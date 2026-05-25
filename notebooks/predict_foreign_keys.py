@@ -31,6 +31,8 @@ dbutils.widgets.text("incremental", "true", "Incremental embedding path only (tr
 dbutils.widgets.text("max_ai_candidates", "200", "Max rows sent to AI_QUERY")
 dbutils.widgets.text("rule_score_min_for_ai", "0.50", "Min rule score to qualify for AI judge")
 dbutils.widgets.text("max_candidates_per_table_pair", "5", "Max candidates per table pair (name/ontology)")
+dbutils.widgets.text("same_schema_bonus", "0.10", "Same-schema FK score bonus")
+dbutils.widgets.text("cross_schema_penalty", "-0.10", "Cross-schema FK score penalty")
 dbutils.widgets.text("system_column_exclude_patterns", "", "Regex patterns to exclude system columns from FK boosting (comma-separated, empty=defaults)")
 dbutils.widgets.text("sweep_stale_edges", "false", "Sweep stale edges")
 dbutils.widgets.text("table_names", "", "Table Names")
@@ -54,6 +56,8 @@ incremental = dbutils.widgets.get("incremental").lower() == "true"
 max_ai_candidates = int(dbutils.widgets.get("max_ai_candidates"))
 rule_score_min_for_ai = float(dbutils.widgets.get("rule_score_min_for_ai"))
 max_candidates_per_table_pair = int(dbutils.widgets.get("max_candidates_per_table_pair"))
+same_schema_bonus = float(dbutils.widgets.get("same_schema_bonus"))
+cross_schema_penalty = float(dbutils.widgets.get("cross_schema_penalty"))
 _sys_col_raw = dbutils.widgets.get("system_column_exclude_patterns").strip()
 system_column_patterns = tuple(p.strip() for p in _sys_col_raw.split(",") if p.strip()) if _sys_col_raw else None
 sweep_stale = dbutils.widgets.get("sweep_stale_edges").strip().lower() in ("true", "1", "yes")
@@ -107,6 +111,8 @@ _fk_kwargs = dict(
     max_ai_candidates=max_ai_candidates,
     rule_score_min_for_ai=rule_score_min_for_ai,
     max_candidates_per_table_pair=max_candidates_per_table_pair,
+    same_schema_bonus=same_schema_bonus,
+    cross_schema_penalty=cross_schema_penalty,
     federation_mode=federation_mode,
 )
 if system_column_patterns is not None:

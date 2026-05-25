@@ -65,6 +65,7 @@ class MetadataConfig:
             "source_file_path",
             "control_table",
             "apply_ddl",
+            "apply_tags",
             "ddl_output_format",
             "allow_data",
             "dry_run",
@@ -204,6 +205,7 @@ class MetadataConfig:
         # Parse boolean fields properly (string "false" should be False, not True)
         self.allow_data = _parse_bool(getattr(self, "allow_data", True))
         self.apply_ddl = _parse_bool(getattr(self, "apply_ddl", False))
+        self.apply_tags = _parse_bool(getattr(self, "apply_tags", getattr(self, "apply_ddl", False)))
         self.dry_run = _parse_bool(getattr(self, "dry_run", False))
         self.cleanup_control_table = _parse_bool(
             getattr(self, "cleanup_control_table", False)
@@ -275,6 +277,7 @@ class MetadataConfig:
         self.claim_timeout_minutes = int(getattr(self, "claim_timeout_minutes", 60))
 
         # Federation mode: force apply_ddl=false when reading from federated catalogs
+        # apply_tags is allowed -- SET TAG ON syntax works on foreign tables (UC-native metadata)
         self.federation_mode = _parse_bool(getattr(self, "federation_mode", False))
         if self.federation_mode:
             self.apply_ddl = False

@@ -1311,15 +1311,11 @@ def mark_table_failed(
     )
 
 
-def run_log_table_ddl(config):
-    """Run the unified log table DDL."""
-    spark = SparkSession.builder.getOrCreate()
-    spark.sql(
-        f"""CREATE TABLE IF NOT EXISTS {config.catalog_name}.{config.schema_name}.metadata_generation_log (
+_LOG_TABLE_DDL = """CREATE TABLE IF NOT EXISTS {fq_table} (
         metadata_type STRING,
-        table STRING, 
-        tokenized_table STRING, 
-        ddl_type STRING, 
+        table STRING,
+        tokenized_table STRING,
+        ddl_type STRING,
         column_name STRING,
         _created_at TIMESTAMP,
         column_content STRING,
@@ -1333,19 +1329,30 @@ def run_log_table_ddl(config):
         recommended_subdomain STRING,
         reasoning STRING,
         metadata_summary STRING,
-        catalog STRING, 
-        schema STRING, 
-        table_name STRING, 
-        ddl STRING, 
-        current_user STRING, 
-        model STRING, 
-        sample_size INT, 
-        max_tokens INT, 
-        temperature DOUBLE, 
-        columns_per_call INT, 
+        catalog STRING,
+        schema STRING,
+        table_name STRING,
+        ddl STRING,
+        current_user STRING,
+        model STRING,
+        sample_size INT,
+        max_tokens INT,
+        temperature DOUBLE,
+        columns_per_call INT,
         status STRING
     )"""
-    )
+
+
+def ensure_log_table(spark_session, catalog_name: str, schema_name: str) -> None:
+    """Create metadata_generation_log if it does not exist (no MetadataConfig needed)."""
+    fq = f"{catalog_name}.{schema_name}.metadata_generation_log"
+    spark_session.sql(_LOG_TABLE_DDL.format(fq_table=fq))
+
+
+def run_log_table_ddl(config):
+    """Run the unified log table DDL."""
+    spark = SparkSession.builder.getOrCreate()
+    ensure_log_table(spark, config.catalog_name, config.schema_name)
 
 
 def output_df_pandas_to_tsv(df, output_file):
@@ -2365,7 +2372,9 @@ def _check_federation_guard(spark, catalog, schema, table_names=None, federation
         rows = spark.sql(f"""
             SELECT table_name FROM system.information_schema.tables
             WHERE table_catalog = '{catalog}' AND table_schema = '{schema}'
-              AND table_type = 'FOREIGN' {filter_clause} LIMIT 5
+              AND table_type = 'FOREIGN'
+              AND data_source_format != 'VECTOR_INDEX_FORMAT'
+              {filter_clause} LIMIT 5
         """).collect()
         foreign = [r.table_name for r in rows]
         if foreign:
@@ -2377,8 +2386,12 @@ def _check_federation_guard(spark, catalog, schema, table_names=None, federation
             )
     except ValueError:
         raise
-    except Exception:
-        pass
+    except Exception as e:
+        raise ValueError(
+            f"Cannot verify whether tables in {catalog}.{schema} are federated "
+            f"(information_schema query failed: {e}). Set federation_mode=true if "
+            f"targeting federated catalogs, or fix access to information_schema."
+        ) from e
 
 
 def get_generated_metadata_data_aware(
@@ -2582,9 +2595,10 @@ def log_missing_governance_tags(error_msg: str, ddl_statement: str) -> None:
     failed_statements = []
 
     if "TAG_NOT_FOUND" in error_msg or "tag" in error_msg.lower():
-        if "SET TAGS" in ddl_statement:
-
-            tag_pattern = r"'(\w+)'\s*="
+        if "SET TAGS" in ddl_statement or "SET TAG ON" in ddl_statement.upper():
+            # Handles both ALTER TABLE ... SET TAGS ('key' = 'val') and
+            # SET TAG ON TABLE/COLUMN ... key = 'val' formats
+            tag_pattern = r"'?(\w+)'?\s*="
             tags = re.findall(tag_pattern, ddl_statement)
             for tag in tags:
                 if tag not in missing_tags:
@@ -2609,7 +2623,7 @@ def log_missing_governance_tags(error_msg: str, ddl_statement: str) -> None:
 
 def _is_column_level_ddl(ddl: str) -> bool:
     upper = ddl.upper()
-    return "COMMENT ON COLUMN" in upper or "ALTER COLUMN" in upper
+    return "COMMENT ON COLUMN" in upper or "ALTER COLUMN" in upper or "SET TAG ON COLUMN" in upper
 
 
 _COL_DDL_RE_COMMENT_ON = re.compile(
@@ -2930,7 +2944,7 @@ def add_ddl_to_dfs(config, table_df, column_df, table_name):
             logger.error(
                 "[DEBUG] WARNING: table_df is None! No table-level DDL will be generated!"
             )
-        if config.apply_ddl:
+        if config.apply_ddl or config.apply_tags:
             dfs["ddl_results"] = apply_ddl_to_tables(dfs, config)
     elif config.mode == "domain":
         if table_df is not None:
@@ -2941,7 +2955,7 @@ def add_ddl_to_dfs(config, table_df, column_df, table_name):
                 "[DEBUG] WARNING: table_df is None! No domain DDL will be generated!"
             )
         dfs["domain_column_df"] = None
-        if config.apply_ddl:
+        if config.apply_ddl or config.apply_tags:
             dfs["ddl_results"] = apply_ddl_to_tables(dfs, config)
     else:
         raise ValueError("Invalid mode. Use 'pi', 'comment', or 'domain'.")
@@ -3541,12 +3555,12 @@ def generate_and_persist_metadata(config: Any) -> None:
                         f"[generate_and_persist_metadata] Generating and persisting ddl for {table}..."
                     )
                     create_and_persist_ddl(df, config, table)
-                    if config.apply_ddl:
+                    if config.apply_ddl or config.apply_tags:
                         status = "Table processed"
                     else:
                         status = "Table processed (DDL not applied - review mode)"
 
-                if df and config.apply_ddl and "ddl_results" in df:
+                if df and (config.apply_ddl or config.apply_tags) and "ddl_results" in df:
                     ddl_results = df["ddl_results"]
                     if ddl_results.get("failed_count", 0) > 0:
                         missing_tags = ddl_results.get("missing_tags", [])
@@ -4105,10 +4119,17 @@ def _create_table_pi_information_ddl_func(config: MetadataConfig):
     pi_subclass_tag = getattr(
         config, "pi_subclassification_tag_name", "data_subclassification"
     )
+    fed = getattr(config, "federation_mode", False)
 
     def table_pi_information_ddl(
         table_name: str, classification: str, pi_type: str
     ) -> str:
+        if fed:
+            return (
+                f"SET TAG ON TABLE {table_name} "
+                f"{pi_class_tag} = '{classification}', "
+                f"{pi_subclass_tag} = '{pi_type}';"
+            )
         return f"ALTER TABLE {table_name} SET TAGS ('{pi_class_tag}' = '{classification}', '{pi_subclass_tag}' = '{pi_type}');"
 
     return table_pi_information_ddl
@@ -4119,10 +4140,17 @@ def _create_pi_information_ddl_func(config: MetadataConfig):
     pi_subclass_tag = getattr(
         config, "pi_subclassification_tag_name", "data_subclassification"
     )
+    fed = getattr(config, "federation_mode", False)
 
     def pi_information_ddl(
         table_name: str, column_name: str, classification: str, pi_type: str
     ) -> str:
+        if fed:
+            return (
+                f"SET TAG ON COLUMN {table_name}.`{column_name}` "
+                f"{pi_class_tag} = '{classification}', "
+                f"{pi_subclass_tag} = '{pi_type}';"
+            )
         return f"ALTER TABLE {table_name} ALTER COLUMN `{column_name}` SET TAGS ('{pi_class_tag}' = '{classification}', '{pi_subclass_tag}' = '{pi_type}');"
 
     return pi_information_ddl
@@ -4131,22 +4159,20 @@ def _create_pi_information_ddl_func(config: MetadataConfig):
 def _create_table_domain_ddl_func(config: MetadataConfig):
     domain_tag = getattr(config, "domain_tag_name", "domain")
     subdomain_tag = getattr(config, "subdomain_tag_name", "subdomain")
+    fed = getattr(config, "federation_mode", False)
 
     def table_domain_ddl(full_table_name: str, domain: str, subdomain: str) -> str:
-        """
-        Generate DDL for domain classification as table tags.
-
-        Args:
-            full_table_name: The full table name (catalog.schema.table)
-            domain: Primary domain classification
-            subdomain: Subdomain classification (can be None or empty)
-
-        Returns:
-            DDL statement to set table tags with domain information
-        """
         if subdomain is None or subdomain == "None" or subdomain.strip() == "":
+            if fed:
+                return f"SET TAG ON TABLE {full_table_name} {domain_tag} = '{domain}';"
             return (
                 f"ALTER TABLE {full_table_name} SET TAGS ('{domain_tag}' = '{domain}');"
+            )
+        if fed:
+            return (
+                f"SET TAG ON TABLE {full_table_name} "
+                f"{domain_tag} = '{domain}', "
+                f"{subdomain_tag} = '{subdomain}';"
             )
         return f"ALTER TABLE {full_table_name} SET TAGS ('{domain_tag}' = '{domain}', '{subdomain_tag}' = '{subdomain}');"
 

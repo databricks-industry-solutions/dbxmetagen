@@ -54,6 +54,7 @@ export default function GenieBuilder({ onNavigate, pipelineStats }) {
   const [refineFeedback, setRefineFeedback] = useState('')
   const [showRefine, setShowRefine] = useState(false)
   const [tablesLoading, setTablesLoading] = useState(true)
+  const [mvsLoading, setMvsLoading] = useState(true)
   const [catalogs, setCatalogs] = useState([])
   const [selectedCatalog, setSelectedCatalog] = useState('')
   const [tableFilter, setTableFilter] = useState('')
@@ -76,8 +77,8 @@ export default function GenieBuilder({ onNavigate, pipelineStats }) {
     fetch('/api/catalogs').then(r => r.ok ? r.json() : []).then(setCatalogs)
       .catch(e => setFetchErrors(prev => ({ ...prev, catalogs: e.message })))
     fetch('/api/semantic/metric-views?status=applied')
-      .then(r => r.ok ? r.json() : []).then(setMetricViews)
-      .catch(e => setFetchErrors(prev => ({ ...prev, metricViews: e.message })))
+      .then(r => r.ok ? r.json() : []).then(d => { setMetricViews(d); setMvsLoading(false) })
+      .catch(e => { setMvsLoading(false); setFetchErrors(prev => ({ ...prev, metricViews: e.message })) })
     fetch('/api/kpis').then(r => r.ok ? r.json() : []).then(setKpis)
       .catch(e => setFetchErrors(prev => ({ ...prev, kpis: e.message })))
     fetch('/api/config').then(r => r.ok ? r.json() : {}).then(c => {
@@ -409,13 +410,16 @@ export default function GenieBuilder({ onNavigate, pipelineStats }) {
             </div>
           )
         })}
-        {!tables.length && tablesLoading && <SkeletonTable rows={3} cols={3} />}
-        {!tables.length && !tablesLoading && (
+        {!tables.length && (tablesLoading || mvsLoading) && <SkeletonTable rows={3} cols={3} />}
+        {!tables.length && !tablesLoading && !mvsLoading && !schemas.length && (
           <EmptyState
-            title="No tables in this catalog"
-            description="Confirm the catalog has managed tables or views, or open Coverage to see registered assets."
+            title="No tables or metric views in this catalog"
+            description="Run the metadata pipeline on tables, or apply metric views in the Semantic Layer tab."
             action={onNavigate ? { label: 'Open Coverage', onClick: () => onNavigate('coverage') } : undefined}
           />
+        )}
+        {!tables.length && !tablesLoading && schemas.length > 0 && (
+          <p className="text-xs text-slate-400 dark:text-slate-500 mt-1">No metadata-processed tables in this catalog. Schemas above contain applied metric views only.</p>
         )}
         {tables.length > 0 && !filteredTables.length && <p className="text-sm text-slate-400">No tables match "{tableFilter}".</p>}
       </div>

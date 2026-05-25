@@ -1,6 +1,6 @@
 [project]
 name = "dbxmetagen"
-version = "0.9.6"
+version = "0.9.7"
 description = "Generates comments and identifies and classifies other metadata for Delta tables in Databricks."
 readme = "README.md"
 authors = [{ name = "Eli Swanson", email = "eli.swanson@databricks.com" }]
@@ -45,6 +45,7 @@ allow-direct-references = true
 packages = ["src/dbxmetagen"]
 
 [tool.pytest.ini_options]
+pythonpath = ["."]
 testpaths = ["tests"]
 python_files = ["test_*.py"]
 python_classes = ["Test*"]

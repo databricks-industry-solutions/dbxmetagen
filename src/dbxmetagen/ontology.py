@@ -563,6 +563,7 @@ class OntologyConfig:
     ontology_vs_index: str = ""
     # VS endpoint name for ontology vector queries
     vs_endpoint_name: str = "dbxmetagen-vs"
+    federation_mode: bool = False
 
     @property
     def fully_qualified_entities(self) -> str:
@@ -3394,6 +3395,8 @@ class OntologyBuilder:
         audit_rows: list = []
         now = _dt.utcnow().isoformat()
 
+        fed = getattr(self.config, "federation_mode", False)
+
         # Table-level tags
         try:
             table_ents_df = self.spark.sql(
@@ -3409,11 +3412,18 @@ class OntologyBuilder:
             for row in table_ents_df.toLocalIterator():
                 action = "failed"
                 try:
-                    self.spark.sql(
-                        f"ALTER TABLE {row.table_name} SET TAGS ("
-                        f"'{tag_key}' = '{row.entity_type}', "
-                        f"'ontology_bundle_version' = '{bundle_ver}')"
-                    )
+                    if fed:
+                        self.spark.sql(
+                            f"SET TAG ON TABLE {row.table_name} "
+                            f"{tag_key} = '{row.entity_type}', "
+                            f"ontology_bundle_version = '{bundle_ver}'"
+                        )
+                    else:
+                        self.spark.sql(
+                            f"ALTER TABLE {row.table_name} SET TAGS ("
+                            f"'{tag_key}' = '{row.entity_type}', "
+                            f"'ontology_bundle_version' = '{bundle_ver}')"
+                        )
                     tagged += 1
                     action = "applied"
                 except Exception as e:
@@ -3425,7 +3435,7 @@ class OntologyBuilder:
         except Exception as e:
             logger.warning("Could not read table-level entities for tagging: %s", e)
 
-        # Column-level tags (batched per table: one ALTER COLUMN, comma-separated cols; DBR 16.3+)
+        # Column-level tags
         try:
             from collections import defaultdict as _defaultdict
 
@@ -3447,27 +3457,49 @@ class OntologyBuilder:
                 table_col_tags[row.table_name].append(row)
 
             for tbl, rows in table_col_tags.items():
-                col_specs = [
-                    f"`{r.col_name}` SET TAGS "
-                    f"('{tag_key}' = '{r.entity_type}', "
-                    f"'ontology_bundle_version' = '{bundle_ver}')"
-                    for r in rows
-                ]
-                try:
-                    self.spark.sql(f"ALTER TABLE {tbl} ALTER COLUMN {', '.join(col_specs)}")
-                    tagged += len(rows)
+                if fed:
+                    # SET TAG ON COLUMN: one statement per column for federation
                     for r in rows:
-                        audit_rows.append((
-                            now, tbl, r.col_name, tag_key, r.entity_type,
-                            float(r.confidence), bundle_ver, r.discovery_method, "applied",
-                        ))
-                except Exception as e:
-                    logger.warning("Batch column tagging failed for %s: %s", tbl, e)
-                    for r in rows:
-                        audit_rows.append((
-                            now, tbl, r.col_name, tag_key, r.entity_type,
-                            float(r.confidence), bundle_ver, r.discovery_method, "failed",
-                        ))
+                        try:
+                            self.spark.sql(
+                                f"SET TAG ON COLUMN {tbl}.`{r.col_name}` "
+                                f"{tag_key} = '{r.entity_type}', "
+                                f"ontology_bundle_version = '{bundle_ver}'"
+                            )
+                            tagged += 1
+                            audit_rows.append((
+                                now, tbl, r.col_name, tag_key, r.entity_type,
+                                float(r.confidence), bundle_ver, r.discovery_method, "applied",
+                            ))
+                        except Exception as e:
+                            logger.warning("Failed to tag column %s.%s: %s", tbl, r.col_name, e)
+                            audit_rows.append((
+                                now, tbl, r.col_name, tag_key, r.entity_type,
+                                float(r.confidence), bundle_ver, r.discovery_method, "failed",
+                            ))
+                else:
+                    # Batched ALTER TABLE ... ALTER COLUMN (DBR 16.3+)
+                    col_specs = [
+                        f"`{r.col_name}` SET TAGS "
+                        f"('{tag_key}' = '{r.entity_type}', "
+                        f"'ontology_bundle_version' = '{bundle_ver}')"
+                        for r in rows
+                    ]
+                    try:
+                        self.spark.sql(f"ALTER TABLE {tbl} ALTER COLUMN {', '.join(col_specs)}")
+                        tagged += len(rows)
+                        for r in rows:
+                            audit_rows.append((
+                                now, tbl, r.col_name, tag_key, r.entity_type,
+                                float(r.confidence), bundle_ver, r.discovery_method, "applied",
+                            ))
+                    except Exception as e:
+                        logger.warning("Batch column tagging failed for %s: %s", tbl, e)
+                        for r in rows:
+                            audit_rows.append((
+                                now, tbl, r.col_name, tag_key, r.entity_type,
+                                float(r.confidence), bundle_ver, r.discovery_method, "failed",
+                            ))
         except Exception as e:
             logger.warning("Could not read column-level entities for tagging: %s", e)
 
@@ -5633,6 +5665,7 @@ def build_ontology(
     table_names: Optional[List[str]] = None,
     ontology_vs_index: str = "",
     vs_endpoint_name: str = "dbxmetagen-vs",
+    federation_mode: bool = False,
 ) -> Dict[str, Any]:
     """Convenience function to build the ontology.
 
@@ -5651,6 +5684,7 @@ def build_ontology(
         ontology_vs_index: Fully-qualified VS index name for ontology retrieval.
             When set, entity/edge classification uses HYBRID vector search.
         vs_endpoint_name: Vector Search endpoint name for ontology queries.
+        federation_mode: Use SET TAG ON syntax for federated (FOREIGN) tables.
     """
     config = OntologyConfig(
         catalog_name=catalog_name,
@@ -5662,6 +5696,7 @@ def build_ontology(
         table_names=table_names,
         ontology_vs_index=ontology_vs_index,
         vs_endpoint_name=vs_endpoint_name,
+        federation_mode=federation_mode,
     )
     builder = OntologyBuilder(spark, config, model_endpoint=model_endpoint)
     return builder.run(apply_tags=apply_tags)

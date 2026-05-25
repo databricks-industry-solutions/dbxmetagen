@@ -60,6 +60,10 @@ resources:
           default: ${var.spacy_model_names}
         - name: endpoint_name
           default: ${var.vs_endpoint_name}
+        - name: comment_style
+          default: "standard"
+        - name: populate_log
+          default: "true"
 
       tasks:
         # ------------------------------------------------------------------
@@ -76,6 +80,7 @@ resources:
               table_names: "{{job.parameters.table_names}}"
               catalog_name: "{{job.parameters.catalog_name}}"
               schema_name: "{{job.parameters.schema_name}}"
+              populate_log: "{{job.parameters.populate_log}}"
 
         # ------------------------------------------------------------------
         # Stage 1: Profiling, extended metadata, ontology (parallel, after bootstrap)
@@ -161,6 +166,7 @@ resources:
               domain_config_path: "{{job.parameters.domain_config_path}}"
               model: "{{job.parameters.model}}"
               spacy_model_names: "{{job.parameters.spacy_model_names}}"
+              comment_style: "{{job.parameters.comment_style}}"
 
         - task_key: generate_pi
           max_retries: 1
@@ -381,6 +387,8 @@ resources:
               apply_ddl: "false"
               dry_run: "false"
               incremental: "{{job.parameters.incremental}}"
+              same_schema_bonus: "0.10"
+              cross_schema_penalty: "-0.10"
               table_names: "{{job.parameters.table_names}}"
               federation_mode: "{{job.parameters.federation_mode}}"
 

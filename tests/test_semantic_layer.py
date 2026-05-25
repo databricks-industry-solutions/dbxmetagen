@@ -66,6 +66,36 @@ class TestFixUnquotedLiterals:
         assert "= 'Active' AND" in result
 
 
+class TestFixBareComparison:
+
+    def test_inserts_empty_string_before_paren(self):
+        result = SemanticLayerGenerator._fix_bare_comparison("source.x != )")
+        assert "!= ''" in result
+        assert ")" in result
+
+    def test_inserts_empty_string_before_comma(self):
+        result = SemanticLayerGenerator._fix_bare_comparison("source.x != ,")
+        assert "!= ''" in result
+
+    def test_inserts_empty_string_before_and(self):
+        result = SemanticLayerGenerator._fix_bare_comparison("source.x != AND source.y = 1")
+        assert "!= '' AND" in result
+
+    def test_preserves_existing_quoted_value(self):
+        expr = "source.x != 'value')"
+        assert SemanticLayerGenerator._fix_bare_comparison(expr) == expr
+
+    def test_preserves_numeric_value(self):
+        expr = "source.x != 0)"
+        assert SemanticLayerGenerator._fix_bare_comparison(expr) == expr
+
+    def test_full_filter_expression(self):
+        bad = "COUNT(DISTINCT source.id) FILTER (WHERE source.col IS NOT NULL AND source.col != )"
+        result = SemanticLayerGenerator._fix_bare_comparison(bad)
+        assert "!= ''" in result
+        assert "!= )" not in result
+
+
 class TestFixCaseQuoting:
 
     def test_splits_trapped_keywords(self):
@@ -259,6 +289,21 @@ class TestAutofixFixesBadExprs:
         result = SemanticLayerGenerator._autofix_expr(bad)
         assert "= 'Closed Won' THEN" in result
         assert "'Closed Lost'" in result
+
+    def test_fixes_bare_comparison_in_filter(self):
+        bad = "COUNT(DISTINCT source.experiment_id) FILTER (WHERE source.eln_number IS NOT NULL AND source.eln_number != )"
+        result = SemanticLayerGenerator._autofix_expr(bad)
+        assert "!= ''" in result
+        assert "!= )" not in result
+
+    def test_fixes_bare_comparison_in_ratio(self):
+        bad = (
+            "COUNT(DISTINCT source.id) FILTER (WHERE source.x IS NOT NULL AND source.x != ) "
+            "* 100.0 / NULLIF(COUNT(DISTINCT source.id), 0)"
+        )
+        result = SemanticLayerGenerator._autofix_expr(bad)
+        assert "!= ''" in result
+        assert "!= )" not in result
 
 
 class TestFixConcatSeparators:

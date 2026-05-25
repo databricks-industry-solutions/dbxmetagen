@@ -404,5 +404,124 @@ class TestBuildKnowledgeBaseFunction:
         assert result == expected_result
 
 
+class TestLogBootstrapToGenerationLog:
+    """Test KnowledgeBaseBuilder.log_bootstrap_to_generation_log."""
+
+    def setup_method(self):
+        self.mock_spark = MagicMock()
+        self.config = KnowledgeBaseConfig(
+            catalog_name="prod", schema_name="meta"
+        )
+
+    @patch("dbxmetagen.processing.ensure_log_table")
+    def test_ensures_log_table_exists(self, mock_ensure):
+        builder = KnowledgeBaseBuilder(self.mock_spark, self.config)
+        builder.log_bootstrap_to_generation_log(["prod.meta.t1"])
+        mock_ensure.assert_called_once_with(self.mock_spark, "prod", "meta")
+
+    @patch("dbxmetagen.processing.ensure_log_table")
+    def test_queries_information_schema(self, mock_ensure):
+        mock_df = MagicMock()
+        mock_df.count.return_value = 1
+        self.mock_spark.sql.return_value = mock_df
+        builder = KnowledgeBaseBuilder(self.mock_spark, self.config)
+        builder.log_bootstrap_to_generation_log(["prod.meta.t1"])
+
+        query = self.mock_spark.sql.call_args[0][0]
+        assert "information_schema.tables" in query
+        assert "'comment' AS metadata_type" in query
+        assert "'table' AS ddl_type" in query
+        assert "'import' AS model" in query
+        assert "'bootstrap_import' AS status" in query
+
+    @patch("dbxmetagen.processing.ensure_log_table")
+    def test_appends_to_log_table(self, mock_ensure):
+        mock_df = MagicMock()
+        mock_df.count.return_value = 2
+        self.mock_spark.sql.return_value = mock_df
+        builder = KnowledgeBaseBuilder(self.mock_spark, self.config)
+        result = builder.log_bootstrap_to_generation_log(["prod.meta.t1", "prod.meta.t2"])
+
+        mock_df.write.mode.assert_called_with("append")
+        mock_df.write.mode().option.assert_called_with("mergeSchema", "true")
+        mock_df.write.mode().option().saveAsTable.assert_called_with(
+            "prod.meta.metadata_generation_log"
+        )
+        assert result == 2
+
+    @patch("dbxmetagen.processing.ensure_log_table")
+    def test_skips_malformed_names(self, mock_ensure):
+        builder = KnowledgeBaseBuilder(self.mock_spark, self.config)
+        result = builder.log_bootstrap_to_generation_log(["bad_name", "also.bad"])
+        assert result == 0
+        self.mock_spark.sql.assert_not_called()
+
+    @patch("dbxmetagen.processing.ensure_log_table")
+    def test_groups_by_catalog_schema(self, mock_ensure):
+        mock_df = MagicMock()
+        mock_df.count.return_value = 3
+        self.mock_spark.sql.return_value = mock_df
+        builder = KnowledgeBaseBuilder(self.mock_spark, self.config)
+        builder.log_bootstrap_to_generation_log([
+            "cat1.sch1.t1", "cat1.sch1.t2", "cat2.sch2.t3"
+        ])
+        assert self.mock_spark.sql.call_count == 2
+
+
+class TestColumnLogBootstrapToGenerationLog:
+    """Test ColumnKnowledgeBaseBuilder.log_bootstrap_to_generation_log."""
+
+    def setup_method(self):
+        self.mock_spark = MagicMock()
+
+    @patch("dbxmetagen.processing.ensure_log_table")
+    def test_queries_information_schema_columns(self, mock_ensure):
+        from dbxmetagen.column_knowledge_base import ColumnKnowledgeBaseConfig, ColumnKnowledgeBaseBuilder
+        config = ColumnKnowledgeBaseConfig(catalog_name="prod", schema_name="meta")
+        mock_df = MagicMock()
+        mock_df.count.return_value = 5
+        self.mock_spark.sql.return_value = mock_df
+        builder = ColumnKnowledgeBaseBuilder(self.mock_spark, config)
+        builder.log_bootstrap_to_generation_log(["prod.meta.t1"])
+
+        query = self.mock_spark.sql.call_args[0][0]
+        assert "information_schema.columns" in query
+        assert "'comment' AS metadata_type" in query
+        assert "'column' AS ddl_type" in query
+        assert "'import' AS model" in query
+        assert "column_name" in query
+
+    @patch("dbxmetagen.processing.ensure_log_table")
+    def test_appends_to_log_table(self, mock_ensure):
+        from dbxmetagen.column_knowledge_base import ColumnKnowledgeBaseConfig, ColumnKnowledgeBaseBuilder
+        config = ColumnKnowledgeBaseConfig(catalog_name="prod", schema_name="meta")
+        mock_df = MagicMock()
+        mock_df.count.return_value = 10
+        self.mock_spark.sql.return_value = mock_df
+        builder = ColumnKnowledgeBaseBuilder(self.mock_spark, config)
+        result = builder.log_bootstrap_to_generation_log(["prod.meta.t1"])
+
+        mock_df.write.mode.assert_called_with("append")
+        mock_df.write.mode().option().saveAsTable.assert_called_with(
+            "prod.meta.metadata_generation_log"
+        )
+        assert result == 10
+
+
+class TestEnsureLogTable:
+    """Test the standalone ensure_log_table helper."""
+
+    def test_creates_table_with_correct_name(self):
+        from dbxmetagen.processing import ensure_log_table
+        mock_spark = MagicMock()
+        ensure_log_table(mock_spark, "my_cat", "my_sch")
+        ddl = mock_spark.sql.call_args[0][0]
+        assert "my_cat.my_sch.metadata_generation_log" in ddl
+        assert "CREATE TABLE IF NOT EXISTS" in ddl
+        assert "metadata_type STRING" in ddl
+        assert "column_content STRING" in ddl
+        assert "status STRING" in ddl
+
+
 if __name__ == "__main__":
     pytest.main([__file__, "-v"])

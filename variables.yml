@@ -53,6 +53,9 @@ variables:
   apply_ddl:
     description: Whether to apply DDL directly to the specified environment or not. Modify permissions needed, and be aware that this will alter tables.
     default: False
+  apply_tags:
+    description: Whether to apply tag DDLs (SET TAGS / SET TAG ON) independently of apply_ddl. Defaults to the value of apply_ddl. In federation_mode, apply_ddl stays False but apply_tags can be True to set UC-native tags on foreign tables.
+    default: False
   ddl_output_format:
     description: Output format can be via sql file (default) or via tsv or excel if this improves reviewability. This file is the individual output files.
     default: sql

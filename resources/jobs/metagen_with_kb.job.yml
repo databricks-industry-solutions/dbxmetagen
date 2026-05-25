@@ -37,6 +37,8 @@ resources:
           default: "false"
         - name: spacy_model_names
           default: ${var.spacy_model_names}
+        - name: comment_style
+          default: "standard"
 
       tasks:
         - task_key: generate_metadata
@@ -58,6 +60,7 @@ resources:
               include_previously_failed_tables: "{{job.parameters.include_previously_failed_tables}}"
               federation_mode: "{{job.parameters.federation_mode}}"
               spacy_model_names: "{{job.parameters.spacy_model_names}}"
+              comment_style: "{{job.parameters.comment_style}}"
 
         - task_key: build_knowledge_base
           max_retries: 1

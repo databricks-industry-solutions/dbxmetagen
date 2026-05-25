@@ -22,15 +22,18 @@
 dbutils.widgets.text("table_names", "", "Comma-separated FQNs or wildcards (e.g. cat.schema.*)")
 dbutils.widgets.text("catalog_name", "", "Output catalog for KB tables")
 dbutils.widgets.text("schema_name", "", "Output schema for KB tables")
+dbutils.widgets.dropdown("populate_log", "true", ["true", "false"], "Also write to metadata_generation_log")
 
 table_names_raw = dbutils.widgets.get("table_names")
 catalog_name = dbutils.widgets.get("catalog_name")
 schema_name = dbutils.widgets.get("schema_name")
+populate_log = dbutils.widgets.get("populate_log").lower() == "true"
 
 if not table_names_raw or not catalog_name or not schema_name:
     raise ValueError("table_names, catalog_name, and schema_name are all required")
 
 print(f"Bootstrapping KB in {catalog_name}.{schema_name} for: {table_names_raw}")
+print(f"Populate metadata_generation_log: {populate_log}")
 
 # COMMAND ----------
 # MAGIC %md
@@ -70,10 +73,27 @@ print(f"Column KB: {col_count} rows merged")
 
 # COMMAND ----------
 # MAGIC %md
+# MAGIC ## Populate metadata_generation_log (optional)
+
+# COMMAND ----------
+
+tbl_log_count = 0
+col_log_count = 0
+if populate_log:
+    tbl_log_count = kb_builder.log_bootstrap_to_generation_log(resolved)
+    col_log_count = ckb_builder.log_bootstrap_to_generation_log(resolved)
+    print(f"Log: {tbl_log_count} table rows + {col_log_count} column rows written to metadata_generation_log")
+else:
+    print("Skipping metadata_generation_log population (populate_log=false)")
+
+# COMMAND ----------
+# MAGIC %md
 # MAGIC ## Summary
 
 # COMMAND ----------
 
 print(f"Bootstrap complete -- {tbl_count} tables, {col_count} columns")
+if populate_log:
+    print(f"Log: {tbl_log_count} table + {col_log_count} column rows")
 spark.sql(f"SELECT COUNT(*) AS total FROM {catalog_name}.{schema_name}.table_knowledge_base").display()
 spark.sql(f"SELECT COUNT(*) AS total FROM {catalog_name}.{schema_name}.column_knowledge_base").display()

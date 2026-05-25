@@ -295,277 +295,450 @@ class ProfilingBuilder:
         
         return "mixed"
     
-    def profile_table(self, table_name: str) -> Optional[Dict[str, Any]]:
-        """Generate profiling snapshot for a single table."""
-        try:
-            snapshot_id = str(uuid.uuid4())
-            df = self.spark.table(table_name)
-            row_count = df.count()
-            column_count = len(df.columns)
-            
-            # Get table details if Delta
-            table_size = None
-            num_files = None
-            last_modified = None
-            
-            try:
-                detail_df = self.spark.sql(f"DESCRIBE DETAIL {table_name}")
-                detail = detail_df.collect()[0]
-                table_size = getattr(detail, 'sizeInBytes', None)
-                num_files = getattr(detail, 'numFiles', None)
-                last_modified = getattr(detail, 'lastModified', None)
-            except Exception as e:
-                logger.debug(f"Could not get table details for {table_name}: {e}")
-            
-            # Profile columns
-            column_stats = {}
-            column_stat_records = []
-            
-            for col_name in df.columns[:50]:  # Limit columns for performance
-                try:
-                    col_stats = self._profile_column(df, col_name, snapshot_id, table_name, row_count)
-                    if col_stats:
-                        # Create summary string for column_stats map
-                        summary = f"dist:{col_stats.get('distinct_count', 0)},null:{col_stats.get('null_rate', 0):.2f}"
-                        column_stats[col_name] = summary
-                        column_stat_records.append(col_stats)
-                except Exception as e:
-                    logger.debug(f"Could not profile column {col_name}: {e}")
-            
-            return {
-                "snapshot_id": snapshot_id,
-                "table_name": table_name,
-                "row_count": row_count,
-                "column_count": column_count,
-                "column_stats": column_stats,
-                "table_size_bytes": table_size,
-                "num_files": num_files,
-                "last_modified": last_modified,
-                "column_stat_records": column_stat_records
-            }
-            
-        except Exception as e:
-            logger.warning(f"Could not profile table {table_name}: {e}")
-            return None
-    
-    def _profile_column(
-        self, 
-        df: DataFrame, 
-        col_name: str, 
-        snapshot_id: str,
-        table_name: str,
-        row_count: int
+    # ------------------------------------------------------------------
+    # Dispatch: route to delta or federated profiling path
+    # ------------------------------------------------------------------
+
+    def profile_table(
+        self, table_name: str, federation_mode: bool = False,
+        drift_baselines: Optional[Dict[str, Dict[str, int]]] = None
     ) -> Dict[str, Any]:
-        """Profile a single column with universal and type-specific metrics."""
-        stat_id = str(uuid.uuid4())
-        col = F.col(f"`{col_name}`")
-        col_type = df.schema[col_name].dataType
-        data_type_str = self._get_data_type_string(col_type)
-        
-        # Track column type for summary
-        self._stats["total_cols"] += 1
-        
-        # === UNIVERSAL METRICS (computed for ALL columns) ===
-        basic_stats = df.select(
-            F.count(col).alias("non_null_count"),
-            F.sum(F.when(col.isNull(), 1).otherwise(0)).alias("null_count"),
-            F.approx_count_distinct(col).alias("distinct_count")
-        ).collect()[0]
-        
-        null_count = int(basic_stats["null_count"] or 0)
-        non_null_count = int(basic_stats["non_null_count"] or 0)
-        distinct_count = int(basic_stats["distinct_count"] or 0)
-        
-        # Null rate
-        null_rate = float(null_count / row_count) if row_count > 0 else 0.0
-        
-        # Cardinality ratio
-        cardinality_ratio = float(distinct_count / non_null_count) if non_null_count > 0 else 0.0
-        
-        # Is unique candidate (high cardinality, low nulls)
-        is_unique = (cardinality_ratio > 0.95 and null_rate < 0.01 and row_count > 10)
-        
-        # Initialize result with sensible defaults (not NULL)
-        result = {
-            "stat_id": stat_id,
-            "snapshot_id": snapshot_id,
-            "table_name": table_name,
-            "column_name": col_name,
-            "data_type": data_type_str,
-            "null_count": null_count,
-            "null_rate": null_rate,
-            "distinct_count": distinct_count,
-            "cardinality_ratio": cardinality_ratio,
-            "is_unique_candidate": is_unique,
-            "min_value": "",  # Empty string instead of None
-            "max_value": "",
-            "mean_value": 0.0,
-            "stddev_value": 0.0,
-            "percentiles": {},
-            "min_length": 0,
-            "max_length": 0,
-            "avg_length": 0.0,
-            "empty_string_count": 0,
-            "empty_string_rate": 0.0,
-            "mode_value": "",
-            "mode_frequency": 0,
-            "entropy": 0.0,
-            "sample_values": "[]",
-            "value_distribution": "{}",
-            "pattern_detected": "unknown",
-            "has_numeric_stats": False,
-            "has_string_stats": False,
-            "previous_distinct_count": None,
-            "distinct_count_change_pct": None
-        }
-        
-        # === SAMPLE VALUES (for all column types) ===
+        """Generate profiling snapshot for a single table.
+
+        Routes to _profile_table_delta (single-pass with APPROX_COUNT_DISTINCT,
+        PERCENTILE_APPROX, mode/frequency) or _profile_table_federated
+        (pushdown-safe aggregates only).
+
+        Raises on failure so callers get actionable error messages.
+        """
+        baselines = drift_baselines or {}
+        if federation_mode:
+            return self._profile_table_federated(table_name, baselines)
+        return self._profile_table_delta(table_name, baselines)
+
+    # ------------------------------------------------------------------
+    # Delta path: single-pass SQL with full stats
+    # ------------------------------------------------------------------
+
+    def _profile_table_delta(self, table_name: str, drift_baselines: Dict[str, Dict[str, int]] = None) -> Optional[Dict[str, Any]]:
+        snapshot_id = str(uuid.uuid4())
+        df = self.spark.table(table_name)
+        schema = df.schema
+        columns = [f.name for f in schema.fields[:50]]
+        column_count = len(schema.fields)
+
+        # Classify columns by type
+        numeric_cols, string_cols, bool_cols, date_cols, other_cols = [], [], [], [], []
+        col_type_map: Dict[str, Any] = {}
+        for f in schema.fields[:50]:
+            col_type_map[f.name] = f.dataType
+            if isinstance(f.dataType, NumericType):
+                numeric_cols.append(f.name)
+            elif isinstance(f.dataType, SparkStringType):
+                string_cols.append(f.name)
+            elif isinstance(f.dataType, SparkBooleanType):
+                bool_cols.append(f.name)
+            elif isinstance(f.dataType, (DateType, SparkTimestampType)):
+                date_cols.append(f.name)
+            else:
+                other_cols.append(f.name)
+
+        # --- Pass 1: single SQL with all aggregates ---
+        agg_parts = ["COUNT(*) AS `_row_count`"]
+        for c in columns:
+            qc = f"`{c}`"
+            agg_parts.append(f"COUNT({qc}) AS `{c}__non_null`")
+            agg_parts.append(f"SUM(CASE WHEN {qc} IS NULL THEN 1 ELSE 0 END) AS `{c}__null_count`")
+            agg_parts.append(f"APPROX_COUNT_DISTINCT({qc}) AS `{c}__distinct`")
+            agg_parts.append(f"CAST(MIN({qc}) AS STRING) AS `{c}__min`")
+            agg_parts.append(f"CAST(MAX({qc}) AS STRING) AS `{c}__max`")
+
+        for c in numeric_cols:
+            qc = f"`{c}`"
+            agg_parts.append(f"AVG({qc}) AS `{c}__mean`")
+            agg_parts.append(f"STDDEV_SAMP({qc}) AS `{c}__stddev`")
+            agg_parts.append(
+                f"PERCENTILE_APPROX({qc}, ARRAY(0.25, 0.5, 0.75, 0.95, 0.99)) AS `{c}__pcts`"
+            )
+
+        for c in string_cols:
+            qc = f"`{c}`"
+            agg_parts.append(f"MIN(LENGTH({qc})) AS `{c}__min_len`")
+            agg_parts.append(f"MAX(LENGTH({qc})) AS `{c}__max_len`")
+            agg_parts.append(f"AVG(LENGTH({qc})) AS `{c}__avg_len`")
+            agg_parts.append(
+                f"SUM(CASE WHEN {qc} = '' OR TRIM({qc}) = '' THEN 1 ELSE 0 END) AS `{c}__empty`"
+            )
+
+        for c in date_cols:
+            qc = f"`{c}`"
+            agg_parts.append(f"CAST(MIN({qc}) AS STRING) AS `{c}__dt_min`")
+            agg_parts.append(f"CAST(MAX({qc}) AS STRING) AS `{c}__dt_max`")
+
+        sql = f"SELECT {', '.join(agg_parts)} FROM {table_name}"
+        row = self.spark.sql(sql).collect()[0]
+        row_count = int(row["_row_count"])
+
+        # DESCRIBE DETAIL (instant for Delta)
+        table_size, num_files, last_modified = None, None, None
         try:
-            sample_rows = df.filter(col.isNotNull()).select(col.cast("string")).limit(100).collect()
-            sample_values = [row[0] for row in sample_rows[:5] if row[0] is not None]
-            result["sample_values"] = json.dumps(sample_values[:5])
-        except Exception:
-            sample_values = []
-        
-        # === MODE and FREQUENCY (for low-cardinality columns) ===
-        if distinct_count > 0 and distinct_count <= 1000:
-            try:
-                mode_df = df.groupBy(col.cast("string").alias("val")).count().orderBy(F.desc("count")).limit(10)
-                mode_rows = mode_df.collect()
-                
-                if mode_rows:
-                    result["mode_value"] = str(mode_rows[0]["val"])[:100] if mode_rows[0]["val"] else ""
-                    result["mode_frequency"] = int(mode_rows[0]["count"])
-                    
-                    # Value distribution (top 10)
-                    dist = {str(r["val"])[:50]: int(r["count"]) for r in mode_rows}
-                    result["value_distribution"] = json.dumps(dist)
-                    
-                    # Entropy
-                    value_counts = {str(r["val"]): int(r["count"]) for r in mode_rows}
-                    result["entropy"] = round(self._compute_entropy(value_counts, non_null_count), 4)
-            except Exception as e:
-                logger.debug(f"Could not compute mode for {col_name}: {e}")
-        
-        # === TYPE-SPECIFIC METRICS ===
-        
-        # Numeric stats
-        if isinstance(col_type, NumericType):
-            self._stats["numeric_cols"] += 1
-            result["has_numeric_stats"] = True
-            try:
-                numeric_stats = df.select(
-                    F.min(col).cast("string").alias("min_value"),
-                    F.max(col).cast("string").alias("max_value"),
-                    F.mean(col).alias("mean_value"),
-                    F.stddev(col).alias("stddev_value")
-                ).collect()[0]
-                
-                result["min_value"] = numeric_stats["min_value"] or ""
-                result["max_value"] = numeric_stats["max_value"] or ""
-                mean_val = numeric_stats["mean_value"]
-                result["mean_value"] = float(mean_val) if mean_val is not None else 0.0
-                stddev_val = numeric_stats["stddev_value"]
-                result["stddev_value"] = float(stddev_val) if stddev_val is not None else 0.0
-                
-                # Percentiles
-                try:
-                    percentile_values = df.stat.approxQuantile(col_name, [0.25, 0.5, 0.75, 0.95, 0.99], 0.01)
-                    if percentile_values and len(percentile_values) == 5:
-                        result["percentiles"] = {
-                            "p25": float(percentile_values[0]),
-                            "p50": float(percentile_values[1]),
-                            "p75": float(percentile_values[2]),
-                            "p95": float(percentile_values[3]),
-                            "p99": float(percentile_values[4])
-                        }
-                except Exception:
-                    pass
-            except Exception as e:
-                logger.debug(f"Could not compute numeric stats for {col_name}: {e}")
-        
-        # String stats
-        elif isinstance(col_type, SparkStringType):
-            self._stats["string_cols"] += 1
-            result["has_string_stats"] = True
-            try:
-                string_stats = df.select(
-                    F.min(F.length(col)).alias("min_length"),
-                    F.max(F.length(col)).alias("max_length"),
-                    F.avg(F.length(col)).alias("avg_length"),
-                    F.min(col).alias("min_value"),
-                    F.max(col).alias("max_value"),
-                    F.sum(F.when((col == "") | (F.trim(col) == ""), 1).otherwise(0)).alias("empty_count")
-                ).collect()[0]
-                
-                min_len = string_stats["min_length"]
-                result["min_length"] = int(min_len) if min_len is not None else 0
-                max_len = string_stats["max_length"]
-                result["max_length"] = int(max_len) if max_len is not None else 0
-                avg_len = string_stats["avg_length"]
-                result["avg_length"] = float(avg_len) if avg_len is not None else 0.0
-                result["min_value"] = str(string_stats["min_value"])[:100] if string_stats["min_value"] else ""
-                result["max_value"] = str(string_stats["max_value"])[:100] if string_stats["max_value"] else ""
-                
-                # Empty string metrics
-                empty_count = int(string_stats["empty_count"] or 0)
-                result["empty_string_count"] = empty_count
-                result["empty_string_rate"] = float(empty_count / row_count) if row_count > 0 else 0.0
-                
-                # Pattern detection
-                result["pattern_detected"] = self._detect_pattern(sample_values)
-                
-            except Exception as e:
-                logger.debug(f"Could not compute string stats for {col_name}: {e}")
-        
-        # Boolean stats
-        elif isinstance(col_type, SparkBooleanType):
-            self._stats["other_cols"] += 1
-            try:
-                bool_stats = df.groupBy(col).count().collect()
-                dist = {str(r[0]): int(r[1]) for r in bool_stats}
-                result["value_distribution"] = json.dumps(dist)
-                result["pattern_detected"] = "boolean"
-            except Exception:
-                pass
-        
-        # Date/Timestamp stats
-        elif isinstance(col_type, (DateType, SparkTimestampType)):
-            self._stats["other_cols"] += 1
-            try:
-                date_stats = df.select(
-                    F.min(col).cast("string").alias("min_value"),
-                    F.max(col).cast("string").alias("max_value")
-                ).collect()[0]
-                result["min_value"] = date_stats["min_value"] or ""
-                result["max_value"] = date_stats["max_value"] or ""
-                result["pattern_detected"] = "datetime"
-            except Exception:
-                pass
-        else:
-            self._stats["other_cols"] += 1
-        
-        # === DRIFT DETECTION ===
-        try:
-            prev_stats = self.spark.sql(f"""
-                SELECT distinct_count
-                FROM {self.config.fully_qualified_column_stats}
-                WHERE table_name = '{table_name}' AND column_name = '{col_name}'
-                ORDER BY created_at DESC
-                LIMIT 1
-            """).collect()
-            
-            if prev_stats and prev_stats[0]["distinct_count"] is not None:
-                prev_distinct = int(prev_stats[0]["distinct_count"])
-                result["previous_distinct_count"] = prev_distinct
-                if prev_distinct > 0:
-                    result["distinct_count_change_pct"] = float(
-                        (distinct_count - prev_distinct) / prev_distinct * 100
-                    )
+            detail = self.spark.sql(f"DESCRIBE DETAIL {table_name}").collect()[0]
+            table_size = getattr(detail, "sizeInBytes", None)
+            num_files = getattr(detail, "numFiles", None)
+            last_modified = getattr(detail, "lastModified", None)
         except Exception:
             pass
-        
-        return result
+
+        # --- Pass 2: sample values (single LIMIT query) ---
+        sample_map = self._fetch_samples(table_name, columns)
+
+        # --- Parse pass-1 results into per-column records ---
+        column_stats_summary: Dict[str, str] = {}
+        column_stat_records: List[Dict[str, Any]] = []
+        low_card_cols: List[str] = []
+
+        for c in columns:
+            non_null = int(row[f"{c}__non_null"] or 0)
+            null_count = int(row[f"{c}__null_count"] or 0)
+            distinct_count = int(row[f"{c}__distinct"] or 0)
+            null_rate = float(null_count / row_count) if row_count > 0 else 0.0
+            cardinality_ratio = float(distinct_count / non_null) if non_null > 0 else 0.0
+            is_unique = cardinality_ratio > 0.95 and null_rate < 0.01 and row_count > 10
+
+            dtype = col_type_map[c]
+            data_type_str = self._get_data_type_string(dtype)
+            is_numeric = isinstance(dtype, NumericType)
+            is_string = isinstance(dtype, SparkStringType)
+            is_bool = isinstance(dtype, SparkBooleanType)
+            is_date = isinstance(dtype, (DateType, SparkTimestampType))
+
+            self._stats["total_cols"] += 1
+            if is_numeric:
+                self._stats["numeric_cols"] += 1
+            elif is_string:
+                self._stats["string_cols"] += 1
+            else:
+                self._stats["other_cols"] += 1
+
+            rec: Dict[str, Any] = {
+                "stat_id": str(uuid.uuid4()),
+                "snapshot_id": snapshot_id,
+                "table_name": table_name,
+                "column_name": c,
+                "data_type": data_type_str,
+                "null_count": null_count,
+                "null_rate": null_rate,
+                "distinct_count": distinct_count,
+                "cardinality_ratio": cardinality_ratio,
+                "is_unique_candidate": is_unique,
+                "min_value": str(row[f"{c}__min"] or "")[:100],
+                "max_value": str(row[f"{c}__max"] or "")[:100],
+                "mean_value": 0.0,
+                "stddev_value": 0.0,
+                "percentiles": {},
+                "min_length": 0,
+                "max_length": 0,
+                "avg_length": 0.0,
+                "empty_string_count": 0,
+                "empty_string_rate": 0.0,
+                "mode_value": "",
+                "mode_frequency": 0,
+                "entropy": 0.0,
+                "sample_values": json.dumps(sample_map.get(c, [])[:5]),
+                "value_distribution": "{}",
+                "pattern_detected": "unknown",
+                "has_numeric_stats": is_numeric,
+                "has_string_stats": is_string,
+                "previous_distinct_count": None,
+                "distinct_count_change_pct": None,
+            }
+
+            if is_numeric:
+                mean_v = row[f"{c}__mean"]
+                stddev_v = row[f"{c}__stddev"]
+                rec["mean_value"] = float(mean_v) if mean_v is not None else 0.0
+                rec["stddev_value"] = float(stddev_v) if stddev_v is not None else 0.0
+                pcts = row[f"{c}__pcts"]
+                if pcts and len(pcts) == 5:
+                    rec["percentiles"] = {
+                        "p25": float(pcts[0]), "p50": float(pcts[1]),
+                        "p75": float(pcts[2]), "p95": float(pcts[3]), "p99": float(pcts[4]),
+                    }
+
+            if is_string:
+                ml = row[f"{c}__min_len"]
+                rec["min_length"] = int(ml) if ml is not None else 0
+                xl = row[f"{c}__max_len"]
+                rec["max_length"] = int(xl) if xl is not None else 0
+                al = row[f"{c}__avg_len"]
+                rec["avg_length"] = float(al) if al is not None else 0.0
+                ec = row[f"{c}__empty"]
+                rec["empty_string_count"] = int(ec) if ec is not None else 0
+                rec["empty_string_rate"] = float(rec["empty_string_count"] / row_count) if row_count > 0 else 0.0
+                rec["pattern_detected"] = self._detect_pattern(sample_map.get(c, []))
+
+            if is_date:
+                rec["min_value"] = str(row[f"{c}__dt_min"] or "")
+                rec["max_value"] = str(row[f"{c}__dt_max"] or "")
+                rec["pattern_detected"] = "datetime"
+
+            if is_bool:
+                rec["pattern_detected"] = "boolean"
+
+            if 0 < distinct_count <= 1000:
+                low_card_cols.append(c)
+
+            column_stats_summary[c] = f"dist:{distinct_count},null:{null_rate:.2f}"
+            column_stat_records.append(rec)
+
+        # --- Pass 3: mode/frequency for low-cardinality columns (batched UNION ALL) ---
+        if low_card_cols:
+            self._fill_mode_frequency(table_name, low_card_cols, column_stat_records, row_count)
+
+        # --- Drift detection (from pre-loaded baselines) ---
+        self._apply_drift(table_name, column_stat_records, drift_baselines or {})
+
+        return {
+            "snapshot_id": snapshot_id,
+            "table_name": table_name,
+            "row_count": row_count,
+            "column_count": column_count,
+            "column_stats": column_stats_summary,
+            "table_size_bytes": table_size,
+            "num_files": num_files,
+            "last_modified": last_modified,
+            "column_stat_records": column_stat_records,
+        }
+
+    # ------------------------------------------------------------------
+    # Federated path: pushdown-safe aggregates only
+    # ------------------------------------------------------------------
+
+    def _profile_table_federated(self, table_name: str, drift_baselines: Dict[str, Dict[str, int]] = None) -> Optional[Dict[str, Any]]:
+        snapshot_id = str(uuid.uuid4())
+        df = self.spark.table(table_name)
+        schema = df.schema
+        columns = [f.name for f in schema.fields[:50]]
+        column_count = len(schema.fields)
+
+        numeric_cols, string_cols = [], []
+        col_type_map: Dict[str, Any] = {}
+        for f in schema.fields[:50]:
+            col_type_map[f.name] = f.dataType
+            if isinstance(f.dataType, NumericType):
+                numeric_cols.append(f.name)
+            elif isinstance(f.dataType, SparkStringType):
+                string_cols.append(f.name)
+
+        # Guaranteed-pushdown aggregates only: bare-column COUNT/MIN/MAX/AVG.
+        # STDDEV_SAMP and AGG(EXPR(col)) like MIN(LENGTH(col)) are NOT guaranteed
+        # to push down across all LF connectors. Those stats are derived from
+        # the LIMIT-based sample pull below instead.
+        agg_parts = ["COUNT(*) AS `_row_count`"]
+        for c in columns:
+            qc = f"`{c}`"
+            agg_parts.append(f"COUNT({qc}) AS `{c}__non_null`")
+            agg_parts.append(f"CAST(MIN({qc}) AS STRING) AS `{c}__min`")
+            agg_parts.append(f"CAST(MAX({qc}) AS STRING) AS `{c}__max`")
+
+        for c in numeric_cols:
+            qc = f"`{c}`"
+            agg_parts.append(f"AVG({qc}) AS `{c}__mean`")
+
+        sql = f"SELECT {', '.join(agg_parts)} FROM {table_name}"
+        row = self.spark.sql(sql).collect()[0]
+        row_count = int(row["_row_count"])
+
+        # Sample values via LIMIT (pushes down everywhere)
+        sample_map = self._fetch_samples(table_name, columns)
+
+        column_stats_summary: Dict[str, str] = {}
+        column_stat_records: List[Dict[str, Any]] = []
+
+        for c in columns:
+            non_null = int(row[f"{c}__non_null"] or 0)
+            null_count = row_count - non_null
+            null_rate = float(null_count / row_count) if row_count > 0 else 0.0
+
+            dtype = col_type_map[c]
+            data_type_str = self._get_data_type_string(dtype)
+            is_numeric = isinstance(dtype, NumericType)
+            is_string = isinstance(dtype, SparkStringType)
+
+            self._stats["total_cols"] += 1
+            if is_numeric:
+                self._stats["numeric_cols"] += 1
+            elif is_string:
+                self._stats["string_cols"] += 1
+            else:
+                self._stats["other_cols"] += 1
+
+            rec: Dict[str, Any] = {
+                "stat_id": str(uuid.uuid4()),
+                "snapshot_id": snapshot_id,
+                "table_name": table_name,
+                "column_name": c,
+                "data_type": data_type_str,
+                "null_count": null_count,
+                "null_rate": null_rate,
+                "distinct_count": 0,
+                "cardinality_ratio": 0.0,
+                "is_unique_candidate": False,
+                "min_value": str(row[f"{c}__min"] or "")[:100],
+                "max_value": str(row[f"{c}__max"] or "")[:100],
+                "mean_value": 0.0,
+                "stddev_value": 0.0,
+                "percentiles": {},
+                "min_length": 0,
+                "max_length": 0,
+                "avg_length": 0.0,
+                "empty_string_count": 0,
+                "empty_string_rate": 0.0,
+                "mode_value": "",
+                "mode_frequency": 0,
+                "entropy": 0.0,
+                "sample_values": json.dumps(sample_map.get(c, [])[:5]),
+                "value_distribution": "{}",
+                "pattern_detected": self._detect_pattern(sample_map.get(c, [])) if is_string else "unknown",
+                "has_numeric_stats": is_numeric,
+                "has_string_stats": is_string,
+                "previous_distinct_count": None,
+                "distinct_count_change_pct": None,
+            }
+
+            if is_numeric:
+                mean_v = row[f"{c}__mean"]
+                rec["mean_value"] = float(mean_v) if mean_v is not None else 0.0
+                samples = sample_map.get(c, [])
+                nums = []
+                for s in samples:
+                    try:
+                        nums.append(float(s))
+                    except (ValueError, TypeError):
+                        pass
+                if len(nums) > 1:
+                    m = sum(nums) / len(nums)
+                    var = sum((x - m) ** 2 for x in nums) / (len(nums) - 1)
+                    rec["stddev_value"] = var ** 0.5
+
+            if is_string:
+                samples = sample_map.get(c, [])
+                if samples:
+                    lengths = [len(s) for s in samples]
+                    rec["min_length"] = min(lengths)
+                    rec["max_length"] = max(lengths)
+                    rec["avg_length"] = sum(lengths) / len(lengths)
+
+            column_stats_summary[c] = f"dist:0,null:{null_rate:.2f}"
+            column_stat_records.append(rec)
+
+        self._apply_drift(table_name, column_stat_records, drift_baselines or {})
+
+        return {
+            "snapshot_id": snapshot_id,
+            "table_name": table_name,
+            "row_count": row_count,
+            "column_count": column_count,
+            "column_stats": column_stats_summary,
+            "table_size_bytes": None,
+            "num_files": None,
+            "last_modified": None,
+            "column_stat_records": column_stat_records,
+        }
+
+    # ------------------------------------------------------------------
+    # Shared helpers
+    # ------------------------------------------------------------------
+
+    def _fetch_samples(self, table_name: str, columns: List[str]) -> Dict[str, List[str]]:
+        """Single LIMIT query to get sample values for all columns."""
+        try:
+            sel = ", ".join(f"CAST(`{c}` AS STRING) AS `{c}`" for c in columns)
+            sample_rows = self.spark.sql(f"SELECT {sel} FROM {table_name} LIMIT 100").collect()
+            result: Dict[str, List[str]] = {c: [] for c in columns}
+            for r in sample_rows:
+                for c in columns:
+                    v = r[c]
+                    if v is not None and len(result[c]) < 5:
+                        result[c].append(v)
+            return result
+        except Exception as e:
+            logger.debug(f"Sample fetch failed for {table_name}: {e}")
+            return {}
+
+    def _fill_mode_frequency(
+        self, table_name: str, low_card_cols: List[str],
+        records: List[Dict[str, Any]], row_count: int
+    ) -> None:
+        """Batched UNION ALL query for mode/frequency (Delta only)."""
+        try:
+            parts = []
+            for c in low_card_cols:
+                qc = f"`{c}`"
+                parts.append(
+                    f"SELECT '{c}' AS col_name, CAST({qc} AS STRING) AS val, COUNT(*) AS cnt "
+                    f"FROM {table_name} GROUP BY {qc}"
+                )
+            sql = " UNION ALL ".join(parts)
+            mode_rows = self.spark.sql(sql).collect()
+
+            # Group by column
+            col_groups: Dict[str, List] = {}
+            for r in mode_rows:
+                col_groups.setdefault(r["col_name"], []).append((r["val"], int(r["cnt"])))
+
+            rec_map = {r["column_name"]: r for r in records}
+            for col_name, vals in col_groups.items():
+                vals.sort(key=lambda x: -x[1])
+                top10 = vals[:10]
+                rec = rec_map.get(col_name)
+                if not rec or not top10:
+                    continue
+                rec["mode_value"] = str(top10[0][0])[:100] if top10[0][0] else ""
+                rec["mode_frequency"] = top10[0][1]
+                dist = {str(v)[:50]: cnt for v, cnt in top10}
+                rec["value_distribution"] = json.dumps(dist)
+                non_null = row_count - rec["null_count"]
+                value_counts = {str(v): cnt for v, cnt in top10}
+                rec["entropy"] = round(self._compute_entropy(value_counts, non_null), 4)
+        except Exception as e:
+            logger.debug(f"Mode frequency batch failed for {table_name}: {e}")
+
+    def _load_all_drift_baselines(self, tables: List[str]) -> Dict[str, Dict[str, int]]:
+        """Single upfront query to load previous distinct counts for all tables."""
+        try:
+            prev_rows = self.spark.sql(f"""
+                SELECT table_name, column_name, distinct_count
+                FROM (
+                    SELECT table_name, column_name, distinct_count,
+                           ROW_NUMBER() OVER (
+                               PARTITION BY table_name, column_name ORDER BY created_at DESC
+                           ) AS rn
+                    FROM {self.config.fully_qualified_column_stats}
+                    WHERE table_name IN ({','.join(f"'{t}'" for t in tables)})
+                ) t WHERE rn = 1
+            """).collect()
+            result: Dict[str, Dict[str, int]] = {}
+            for r in prev_rows:
+                result.setdefault(r["table_name"], {})[r["column_name"]] = r["distinct_count"]
+            return result
+        except Exception:
+            return {}
+
+    def _apply_drift(
+        self, table_name: str, records: List[Dict[str, Any]],
+        drift_baselines: Dict[str, Dict[str, int]]
+    ) -> None:
+        """Apply pre-loaded drift baselines to column records."""
+        prev_map = drift_baselines.get(table_name, {})
+        for rec in records:
+            prev = prev_map.get(rec["column_name"])
+            if prev is not None:
+                rec["previous_distinct_count"] = int(prev)
+                if prev > 0:
+                    rec["distinct_count_change_pct"] = float(
+                        (rec["distinct_count"] - prev) / prev * 100
+                    )
     
     def write_snapshot(self, snapshot_data: Dict[str, Any]) -> None:
         """Write snapshot and column stats to tables."""
@@ -660,54 +833,71 @@ class ProfilingBuilder:
                 logger.warning("Dedup DELETE failed for column_stats, proceeding with append: %s", e)
             stats_df.write.mode("append").option("mergeSchema", "true").saveAsTable(self.config.fully_qualified_column_stats)
     
-    def run(self, max_tables: int = None, federation_mode: bool = False) -> Dict[str, Any]:
-        """Execute the profiling pipeline."""
+    def run(self, max_tables: int = None, federation_mode: bool = False, raise_on_error: bool = True) -> Dict[str, Any]:
+        """Execute the profiling pipeline with cross-table parallelism.
+
+        Args:
+            raise_on_error: If True (default), raise RuntimeError when any table
+                fails to profile. Set False for pipeline resilience (partial results).
+        """
+        from concurrent.futures import ThreadPoolExecutor, as_completed
+
         logger.info("Starting profiling pipeline")
         self._stats = {"numeric_cols": 0, "string_cols": 0, "other_cols": 0, "total_cols": 0}
-        
+
         self.create_snapshots_table()
         self.create_column_stats_table()
-        
-        if federation_mode:
-            logger.info(
-                "Federation mode enabled — skipping source table profiling. "
-                "Output tables created but will remain empty for this run."
-            )
-            return {
-                "tables_profiled": 0,
-                "tables_failed": 0,
-                "total_tables": 0,
-                "columns_profiled": 0,
-                "numeric_columns": 0,
-                "string_columns": 0,
-                "other_columns": 0,
-            }
-        
+
         tables = self.get_tables_to_profile()
         if max_tables:
             tables = tables[:max_tables]
-        
-        logger.info(f"Profiling {len(tables)} tables")
-        
+
+        if not tables:
+            logger.info("No tables to profile")
+            return {
+                "tables_profiled": 0, "tables_failed": 0, "total_tables": 0,
+                "columns_profiled": 0, "numeric_columns": 0,
+                "string_columns": 0, "other_columns": 0,
+            }
+
+        logger.info(f"Profiling {len(tables)} tables (federation_mode={federation_mode})")
+
+        drift_baselines = self._load_all_drift_baselines(tables)
+
         successful = 0
         failed = 0
-        
-        for table_name in tables:
-            snapshot = self.profile_table(table_name)
-            if snapshot:
-                self.write_snapshot(snapshot)
-                successful += 1
-            else:
-                failed += 1
-        
-        # Summary logging
+        errors: list[str] = []
+        max_workers = min(4 if federation_mode else 8, len(tables))
+
+        with ThreadPoolExecutor(max_workers=max_workers) as pool:
+            futures = {
+                pool.submit(self.profile_table, t, federation_mode, drift_baselines): t
+                for t in tables
+            }
+            for future in as_completed(futures):
+                tbl = futures[future]
+                try:
+                    snapshot = future.result()
+                    self.write_snapshot(snapshot)
+                    successful += 1
+                except Exception as e:
+                    logger.error(f"Profiling failed for {tbl}: {e}")
+                    errors.append(f"{tbl}: {e}")
+                    failed += 1
+
         logger.info(
             f"Profiling complete. Tables: {successful} success, {failed} failed. "
             f"Columns: {self._stats['total_cols']} total "
             f"({self._stats['numeric_cols']} numeric, {self._stats['string_cols']} string, "
             f"{self._stats['other_cols']} other)"
         )
-        
+
+        if failed > 0 and raise_on_error:
+            raise RuntimeError(
+                f"Profiling failed for {failed}/{len(tables)} tables:\n" +
+                "\n".join(f"  - {e}" for e in errors)
+            )
+
         return {
             "tables_profiled": successful,
             "tables_failed": failed,
@@ -715,7 +905,7 @@ class ProfilingBuilder:
             "columns_profiled": self._stats["total_cols"],
             "numeric_columns": self._stats["numeric_cols"],
             "string_columns": self._stats["string_cols"],
-            "other_columns": self._stats["other_cols"]
+            "other_columns": self._stats["other_cols"],
         }
 
 
@@ -727,6 +917,7 @@ def run_profiling(
     incremental: bool = True,
     table_names: list[str] | None = None,
     federation_mode: bool = False,
+    raise_on_error: bool = True,
 ) -> Dict[str, Any]:
     """
     Convenience function to run profiling.
@@ -737,7 +928,9 @@ def run_profiling(
         schema_name: Schema name for tables
         max_tables: Maximum tables to profile
         incremental: Only profile tables changed since last snapshot
-        federation_mode: Skip source table profiling for federated catalogs
+        federation_mode: Use pushdown-safe profiling for federated catalogs
+        raise_on_error: If True (default), raise on any table failure.
+            Set False for pipeline resilience (partial results).
         
     Returns:
         Dict with execution statistics
@@ -752,4 +945,4 @@ def run_profiling(
         table_names=table_names,
     )
     builder = ProfilingBuilder(spark, config)
-    return builder.run(max_tables, federation_mode=federation_mode)
+    return builder.run(max_tables, federation_mode=federation_mode, raise_on_error=raise_on_error)

@@ -1,4 +1,4 @@
-import React, { useState, useEffect } from 'react'
+import React, { useState, useEffect, useRef, useCallback } from 'react'
 import { ErrorBanner } from '../App'
 import { PageHeader, StatCard, SkeletonCards, EmptyState } from './ui'
 
@@ -45,10 +45,36 @@ export default function VectorSearch() {
   const [results, setResults] = useState(null)
   const [searching, setSearching] = useState(false)
   const [syncing, setSyncing] = useState(false)
+  const [syncRunId, setSyncRunId] = useState(null)
+  const [syncResult, setSyncResult] = useState(null)
+  const pollRef = useRef(null)
+
+  const TERMINAL_STATES = new Set(['TERMINATED', 'SKIPPED', 'INTERNAL_ERROR'])
 
   const loadStatus = () => {
     fetch('/api/vector/status').then(r => r.ok ? r.json() : null).then(setStatus).catch(() => {})
   }
+
+  const pollSyncJob = useCallback(async (runId) => {
+    try {
+      const res = await fetch(`/api/jobs/${runId}/status`)
+      if (!res.ok) return
+      const data = await res.json()
+      if (TERMINAL_STATES.has(data.state)) {
+        clearInterval(pollRef.current)
+        pollRef.current = null
+        setSyncing(false)
+        setSyncRunId(null)
+        setSyncResult(data.result === 'SUCCESS' ? 'success' : 'failed')
+        loadStatus()
+        setTimeout(() => setSyncResult(null), 8000)
+      }
+    } catch {}
+  }, [])
+
+  useEffect(() => {
+    return () => { if (pollRef.current) clearInterval(pollRef.current) }
+  }, [])
 
   useEffect(() => { loadStatus() }, [])
 
@@ -72,12 +98,21 @@ export default function VectorSearch() {
   const doSync = async () => {
     setSyncing(true)
     setError(null)
+    setSyncResult(null)
     try {
       const res = await fetch('/api/vector/sync', { method: 'POST' })
-      if (!res.ok) { const d = await res.json(); setError(d.detail || 'Sync failed') }
-      else loadStatus()
-    } catch (e) { setError(e.message) }
-    setSyncing(false)
+      const data = await res.json()
+      if (!res.ok) { setError(data.detail || 'Sync failed'); setSyncing(false); return }
+      if (data.run_id) {
+        setSyncRunId(data.run_id)
+        pollRef.current = setInterval(() => pollSyncJob(data.run_id), 5000)
+      } else {
+        loadStatus()
+        setSyncing(false)
+        setSyncResult('success')
+        setTimeout(() => setSyncResult(null), 5000)
+      }
+    } catch (e) { setError(e.message); setSyncing(false) }
   }
 
   const handleKey = (e) => {
@@ -101,7 +136,11 @@ export default function VectorSearch() {
           <h2 className="text-base font-semibold text-slate-800 dark:text-slate-100">Index Status</h2>
           <div className="flex gap-2">
             <button onClick={doSync} disabled={syncing || endpointMissing || endpointError}
-              className="btn-secondary btn-sm">{syncing ? 'Syncing...' : 'Sync Now'}</button>
+              className="btn-secondary btn-sm">
+              {syncing ? (syncRunId ? 'Building...' : 'Syncing...') : 'Sync Now'}
+            </button>
+            {syncResult === 'success' && <span className="text-xs text-emerald-600 dark:text-emerald-400">Sync complete</span>}
+            {syncResult === 'failed' && <span className="text-xs text-red-600 dark:text-red-400">Sync job failed</span>}
             <button onClick={loadStatus} className="btn-ghost btn-sm">Refresh</button>
           </div>
         </div>

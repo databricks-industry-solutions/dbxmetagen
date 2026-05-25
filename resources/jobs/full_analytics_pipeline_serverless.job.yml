@@ -290,6 +290,8 @@ resources:
               max_ai_candidates: "{{job.parameters.max_ai_candidates}}"
               rule_score_min_for_ai: "{{job.parameters.rule_score_min_for_ai}}"
               max_candidates_per_table_pair: "{{job.parameters.max_candidates_per_table_pair}}"
+              same_schema_bonus: "0.10"
+              cross_schema_penalty: "-0.10"
               sweep_stale_edges: "{{job.parameters.sweep_stale_edges}}"
               table_names: "{{job.parameters.table_names}}"
               federation_mode: "{{job.parameters.federation_mode}}"

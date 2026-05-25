@@ -142,6 +142,7 @@ def setup_widgets(dbutils):
         "allow_manual_override", "true", ["true", "false"], "Allow Manual Override"
     )
     dbutils.widgets.text("override_csv_path", "", "Override CSV Path")
+    dbutils.widgets.text("comment_style", "standard", "Comment Style (concise, standard, detailed)")
 
 
 def get_widgets(dbutils):
@@ -166,6 +167,7 @@ def get_widgets(dbutils):
     model = dbutils.widgets.get("model")
     allow_manual_override = dbutils.widgets.get("allow_manual_override")
     override_csv_path = dbutils.widgets.get("override_csv_path")
+    comment_style = dbutils.widgets.get("comment_style")
     notebook_variables = {
         "cleanup_control_table": cleanup_control_table,
         "mode": mode,
@@ -187,6 +189,7 @@ def get_widgets(dbutils):
         "model": model,
         "allow_manual_override": allow_manual_override,
         "override_csv_path": override_csv_path,
+        "comment_style": comment_style,
     }
     return {k: v for k, v in notebook_variables.items() if v is not None and v != ""}
 
