@@ -643,8 +643,8 @@ export default function BatchJobs({ onNavigate, pipelineStats }) {
             </details>
 
             <p className="text-sm text-slate-500 dark:text-slate-400">
-              <strong className="text-slate-700 dark:text-slate-200">Run Selected Mode</strong> runs one generation type at a time.{' '}
-              <strong className="text-slate-700 dark:text-slate-200">All Three</strong> runs descriptions, sensitivity, and domain in a single optimized pass — reads each table once, then uses the generated descriptions as context for classification.
+              <strong className="text-slate-700 dark:text-slate-200">Generate All</strong> runs descriptions, sensitivity, and domain classification together.{' '}
+              <strong className="text-slate-700 dark:text-slate-200">Run Selected Mode</strong> lets you run one analysis type at a time for targeted re-runs.
             </p>
 
             <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
@@ -783,9 +783,9 @@ export default function BatchJobs({ onNavigate, pipelineStats }) {
                     <input type="checkbox" checked={settings.include_lineage} onChange={e => setSetting('include_lineage', e.target.checked)} />
                     Include lineage
                   </label>
-                  <label className="flex items-center gap-2 text-xs text-slate-600 dark:text-slate-300 cursor-pointer" title="Use existing knowledge base comments as additional context when generating metadata">
+                  <label className="flex items-center gap-2 text-xs text-slate-600 dark:text-slate-300 cursor-pointer" title="Include previously generated descriptions from the knowledge base as context when running sensitivity or domain classification. Only useful after an initial descriptions run has completed.">
                     <input type="checkbox" checked={settings.use_kb_comments} onChange={e => setSetting('use_kb_comments', e.target.checked)} />
-                    Use knowledge base descriptions
+                    Enrich with prior descriptions
                   </label>
                 </div>
                 <div className="flex flex-col gap-2 pt-1">
@@ -808,22 +808,22 @@ export default function BatchJobs({ onNavigate, pipelineStats }) {
               {' | '}Domains: {domainConfig ? domainConfigs.find(d => d.key === domainConfig)?.name || domainConfig : (ontologyBundle ? 'from selected ontology' : <em>none</em>)}
             </p>
             <div className="flex flex-wrap gap-3 mt-2">
-              <button onClick={() => runJob('_kb_enriched_modes_job', { table_names: tableNames, apply_ddl: applyDdl, federation_mode: federationMode, ontology_bundle: ontologyBundle, include_lineage: settings.include_lineage, ...(domainConfig ? { domain_config: domainConfig } : {}), extra_params: buildExtraParams() }, 'kb_enriched')}
+              <button onClick={() => runJob(settings.use_serverless ? '_kb_enriched_serverless_job' : '_kb_enriched_modes_job', { table_names: tableNames, apply_ddl: applyDdl, federation_mode: federationMode, ontology_bundle: ontologyBundle, include_lineage: settings.include_lineage, ...(domainConfig ? { domain_config: domainConfig } : {}), extra_params: buildExtraParams() }, 'kb_enriched')}
                 disabled={!!runningAction || !tableNames.trim()}
-                title="Recommended. Generates comments first, builds table + column knowledge bases, then runs PI and domain classification with KB enrichment. PI/domain prompts see the generated descriptions even if DDL hasn't been applied to the tables yet."
-                className="btn-primary btn-md">{runningAction === 'kb_enriched' ? 'Starting...' : 'All 3 Modes (KB-Enriched)'}</button>
+                title="Generates comments first, builds table + column knowledge bases, then runs PI and domain classification with KB enrichment. PI/domain prompts see the generated descriptions even if DDL hasn't been applied to the tables yet."
+                className="btn-primary btn-md">{runningAction === 'kb_enriched' ? 'Starting...' : `All 3 Modes (KB-Enriched)${settings.use_serverless ? ' (Serverless)' : ''}`}</button>
               <button onClick={() => runJob(getJobSuffix(true), { table_names: tableNames, apply_ddl: applyDdl, federation_mode: federationMode, ontology_bundle: ontologyBundle, use_kb_comments: settings.use_kb_comments, include_lineage: settings.include_lineage, ...(domainConfig ? { domain_config: domainConfig } : {}), extra_params: buildExtraParams() }, 'all3')}
                 disabled={!!runningAction || !tableNames.trim()}
-                title="Faster but lower quality. Runs comments first, then PI + domain in parallel without building the knowledge base in between. PI/domain prompts will only see table descriptions if DDL was already applied. Best option when tables already have good comments -- set Apply DDL to off."
-                className="btn-secondary btn-md">{runningAction === 'all3' ? 'Starting...' : `All 3 Modes (Fast)${settings.use_serverless ? ' (Serverless)' : ''}`}</button>
+                title="Runs comments first, then PI + domain in parallel without building the knowledge base in between. PI/domain prompts will only see table descriptions if DDL was already applied. Best option when tables already have good comments."
+                className="btn-secondary btn-md">{runningAction === 'all3' ? 'Starting...' : `All 3 Modes${settings.use_serverless ? ' (Serverless)' : ''}`}</button>
               <button onClick={() => runJob(getJobSuffix(false), { table_names: tableNames, mode, apply_ddl: applyDdl, federation_mode: federationMode, ontology_bundle: ontologyBundle, use_kb_comments: settings.use_kb_comments, include_lineage: settings.include_lineage, ...(domainConfig ? { domain_config: domainConfig } : {}), extra_params: buildExtraParams() }, 'single')}
                 disabled={!!runningAction || !tableNames.trim() || (needsDomain && !hasDomainSource)}
                 title={(needsDomain && !hasDomainSource) ? 'Select an ontology bundle or domain list to run domain classification' : 'Run only the selected mode (comment, PI, or domain) as a single generation pass. Use for targeted re-runs on specific tables or when you only need one metadata type.'}
                 className="btn-md bg-slate-100 text-slate-700 rounded-lg hover:bg-slate-200 dark:bg-dbx-navy-400/30 dark:text-slate-300 dark:hover:bg-dbx-navy-400/50 disabled:opacity-50 transition-all">{runningAction === 'single' ? 'Starting...' : `Run Selected Mode${settings.build_kb_after ? ' + KB' : ''}${settings.use_serverless ? ' (Serverless)' : ''}`}</button>
             </div>
             <div className="text-xs text-slate-400 space-y-1 mt-1">
-              <p><strong className="text-slate-500">All 3 Modes (KB-Enriched)</strong>: Comments, then KB build, then PI + domain enriched with KB descriptions. Recommended for best quality -- PI/domain see generated comments even before DDL is applied.</p>
-              <p><strong className="text-slate-500">All 3 Modes (Fast)</strong>: Comments first, then PI + domain in parallel without KB enrichment. Faster but PI/domain won't see generated comments unless DDL was applied. <em className="text-blue-500 dark:text-blue-400">Tip: if your tables already have good comments, use this mode with Apply DDL off to skip comment generation overhead.</em></p>
+              <p><strong className="text-slate-500">All 3 Modes (KB-Enriched)</strong>: Comments, then KB build, then PI + domain enriched with KB descriptions. PI/domain see generated comments even before DDL is applied. Most useful when tables don't already have good comments.</p>
+              <p><strong className="text-slate-500">All 3 Modes</strong>: Comments first, then PI + domain in parallel without KB enrichment. Faster but PI/domain won't see generated comments unless DDL was applied.</p>
               <p><strong className="text-slate-500">Run Selected Mode</strong>: Run a single mode (comment, PI, or domain) on the listed tables. Best for quick, targeted runs.</p>
               {settings.build_kb_after && <p><strong className="text-slate-500">+ KB</strong>: Builds the table + column knowledge base after generation so the Review tab is populated.</p>}
             </div>
