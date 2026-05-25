@@ -58,6 +58,8 @@ env:
     valueFrom: parallel_serverless_job
   - name: KB_ENRICHED_MODES_JOB_ID
     valueFrom: kb_enriched_modes_job
+  - name: KB_ENRICHED_SERVERLESS_JOB_ID
+    valueFrom: kb_enriched_serverless_job
   - name: IMPORT_COMMENTS_JOB_ID
     valueFrom: import_comments_job
   - name: SETUP_MCP_SERVERS_JOB_ID

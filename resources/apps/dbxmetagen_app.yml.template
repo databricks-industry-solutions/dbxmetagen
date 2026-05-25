@@ -40,6 +40,10 @@ resources:
           job:
             id: ${resources.jobs.metadata_kb_enriched_modes_job.id}
             permission: CAN_MANAGE_RUN
+        - name: kb_enriched_serverless_job
+          job:
+            id: ${resources.jobs.metadata_kb_enriched_serverless_job.id}
+            permission: CAN_MANAGE_RUN
         - name: metadata_kb_build_job
           job:
             id: ${resources.jobs.metadata_kb_build_job.id}
