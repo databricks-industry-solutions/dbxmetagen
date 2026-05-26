@@ -4891,7 +4891,7 @@ async def ontology_builder_validate(request: Request):
 @app.post("/api/ontology/builder/suggest")
 def ontology_builder_suggest(req: _OntologyBuilderSuggestReq):
     """Use LLM to suggest entity types given tables and a domain."""
-    from langchain_community.chat_models import ChatDatabricks
+    from databricks_langchain import ChatDatabricks
 
     table_context = ", ".join(req.tables[:20]) if req.tables else "no specific tables"
     existing = ", ".join(req.existing_entities) if req.existing_entities else "none"
@@ -4925,7 +4925,7 @@ Return ONLY a JSON array of objects with these fields. Suggest 5-8 entities."""
 @app.post("/api/ontology/builder/suggest-relationships")
 def ontology_builder_suggest_relationships(req: _OntologyBuilderSuggestRelsReq):
     """Use LLM to suggest relationships between existing entity types."""
-    from langchain_community.chat_models import ChatDatabricks
+    from databricks_langchain import ChatDatabricks
 
     entity_list = ", ".join(req.entities)
     table_context = ", ".join(req.tables[:20]) if req.tables else "no specific tables"
@@ -4963,7 +4963,7 @@ Return ONLY a JSON array of objects. Suggest 4-8 relationships."""
 @app.post("/api/ontology/builder/suggest-properties")
 def ontology_builder_suggest_properties(req: _OntologyBuilderSuggestPropsReq):
     """Use LLM to suggest properties for a specific entity type."""
-    from langchain_community.chat_models import ChatDatabricks
+    from databricks_langchain import ChatDatabricks
 
     table_context = ", ".join(req.tables[:20]) if req.tables else "no specific tables"
     existing = ", ".join(req.existing_properties) if req.existing_properties else "none"
@@ -9559,7 +9559,7 @@ def genie_generate_questions(req: SuggestQuestionsRequest):
     if not wh:
         raise HTTPException(500, detail="WAREHOUSE_ID not configured")
     from dbxmetagen.genie.context import GenieContextAssembler
-    from langchain_community.chat_models import ChatDatabricks
+    from databricks_langchain import ChatDatabricks
 
     ws = _get_effective_client()
     assembler = GenieContextAssembler(ws, wh, CATALOG, SCHEMA)
@@ -10332,7 +10332,7 @@ def genie_enrich_description(req: GenieEnrichDescriptionRequest):
     kb_context = "\n".join(kb_context_parts)
     existing = req.existing_description or "(none)"
 
-    from langchain_community.chat_models import ChatDatabricks
+    from databricks_langchain import ChatDatabricks
     model = os.environ.get("LLM_MODEL", "databricks-claude-sonnet-4-6")
     llm = ChatDatabricks(endpoint=model, temperature=0.1, max_tokens=2048, max_retries=1, request_timeout=60)
     messages = [
@@ -10776,7 +10776,7 @@ def genie_analyze(req: GenieAnalyzeRequest):
 
     if sample_q_texts:
         try:
-            from langchain_community.chat_models import ChatDatabricks
+            from databricks_langchain import ChatDatabricks
             llm = ChatDatabricks(endpoint=req.model_endpoint, temperature=0.0, max_tokens=4096, max_retries=1, request_timeout=120)
 
             join_graph = []
@@ -10859,7 +10859,7 @@ def genie_analyze(req: GenieAnalyzeRequest):
                 from dbxmetagen.genie.context import GenieContextAssembler
                 assembler = GenieContextAssembler(ws, wh, cat, sch)
                 ctx = assembler.assemble(req.table_identifiers)
-                from langchain_community.chat_models import ChatDatabricks
+                from databricks_langchain import ChatDatabricks
                 llm2 = ChatDatabricks(endpoint=req.model_endpoint, temperature=0.1, max_tokens=4096, max_retries=1, request_timeout=120)
                 space_summary = json.dumps({
                     "analytical_tables": analytical_tables,
@@ -11505,7 +11505,7 @@ def suggest_kpis(req: KpiSuggestRequest):
     if not wh:
         raise HTTPException(500, detail="WAREHOUSE_ID not configured")
     from dbxmetagen.genie.context import GenieContextAssembler
-    from langchain_community.chat_models import ChatDatabricks
+    from databricks_langchain import ChatDatabricks
 
     ws = _get_effective_client()
     assembler = GenieContextAssembler(ws, wh, CATALOG, SCHEMA)

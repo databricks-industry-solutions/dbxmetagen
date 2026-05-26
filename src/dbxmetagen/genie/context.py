@@ -1250,7 +1250,7 @@ def generate_section_assist(
     and parses the fenced JSON response. Existing items are included in the prompt
     so the LLM avoids duplicating them.
     """
-    from langchain_community.chat_models import ChatDatabricks
+    from databricks_langchain import ChatDatabricks
 
     model = model_endpoint or os.environ.get("LLM_MODEL", "databricks-claude-sonnet-4-6")
     llm = ChatDatabricks(endpoint=model, temperature=0.1, max_tokens=8192, max_retries=1, request_timeout=120)
