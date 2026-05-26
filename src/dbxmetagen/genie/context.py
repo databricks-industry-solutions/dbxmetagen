@@ -491,9 +491,8 @@ class GenieContextAssembler:
                    deployed_catalog, deployed_schema
             FROM {self._fq('metric_view_definitions')}
             WHERE metric_view_name IN ({match_list})
-              AND status IN ('applied', 'validated')
-            ORDER BY CASE WHEN status = 'applied' THEN 0 ELSE 1 END,
-                     applied_at DESC NULLS LAST
+              AND status = 'applied'
+            ORDER BY applied_at DESC NULLS LAST
         """,
         )
         # Deduplicate: keep only the highest-priority row per MV name

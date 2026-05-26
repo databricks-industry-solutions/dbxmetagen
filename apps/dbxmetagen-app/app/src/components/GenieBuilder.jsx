@@ -226,6 +226,16 @@ export default function GenieBuilder({ onNavigate, pipelineStats }) {
     setCreateError(null); setCreating(true)
     let parsed
     try { parsed = JSON.parse(editedJson) } catch { setCreating(false); return setCreateError('Invalid JSON') }
+    // Inject selected MVs into data_sources if missing
+    if (selectedMVs.size && (!parsed.data_sources?.metric_views?.length)) {
+      if (!parsed.data_sources) parsed.data_sources = {}
+      parsed.data_sources.metric_views = metricViews
+        .filter(mv => selectedMVs.has(mv.metric_view_name))
+        .map(mv => ({
+          identifier: `${mv.deployed_catalog || mv.source_table?.split('.')[0]}.${mv.deployed_schema || mv.source_table?.split('.')[1]}.${mv.metric_view_name}`,
+          description: [`Metric view on ${mv.source_table || 'unknown'}`],
+        }))
+    }
     try {
       const res = await fetch('/api/genie/create', {
         method: 'POST',
