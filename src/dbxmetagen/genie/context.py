@@ -212,6 +212,8 @@ class GenieContextAssembler:
         context_text = self._format_context(
             table_meta, column_meta, fk_rows, entity_rows, value_samples, entity_rels
         )
+        if metric_views and not context_text.strip():
+            context_text = self._format_mv_context(metric_views)
         join_specs = self._build_join_specs(fk_rows)
         # Build dedup set using short names (handles FQ vs short identifier mismatches)
         existing_pairs: set[tuple] = set()
@@ -646,6 +648,37 @@ class GenieContextAssembler:
         )
 
     # -- Formatting -----------------------------------------------------------
+
+    def _format_mv_context(self, metric_views: list[dict]) -> str:
+        """Build context text from metric view definitions when no tables are selected."""
+        parts = ["METRIC VIEWS (pre-defined business metrics available as data sources):\n"]
+        for mv in metric_views:
+            name = mv.get("metric_view_name", "unknown")
+            source = mv.get("source_table", "")
+            status = mv.get("status", "")
+            raw = mv.get("json_definition", "")
+            try:
+                defn = json.loads(raw) if isinstance(raw, str) else (raw or {})
+            except (json.JSONDecodeError, TypeError):
+                defn = {}
+            measures = defn.get("measures", [])
+            dims = defn.get("dimensions", [])
+            filters = defn.get("filters", [])
+            parts.append(f"\n## Metric View: {name}")
+            if source:
+                parts.append(f"  Source table: {source}")
+            if status:
+                parts.append(f"  Status: {status}")
+            if measures:
+                m_names = [m.get("name", m.get("column", "?")) for m in measures]
+                parts.append(f"  Measures: {', '.join(m_names)}")
+            if dims:
+                d_names = [d.get("name", d.get("column", "?")) for d in dims]
+                parts.append(f"  Dimensions: {', '.join(d_names)}")
+            if filters:
+                f_names = [f.get("name", f.get("expression", "?")) for f in filters]
+                parts.append(f"  Filters: {', '.join(f_names)}")
+        return "\n".join(parts)
 
     def _format_context(
         self, table_meta, column_meta, fk_rows, entity_rows, value_samples,

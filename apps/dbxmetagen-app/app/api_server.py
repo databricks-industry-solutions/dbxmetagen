@@ -9659,13 +9659,14 @@ def genie_generate(req: GenieGenerateRequest):
             )
             ctx_elapsed = round(time.time() - ctx_t0, 1)
             ctx_len = len(ctx.get("context_text", ""))
+            has_mvs = bool(ctx.get("data_sources", {}).get("metric_views")) or bool(ctx.get("sql_snippets"))
             logger.info(
-                "Genie context assembly: %.1fs, %d tables, %d join_specs, %d context_text chars",
-                ctx_elapsed, len(req.table_identifiers), len(ctx.get("join_specs", [])), ctx_len,
+                "Genie context assembly: %.1fs, %d tables, %d join_specs, %d context_text chars, has_mvs=%s",
+                ctx_elapsed, len(req.table_identifiers), len(ctx.get("join_specs", [])), ctx_len, has_mvs,
             )
-            if ctx_len < 100:
+            if ctx_len < 100 and not has_mvs:
                 raise ValueError(
-                    "No metadata found for the selected tables. "
+                    "No metadata found for the selected tables/metric views. "
                     "Ensure the knowledge base pipeline has been run (build_knowledge_base) "
                     "and the correct catalog/schema is configured."
                 )
