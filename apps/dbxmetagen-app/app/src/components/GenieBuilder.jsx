@@ -148,7 +148,7 @@ export default function GenieBuilder({ onNavigate, pipelineStats }) {
   }
 
   const suggestQuestions = async () => {
-    if (!selectedTables.length) return setError('Select at least one table first')
+    if (!selectedTables.length && !selectedMVs.size) return setError('Select at least one table or metric view first')
     setSuggestingQs(true); setError(null)
     try {
       const res = await fetch('/api/genie/generate-questions', {
@@ -165,7 +165,7 @@ export default function GenieBuilder({ onNavigate, pipelineStats }) {
   }
 
   const startGeneration = async ({ feedback, priorResult } = {}) => {
-    if (!selectedTables.length) return setError('Select at least one table')
+    if (!selectedTables.length && !selectedMVs.size) return setError('Select at least one table or metric view')
     if (pollRef.current) clearInterval(pollRef.current)
     setError(null); setCreatedSpace(null); setCreateError(null); setLoading(true)
     if (!feedback) { setResult(null) }
@@ -226,6 +226,16 @@ export default function GenieBuilder({ onNavigate, pipelineStats }) {
     setCreateError(null); setCreating(true)
     let parsed
     try { parsed = JSON.parse(editedJson) } catch { setCreating(false); return setCreateError('Invalid JSON') }
+    // Inject selected MVs into data_sources if missing
+    if (selectedMVs.size && (!parsed.data_sources?.metric_views?.length)) {
+      if (!parsed.data_sources) parsed.data_sources = {}
+      parsed.data_sources.metric_views = metricViews
+        .filter(mv => selectedMVs.has(mv.metric_view_name))
+        .map(mv => ({
+          identifier: `${mv.deployed_catalog || mv.source_table?.split('.')[0]}.${mv.deployed_schema || mv.source_table?.split('.')[1]}.${mv.metric_view_name}`,
+          description: [`Metric view on ${mv.source_table || 'unknown'}`],
+        }))
+    }
     try {
       const res = await fetch('/api/genie/create', {
         method: 'POST',
@@ -490,7 +500,7 @@ export default function GenieBuilder({ onNavigate, pipelineStats }) {
             <h3 className="text-sm font-medium text-slate-700 dark:text-slate-300">Business Questions (optional)</h3>
             <p className="text-xs text-gray-500 dark:text-gray-400 mt-0.5">Questions are generated based on the selected tables, their metric views, and discovered business entities.</p>
           </div>
-          <button onClick={suggestQuestions} disabled={suggestingQs || !selectedTables.length}
+          <button onClick={suggestQuestions} disabled={suggestingQs || (!selectedTables.length && !selectedMVs.size)}
             className="text-xs px-3 py-1 bg-dbx-navy text-white rounded hover:bg-slate-700 disabled:opacity-50 transition-colors flex items-center gap-1.5">
             {suggestingQs && <span className="w-3 h-3 border-2 border-white border-t-transparent rounded-full animate-spin" />}
             {suggestingQs ? 'Generating...' : 'Suggest Questions'}
@@ -508,7 +518,7 @@ export default function GenieBuilder({ onNavigate, pipelineStats }) {
       {/* Generate button */}
       <button
         onClick={() => startGeneration()}
-        disabled={loading || !selectedTables.length}
+        disabled={loading || (!selectedTables.length && !selectedMVs.size)}
         className="px-5 py-2.5 bg-dbx-lava text-white text-sm font-medium rounded-lg hover:bg-red-700 disabled:opacity-50 disabled:cursor-not-allowed transition-colors"
       >
         {loading ? 'Generating...' : 'Generate Genie Config'}

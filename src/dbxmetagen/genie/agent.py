@@ -669,8 +669,8 @@ def _validate_output(raw: dict, context: dict | None = None) -> list[str]:
         if requested is not None and actual < requested:
             warnings.append(f"{actual} of {requested} selected metric views included as data sources")
     ds = raw.get("data_sources", {})
-    if not ds.get("tables"):
-        warnings.append("No tables in data_sources")
+    if not ds.get("tables") and not ds.get("metric_views"):
+        warnings.append("No tables or metric views in data_sources")
     inst = raw.get("instructions", {})
     examples = inst.get("example_sql") or inst.get("example_question_sqls") or []
     if len(examples) < 5:
