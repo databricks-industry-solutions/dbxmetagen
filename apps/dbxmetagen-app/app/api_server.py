@@ -826,6 +826,7 @@ class SuggestQuestionsRequest(BaseModel):
     count: int = 8
     purpose: str = "genie"  # "genie" or "metric_views"
     business_context: Optional[str] = None
+    existing_questions: list[str] = []
 
 
 class GenieCreateRequest(BaseModel):
@@ -9552,33 +9553,220 @@ def update_definition_field(definition_id: str, req: UpdateFieldRequest):
 # ---------------------------------------------------------------------------
 
 
-@app.post("/api/genie/generate-questions")
-def genie_generate_questions(req: SuggestQuestionsRequest):
-    """Generate business-user-friendly questions for the selected tables using an LLM."""
-    wh = os.environ.get("WAREHOUSE_ID", "")
-    if not wh:
-        raise HTTPException(500, detail="WAREHOUSE_ID not configured")
+def _cluster_tables_into_themes(table_identifiers: list[str], model_endpoint: str) -> list[dict]:
+    """Phase 1: Cluster tables into themes using only names + descriptions (lightweight)."""
+    from databricks_langchain import ChatDatabricks
+
+    table_list = ", ".join(f"'{t}'" for t in table_identifiers)
+    rows = execute_sql(
+        f"SELECT table_name, comment FROM {fq('table_knowledge_base')} WHERE table_name IN ({table_list})"
+    )
+    tbl_map = {r["table_name"]: r.get("comment") or "" for r in rows}
+    # Build compact summary: table name + truncated description
+    lines = []
+    for t in table_identifiers:
+        desc = tbl_map.get(t, "")[:80]
+        lines.append(f"- {t.split('.')[-1]}: {desc}" if desc else f"- {t.split('.')[-1]}")
+
+    prompt = f"""Group these {len(table_identifiers)} tables into 2-5 thematic clusters based on their names and descriptions. Each theme should represent a coherent business domain or functional area.
+
+Tables:
+{chr(10).join(lines)}
+
+Return ONLY a JSON array of objects with keys "theme" (short name) and "tables" (list of short table names exactly as shown above, without dots).
+Example: [{{"theme": "Patient Demographics", "tables": ["dim_patient", "dim_address"]}}, ...]"""
+
+    llm = ChatDatabricks(endpoint=model_endpoint, temperature=0.3, max_tokens=1024)
+    response = llm.invoke(prompt)
+    content = response.content.strip()
+    if content.startswith("```"):
+        content = content.split("\n", 1)[1] if "\n" in content else content[3:]
+        content = content.rsplit("```", 1)[0]
+    themes = json.loads(content)
+
+    # Map short names back to FQ identifiers
+    short_to_fq = {t.split(".")[-1]: t for t in table_identifiers}
+    for theme in themes:
+        theme["tables"] = [short_to_fq[s] for s in theme.get("tables", []) if s in short_to_fq]
+    # Assign any unclaimed tables to the largest theme
+    claimed = {t for theme in themes for t in theme["tables"]}
+    unclaimed = [t for t in table_identifiers if t not in claimed]
+    if unclaimed and themes:
+        largest = max(themes, key=lambda th: len(th["tables"]))
+        largest["tables"].extend(unclaimed)
+    # Cap each theme at 20 tables; split overflow into sub-themes
+    result = []
+    for theme in themes:
+        tbls = theme["tables"]
+        for i in range(0, len(tbls), 20):
+            chunk = tbls[i:i+20]
+            name = theme["theme"] if i == 0 else f"{theme['theme']} (cont.)"
+            result.append({"theme": name, "tables": chunk})
+    return result or [{"theme": "All Tables", "tables": table_identifiers[:20]}]
+
+
+def _generate_questions_for_theme(
+    tables: list[str], count: int, purpose: str, business_context: str,
+    model_endpoint: str, metric_view_names: list[str],
+    existing_questions: list[str] = None,
+) -> list[str]:
+    """Generate questions for a single theme's table set using full context assembly."""
     from dbxmetagen.genie.context import GenieContextAssembler
     from databricks_langchain import ChatDatabricks
 
+    wh = os.environ.get("WAREHOUSE_ID", "")
+    ws = _get_effective_client()
+    assembler = GenieContextAssembler(ws, wh, CATALOG, SCHEMA)
+    ctx = assembler.assemble(tables, questions=None, metric_view_names=metric_view_names)
+    ctx_text = ctx.get("context_text", "")
+    if len(ctx_text) > 80000:
+        ctx_text = ctx_text[:80000] + "\n\n[... truncated ...]"
+
+    biz_ctx_block = ""
+    if business_context and business_context.strip():
+        biz_ctx_block = f"\nBUSINESS CONTEXT:\n{business_context.strip()}\n"
+
+    existing_block = _build_existing_questions_block(existing_questions or [])
+
+    if purpose == "metric_views":
+        prompt = f"""You are a business intelligence strategist. Generate questions that would drive the creation of reusable KPI metric views.
+{biz_ctx_block}
+{ctx_text}
+
+Generate exactly {count} questions that a BUSINESS LEADER would ask to track organizational performance. Rules:
+- Ground every question in the ENTITY TYPES and RELATIONSHIPS described in the metadata
+- Every question MUST be answerable using ONLY the tables and columns described above
+- Focus on measurable outcomes: revenue growth, cost efficiency, customer satisfaction, operational throughput
+- Frame questions around trends, comparisons, and thresholds
+- Prefer questions that decompose into a measure (SUM, AVG, COUNT) and dimensions (time, category, region)
+- Do NOT mention column names, table names, or SQL concepts -- use business language only
+{existing_block}
+Return ONLY a JSON array of strings, no other text."""
+    else:
+        prompt = f"""You are a data analyst helping business users explore their data through a natural language SQL interface.
+{biz_ctx_block}
+{ctx_text}
+
+Generate exactly {count} questions that a BUSINESS USER would naturally ask. Rules:
+- Ground every question in the ENTITY TYPES and RELATIONSHIPS described in the metadata
+- Every question MUST be answerable using ONLY the tables and columns described above
+- Questions should be outcome-oriented and insight-driven
+- Do NOT reference column names, table names, or technical schema details
+- Focus on trends, comparisons, rankings, anomalies, and KPIs
+- Vary the question types: aggregations, time-series trends, top-N, filters, comparisons
+{existing_block}
+Return ONLY a JSON array of strings, no other text."""
+
+    llm = ChatDatabricks(endpoint=model_endpoint, temperature=0.7, max_tokens=2048)
+    response = llm.invoke(prompt)
+    content = response.content.strip()
+    if content.startswith("```"):
+        content = content.split("\n", 1)[1] if "\n" in content else content[3:]
+        content = content.rsplit("```", 1)[0]
+    return json.loads(content)
+
+
+@app.post("/api/genie/generate-questions")
+def genie_generate_questions(req: SuggestQuestionsRequest):
+    """Generate business-user-friendly questions, using chunked theme-based generation for large table sets."""
+    if len(req.table_identifiers) > 100:
+        raise HTTPException(400, detail="Maximum 100 tables supported. Select fewer tables.")
+
+    wh = os.environ.get("WAREHOUSE_ID", "")
+    if not wh:
+        raise HTTPException(500, detail="WAREHOUSE_ID not configured")
+
+    # Small table sets: use direct single-call path (no regression)
+    if len(req.table_identifiers) <= 20:
+        return _generate_questions_single(req)
+
+    # Large table sets: two-phase chunked generation with SSE progress
+    def event_generator():
+        def sse(event: str, data: dict) -> str:
+            return f"data: {json.dumps({'event': event, **data})}\n\n"
+
+        try:
+            yield sse("status", {"message": f"Clustering {len(req.table_identifiers)} tables into themes..."})
+            themes = _cluster_tables_into_themes(req.table_identifiers, req.model_endpoint)
+            theme_names = [t["theme"] for t in themes]
+            yield sse("themes", {"themes": [{"name": t["theme"], "table_count": len(t["tables"])} for t in themes]})
+
+            # Distribute questions: at least 2 per theme
+            n_themes = len(themes)
+            per_theme = max(2, req.count // n_themes)
+            # Adjust last theme to hit total
+            quotas = [per_theme] * n_themes
+            total_alloc = sum(quotas)
+            if total_alloc < req.count:
+                quotas[0] += req.count - total_alloc
+
+            yield sse("status", {"message": f"Generating questions for {n_themes} themes: {', '.join(theme_names)}..."})
+
+            all_questions = []
+            accumulated_exclusions = list(req.existing_questions)
+            for i, theme in enumerate(themes):
+                try:
+                    qs = _generate_questions_for_theme(
+                        theme["tables"], quotas[i], req.purpose,
+                        req.business_context or "", req.model_endpoint, req.metric_view_names,
+                        existing_questions=accumulated_exclusions,
+                    )
+                    for q in qs:
+                        all_questions.append({"question": q, "theme": theme["theme"]})
+                        accumulated_exclusions.append(q)
+                except Exception as e:
+                    logger.warning("Theme '%s' question generation failed: %s", theme["theme"], e)
+
+            yield sse("done", {
+                "questions": [q["question"] for q in all_questions[:req.count]],
+                "themes": [{"name": t["theme"], "table_count": len(t["tables"])} for t in themes],
+                "themed_questions": all_questions[:req.count],
+            })
+        except Exception as e:
+            logger.error("Chunked question generation failed: %s", e, exc_info=True)
+            yield sse("error", {"message": str(e)})
+
+    return StreamingResponse(event_generator(), media_type="text/event-stream")
+
+
+def _build_existing_questions_block(existing: list[str]) -> str:
+    """Build prompt block instructing the LLM to avoid repeating existing questions."""
+    if not existing:
+        return ""
+    eq_list = "\n".join(f"  - {q}" for q in existing[:20])
+    return f"""
+EXISTING QUESTIONS (do NOT repeat, rephrase, or generate close variants of these -- fill GAPS in the semantic space instead):
+{eq_list}
+"""
+
+
+def _generate_questions_single(req: SuggestQuestionsRequest):
+    """Original single-call path for <= 20 tables."""
+    from dbxmetagen.genie.context import GenieContextAssembler
+    from databricks_langchain import ChatDatabricks
+
+    wh = os.environ.get("WAREHOUSE_ID", "")
     ws = _get_effective_client()
     assembler = GenieContextAssembler(ws, wh, CATALOG, SCHEMA)
     ctx = assembler.assemble(
-        req.table_identifiers,
-        questions=None,
-        metric_view_names=req.metric_view_names,
+        req.table_identifiers, questions=None, metric_view_names=req.metric_view_names,
     )
+    ctx_text = ctx.get('context_text', '')
+    if len(ctx_text) > 100000:
+        ctx_text = ctx_text[:100000] + "\n\n[... additional table metadata truncated for brevity ...]"
 
     biz_ctx_block = ""
     if req.business_context and req.business_context.strip():
         biz_ctx_block = f"\nBUSINESS CONTEXT (provided by the user -- this defines the semantic frame for all analysis):\n{req.business_context.strip()}\n"
+
+    existing_block = _build_existing_questions_block(req.existing_questions)
 
     if req.purpose == "metric_views":
         prompt = f"""You are a business intelligence strategist. Your task is to generate questions that would drive the creation of reusable KPI metric views.
 {biz_ctx_block}
 Below is metadata about available tables and their business context.
 
-{ctx.get('context_text', '')}
+{ctx_text}
 
 Generate exactly {req.count} questions that a BUSINESS LEADER would ask to track organizational performance. Rules:
 - Ground every question in the ENTITY TYPES and RELATIONSHIPS described in the metadata (e.g., if the data contains Encounters, Patients, Providers -- ask about patient visit patterns, provider utilization, encounter outcomes)
@@ -9590,14 +9778,14 @@ Generate exactly {req.count} questions that a BUSINESS LEADER would ask to track
 - Prefer questions that naturally decompose into a measure (SUM, AVG, COUNT) and dimensions (time, category, region)
 - Do NOT mention column names, table names, or SQL concepts -- use business language only
 - A business user who USES the data but doesn't know the data model should understand every question
-
+{existing_block}
 Return ONLY a JSON array of strings, no other text."""
     else:
         prompt = f"""You are a data analyst helping business users explore their data through a natural language SQL interface (Databricks Genie).
 {biz_ctx_block}
 Below is metadata about the available tables, columns, relationships, and metric views.
 
-{ctx.get('context_text', '')}
+{ctx_text}
 
 Generate exactly {req.count} questions that a BUSINESS USER would naturally ask. Rules:
 - Ground every question in the ENTITY TYPES and RELATIONSHIPS described in the metadata -- if the data models Patients, Orders, Claims, etc., ask about those specific business concepts
@@ -9608,7 +9796,7 @@ Generate exactly {req.count} questions that a BUSINESS USER would naturally ask.
 - Focus on trends, comparisons, rankings, anomalies, and KPIs
 - Vary the question types: aggregations, time-series trends, top-N, filters, comparisons
 - A business user who USES the data but doesn't know the data model should understand every question
-
+{existing_block}
 Return ONLY a JSON array of strings, no other text."""
 
     llm = ChatDatabricks(endpoint=req.model_endpoint, temperature=0.7, max_tokens=2048)
@@ -11313,12 +11501,14 @@ def _ensure_kpi_table():
 
 
 def _validate_kpi_formula(formula: str, target_tables: list[str]) -> tuple[str, str]:
-    """Dry-run a KPI formula against each target table. Returns (status, error)."""
+    """Dry-run a KPI formula to check syntax and column existence."""
     if not formula or not target_tables:
         return "skipped", ""
     for table in target_tables:
         try:
-            execute_sql(f"SELECT {formula} FROM {table} LIMIT 0", timeout=30)
+            rows = execute_sql(f"SELECT {formula} AS kpi_val FROM {table} LIMIT 1", timeout=30)
+            if not rows:
+                return "empty", f"No rows returned from {table}"
         except Exception as e:
             return "invalid", f"Against {table}: {e}"
     return "valid", ""
@@ -11335,11 +11525,12 @@ class KpiRequest(BaseModel):
 
 class KpiSuggestRequest(BaseModel):
     table_identifiers: list[str]
-    count: int = 8
+    count: int = 5
     model_endpoint: str = _LLM_MODEL
     business_context: Optional[str] = None
     questions: list[str] = []
     profile_id: Optional[str] = None
+    existing_kpi_names: list[str] = []
 
 
 @app.get("/api/kpis")
@@ -11407,12 +11598,11 @@ def delete_kpi(kpi_id: str):
     return {"ok": True}
 
 
-def _build_kpi_context(assembler, table_identifiers: list[str]) -> str:
+def _build_kpi_context(assembler, table_identifiers: list[str]) -> tuple[str, str]:
     """Build condensed entity-first context for KPI generation.
 
-    Leads with entity types and relationships, then per-entity summarized
-    columns grouped by role (measures, dimensions, identifiers).  Omits full
-    column listings to reduce noise and let the LLM focus on business concepts.
+    Returns (context_text, dominant_domain). Leads with entity types and
+    relationships, then per-entity summarized columns grouped by role.
     """
     table_meta = assembler._get_table_metadata(table_identifiers)
     column_meta = assembler._get_column_metadata(table_identifiers)
@@ -11496,7 +11686,11 @@ def _build_kpi_context(assembler, table_identifiers: list[str]) -> str:
         for fk in fk_rows:
             parts.append(f"  {fk['src_table']}.{fk['src_column']} -> {fk['dst_table']}.{fk['dst_column']}")
 
-    return "\n".join(parts)
+    from collections import Counter
+    domains = [t["domain"] for t in table_meta if t.get("domain")]
+    dominant_domain = Counter(domains).most_common(1)[0][0] if domains else ""
+
+    return "\n".join(parts), dominant_domain
 
 
 @app.post("/api/kpis/suggest")
@@ -11509,7 +11703,7 @@ def suggest_kpis(req: KpiSuggestRequest):
 
     ws = _get_effective_client()
     assembler = GenieContextAssembler(ws, wh, CATALOG, SCHEMA)
-    kpi_context = _build_kpi_context(assembler, req.table_identifiers)
+    kpi_context, dominant_domain = _build_kpi_context(assembler, req.table_identifiers)
 
     biz_ctx_block = ""
     if req.business_context and req.business_context.strip():
@@ -11520,39 +11714,110 @@ def suggest_kpis(req: KpiSuggestRequest):
         q_list = "\n".join(f"  - {q}" for q in req.questions)
         questions_block = f"\nBUSINESS QUESTIONS (the KPIs you generate should help answer these):\n{q_list}\n"
 
-    prompt = f"""You are a business intelligence architect. Given the data model below, suggest {req.count} concrete KPIs that would bridge the semantic gap between raw data and business meaning.
-{biz_ctx_block}
+    existing_kpi_block = ""
+    if req.existing_kpi_names:
+        ek_list = "\n".join(f"  - {n}" for n in req.existing_kpi_names[:20])
+        existing_kpi_block = f"""
+EXISTING KPIs (do NOT regenerate these or close variants -- suggest DIFFERENT metrics that fill gaps):
+{ek_list}
+"""
+
+    domain_block = ""
+    if dominant_domain:
+        domain_block = f"\nDOMAIN FOCUS: Generate KPIs only for the '{dominant_domain}' domain. Do not mix in unrelated domains.\n"
+
+    prompt = f"""You are a business intelligence architect. Given the data model below, suggest {req.count} concrete KPIs.
+{biz_ctx_block}{domain_block}
 {kpi_context}
 {questions_block}
 Rules:
-- Ground each KPI in the ENTITY TYPES described in the metadata -- if there are Patients, Encounters, Claims, Orders, etc., the KPIs should measure aspects of those specific entities
-- Use the RELATIONSHIPS between entities to suggest cross-entity KPIs (e.g., encounters per patient, revenue per provider, claims per policy)
-- Each KPI's formula MUST reference only columns that exist in the provided table metadata -- do not invent columns
-- Align KPIs with the domain/subdomain classifications shown in the metadata
-- If BUSINESS QUESTIONS are provided, prioritize KPIs that directly support answering those questions
-- Think like a business user who works WITH the data but doesn't know the schema -- KPIs should be framed in business language
+- Formulas MUST encode ALL filtering or conditional logic implied by the KPI name. If the name says "overdue", "failed", "at risk", etc., the formula must include a CASE WHEN or equivalent filter -- never a bare aggregate that ignores the condition.
+- Prefer RATIO, RATE, and CONDITIONAL KPIs (e.g. SUM(CASE WHEN x THEN 1 ELSE 0 END) / COUNT(*), or SUM(a) / SUM(b)). A bare SUM(x) or COUNT(x) is acceptable ONLY if the KPI genuinely measures a simple total with no implied filter.
+- Each KPI's formula MUST reference only columns that exist in the provided table metadata -- do not invent columns.
+- Use RELATIONSHIPS between entities for cross-entity KPIs (e.g. encounters per patient, revenue per provider).
+- If BUSINESS QUESTIONS are provided, prioritize KPIs that directly support answering those questions.
+- Frame KPI names in business language -- no column names or schema references.
+{existing_kpi_block}
+EXAMPLES:
+
+GOOD:
+  name: "Overdue Pipeline Risk Value"
+  description: "Total weighted deal value where expected close has passed without actual closure."
+  formula: "SUM(CASE WHEN expected_close_date < CURRENT_DATE AND actual_close_date IS NULL THEN weighted_amount_usd ELSE 0 END)"
+
+GOOD:
+  name: "Severe Adverse Event Rate"
+  description: "Share of adverse events graded 3+ out of total reported events."
+  formula: "SUM(CASE WHEN grade >= 3 THEN 1 ELSE 0 END) * 1.0 / COUNT(ae_id)"
+
+BAD (do NOT generate like this):
+  name: "Pipeline Overdue Deal Value"
+  description: "Calculates the total weighted deal value for open opportunities where the expected close date has passed..."
+  formula: "SUM(weighted_amount_usd)"
+  WHY BAD: Formula is a bare SUM with no filter for overdue status despite the name claiming it does. Description is verbose filler.
 
 For each KPI provide:
-- name: concise business name (e.g. "Monthly Revenue Growth Rate")
-- description: 1-2 sentences explaining what it measures and why it matters
-- formula: SQL expression using bare column names only -- NO catalog, schema, or table prefixes (e.g. SUM(total_amount), not SUM(schema.table.total_amount)). The source table is specified separately. Avoid SQL window functions (OVER, PARTITION BY) -- use simple aggregates instead (SUM, COUNT, AVG). If a share-of-total is needed, describe it conceptually and let the metric view layer handle the windowing.
-- domain: business domain it belongs to (e.g. sales, finance, operations)
+- name: concise business name
+- description: ONE sentence -- what does this number tell a decision-maker? No filler.
+- formula: SQL expression using bare column names only (no catalog/schema/table prefixes). Use CASE WHEN for conditional logic. No window functions (OVER/PARTITION BY).
+- domain: business domain (e.g. sales, finance, operations, clinical)
+- source_table: the SHORT table name containing the columns used
 
-Return ONLY a JSON array of objects with keys: name, description, formula, domain. No other text."""
+Return ONLY a JSON array of objects with keys: name, description, formula, domain, source_table. No other text."""
 
-    llm = ChatDatabricks(endpoint=req.model_endpoint, temperature=0.5, max_tokens=4096)
+    llm = ChatDatabricks(endpoint=req.model_endpoint, temperature=0.6, max_tokens=4096)
     response = llm.invoke(prompt)
     content = response.content.strip()
     if content.startswith("```"):
         content = content.split("\n", 1)[1] if "\n" in content else content[3:]
         content = content.rsplit("```", 1)[0]
     kpis = json.loads(content)
+    short_to_fq = {t.split(".")[-1].lower(): t for t in req.table_identifiers}
     for kpi in kpis:
-        tables = req.table_identifiers[:1] if req.table_identifiers else []
-        v_status, v_error = _validate_kpi_formula(kpi.get("formula", ""), tables)
+        source_short = (kpi.get("source_table") or "").lower()
+        target = [short_to_fq[source_short]] if source_short in short_to_fq else req.table_identifiers[:1]
+        v_status, v_error = _validate_kpi_formula(kpi.get("formula", ""), target)
         kpi["validation_status"] = v_status
         kpi["validation_error"] = v_error
-    return {"kpis": kpis[:req.count]}
+        kpi["target_tables"] = target
+
+    # Second LLM pass: review KPI semantic correctness
+    valid_kpis = [k for k in kpis if k.get("validation_status") != "invalid"][:req.count]
+    if valid_kpis:
+        review_prompt = f"""Review these KPIs for correctness. For each, answer: does the formula actually measure what the name/description claims?
+
+Column metadata:
+{kpi_context}
+
+KPIs to review:
+{json.dumps([{"name": k["name"], "formula": k["formula"], "description": k["description"]} for k in valid_kpis], indent=2)}
+
+For each KPI, respond with a JSON array of objects:
+  {{"name": "...", "verdict": "correct" | "questionable" | "wrong", "reason": "brief explanation if not correct"}}
+Return ONLY the JSON array."""
+        try:
+            review_llm = ChatDatabricks(endpoint=req.model_endpoint, temperature=0.0, max_tokens=2048)
+            review_resp = review_llm.invoke(review_prompt)
+            review_text = review_resp.content.strip()
+            if review_text.startswith("```"):
+                review_text = review_text.split("\n", 1)[1] if "\n" in review_text else review_text[3:]
+                review_text = review_text.rsplit("```", 1)[0]
+            verdicts = json.loads(review_text)
+            verdict_map = {v["name"]: v for v in verdicts if isinstance(v, dict)}
+            for kpi in valid_kpis:
+                rv = verdict_map.get(kpi["name"], {})
+                kpi["review_verdict"] = rv.get("verdict", "unknown")
+                kpi["review_reason"] = rv.get("reason", "")
+        except Exception:
+            for kpi in valid_kpis:
+                kpi["review_verdict"] = "unknown"
+                kpi["review_reason"] = "Review unavailable"
+
+    # Filter out KPIs marked as wrong by the reviewer
+    result_kpis = [k for k in valid_kpis if k.get("review_verdict") != "wrong"]
+    if not result_kpis:
+        result_kpis = valid_kpis  # fallback: return all if reviewer rejected everything
+    return {"kpis": result_kpis[:req.count]}
 
 
 # ---------------------------------------------------------------------------
@@ -12188,7 +12453,7 @@ def _mv_sync_worker(task_id: str):
         f"      FLATTEN(TRANSFORM(FROM_JSON(m.json_definition, 'STRUCT<measures:ARRAY<STRUCT<synonyms:ARRAY<STRING>>>>').measures, x -> COALESCE(x.synonyms, ARRAY()))),"
         f"      FLATTEN(TRANSFORM(FROM_JSON(m.json_definition, 'STRUCT<dimensions:ARRAY<STRUCT<synonyms:ARRAY<STRING>>>>').dimensions, x -> COALESCE(x.synonyms, ARRAY())))"
         f"    ), ', ')), '') AS all_synonyms_line"
-        f"  FROM {defs} m WHERE m.status IN ('validated', 'applied')"
+        f"  FROM {defs} m WHERE m.status = 'applied'"
         f") "
         f"SELECT CONCAT('metric_view_summary::', p.definition_id) AS doc_id, 'metric_view_summary' AS doc_type, p.definition_id AS node_id, "
         f"  CONCAT(p.mv_fqn, '\\n', COALESCE(p.mv_comment, ''), '\\n', 'Domain: ', COALESCE(kb.domain, ''), ' / ', COALESCE(kb.subdomain, ''), '\\n', "
@@ -12220,7 +12485,7 @@ def _mv_sync_worker(task_id: str):
         execute_sql(f"DELETE FROM {docs} WHERE doc_type = 'metric_view'", timeout=30)
 
         # Sweep orphaned tier docs
-        valid_ids = f"SELECT definition_id FROM {defs} WHERE status IN ('validated', 'applied')"
+        valid_ids = f"SELECT definition_id FROM {defs} WHERE status = 'applied'"
         for dt in ("metric_view_summary", "metric_view_measures", "metric_view_schema"):
             execute_sql(
                 f"DELETE FROM {docs} WHERE doc_type = '{dt}' AND node_id NOT IN ({valid_ids})",
@@ -12309,7 +12574,7 @@ def _sg_sync_worker(task_id: str):
         rows = execute_sql(
             f"SELECT definition_id, metric_view_name, source_table, json_definition, "
             f"status, deployed_catalog, deployed_schema "
-            f"FROM {cfg_defs} WHERE status IN ('validated', 'applied')",
+            f"FROM {cfg_defs} WHERE status = 'applied'",
             timeout=30,
         )
         if not rows:
