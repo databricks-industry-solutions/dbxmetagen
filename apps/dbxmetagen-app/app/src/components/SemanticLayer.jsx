@@ -238,6 +238,7 @@ export default function SemanticLayer({ onNavigate, pipelineStats }) {
   // Per-definition action state
   const [actionLoading, setActionLoading] = useState({})
   const [globalTargetOverride, setGlobalTargetOverride] = useState('')
+  const [customTargetMode, setCustomTargetMode] = useState(false)
 
   // MV health + analysis per definition
   const [mvHealth, setMvHealth] = useState({})
@@ -253,6 +254,7 @@ export default function SemanticLayer({ onNavigate, pipelineStats }) {
   const [editJson, setEditJson] = useState('')
   const [suggestLoading, setSuggestLoading] = useState(false)
   const [suggestQLoading, setSuggestQLoading] = useState(false)
+  const [suggestQProgress, setSuggestQProgress] = useState('')
   const [userIdentity, setUserIdentity] = useState(null)
   const [bulkCreating, setBulkCreating] = useState(false)
   const [bulkDeleting, setBulkDeleting] = useState(null)
@@ -294,10 +296,9 @@ export default function SemanticLayer({ onNavigate, pipelineStats }) {
     if (globalTargetOverride) return globalTargetOverride
     return perMvTargets[d.definition_id] || getDefaultTarget(d)
   }
-  const schemaOptions = [...new Set([
-    ...definitions.map(d => getDefaultTarget(d)),
-    ...(globalTargetOverride ? [globalTargetOverride] : []),
-  ].filter(Boolean))]
+  const schemaOptions = [...new Set(
+    definitions.map(d => getDefaultTarget(d)).filter(Boolean)
+  )]
 
   // Auto-set "Create target" to most common catalog.schema from selected tables
   useEffect(() => {
@@ -551,19 +552,67 @@ export default function SemanticLayer({ onNavigate, pipelineStats }) {
 
   const suggestQuestions = async () => {
     if (!selectedTables.length) { setError('Select tables first'); return }
-    setSuggestQLoading(true); setError(null)
+    setSuggestQLoading(true); setError(null); setSuggestQProgress('')
+    const controller = new AbortController()
+    const timeout = setTimeout(() => controller.abort(), 180000)
     try {
       const fqTables = selectedTables.map(t => t.includes('.') ? t : `${selectedCatalog}.${selectedSchema}.${t}`)
+      const existing = questionsText.split('\n').filter(l => l.trim())
       const res = await fetch('/api/genie/generate-questions', {
         method: 'POST', headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ table_identifiers: fqTables, count: 6, purpose: 'metric_views', business_context: businessContext || undefined }),
+        body: JSON.stringify({ table_identifiers: fqTables, count: 6, purpose: 'metric_views', business_context: businessContext || undefined, existing_questions: existing }),
+        signal: controller.signal,
       })
-      const data = await res.json()
-      if (!res.ok) { setError(data.detail || 'Failed to suggest questions'); setSuggestQLoading(false); return }
-      const newQs = (data.questions || []).join('\n')
-      setQuestionsText(prev => prev ? prev + '\n' + newQs : newQs)
-    } catch (e) { setError(e.message) }
-    setSuggestQLoading(false)
+      clearTimeout(timeout)
+      if (!res.ok) {
+        const text = await res.text()
+        let detail = 'Failed to suggest questions'
+        try { detail = JSON.parse(text).detail || detail } catch {}
+        setError(detail); setSuggestQLoading(false); setSuggestQProgress(''); return
+      }
+      const contentType = res.headers.get('content-type') || ''
+      if (contentType.includes('text/event-stream')) {
+        // SSE streaming response (chunked generation for >20 tables)
+        const reader = res.body.getReader()
+        const decoder = new TextDecoder()
+        let buffer = ''
+        let finalData = null
+        while (true) {
+          const { done, value } = await reader.read()
+          if (done) break
+          buffer += decoder.decode(value, { stream: true })
+          const lines = buffer.split('\n')
+          buffer = lines.pop() || ''
+          for (const line of lines) {
+            if (!line.startsWith('data: ')) continue
+            try {
+              const evt = JSON.parse(line.slice(6))
+              if (evt.event === 'status') setSuggestQProgress(evt.message)
+              else if (evt.event === 'themes') {
+                const names = evt.themes.map(t => `${t.name} (${t.table_count} tables)`).join(', ')
+                setSuggestQProgress(`Themes: ${names}`)
+              } else if (evt.event === 'done') { finalData = evt }
+              else if (evt.event === 'error') { setError(evt.message); break }
+            } catch {}
+          }
+        }
+        if (finalData) {
+          const newQs = (finalData.questions || []).join('\n')
+          setQuestionsText(prev => prev ? prev + '\n' + newQs : newQs)
+        }
+      } else {
+        // Standard JSON response (single-call for <=20 tables)
+        const data = await res.json()
+        if (data.warning) setError(data.warning)
+        const newQs = (data.questions || []).join('\n')
+        setQuestionsText(prev => prev ? prev + '\n' + newQs : newQs)
+      }
+    } catch (e) {
+      clearTimeout(timeout)
+      if (e.name === 'AbortError') setError('Request timed out. Try selecting fewer tables.')
+      else setError(e.message || 'Request failed')
+    }
+    setSuggestQLoading(false); setSuggestQProgress('')
   }
 
   // --- KPIs ---
@@ -600,19 +649,35 @@ export default function SemanticLayer({ onNavigate, pipelineStats }) {
   }
   const suggestKpis = async () => {
     if (!selectedTables.length) return
-    setKpiSuggesting(true)
+    setKpiSuggesting(true); setError(null)
+    const controller = new AbortController()
+    const timeout = setTimeout(() => controller.abort(), 120000)
     try {
       const fqTables = selectedTables.map(t => t.includes('.') ? t : `${selectedCatalog}.${selectedSchema}.${t}`)
       const qLines = questionsText.split('\n').filter(l => l.trim())
+      const existingNames = kpis.map(k => k.name)
       const res = await fetch('/api/kpis/suggest', { method: 'POST', headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ table_identifiers: fqTables, business_context: businessContext || undefined, questions: qLines.length ? qLines : undefined, profile_id: activeProfileId || undefined }) })
+        body: JSON.stringify({ table_identifiers: fqTables, business_context: businessContext || undefined, questions: qLines.length ? qLines : undefined, profile_id: activeProfileId || undefined, existing_kpi_names: existingNames }),
+        signal: controller.signal })
+      clearTimeout(timeout)
+      if (!res.ok) {
+        const text = await res.text()
+        let detail = 'Failed to suggest KPIs'
+        try { detail = JSON.parse(text).detail || detail } catch {}
+        setError(detail); setKpiSuggesting(false); return
+      }
       const j = await res.json()
+      if (j.warning) setError(j.warning)
       for (const k of (j.kpis || [])) {
         await fetch('/api/kpis', { method: 'POST', headers: { 'Content-Type': 'application/json' },
           body: JSON.stringify({ ...k, target_tables: fqTables, source: 'suggested', profile_id: activeProfileId || undefined }) })
       }
       loadKpis()
-    } catch (e) { setError(e.message) }
+    } catch (e) {
+      clearTimeout(timeout)
+      if (e.name === 'AbortError') setError('Request timed out. Try selecting fewer tables.')
+      else setError(e.message || 'Request failed')
+    }
     setKpiSuggesting(false)
   }
 
@@ -1271,11 +1336,12 @@ export default function SemanticLayer({ onNavigate, pipelineStats }) {
         <textarea value={questionsText} onChange={e => setQuestionsText(e.target.value)}
           placeholder={"What was total revenue by region last quarter?\nHow many orders per month by product category?\nWhat is the average deal size by sales rep?"}
           className={`${input} h-32 mb-3`} />
-        <div className="flex gap-3 items-center">
+        <div className="flex gap-3 items-center flex-wrap">
           <button onClick={suggestQuestions} disabled={suggestQLoading || !selectedTables.length}
             className="px-4 py-2 bg-amber-600 text-white rounded-md text-sm hover:bg-amber-700 disabled:opacity-50">
             {suggestQLoading ? 'Suggesting...' : 'Suggest Questions'}
           </button>
+          {suggestQProgress && <span className="text-xs text-slate-500 dark:text-slate-400 italic">{suggestQProgress}</span>}
           <button onClick={saveProfile} disabled={loading || !profileName.trim() || !questionLines.length}
             className="px-4 py-2 bg-blue-600 text-white rounded-md text-sm hover:bg-blue-700 disabled:opacity-50">
             {activeProfileId ? 'Update Profile' : 'Save Profile'}
@@ -1290,6 +1356,7 @@ export default function SemanticLayer({ onNavigate, pipelineStats }) {
             <span className="text-xs text-gray-500 dark:text-gray-400">{questionLines.length} question{questionLines.length !== 1 ? 's' : ''}</span>
           )}
         </div>
+        <p className="text-xs text-gray-400 dark:text-gray-500 mt-2">Click multiple times to expand coverage -- each run generates new questions that complement the existing ones.</p>
       </section>
 
       {/* KPI Library */}
@@ -1297,7 +1364,7 @@ export default function SemanticLayer({ onNavigate, pipelineStats }) {
         <div className="flex items-center justify-between mb-3">
           <div>
             <h2 className="text-lg font-semibold dark:text-gray-100">KPI Library</h2>
-            <p className="text-xs text-gray-500 dark:text-gray-400 mt-0.5">Define or auto-suggest business KPIs from your selected tables. KPIs feed into metric view generation and Genie space configuration.</p>
+            <p className="text-xs text-gray-500 dark:text-gray-400 mt-0.5">Define or auto-suggest business KPIs from your selected tables. KPIs feed into metric view generation and Genie space configuration. Run multiple times for broader coverage -- each pass generates different KPIs.</p>
           </div>
           <div className="flex gap-2">
             <button onClick={suggestKpis} disabled={kpiSuggesting || !selectedTables.length}
@@ -1573,8 +1640,8 @@ export default function SemanticLayer({ onNavigate, pipelineStats }) {
           {/* Deploy target override */}
           <div className="flex items-center gap-3 mb-4 p-3 bg-dbx-oat dark:bg-gray-900 rounded-md border dark:border-gray-700 flex-wrap">
             <span className="text-xs font-medium text-gray-600 dark:text-gray-400 whitespace-nowrap" title="Override deploys all metric views to this schema instead of each view's source table schema">Deploy target override:</span>
-            <select value={schemaOptions.includes(globalTargetOverride) ? globalTargetOverride : (globalTargetOverride ? '__custom__' : '')}
-              onChange={e => { userEditedTargetRef.current = true; setGlobalTargetOverride(e.target.value === '__custom__' ? '' : e.target.value) }}
+            <select value={schemaOptions.includes(globalTargetOverride) ? globalTargetOverride : (globalTargetOverride || customTargetMode ? '__custom__' : '')}
+              onChange={e => { userEditedTargetRef.current = true; if (e.target.value === '__custom__') { setCustomTargetMode(true); setGlobalTargetOverride('') } else { setCustomTargetMode(false); setGlobalTargetOverride(e.target.value) } }}
               className="input-base !text-xs w-56">
               <option value="">(None - use each view's source schema)</option>
               {schemaOptions.map(s => <option key={s} value={s}>{s}</option>)}
@@ -1582,7 +1649,7 @@ export default function SemanticLayer({ onNavigate, pipelineStats }) {
             </select>
             <input type="text" placeholder="catalog.schema"
               value={!schemaOptions.includes(globalTargetOverride) ? globalTargetOverride : ''}
-              onChange={e => { userEditedTargetRef.current = true; setGlobalTargetOverride(e.target.value) }}
+              onChange={e => { userEditedTargetRef.current = true; setCustomTargetMode(true); setGlobalTargetOverride(e.target.value) }}
               className={`input-base !text-xs w-48 ${schemaOptions.includes(globalTargetOverride) && globalTargetOverride ? 'opacity-40 pointer-events-none' : ''}`}
               title="Type a custom catalog.schema for federated or cross-catalog deploys" />
             {globalTargetOverride && !schemaOptions.includes(globalTargetOverride) && !globalTargetOverride.match(/^[^.]+\.[^.]+$/) && (

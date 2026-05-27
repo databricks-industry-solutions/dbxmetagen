@@ -16,7 +16,7 @@ from typing import Any, Dict, Optional
 
 from databricks.sdk import WorkspaceClient
 from databricks.sdk.service.sql import Format, Disposition
-from langchain_community.chat_models import ChatDatabricks
+from databricks_langchain import ChatDatabricks
 
 try:
     import mlflow
