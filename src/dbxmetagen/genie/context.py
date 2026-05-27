@@ -594,7 +594,7 @@ class GenieContextAssembler:
             for c in columns
             if c.get("data_type", "").upper() in ("STRING", "VARCHAR")
         ]
-        capped = string_cols[:20]
+        capped = string_cols[:10]
         if not capped:
             return samples
 
@@ -604,7 +604,7 @@ class GenieContextAssembler:
             fq_tbl = self._qualify(tbl)
             rows = _safe_sql(
                 self.ws, self.wh,
-                f"SELECT DISTINCT `{cn}` AS val FROM {fq_tbl} WHERE `{cn}` IS NOT NULL LIMIT 15",
+                f"SELECT DISTINCT `{cn}` AS val FROM {fq_tbl} WHERE `{cn}` IS NOT NULL LIMIT 8",
             )
             return tbl, cn, [r["val"] for r in rows] if rows else []
 

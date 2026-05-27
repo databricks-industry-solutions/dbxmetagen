@@ -355,7 +355,7 @@ class VectorIndexBuilder:
                         FLATTEN(TRANSFORM(FROM_JSON(m.json_definition, 'STRUCT<measures:ARRAY<STRUCT<synonyms:ARRAY<STRING>>>>').measures, x -> COALESCE(x.synonyms, ARRAY()))),
                         FLATTEN(TRANSFORM(FROM_JSON(m.json_definition, 'STRUCT<dimensions:ARRAY<STRUCT<synonyms:ARRAY<STRING>>>>').dimensions, x -> COALESCE(x.synonyms, ARRAY())))
                     ), ', ')), '') AS all_synonyms_line
-                FROM {_defs} m WHERE m.status IN ('validated', 'applied')
+                FROM {_defs} m WHERE m.status = 'applied'
             )
             SELECT CONCAT('metric_view_summary::', p.definition_id) AS doc_id, 'metric_view_summary' AS doc_type, p.definition_id AS node_id,
                 CONCAT(p.mv_fqn, '\\n', COALESCE(p.mv_comment, ''), '\\n', 'Domain: ', COALESCE(kb.domain, ''), ' / ', COALESCE(kb.subdomain, ''), '\\n',

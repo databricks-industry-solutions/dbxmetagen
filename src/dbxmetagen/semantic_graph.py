@@ -305,7 +305,7 @@ class SemanticGraphBuilder:
             f"SELECT definition_id, metric_view_name, source_table, json_definition, "
             f"status, deployed_catalog, deployed_schema "
             f"FROM {cfg.fq(cfg.definitions_table)} "
-            f"WHERE status IN ('validated', 'applied')"
+            f"WHERE status = 'applied'"
         ).collect()
 
         if not rows:
