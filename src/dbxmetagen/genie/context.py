@@ -241,6 +241,7 @@ class GenieContextAssembler:
         sql_snippets = self._build_sql_snippets(
             unapplied_mvs, value_samples, column_meta
         )
+        mv_seed_examples = self._build_mv_example_sql(applied_mvs)
 
         reference_text = self._load_genie_reference()
 
@@ -249,6 +250,7 @@ class GenieContextAssembler:
             "join_specs": join_specs,
             "data_sources": data_sources,
             "sql_snippets": sql_snippets,
+            "mv_seed_examples": mv_seed_examples,
             "questions": questions or [],
             "reference_text": reference_text,
             "assembler_warnings": mv_warnings,
@@ -1182,6 +1184,44 @@ class GenieContextAssembler:
             "filters": filters[:20],
             "expressions": expressions,
         }
+
+    def _build_mv_example_sql(self, applied_mvs: list[dict]) -> list[dict]:
+        """Generate deterministic seed example SQL from applied metric view definitions."""
+        examples: list[dict] = []
+        for mv in applied_mvs:
+            raw = mv.get("json_definition", "")
+            try:
+                defn = json.loads(raw) if isinstance(raw, str) else raw
+            except (json.JSONDecodeError, TypeError):
+                continue
+            mv_name = mv.get("metric_view_name", "")
+            if not mv_name:
+                continue
+            mv_cat, mv_sch = self._resolve_mv_location(mv, self.catalog, self.schema)
+            fq_mv = f"`{mv_cat}`.`{mv_sch}`.`{mv_name}`"
+            dims = [d.get("name") for d in defn.get("dimensions", []) if d.get("name")]
+            measures = [m.get("name") for m in defn.get("measures", []) if m.get("name")]
+            if not measures:
+                continue
+            measure_col = measures[0]
+            dim_col = dims[0] if dims else None
+            mv_label = mv_name.replace("_", " ").title()
+            if dim_col:
+                examples.append({
+                    "question": f"What is the {measure_col.replace('_', ' ')} by {dim_col.replace('_', ' ')}?",
+                    "sql": f"SELECT `{dim_col}`, `{measure_col}` FROM {fq_mv} GROUP BY `{dim_col}` ORDER BY `{measure_col}` DESC",
+                })
+            else:
+                examples.append({
+                    "question": f"What is the total {measure_col.replace('_', ' ')} from {mv_label}?",
+                    "sql": f"SELECT `{measure_col}` FROM {fq_mv}",
+                })
+            if len(dims) >= 2 and len(measures) >= 2:
+                examples.append({
+                    "question": f"Show {measures[1].replace('_', ' ')} by {dims[1].replace('_', ' ')} from {mv_label}",
+                    "sql": f"SELECT `{dims[1]}`, `{measures[1]}` FROM {fq_mv} GROUP BY `{dims[1]}` ORDER BY `{measures[1]}` DESC",
+                })
+        return examples
 
 
 # ---------------------------------------------------------------------------
