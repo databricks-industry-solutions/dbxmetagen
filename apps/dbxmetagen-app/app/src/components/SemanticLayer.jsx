@@ -1553,16 +1553,10 @@ export default function SemanticLayer({ onNavigate, pipelineStats }) {
             className={btnPrimary}>
             {isGenerating ? 'Generating...' : 'Generate'}
           </button>
-          <button onClick={() => startGeneration('additive')}
-            disabled={loading || isGenerating || !selectedTables.length || !questionLines.length}
-            title="Add more definitions without replacing existing ones"
-            className="px-4 py-2 bg-teal-600 text-white rounded-md text-sm hover:bg-teal-700 disabled:opacity-50">
-            Generate More
-          </button>
           {selectedProjectId && (
-            <button onClick={() => { if (!confirm('Regenerate all definitions? This will replace existing ones.')) return; startGeneration('replace_all') }}
+            <button onClick={() => { if (!confirm('Regenerate all definitions in this project? Applied metric views are preserved.')) return; startGeneration('replace_all') }}
               disabled={loading || isGenerating || !selectedTables.length || !questionLines.length}
-              title="Delete all existing definitions in this project and regenerate from scratch"
+              title="Replace all draft, validated, and failed definitions in this project and regenerate. Applied metric views are preserved."
               className="px-4 py-2 bg-dbx-lava text-white rounded-md text-sm hover:bg-red-700 disabled:opacity-50">
               Regenerate All
             </button>
@@ -1740,8 +1734,8 @@ export default function SemanticLayer({ onNavigate, pipelineStats }) {
                         </span>
                       )}
                       {d.deployed_catalog && d.deployed_schema && (
-                        <span className="text-[10px] ml-2 px-1 py-0.5 rounded bg-emerald-50 dark:bg-emerald-900/20 text-emerald-600 dark:text-emerald-400">
-                          Deployed: {d.deployed_catalog}.{d.deployed_schema}
+                        <span className={`text-[10px] ml-2 px-1 py-0.5 rounded ${d.deployed_exists === false ? 'bg-amber-50 dark:bg-amber-900/20 text-amber-600 dark:text-amber-400' : 'bg-emerald-50 dark:bg-emerald-900/20 text-emerald-600 dark:text-emerald-400'}`}>
+                          {d.deployed_exists === false ? 'Missing from UC: ' : 'Deployed: '}{d.deployed_catalog}.{d.deployed_schema}
                         </span>
                       )}
                     </div>
