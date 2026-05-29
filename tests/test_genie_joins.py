@@ -265,6 +265,41 @@ class TestExtractMVJoinSpecs:
         specs = self._asm()._extract_mv_join_specs([mv], set(), {"orders"})
         assert len(specs) == 0
 
+    def test_empty_selected_skips_all_joins(self):
+        """When table_identifiers is empty (MV-only room), no joins should be emitted."""
+        mv = {
+            "source_table": "rdl_redshift.ppm.dwh.trainprogram",
+            "json_definition": json.dumps({
+                "joins": [{"name": "project", "source": "rdl_redshift.ppm.dwh.project",
+                           "on": "source.project_id = project.id"}]
+            }),
+        }
+        specs = self._asm()._extract_mv_join_specs([mv], set(), set())
+        assert len(specs) == 0
+
+    def test_none_selected_skips_all_joins(self):
+        """None for selected_short_names should also skip all joins."""
+        mv = {
+            "source_table": "cat.sch.orders",
+            "json_definition": json.dumps({
+                "joins": [{"name": "c", "source": "cat.sch.c", "on": "source.id = c.id"}]
+            }),
+        }
+        specs = self._asm()._extract_mv_join_specs([mv], set(), None)
+        assert len(specs) == 0
+
+    def test_left_side_not_in_selected_skips(self):
+        """If the MV's source_table is not in selected tables, skip its joins."""
+        mv = {
+            "source_table": "other_cat.other_sch.unselected_table",
+            "json_definition": json.dumps({
+                "joins": [{"name": "customers", "source": "cat.sch.customers",
+                           "on": "source.cust_id = customers.id"}]
+            }),
+        }
+        specs = self._asm()._extract_mv_join_specs([mv], set(), {"customers"})
+        assert len(specs) == 0
+
 
 # ---------------------------------------------------------------------------
 # assemble() — applied vs unapplied MV contract

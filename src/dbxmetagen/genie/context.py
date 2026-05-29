@@ -238,6 +238,15 @@ class GenieContextAssembler:
             table_identifiers, table_meta, applied_mvs,
             column_meta=column_meta, entity_rows=entity_rows,
         )
+        ds_ids = {t["identifier"] for t in data_sources.get("tables", [])}
+        ds_ids |= {m["identifier"] for m in data_sources.get("metric_views", [])}
+        pre = len(join_specs)
+        join_specs = [
+            js for js in join_specs
+            if js["left"]["identifier"] in ds_ids and js["right"]["identifier"] in ds_ids
+        ]
+        if len(join_specs) < pre:
+            logger.warning("Dropped %d join_specs not matching data_sources", pre - len(join_specs))
         sql_snippets = self._build_sql_snippets(
             unapplied_mvs, value_samples, column_meta
         )
@@ -875,13 +884,14 @@ class GenieContextAssembler:
             joins = jd.get("joins", [])
             source_table = mv.get("source_table", "")
             left_short = source_table.split(".")[-1].lower()
+            if not selected_short_names or left_short not in selected_short_names:
+                continue
             for j in joins:
                 target_fq = j.get("source", "") or j.get("table", "")
                 if not target_fq:
                     continue
                 right_short = target_fq.split(".")[-1].lower()
-                # Only emit if target table is in the selected data sources
-                if selected_short_names and right_short not in selected_short_names:
+                if not selected_short_names or right_short not in selected_short_names:
                     continue
                 pair = tuple(sorted([left_short, right_short]))
                 if pair in existing_pairs:

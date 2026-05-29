@@ -17,6 +17,96 @@ ontology:
   version: "1.0"
   name: IoT Manufacturing Ontology
   description: Covers devices, sensors, readings, and alerts
+  property_roles:
+    primary_key:
+      description: Surrogate or technical row identifier
+      maps_to_kind: data_property
+      semantic_role: identifier
+    business_key:
+      description: Natural key meaningful to users
+      maps_to_kind: data_property
+      semantic_role: identifier
+    object_property:
+      description: FK or reference to another entity's identifier
+      maps_to_kind: object_property
+      semantic_role: relationship
+    measure:
+      description: Numeric value to aggregate
+      maps_to_kind: data_property
+      semantic_role: metric
+    dimension:
+      description: Categorical filter or grouping attribute
+      maps_to_kind: data_property
+      semantic_role: dimension
+    temporal:
+      description: Date or timestamp of event
+      maps_to_kind: data_property
+      semantic_role: temporal
+    geographic:
+      description: Location-based dimension
+      maps_to_kind: data_property
+      semantic_role: geographic
+    label:
+      description: Human-readable name or title
+      maps_to_kind: data_property
+      semantic_role: label
+    audit:
+      description: System-generated provenance column
+      maps_to_kind: data_property
+      semantic_role: provenance
+    derived:
+      description: Computed from other columns
+      maps_to_kind: data_property
+      semantic_role: derived
+    composite_component:
+      description: Part of a multi-column value object
+      maps_to_kind: data_property
+      semantic_role: component
+  edge_catalog:
+    instance_of:
+      inverse: type_of
+      symmetric: false
+      category: structural
+    subclass_of:
+      inverse: superclass_of
+      symmetric: false
+      category: structural
+    has_part:
+      inverse: part_of
+      symmetric: false
+      category: structural
+    contains:
+      inverse: contained_in
+      symmetric: false
+      category: structural
+    member_of:
+      inverse: has_member
+      symmetric: false
+      category: structural
+    has_sensor:
+      inverse: sensor_of
+      domain: Device
+      range: Sensor
+      symmetric: false
+      category: business
+    produces:
+      inverse: produced_by
+      domain: Sensor
+      range: Reading
+      symmetric: false
+      category: business
+    triggered_by:
+      inverse: triggers
+      domain: Alert
+      range: Reading
+      symmetric: false
+      category: business
+    part_of:
+      inverse: has_part
+      domain: Sensor
+      range: Device
+      symmetric: false
+      category: business
   entities:
     auto_discover: true
     discovery_confidence_threshold: 0.4
@@ -29,6 +119,27 @@ ontology:
           has_sensor:
             target: Sensor
             cardinality: one-to-many
+        properties:
+          id:
+            kind: data_property
+            role: primary_key
+            typical_attributes: [device_id, id]
+          serial_number:
+            kind: data_property
+            role: business_key
+            typical_attributes: [serial_number, serial_no, sn]
+          model:
+            kind: data_property
+            role: dimension
+            typical_attributes: [model, model_name, model_number]
+          location:
+            kind: data_property
+            role: geographic
+            typical_attributes: [location, site, facility]
+          install_date:
+            kind: data_property
+            role: temporal
+            typical_attributes: [install_date, installed_at, installation_date]
       Sensor:
         description: Measurement instrument attached to a device
         keywords: [sensor, probe, meter, transducer, detector]
@@ -40,10 +151,56 @@ ontology:
           part_of:
             target: Device
             cardinality: many-to-one
+        properties:
+          id:
+            kind: data_property
+            role: primary_key
+            typical_attributes: [sensor_id, id]
+          device_id:
+            kind: object_property
+            role: object_property
+            typical_attributes: [device_id]
+            edge: part_of
+            target_entity: Device
+          sensor_type:
+            kind: data_property
+            role: dimension
+            typical_attributes: [sensor_type, type, sensor_kind]
+          unit:
+            kind: data_property
+            role: dimension
+            typical_attributes: [unit, unit_of_measure, uom]
+          calibration_date:
+            kind: data_property
+            role: temporal
+            typical_attributes: [calibration_date, last_calibrated]
       Reading:
         description: Time-series measurement from a sensor
         keywords: [reading, measurement, observation, telemetry, signal, data_point]
         typical_attributes: [reading_id, sensor_id, timestamp, value, quality_flag]
+        properties:
+          id:
+            kind: data_property
+            role: primary_key
+            typical_attributes: [reading_id, id]
+          sensor_id:
+            kind: object_property
+            role: object_property
+            typical_attributes: [sensor_id]
+            edge: produces
+            target_entity: Sensor
+          timestamp:
+            kind: data_property
+            role: temporal
+            typical_attributes: [timestamp, reading_time, ts, recorded_at]
+          value:
+            kind: data_property
+            role: measure
+            typical_attributes: [value, reading_value, measurement]
+          quality_flag:
+            kind: data_property
+            role: dimension
+            typical_attributes: [quality_flag, quality, qc_flag]
       Alert:
         description: Threshold breach or anomaly notification
         keywords: [alert, alarm, notification, fault, incident, warning]
@@ -52,18 +209,93 @@ ontology:
           triggered_by:
             target: Reading
             cardinality: many-to-one
+        properties:
+          id:
+            kind: data_property
+            role: primary_key
+            typical_attributes: [alert_id, id]
+          device_id:
+            kind: object_property
+            role: object_property
+            typical_attributes: [device_id]
+            edge: has_sensor
+            target_entity: Device
+          severity:
+            kind: data_property
+            role: dimension
+            typical_attributes: [severity, priority, level]
+          triggered_at:
+            kind: data_property
+            role: temporal
+            typical_attributes: [triggered_at, alert_time, created_at]
+          resolved_at:
+            kind: data_property
+            role: temporal
+            typical_attributes: [resolved_at, resolved_time, cleared_at]
 
-domain_config:
-  domains:
-    IoT:
-      description: Internet of Things data ingestion and telemetry
-      subdomains:
-        - Telemetry
-        - Device Management
-        - Edge Computing
-    Manufacturing:
-      description: Production, quality, and maintenance operations
-      subdomains:
-        - Production
-        - Quality Control
-        - Predictive Maintenance
+domains:
+  iot:
+    name: IoT
+    description: Internet of Things data ingestion and telemetry
+    keywords:
+      - iot
+      - telemetry
+      - sensor
+      - device
+      - edge
+    subdomains:
+      telemetry:
+        name: Telemetry
+        description: Time-series data collection from sensors and devices
+        keywords:
+          - telemetry
+          - signal
+          - reading
+          - measurement
+      device_management:
+        name: Device Management
+        description: Provisioning, monitoring, and lifecycle of IoT devices
+        keywords:
+          - device
+          - provisioning
+          - firmware
+          - gateway
+      edge_computing:
+        name: Edge Computing
+        description: Local processing and analytics at the network edge
+        keywords:
+          - edge
+          - local
+          - gateway
+          - compute
+  manufacturing:
+    name: Manufacturing
+    description: Production, quality, and maintenance operations
+    keywords:
+      - production
+      - manufacturing
+      - quality
+      - maintenance
+    subdomains:
+      production:
+        name: Production
+        description: Assembly, work orders, and output tracking
+        keywords:
+          - production
+          - assembly
+          - work_order
+      quality_control:
+        name: Quality Control
+        description: Inspections, defects, and certification
+        keywords:
+          - inspection
+          - defect
+          - quality
+      predictive_maintenance:
+        name: Predictive Maintenance
+        description: Failure prediction and preventive servicing
+        keywords:
+          - maintenance
+          - failure
+          - prediction
+          - vibration

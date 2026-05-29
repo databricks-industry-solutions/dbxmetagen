@@ -2941,6 +2941,72 @@ class TestEmitBundleEdges:
         )
         assert result is None
 
+    def test_root_yaml_fallback_emits_edges_without_tiers(self, builder):
+        """When tier indexes are absent, edges are derived from entity definitions."""
+        from dbxmetagen.ontology import EntityDefinition
+
+        builder.discoverer._get_index_loader.return_value = None
+        builder.discoverer.entity_definitions = [
+            EntityDefinition(
+                name="Device", description="",
+                relationships={"has_sensor": {"target": "Sensor", "cardinality": "one-to-many"}},
+            ),
+            EntityDefinition(name="Sensor", description="", relationships={}),
+        ]
+
+        Row = type("Row", (), {"__init__": lambda self, **kw: self.__dict__.update(kw)})
+        builder.spark.sql.return_value.collect.return_value = [
+            Row(entity_type="Device"), Row(entity_type="Sensor"),
+        ]
+        builder.spark.createDataFrame = MagicMock()
+        builder.spark.catalog = MagicMock()
+
+        result = builder.emit_bundle_edges()
+        assert result == 1
+        df_data = builder.spark.createDataFrame.call_args[0][0]
+        assert len(df_data) == 1
+        row = df_data[0]
+        assert row["src_entity_type"] == "Device"
+        assert row["dst_entity_type"] == "Sensor"
+        assert row["relationship_name"] == "has_sensor"
+        assert row["source"] == "bundle"
+        assert row["confidence"] == 0.8
+
+    def test_root_yaml_fallback_skips_undiscovered_targets(self, builder):
+        """Fallback only emits edges where both entity types are discovered."""
+        from dbxmetagen.ontology import EntityDefinition
+
+        builder.discoverer._get_index_loader.return_value = None
+        builder.discoverer.entity_definitions = [
+            EntityDefinition(
+                name="Device", description="",
+                relationships={
+                    "has_sensor": {"target": "Sensor", "cardinality": "one-to-many"},
+                    "has_alert": {"target": "Alert", "cardinality": "one-to-many"},
+                },
+            ),
+            EntityDefinition(name="Sensor", description="", relationships={}),
+        ]
+
+        Row = type("Row", (), {"__init__": lambda self, **kw: self.__dict__.update(kw)})
+        builder.spark.sql.return_value.collect.return_value = [
+            Row(entity_type="Device"), Row(entity_type="Sensor"),
+        ]
+        builder.spark.createDataFrame = MagicMock()
+        builder.spark.catalog = MagicMock()
+
+        result = builder.emit_bundle_edges()
+        assert result == 1
+        df_data = builder.spark.createDataFrame.call_args[0][0]
+        assert len(df_data) == 1
+        assert df_data[0]["relationship_name"] == "has_sensor"
+
+    def test_root_yaml_fallback_returns_zero_with_no_entity_defs(self, builder):
+        """Fallback with empty entity_definitions still returns 0."""
+        builder.discoverer._get_index_loader.return_value = None
+        builder.discoverer.entity_definitions = []
+        assert builder.emit_bundle_edges() == 0
+
 
 class TestBuildTiersEnrichedSchema:
     """Verify build_tiers outputs label on entities and cardinality on edges."""
