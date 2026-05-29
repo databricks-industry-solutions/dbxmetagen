@@ -818,6 +818,9 @@ class OntologyLoader:
                     if config and "ontology" in config:
                         loaded_config = config.get("ontology", {})
                         OntologyLoader._validate_config(loaded_config)
+                        metadata = config.get("metadata", {})
+                        is_formal = metadata.get("bundle_type") == "formal_ontology"
+                        OntologyLoader._validate_cross_refs(loaded_config, is_formal)
                         if "metadata" in config:
                             loaded_config["_bundle_metadata"] = config["metadata"]
                         fmt_ver = config.get("metadata", {}).get("format_version", "1.0")
@@ -900,6 +903,66 @@ class OntologyLoader:
                     raise ValueError(
                         f"validation.{key} must be numeric, got {type(val).__name__}"
                     )
+
+    _VALID_PROPERTY_ROLES = frozenset({
+        "primary_key", "business_key", "object_property", "measure",
+        "dimension", "temporal", "geographic", "label", "audit",
+        "derived", "composite_component",
+    })
+
+    @staticmethod
+    def _validate_cross_refs(config: Dict[str, Any], is_formal: bool = False) -> None:
+        """Warn on referential integrity issues (never raises).
+
+        Skipped for formal ontologies where relationship targets commonly
+        reference FHIR datatypes (Reference, CodeableConcept, etc.) that
+        are not entity definitions.
+        """
+        try:
+            definitions = config.get("entities", {}).get("definitions", {})
+            entity_names = set(definitions.keys())
+
+            if not is_formal:
+                for name, defn in definitions.items():
+                    if not isinstance(defn, dict):
+                        continue
+                    for rel_name, rel_info in (defn.get("relationships") or {}).items():
+                        target = rel_info.get("target") if isinstance(rel_info, dict) else None
+                        if target and target not in entity_names:
+                            logger.warning(
+                                "Entity '%s' relationship '%s' targets undefined entity '%s'",
+                                name, rel_name, target,
+                            )
+
+                    for prop_name, prop_info in (defn.get("properties") or {}).items():
+                        if not isinstance(prop_info, dict):
+                            continue
+                        role = prop_info.get("role")
+                        if role and role not in OntologyLoader._VALID_PROPERTY_ROLES:
+                            logger.warning(
+                                "Entity '%s' property '%s' uses unknown role '%s'",
+                                name, prop_name, role,
+                            )
+
+            edge_catalog = config.get("edge_catalog", {})
+            if not is_formal and edge_catalog:
+                for edge_name, info in edge_catalog.items():
+                    if not isinstance(info, dict):
+                        continue
+                    domain = info.get("domain") or info.get("source")
+                    rng = info.get("range") or info.get("target")
+                    if domain and domain != "Any" and domain not in entity_names:
+                        logger.warning(
+                            "edge_catalog '%s' domain '%s' is not a defined entity",
+                            edge_name, domain,
+                        )
+                    if rng and rng != "Any" and rng not in entity_names:
+                        logger.warning(
+                            "edge_catalog '%s' range '%s' is not a defined entity",
+                            edge_name, rng,
+                        )
+        except Exception as e:
+            logger.debug("Cross-reference validation skipped: %s", e)
 
     @staticmethod
     def get_entity_definitions(config: Dict[str, Any]) -> List[EntityDefinition]:
@@ -1003,9 +1066,22 @@ class OntologyLoader:
         """Extract the global property_roles taxonomy from config."""
         return config.get("property_roles", {})
 
+    _STRUCTURAL_EDGES: Dict[str, Dict[str, Any]] = {
+        "instance_of": {"inverse": "type_of", "symmetric": False, "category": "structural"},
+        "subclass_of": {"inverse": "superclass_of", "symmetric": False, "category": "structural"},
+        "has_part": {"inverse": "part_of", "symmetric": False, "category": "structural"},
+        "contains": {"inverse": "contained_in", "symmetric": False, "category": "structural"},
+        "member_of": {"inverse": "has_member", "symmetric": False, "category": "structural"},
+    }
+
     @staticmethod
     def get_edge_catalog(config: Dict[str, Any]) -> Dict[str, EdgeCatalogEntry]:
-        """Extract the global edge catalog from config."""
+        """Extract the global edge catalog from config.
+
+        Structural edges (instance_of, subclass_of, has_part, contains,
+        member_of) are auto-merged when not explicitly defined so that
+        hierarchy and structural edge operations work for all bundles.
+        """
         raw = config.get("edge_catalog", {})
         catalog: Dict[str, EdgeCatalogEntry] = {}
         for edge_name, info in raw.items():
@@ -1021,6 +1097,14 @@ class OntologyLoader:
                 uri=info.get("uri"),
                 owl_type=info.get("owl_type"),
             )
+        for sname, sinfo in OntologyLoader._STRUCTURAL_EDGES.items():
+            if sname not in catalog:
+                catalog[sname] = EdgeCatalogEntry(
+                    name=sname,
+                    inverse=sinfo["inverse"],
+                    symmetric=sinfo["symmetric"],
+                    category=sinfo["category"],
+                )
         return catalog
 
 
@@ -4684,19 +4768,7 @@ class OntologyBuilder:
         """
         disc = self.discoverer
         loader = disc._get_index_loader() if hasattr(disc, "_get_index_loader") else None
-        if not loader or not loader.has_tier_indexes:
-            logger.info("emit_bundle_edges: no tier indexes available, skipping")
-            return 0
-
-        edges_t1 = loader.get_edges_tier1()
-        if not edges_t1:
-            return 0
-
-        edges_t2_raw = loader._load("edges_tier2.yaml") or {}
-        edges_t2_ranges: Dict[str, List[str]] = {}
-        for ename, edata in edges_t2_raw.items():
-            if isinstance(edata, dict) and edata.get("ranges"):
-                edges_t2_ranges[ename] = edata["ranges"]
+        has_tiers = loader and loader.has_tier_indexes
 
         ent_table = self.config.fully_qualified_entities
         rels_table = self.config.fully_qualified_relationships
@@ -4723,56 +4795,98 @@ class OntologyBuilder:
         seen: set = set()
         ref_resolved = 0
 
-        for edge in edges_t1:
-            domain = edge.get("domain")
-            rng = edge.get("range")
-            name = edge.get("name")
-            if not domain or not name:
-                continue
-            if domain not in discovered_types:
-                continue
+        if has_tiers:
+            # Tier-based path: iterate tier-1 edges with multi-range and
+            # Reference resolution from tier-2
+            edges_t1 = loader.get_edges_tier1() or []
+            edges_t2_raw = loader._load("edges_tier2.yaml") or {}
+            edges_t2_ranges: Dict[str, List[str]] = {}
+            for ename, edata in edges_t2_raw.items():
+                if isinstance(edata, dict) and edata.get("ranges"):
+                    edges_t2_ranges[ename] = edata["ranges"]
 
-            resolved_range = None
-            if rng and rng in discovered_types:
-                resolved_range = rng
-            elif rng and rng not in discovered_types:
-                # Multi-range fallback: check tier-2 ranges list
-                for alt in edges_t2_ranges.get(name, []):
-                    if alt in discovered_types:
-                        resolved_range = alt
-                        break
-                # Reference resolution: resolve from property name suffix
-                if not resolved_range and rng == "Reference":
-                    resolved_range = self._resolve_reference_target(name, discovered_lower)
-                    if resolved_range:
-                        ref_resolved += 1
+            for edge in edges_t1:
+                domain = edge.get("domain")
+                rng = edge.get("range")
+                name = edge.get("name")
+                if not domain or not name:
+                    continue
+                if domain not in discovered_types:
+                    continue
 
-            if not resolved_range:
-                continue
+                resolved_range = None
+                if rng and rng in discovered_types:
+                    resolved_range = rng
+                elif rng and rng not in discovered_types:
+                    for alt in edges_t2_ranges.get(name, []):
+                        if alt in discovered_types:
+                            resolved_range = alt
+                            break
+                    if not resolved_range and rng == "Reference":
+                        resolved_range = self._resolve_reference_target(name, discovered_lower)
+                        if resolved_range:
+                            ref_resolved += 1
 
-            key = (domain, resolved_range, name)
-            if key in seen:
-                continue
-            seen.add(key)
-            rels.append({
-                "relationship_id": str(uuid.uuid4()),
-                "src_entity_type": domain,
-                "relationship_name": name,
-                "dst_entity_type": resolved_range,
-                "cardinality": edge.get("cardinality", "unknown"),
-                "evidence_column": None,
-                "evidence_table": None,
-                "source": "bundle",
-                "confidence": 0.8,
-                "label": edge.get("label"),
-                "facet": edge.get("facet"),
-                "sub_property_of": edge.get("sub_property_of"),
-                "ranges": edges_t2_ranges.get(name, []),
-                "source_ontology": edge.get("source_ontology"),
-                "edge_uri": edge.get("uri") or edge.get("edge_uri"),
-                "created_at": now,
-                "updated_at": now,
-            })
+                if not resolved_range:
+                    continue
+
+                key = (domain, resolved_range, name)
+                if key in seen:
+                    continue
+                seen.add(key)
+                rels.append({
+                    "relationship_id": str(uuid.uuid4()),
+                    "src_entity_type": domain,
+                    "relationship_name": name,
+                    "dst_entity_type": resolved_range,
+                    "cardinality": edge.get("cardinality", "unknown"),
+                    "evidence_column": None,
+                    "evidence_table": None,
+                    "source": "bundle",
+                    "confidence": 0.8,
+                    "label": edge.get("label"),
+                    "facet": edge.get("facet"),
+                    "sub_property_of": edge.get("sub_property_of"),
+                    "ranges": edges_t2_ranges.get(name, []),
+                    "source_ontology": edge.get("source_ontology"),
+                    "edge_uri": edge.get("uri") or edge.get("edge_uri"),
+                    "created_at": now,
+                    "updated_at": now,
+                })
+        else:
+            # Root-YAML fallback: derive edges from entity relationship
+            # declarations when tier indexes are not available.
+            logger.info("emit_bundle_edges: using root YAML relationships (no tier indexes)")
+            for edef in disc.entity_definitions:
+                if edef.name not in discovered_types:
+                    continue
+                for rel_name, rel_info in edef.relationships.items():
+                    target = rel_info.get("target")
+                    if not target or target not in discovered_types:
+                        continue
+                    key = (edef.name, target, rel_name)
+                    if key in seen:
+                        continue
+                    seen.add(key)
+                    rels.append({
+                        "relationship_id": str(uuid.uuid4()),
+                        "src_entity_type": edef.name,
+                        "relationship_name": rel_name,
+                        "dst_entity_type": target,
+                        "cardinality": rel_info.get("cardinality", "unknown"),
+                        "evidence_column": None,
+                        "evidence_table": None,
+                        "source": "bundle",
+                        "confidence": 0.8,
+                        "label": None,
+                        "facet": None,
+                        "sub_property_of": None,
+                        "ranges": [],
+                        "source_ontology": edef.source_ontology,
+                        "edge_uri": None,
+                        "created_at": now,
+                        "updated_at": now,
+                    })
 
         if not rels:
             logger.info("emit_bundle_edges: no matching entity pairs found in tier-1 edges")
