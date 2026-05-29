@@ -4315,15 +4315,16 @@ class OntologyBuilder:
 
         When multiple entities share entity_role='primary' for the same
         source_tables entry, keep only the highest-confidence one and
-        demote the rest to 'referenced'. Validated entities always win
-        the ranking and are never demoted.
+        demote the rest to 'referenced'. Human-created entities
+        (auto_discovered=FALSE) always win the ranking and are never
+        demoted, since those represent explicit steward overrides.
         """
         ent_table = self.config.fully_qualified_entities
         self.spark.sql(f"""
             MERGE INTO {ent_table} AS target
             USING (
                 WITH exploded AS (
-                    SELECT entity_id, confidence, validated, tbl
+                    SELECT entity_id, confidence, auto_discovered, tbl
                     FROM {ent_table}
                     LATERAL VIEW EXPLODE(source_tables) AS tbl
                     WHERE entity_role = 'primary'
@@ -4333,7 +4334,7 @@ class OntologyBuilder:
                            ROW_NUMBER() OVER (
                                PARTITION BY tbl
                                ORDER BY
-                                   CASE WHEN validated = TRUE THEN 0 ELSE 1 END,
+                                   CASE WHEN auto_discovered = FALSE THEN 0 ELSE 1 END,
                                    confidence DESC
                            ) AS rn
                     FROM exploded
@@ -4350,7 +4351,7 @@ class OntologyBuilder:
                 SELECT entity_id FROM losers
             ) AS source
             ON target.entity_id = source.entity_id
-            WHEN MATCHED AND target.validated = FALSE THEN UPDATE SET
+            WHEN MATCHED AND target.auto_discovered = TRUE THEN UPDATE SET
                 entity_role = 'referenced',
                 updated_at = CURRENT_TIMESTAMP()
         """)

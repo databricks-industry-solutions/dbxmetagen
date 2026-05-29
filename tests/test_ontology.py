@@ -2105,18 +2105,18 @@ class TestOntologyEdgeDeduplication:
 
 
 class TestDeduplicatePrimaryEntities:
-    """Verify _deduplicate_primary_entities respects validated entities."""
+    """Verify _deduplicate_primary_entities respects human-created entities."""
 
-    def test_source_has_validated_guard(self):
+    def test_source_has_auto_discovered_guard(self):
         source = inspect.getsource(OntologyBuilder._deduplicate_primary_entities)
-        assert "validated = FALSE" in source, (
-            "_deduplicate_primary_entities must only demote unvalidated entities"
+        assert "auto_discovered = TRUE" in source, (
+            "_deduplicate_primary_entities must only demote auto-discovered entities"
         )
 
-    def test_source_ranks_validated_first(self):
+    def test_source_ranks_human_created_first(self):
         source = inspect.getsource(OntologyBuilder._deduplicate_primary_entities)
-        assert "WHEN validated = TRUE THEN 0" in source, (
-            "_deduplicate_primary_entities must rank validated entities first"
+        assert "auto_discovered = FALSE THEN 0" in source, (
+            "_deduplicate_primary_entities must rank human-created entities first"
         )
 
     def test_run_calls_deduplication(self):
