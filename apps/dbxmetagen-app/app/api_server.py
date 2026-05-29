@@ -5778,11 +5778,35 @@ def list_semantic_definitions(project_id: Optional[str] = None):
         f"ORDER BY created_at DESC"
     )
     try:
-        return execute_sql(q)
+        rows = execute_sql(q)
     except HTTPException as e:
         if e.status_code == 404:
             return []
         raise
+    # Flag applied definitions whose UC metric view no longer exists
+    applied = [r for r in rows if r.get("status") == "applied" and r.get("deployed_catalog") and r.get("deployed_schema")]
+    if applied:
+        pairs = {(r["deployed_catalog"], r["deployed_schema"]) for r in applied}
+        scope = " OR ".join(
+            f"(table_catalog = '{c.replace(chr(39), chr(39)*2)}' AND table_schema = '{s.replace(chr(39), chr(39)*2)}')"
+            for c, s in pairs
+        )
+        uc_mvs: set[str] = set()
+        try:
+            uc_rows = execute_sql(
+                "SELECT table_catalog, table_schema, table_name "
+                "FROM system.information_schema.tables "
+                f"WHERE table_type = 'METRIC_VIEW' AND ({scope})"
+            )
+            for u in (uc_rows or []):
+                uc_mvs.add(f"{u['table_catalog']}.{u['table_schema']}.{u['table_name']}".lower())
+        except Exception:
+            uc_mvs = None
+        if uc_mvs is not None:
+            for r in applied:
+                fqn = f"{r['deployed_catalog']}.{r['deployed_schema']}.{r['metric_view_name']}".lower()
+                r["deployed_exists"] = fqn in uc_mvs
+    return rows
 
 
 @app.get("/api/semantic-layer/definitions/{definition_id}/json")
@@ -6651,6 +6675,7 @@ JOIN AND RELATIONSHIP RULES:
 - COLUMN REFERENCING: Use "source.col" for source columns, "alias.col" for flat joins. For NESTED joins use the full dot-path: "customer.nation.name" not "nation.name".
 - Include joins when FK relationships OR GRAPH RELATIONSHIPS show a valid path
 - Cross-table metrics are encouraged when FKs exist: join fact tables to dimension tables for breakdowns and ratios
+- Do NOT join the same physical table via multiple paths unless each join serves a genuinely different FK role (e.g. ship_to_address vs bill_to_address). If the source has a direct FK to a dimension, do not also reach it through a nested chain.
 - EXISTING METRIC VIEWS: do NOT duplicate -- build on existing coverage
 
 STRUCTURE:
@@ -6671,6 +6696,7 @@ SQL SYNTAX REMINDERS:
   {{"name": "30-Day Rolling Revenue", "expr": "AVG(SUM(amount))", "window": [{{"order": "date_col", "range": "trailing 30 day", "semiadditive": "last"}}]}}
   Use "trailing N day" for time-based windows, "unbounded" for cumulative. Always include "semiadditive": "first" or "last"
 - For MoM/YoY growth, use FILTER on date ranges rather than window functions
+- Prefer ANSI SQL functions for federation pushdown: use PERCENTILE_CONT(p) WITHIN GROUP (ORDER BY col) instead of PERCENTILE(col, p). Use standard aggregates (SUM, COUNT, AVG, MIN, MAX) over Spark-specific variants where possible.
 
 AGGREGATION CORRECTNESS:
 - Ratios must use NULLIF in denominator: SUM(a) / NULLIF(SUM(b), 0), NEVER SUM(a) / SUM(b)
@@ -7090,7 +7116,18 @@ def _fix_bare_comparison(expr: str) -> str:
 
 
 def _fix_unquoted_literals(expr: str) -> str:
-    """Quote bare words/phrases used as string literals in comparisons."""
+    """Quote bare words/phrases used as string literals in comparisons.
+
+    Masks already-quoted strings before scanning so operators inside quotes
+    (e.g. ``'SMB (<50M)'``) are not mistaken for comparison operators.
+    """
+    placeholders: list[str] = []
+
+    def _mask(m):
+        placeholders.append(m.group(0))
+        return f"__Q{len(placeholders) - 1}__"
+
+    masked = re.sub(r"'[^']*'", _mask, expr)
 
     def _replacer(m):
         op = m.group(1)
@@ -7100,23 +7137,27 @@ def _fix_unquoted_literals(expr: str) -> str:
             return m.group(0)
         if value.startswith("'") or value.startswith('"'):
             return m.group(0)
+        if re.match(r"^__Q\d+__$", value):
+            return m.group(0)
         if re.match(r"^-?\d+(\.\d+)?$", value):
             return m.group(0)
         if "." in value and " " not in value:
             return m.group(0)
-        # Skip function calls but allow parenthesized string literals
         if "(" in value and re.match(r"^[A-Za-z_]\w*\(", value):
             return m.group(0)
         if value.upper() in _SQL_RESERVED or value.upper() in _DATE_TRUNC_INTERVALS:
             return m.group(0)
         return f"{op}'{value}'{trail}"
 
-    return re.sub(
+    fixed = re.sub(
         r"([=!<>]+\s*)(.*?)(\s+(?:THEN|ELSE|END|AND|OR|WHEN)\b|\s*[,)]|$)",
         _replacer,
-        expr,
+        masked,
         flags=re.IGNORECASE,
     )
+    for i, orig in enumerate(placeholders):
+        fixed = fixed.replace(f"__Q{i}__", orig)
+    return fixed
 
 
 def _fix_then_else_literals(expr: str) -> str:
@@ -7139,13 +7180,9 @@ def _fix_then_else_literals(expr: str) -> str:
         tokens = body.split()
         if len(tokens) == 1 and tokens[0].upper() in _SQL_RESERVED:
             return m.group(0)
-        if len(tokens) == 1 and re.match(r"^[A-Za-z_]\w*$", tokens[0]):
-            if tokens[0].upper() not in _SQL_RESERVED:
-                return f"{kw} '{body}'"
+        if len(tokens) == 1 and tokens[0].upper() in _SQL_RESERVED:
             return m.group(0)
-        if len(tokens) > 1:
-            return f"{kw} '{body}'"
-        return m.group(0)
+        return f"{kw} '{body}'"
 
     return re.sub(
         r"\b(THEN|ELSE)\s+(.*?)(?=\s+(?:WHEN|ELSE|END)\b)",
@@ -7165,7 +7202,7 @@ def _fix_in_clause_literals(expr: str) -> str:
         fixed = []
         for tok in tokens:
             if not tok:
-                fixed.append(tok)
+                continue
             elif tok.startswith("'") or tok.startswith('"'):
                 fixed.append(tok)
             elif re.match(r"^-?\d+(\.\d+)?$", tok):
@@ -7199,14 +7236,19 @@ def _fix_concat_separators(expr: str) -> str:
 
 
 def _fix_like_patterns(expr: str) -> str:
-    """Quote bare LIKE/NOT LIKE patterns: ``col LIKE HW%`` -> ``col LIKE 'HW%'``."""
+    """Quote bare LIKE/NOT LIKE patterns, including multi-word patterns with spaces."""
     def _repl(m):
         prefix = m.group(1)
         pat = m.group(2).strip()
         if pat.startswith("'") or pat.startswith('"'):
             return m.group(0)
+        if not pat:
+            return m.group(0)
         return f"{prefix}'{pat}'"
-    return re.sub(r"(LIKE\s+)([^'\"\s(]+)", _repl, expr, flags=re.IGNORECASE)
+    return re.sub(
+        r"(LIKE\s+)(.*?)(?=\s+(?:AND|OR|THEN|ELSE|END|WHEN)\b|\s*[)]|$)",
+        _repl, expr, flags=re.IGNORECASE,
+    )
 
 
 def _fix_position_bare_char(expr: str) -> str:
@@ -7246,6 +7288,19 @@ def _fix_concat_bare_first_arg(expr: str) -> str:
             return f"{fn}'{arg}',"
         return m.group(0)
     return re.sub(r"(CONCAT\(\s*)([^',\s]+)\s*,", _repl, expr, flags=re.IGNORECASE)
+
+
+def _fix_percentile_cont(expr: str) -> str:
+    """Rewrite 2-arg percentile_cont/disc to ANSI WITHIN GROUP syntax."""
+    def _repl(m):
+        func = m.group(1)
+        pct = m.group(2).strip()
+        col = m.group(3).strip()
+        return f"{func}({pct}) WITHIN GROUP (ORDER BY {col})"
+    return re.sub(
+        r"\b(PERCENTILE_CONT|PERCENTILE_DISC)\s*\(\s*([^,]+?)\s*,\s*([^)]+?)\s*\)",
+        _repl, expr, flags=re.IGNORECASE,
+    )
 
 
 def _autofix_expr(expr: str) -> str:
@@ -7296,11 +7351,12 @@ def _autofix_expr(expr: str) -> str:
     expr = _fix_double_commas(expr)
     expr = _fix_position_bare_char(expr)
     expr = _fix_concat_bare_first_arg(expr)
-    expr = _fix_unquoted_literals(expr)
     expr = _fix_then_else_literals(expr)
+    expr = _fix_unquoted_literals(expr)
     expr = _fix_in_clause_literals(expr)
     expr = _fix_concat_separators(expr)
     expr = _fix_like_patterns(expr)
+    expr = _fix_percentile_cont(expr)
     expr = re.sub(r'\bOVER\s*\(\s*\)', '', expr, flags=re.IGNORECASE)
     return expr
 
@@ -7959,10 +8015,11 @@ TASK: Output a PLAN only (no SQL). Reply with a single JSON object: {{ "views": 
 For each metric view in "views", include:
 - "name": unique snake_case name reflecting the grain (e.g. prescription_metrics, order_line_metrics)
 - "source": fully qualified source table (catalog.schema.table)
-- "comment": one sentence purpose
+- "comment": one sentence describing the analytical purpose (what it measures and from what data). Do NOT reference question numbers, KPI indices, or the generation process.
 - "joins": array of {{ "name": "<alias>", "source": "catalog.schema.table", "on": "source.<fk_col> = <alias>.<pk_col>" }}
-  Include ALL joins supported by high-confidence FK relationships to maximize dimension reach. Use nested joins for dimension hierarchies (e.g. orders -> customers -> regions):
+  Include joins supported by high-confidence FK relationships to maximize dimension reach. Use nested joins for dimension hierarchies (e.g. orders -> customers -> regions):
   {{ "name": "customer", ..., "joins": [{{ "name": "nation", ..., "on": "customer.nation_id = nation.id" }}] }}
+  Do NOT join the same physical table via multiple paths unless each join serves a genuinely different FK role (e.g. ship_to_address vs bill_to_address). If the source table already has a direct FK to a dimension, do NOT also reach that dimension through a nested join chain.
 - "dimensions": array of {{ "name": "Display Name", "comment": "what it is" }} (no expr)
 - "measures": array of {{ "name": "Display Name", "comment": "what it measures" }} (no expr)
 - "question_indices": array of 0-based question indices this view answers
@@ -7997,6 +8054,7 @@ RULES:
   STAR SCHEMA joins: "on": "source.<fk> = <alias>.<pk>"
   NESTED JOINS for hierarchies: nest child joins inside the parent's "joins" array with child "on" referencing the parent alias:
   {{"name": "customer", "source": "...", "on": "source.customer_id = customer.id", "joins": [{{"name": "nation", "source": "...", "on": "customer.nation_id = nation.id"}}]}}
+  Do NOT join the same physical table via multiple paths unless each join serves a genuinely different FK role (e.g. ship_to_address vs bill_to_address). If the plan has redundant joins, keep only the shortest direct path.
 - COLUMN REFERENCING: Use "source.col" for source columns, "alias.col" for flat (top-level) join columns. For NESTED joins, use the full dot-path through parents: if physician -> account -> territory, use "physician.account.account_name" and "physician.account.territory.region". NEVER use bare "account.col" for a nested alias. NEVER use bare column names when joins are present.
 - NEVER substitute a placeholder column from an unrelated table or alias. If a dimension is called "Region", its expr MUST reference the actual region column from the correct alias (e.g. "territory.region"), NOT an unrelated column like "source.channel". If a column is unreachable through the join path, DROP the dimension entirely rather than using a fake placeholder.
 - Share/mix measures (X as % of total) CANNOT be computed in metric views because window functions are banned. Do NOT create measures like SUM(x)/NULLIF(SUM(x),0) -- this always equals 1.0. Instead, provide the raw numerator; the consumer computes shares at query time.
@@ -8004,8 +8062,9 @@ RULES:
 - REVERSE STAR: When sourcing from a dimension table and joining to a fact table, SUM and COUNT of fact columns are valid. But AVG of a source dimension attribute inflates because each row is duplicated by the fan-out. Prefer COUNT(DISTINCT fact.pk) and SUM(fact.amount); avoid AVG(source.attribute) when a fact join is present.
 - Do NOT create duplicate measures with identical expressions but different names. Each measure expr must be semantically distinct.
 - Only use column names that appear in the metadata.
-- comment fields: describe content and lineage only. Do NOT reference KPI numbers, question numbers, or implementation details (e.g. "Implements KPIs 1, 10" is WRONG).
+- comment fields: describe the user-facing intent of the view or column -- what it measures, from what source, and for whom. Reference source tables if helpful. NEVER reference KPI numbers, question numbers, the generation process, or which business questions are addressed (e.g. "Implements KPIs 1, 10" is WRONG; "Answers question about revenue" is WRONG). Write as if documenting a catalog object for a data consumer who has no knowledge of the generation pipeline.
 - For year-month dimensions, use DATE_FORMAT(col, 'yyyy-MM'). NEVER use SUBSTR on date columns.
+- Prefer ANSI SQL functions for federation pushdown: use PERCENTILE_CONT(p) WITHIN GROUP (ORDER BY col) instead of PERCENTILE(col, p). Use standard aggregates (SUM, COUNT, AVG, MIN, MAX) over Spark-specific variants where possible.
 
 {_REFERENCE_RULES_BLOCK}
 
@@ -8141,7 +8200,7 @@ def _run_sl_generation(
             try:
                 execute_sql(
                     f"UPDATE {fq('metric_view_definitions')} SET status = 'superseded' "
-                    f"WHERE project_id = '{project_id}' AND status != 'superseded'"
+                    f"WHERE project_id = '{project_id}' AND status IN ('created', 'validated', 'failed')"
                 )
             except Exception:
                 pass
@@ -8301,37 +8360,59 @@ def _run_sl_generation(
 
             json_str = json.dumps(defn).replace("'", "''")
 
-            # Name collision check: skip if an applied view with this name already exists
+            # Name collision check against existing definitions
             mv_esc = mv_name.replace("'", "''")
-            collision_applied = False
+            collision_rows = []
             try:
                 collision_rows = execute_sql(
                     f"SELECT definition_id, status FROM {fq('metric_view_definitions')} "
                     f"WHERE metric_view_name = '{mv_esc}' AND status NOT IN ('superseded', 'deleted') LIMIT 5"
-                )
-                for cr in (collision_rows or []):
-                    if cr.get("status") == "applied":
-                        collision_applied = True
-                        break
+                ) or []
             except Exception:
                 pass
 
-            if collision_applied and mode != "replace_all":
+            collision_applied = any(cr.get("status") == "applied" for cr in collision_rows)
+            collision_active = any(cr.get("status") in ("validated", "created") for cr in collision_rows)
+
+            if collision_applied:
                 logger.info("Skipping '%s': an applied view with this name already exists", mv_name)
                 per_definition_results.append({
                     "name": mv_name, "source": source, "status": "skipped",
-                    "validation_errors": [f"Metric view '{mv_name}' already exists and is applied. Delete or supersede it first."],
+                    "validation_errors": [f"Metric view '{mv_name}' already exists and is applied. Delete or drop it first."],
                 })
                 stats.setdefault("skipped", 0)
                 stats["skipped"] += 1
                 stats["generated"] += 1
                 continue
 
-            # Supersede non-applied siblings with the same name (created/validated/failed)
+            if collision_active:
+                # Rename the NEW view to avoid superseding existing validated/created ones
+                suffix = 2
+                while True:
+                    candidate = f"{mv_name}_v{suffix}"
+                    cand_esc = candidate.replace("'", "''")
+                    try:
+                        dup = execute_sql(
+                            f"SELECT 1 FROM {fq('metric_view_definitions')} "
+                            f"WHERE metric_view_name = '{cand_esc}' AND status NOT IN ('superseded', 'deleted') LIMIT 1"
+                        )
+                    except Exception:
+                        dup = []
+                    if not dup:
+                        break
+                    suffix += 1
+                    if suffix > 20:
+                        break
+                logger.info("Renaming new view '%s' -> '%s' to avoid collision with existing definition", mv_name, candidate)
+                mv_name = candidate
+                defn["name"] = mv_name
+                json_str = json.dumps(defn).replace("'", "''")
+
+            # Supersede only failed siblings with the same name
             if collision_rows:
-                sibling_ids = [cr["definition_id"] for cr in collision_rows if cr.get("status") != "applied"]
-                if sibling_ids:
-                    id_list = ", ".join(f"'{sid}'" for sid in sibling_ids)
+                failed_ids = [cr["definition_id"] for cr in collision_rows if cr.get("status") == "failed"]
+                if failed_ids:
+                    id_list = ", ".join(f"'{sid}'" for sid in failed_ids)
                     try:
                         execute_sql(
                             f"UPDATE {fq('metric_view_definitions')} SET status = 'superseded' "
@@ -9077,13 +9158,13 @@ def create_metric_view(definition_id: str, req: CreateDefinitionRequest):
         f"deployed_catalog = '{req.target_catalog}', deployed_schema = '{req.target_schema}' "
         f"WHERE definition_id = '{definition_id}'"
     )
-    # Supersede all other definitions with the same name (safety net for duplicates)
+    # Supersede non-applied siblings with the same name (applied views are never auto-superseded)
     mv_esc = mv_name.replace("'", "''")
     try:
         execute_sql(
             f"UPDATE {fq('metric_view_definitions')} SET status = 'superseded' "
             f"WHERE metric_view_name = '{mv_esc}' AND definition_id != '{definition_id}' "
-            f"AND status NOT IN ('superseded', 'deleted')"
+            f"AND status NOT IN ('superseded', 'deleted', 'applied')"
         )
     except Exception:
         pass
@@ -9231,6 +9312,7 @@ Improvements to make:
 - Keep existing measures/dimensions unless they are wrong
 - Every metric view must have at least one measure and one dimension
 - ALL string literals MUST be single-quoted (comparisons, CASE results, IN lists)
+- comment fields must describe user-facing intent (what it measures, from what data). Remove any references to KPI numbers, question numbers, or the generation process.
 
 OUTPUT: Return ONLY the improved JSON definition (single object, not array)."""
 

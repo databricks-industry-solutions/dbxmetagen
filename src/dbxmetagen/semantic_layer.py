@@ -1138,7 +1138,15 @@ RULES:
 - Output a single object with keys: name, source, comment, filter (optional), dimensions, measures, joins.
 - comment: 1-2 sentences on what the view measures and its source lineage. Do NOT reference question numbers, KPI numbers, or list which questions are/aren't answerable.
 - dimensions: array of {{ "name", "expr", "comment", "display_name", "synonyms" }}. "display_name" and "synonyms" (array of 2-5 alternative names) are REQUIRED. expr must be valid Databricks/Spark SQL using ONLY columns from the metadata below.
-- measures: array of {{ "name", "expr", "comment", "display_name", "synonyms", "format" }}. "display_name", "synonyms", and "format" are REQUIRED. format is {{"type": "currency"}}, {{"type": "percentage"}} (expr must return a 0-to-1 fraction, NOT multiplied by 100), or {{"type": "number"}}. Use SUM, COUNT, AVG, FILTER, etc. String literals single-quoted.
+- measures: array of {{ "name", "expr", "comment", "display_name", "synonyms", "format" }}. "display_name", "synonyms", and "format" are REQUIRED. format is {{"type": "currency"}}, {{"type": "percentage"}} (expr must return a 0-to-1 fraction, NOT multiplied by 100), or {{"type": "number"}}. Use SUM, COUNT, AVG, FILTER, etc.
+- QUOTING (critical): ALL string literals in expressions MUST be wrapped in single quotes. This includes LIKE patterns, CASE WHEN/THEN/ELSE values, IN lists, and FILTER conditions. The ONLY unquoted tokens are column references, SQL keywords, and numeric literals.
+  CORRECT: CASE WHEN col LIKE '%Binding%' THEN 'Binding' WHEN col LIKE '%Biological Activity%' THEN 'Functional' ELSE 'Other' END
+  WRONG:   CASE WHEN col LIKE %Binding% THEN Binding
+  CORRECT: COUNT(*) FILTER (WHERE status LIKE '%Active%')
+  WRONG:   COUNT(*) FILTER (WHERE status LIKE %Active%)
+  CORRECT: DATE_TRUNC('MONTH', order_date)
+  WRONG:   DATE_TRUNC(MONTH, order_date)
+  Multi-word patterns MUST be one quoted string: '%Biological Activity%' -- NEVER split as '%Biological' Activity%.
 - joins: use exactly: on: source.<fk_column> = <join_name>.<pk_column>. Keep the same join names and sources as in the plan.
 - Only use column names that appear in the metadata.
 

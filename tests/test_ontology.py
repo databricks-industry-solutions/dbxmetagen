@@ -2100,6 +2100,101 @@ class TestOntologyEdgeDeduplication:
 
 
 # ======================================================================
+# Primary entity deduplication
+# ======================================================================
+
+
+class TestDeduplicatePrimaryEntities:
+    """Verify _deduplicate_primary_entities respects human-created entities."""
+
+    def test_source_has_auto_discovered_guard(self):
+        source = inspect.getsource(OntologyBuilder._deduplicate_primary_entities)
+        assert "auto_discovered = TRUE" in source, (
+            "_deduplicate_primary_entities must only demote auto-discovered entities"
+        )
+
+    def test_source_ranks_human_created_first(self):
+        source = inspect.getsource(OntologyBuilder._deduplicate_primary_entities)
+        assert "auto_discovered = FALSE THEN 0" in source, (
+            "_deduplicate_primary_entities must rank human-created entities first"
+        )
+
+    def test_run_calls_deduplication(self):
+        source = inspect.getsource(OntologyBuilder.run)
+        assert "_deduplicate_primary_entities" in source, (
+            "run() must call _deduplicate_primary_entities after classify_entity_roles"
+        )
+
+
+class TestBuildStructuralEdgesFiltersConfigured:
+    """Verify _build_structural_edges excludes configured hierarchy edges."""
+
+    def test_filters_configured_source(self):
+        source = inspect.getsource(OntologyBuilder._build_structural_edges)
+        assert "source != 'configured'" in source, (
+            "_build_structural_edges must filter out configured hierarchy relationships"
+        )
+
+
+# ======================================================================
+# Numeric heuristic refinements
+# ======================================================================
+
+
+class TestHeuristicNumericRefinements:
+    """Verify numeric columns with temporal/ordinal/count suffixes are not blindly classified as measure."""
+
+    @pytest.fixture
+    def classifier(self):
+        mock_spark = MagicMock()
+        config = OntologyConfig(catalog_name="cat", schema_name="sch")
+        with patch.object(OntologyLoader, 'load_config') as mock_load:
+            mock_load.return_value = OntologyLoader._default_config()
+            builder = OntologyBuilder(mock_spark, config)
+        return builder
+
+    @pytest.mark.parametrize("col", [
+        "onset_day", "resolution_days", "visit_day", "start_year",
+        "birth_year", "duration_hours", "elapsed_minutes", "age_months",
+        "tenure_weeks",
+    ])
+    def test_temporal_offset_columns(self, classifier, col):
+        role, method, conf = classifier._heuristic_classify(
+            col, "INT", False, None, "", table_name="cat.sch.events",
+        )
+        assert role == "temporal", f"{col} should be temporal, got {role}"
+
+    @pytest.mark.parametrize("col", [
+        "ecog_score", "pain_grade", "star_rating", "priority_rank",
+        "risk_level", "support_tier", "schema_version", "api_revision",
+    ])
+    def test_ordinal_score_columns(self, classifier, col):
+        role, method, conf = classifier._heuristic_classify(
+            col, "INT", False, None, "", table_name="cat.sch.records",
+        )
+        assert role == "dimension", f"{col} should be dimension, got {role}"
+
+    @pytest.mark.parametrize("col", [
+        "employee_count", "bed_count", "version_number", "line_num",
+        "item_qty",
+    ])
+    def test_count_dimension_columns(self, classifier, col):
+        role, method, conf = classifier._heuristic_classify(
+            col, "INT", False, None, "", table_name="cat.sch.orgs",
+        )
+        assert role == "dimension", f"{col} should be dimension, got {role}"
+
+    @pytest.mark.parametrize("col", [
+        "total_amount", "unit_price", "revenue", "discount_percent",
+    ])
+    def test_genuine_measure_columns_unchanged(self, classifier, col):
+        role, method, conf = classifier._heuristic_classify(
+            col, "DOUBLE", False, None, "", table_name="cat.sch.orders",
+        )
+        assert role == "measure", f"{col} should remain measure, got {role}"
+
+
+# ======================================================================
 # OntologyValidator -- batched column validation
 # ======================================================================
 

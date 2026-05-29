@@ -103,7 +103,7 @@ RULES:
 _PHASE2_PROMPT = _CONTEXT_BLOCK + """
 === SPACE DESCRIPTION ===
 {description}
-
+{mv_guidance}
 === TASK: Generate example_sql pairs ===
 Output a JSON object wrapped in ```json ``` fences:
 
@@ -131,7 +131,7 @@ Generate 10 diverse example_sql pairs covering these patterns:
 10. Date comparison -- YoY, MoM, or period-over-period (parameterized with :date or :period)
 
 RULES:
-- SQL must use fully qualified table names (catalog.schema.table).
+- SQL must use fully qualified identifiers (catalog.schema.table or catalog.schema.metric_view).
 - Each question must be different. Cover diverse analytical patterns.
 - For parameterized queries (patterns 4, 5, 10):
   - Use :param_name syntax in SQL for user-adjustable values
@@ -140,6 +140,14 @@ RULES:
 - Post-processing validates SQL and removes broken entries -- aim for correctness.
 - Output ONLY JSON. No explanation.
 """
+
+_MV_GUIDANCE_BLOCK = """
+=== METRIC VIEW GUIDANCE ===
+The data_sources include metric views. Metric views are queryable using standard SQL just like tables:
+  SELECT dimension, measure FROM catalog.schema.metric_view_name GROUP BY dimension
+They expose pre-defined measures (aggregations) and dimensions (grouping columns).
+Generate example SQL that queries metric views directly -- they are first-class data sources.
+{seed_examples}"""
 
 # -- Phase 3: SQL Snippets --
 _PHASE3_PROMPT = _CONTEXT_BLOCK + """
@@ -407,9 +415,19 @@ def run_genie_agent(
 
         if 2 in target_phases:
             progress_queue.put({"stage": "generating", "message": "Refining example SQL..."})
+            ref_mv_guidance = ""
+            if context.get("data_sources", {}).get("metric_views"):
+                ref_seeds = context.get("mv_seed_examples", [])
+                ref_seed_text = ""
+                if ref_seeds:
+                    ref_seed_text = "\nReference examples (metric view queries):\n" + "\n".join(
+                        f'  Q: {s["question"]}\n  SQL: {s["sql"]}' for s in ref_seeds[:4]
+                    )
+                ref_mv_guidance = _MV_GUIDANCE_BLOCK.format(seed_examples=ref_seed_text)
             p2_prompt = (_PHASE2_PROMPT + SAFETY_PROMPT_BLOCK).format(
                 **ctx_subs,
                 description=serialized.get("description", ""),
+                mv_guidance=ref_mv_guidance,
             ) + feedback_suffix
             p2 = _llm_phase(llm, p2_prompt, "Revise the example_sql JSON now.", "refine_sql")
             if p2:
@@ -461,9 +479,19 @@ def run_genie_agent(
 
         # Phase 2: Example SQL
         progress_queue.put({"stage": "generating", "message": "Phase 2/3: Generating example SQL..."})
+        mv_guidance = ""
+        mv_seeds = context.get("mv_seed_examples", [])
+        if context.get("data_sources", {}).get("metric_views"):
+            seed_text = ""
+            if mv_seeds:
+                seed_text = "\nReference examples (metric view queries):\n" + "\n".join(
+                    f'  Q: {s["question"]}\n  SQL: {s["sql"]}' for s in mv_seeds[:4]
+                )
+            mv_guidance = _MV_GUIDANCE_BLOCK.format(seed_examples=seed_text)
         p2_prompt = (_PHASE2_PROMPT + SAFETY_PROMPT_BLOCK).format(
             **ctx_subs,
             description=serialized.get("description", ""),
+            mv_guidance=mv_guidance,
         )
         p2 = _llm_phase(llm, p2_prompt, "Generate the example_sql JSON now.", "example_sql")
         if p2:
@@ -486,6 +514,17 @@ def run_genie_agent(
                 serialized["instructions"]["sql_snippets"] = snippets
         else:
             logger.warning("Phase 3 (snippets) failed -- continuing without extra snippets")
+
+    # ---- Merge MV seed examples before validation so they get checked too ----
+    mv_seeds = context.get("mv_seed_examples", [])
+    if mv_seeds:
+        existing = serialized.get("instructions", {}).get("example_sql", [])
+        existing_sqls = {(e.get("sql") or "").strip().lower() for e in existing}
+        for seed in mv_seeds:
+            if seed["sql"].strip().lower() not in existing_sqls:
+                existing.append(seed)
+                existing_sqls.add(seed["sql"].strip().lower())
+        serialized.setdefault("instructions", {})["example_sql"] = existing
 
     # ---- SQL validation ----
     progress_queue.put({"stage": "validating_sql"})

@@ -831,6 +831,7 @@ class CommentPrompt(Prompt):
                     8. Do not include example values in the comment if the values are PII.
                     9. If lineage information (upstream/downstream tables) is provided, use it to understand data provenance and inform your descriptions (e.g. note that a table is derived from specific sources).
                     10. Do NOT echo exact large numeric statistics from metadata (row counts, null counts like "5,435 nulls", large distinct counts, min/max values, specific date ranges). These go stale quickly. Instead describe what the statistic implies: "high cardinality suggesting uniqueness", "very few nulls", "moderate null rate", "mostly populated". Small structural numbers that reveal column semantics ARE appropriate (e.g. "2 distinct values indicating a boolean flag", "values 1-12 representing months"). Structural observations like formats, data types, and encoding patterns are always appropriate.
+                    11. If table or column tags are provided, use them as context to inform your understanding of the data (e.g., a "domain: finance" tag helps you write a more domain-appropriate description), but do NOT list or echo tag names/values in the comment text. Tags are already visible in the catalog and repeating them adds no value.
                     """,
                 },
                 {
@@ -1076,6 +1077,7 @@ class CommentNoDataPrompt(Prompt):
                     8. Do not include example values in the comment ever.
                     9. If lineage information (upstream/downstream tables) is provided, use it to understand data provenance and inform your descriptions (e.g. note that a table is derived from specific sources).
                     10. Do NOT echo exact large numeric statistics from metadata (row counts, null counts like "5,435 nulls", large distinct counts, min/max values, specific date ranges). These go stale quickly. Instead describe what the statistic implies: "high cardinality suggesting uniqueness", "very few nulls", "moderate null rate", "mostly populated". Small structural numbers that reveal column semantics ARE appropriate (e.g. "2 distinct values indicating a boolean flag", "values 1-12 representing months"). Structural observations like formats, data types, and encoding patterns are always appropriate.
+                    11. If table or column tags are provided, use them as context to inform your understanding of the data (e.g., a "domain: finance" tag helps you write a more domain-appropriate description), but do NOT list or echo tag names/values in the comment text. Tags are already visible in the catalog and repeating them adds no value.
                     """,
                 },
                 {
