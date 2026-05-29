@@ -6675,6 +6675,7 @@ JOIN AND RELATIONSHIP RULES:
 - COLUMN REFERENCING: Use "source.col" for source columns, "alias.col" for flat joins. For NESTED joins use the full dot-path: "customer.nation.name" not "nation.name".
 - Include joins when FK relationships OR GRAPH RELATIONSHIPS show a valid path
 - Cross-table metrics are encouraged when FKs exist: join fact tables to dimension tables for breakdowns and ratios
+- Do NOT join the same physical table via multiple paths unless each join serves a genuinely different FK role (e.g. ship_to_address vs bill_to_address). If the source has a direct FK to a dimension, do not also reach it through a nested chain.
 - EXISTING METRIC VIEWS: do NOT duplicate -- build on existing coverage
 
 STRUCTURE:
@@ -6695,6 +6696,7 @@ SQL SYNTAX REMINDERS:
   {{"name": "30-Day Rolling Revenue", "expr": "AVG(SUM(amount))", "window": [{{"order": "date_col", "range": "trailing 30 day", "semiadditive": "last"}}]}}
   Use "trailing N day" for time-based windows, "unbounded" for cumulative. Always include "semiadditive": "first" or "last"
 - For MoM/YoY growth, use FILTER on date ranges rather than window functions
+- Prefer ANSI SQL functions for federation pushdown: use PERCENTILE_CONT(p) WITHIN GROUP (ORDER BY col) instead of PERCENTILE(col, p). Use standard aggregates (SUM, COUNT, AVG, MIN, MAX) over Spark-specific variants where possible.
 
 AGGREGATION CORRECTNESS:
 - Ratios must use NULLIF in denominator: SUM(a) / NULLIF(SUM(b), 0), NEVER SUM(a) / SUM(b)
@@ -7178,13 +7180,9 @@ def _fix_then_else_literals(expr: str) -> str:
         tokens = body.split()
         if len(tokens) == 1 and tokens[0].upper() in _SQL_RESERVED:
             return m.group(0)
-        if len(tokens) == 1 and re.match(r"^[A-Za-z_]\w*$", tokens[0]):
-            if tokens[0].upper() not in _SQL_RESERVED:
-                return f"{kw} '{body}'"
+        if len(tokens) == 1 and tokens[0].upper() in _SQL_RESERVED:
             return m.group(0)
-        if len(tokens) > 1:
-            return f"{kw} '{body}'"
-        return m.group(0)
+        return f"{kw} '{body}'"
 
     return re.sub(
         r"\b(THEN|ELSE)\s+(.*?)(?=\s+(?:WHEN|ELSE|END)\b)",
@@ -7204,7 +7202,7 @@ def _fix_in_clause_literals(expr: str) -> str:
         fixed = []
         for tok in tokens:
             if not tok:
-                fixed.append(tok)
+                continue
             elif tok.startswith("'") or tok.startswith('"'):
                 fixed.append(tok)
             elif re.match(r"^-?\d+(\.\d+)?$", tok):
@@ -7238,14 +7236,19 @@ def _fix_concat_separators(expr: str) -> str:
 
 
 def _fix_like_patterns(expr: str) -> str:
-    """Quote bare LIKE/NOT LIKE patterns: ``col LIKE HW%`` -> ``col LIKE 'HW%'``."""
+    """Quote bare LIKE/NOT LIKE patterns, including multi-word patterns with spaces."""
     def _repl(m):
         prefix = m.group(1)
         pat = m.group(2).strip()
         if pat.startswith("'") or pat.startswith('"'):
             return m.group(0)
+        if not pat:
+            return m.group(0)
         return f"{prefix}'{pat}'"
-    return re.sub(r"(LIKE\s+)([^'\"\s(]+)", _repl, expr, flags=re.IGNORECASE)
+    return re.sub(
+        r"(LIKE\s+)(.*?)(?=\s+(?:AND|OR|THEN|ELSE|END|WHEN)\b|\s*[)]|$)",
+        _repl, expr, flags=re.IGNORECASE,
+    )
 
 
 def _fix_position_bare_char(expr: str) -> str:
@@ -7285,6 +7288,19 @@ def _fix_concat_bare_first_arg(expr: str) -> str:
             return f"{fn}'{arg}',"
         return m.group(0)
     return re.sub(r"(CONCAT\(\s*)([^',\s]+)\s*,", _repl, expr, flags=re.IGNORECASE)
+
+
+def _fix_percentile_cont(expr: str) -> str:
+    """Rewrite 2-arg percentile_cont/disc to ANSI WITHIN GROUP syntax."""
+    def _repl(m):
+        func = m.group(1)
+        pct = m.group(2).strip()
+        col = m.group(3).strip()
+        return f"{func}({pct}) WITHIN GROUP (ORDER BY {col})"
+    return re.sub(
+        r"\b(PERCENTILE_CONT|PERCENTILE_DISC)\s*\(\s*([^,]+?)\s*,\s*([^)]+?)\s*\)",
+        _repl, expr, flags=re.IGNORECASE,
+    )
 
 
 def _autofix_expr(expr: str) -> str:
@@ -7340,6 +7356,7 @@ def _autofix_expr(expr: str) -> str:
     expr = _fix_in_clause_literals(expr)
     expr = _fix_concat_separators(expr)
     expr = _fix_like_patterns(expr)
+    expr = _fix_percentile_cont(expr)
     expr = re.sub(r'\bOVER\s*\(\s*\)', '', expr, flags=re.IGNORECASE)
     return expr
 
@@ -8000,8 +8017,9 @@ For each metric view in "views", include:
 - "source": fully qualified source table (catalog.schema.table)
 - "comment": one sentence describing the analytical purpose (what it measures and from what data). Do NOT reference question numbers, KPI indices, or the generation process.
 - "joins": array of {{ "name": "<alias>", "source": "catalog.schema.table", "on": "source.<fk_col> = <alias>.<pk_col>" }}
-  Include ALL joins supported by high-confidence FK relationships to maximize dimension reach. Use nested joins for dimension hierarchies (e.g. orders -> customers -> regions):
+  Include joins supported by high-confidence FK relationships to maximize dimension reach. Use nested joins for dimension hierarchies (e.g. orders -> customers -> regions):
   {{ "name": "customer", ..., "joins": [{{ "name": "nation", ..., "on": "customer.nation_id = nation.id" }}] }}
+  Do NOT join the same physical table via multiple paths unless each join serves a genuinely different FK role (e.g. ship_to_address vs bill_to_address). If the source table already has a direct FK to a dimension, do NOT also reach that dimension through a nested join chain.
 - "dimensions": array of {{ "name": "Display Name", "comment": "what it is" }} (no expr)
 - "measures": array of {{ "name": "Display Name", "comment": "what it measures" }} (no expr)
 - "question_indices": array of 0-based question indices this view answers
@@ -8036,6 +8054,7 @@ RULES:
   STAR SCHEMA joins: "on": "source.<fk> = <alias>.<pk>"
   NESTED JOINS for hierarchies: nest child joins inside the parent's "joins" array with child "on" referencing the parent alias:
   {{"name": "customer", "source": "...", "on": "source.customer_id = customer.id", "joins": [{{"name": "nation", "source": "...", "on": "customer.nation_id = nation.id"}}]}}
+  Do NOT join the same physical table via multiple paths unless each join serves a genuinely different FK role (e.g. ship_to_address vs bill_to_address). If the plan has redundant joins, keep only the shortest direct path.
 - COLUMN REFERENCING: Use "source.col" for source columns, "alias.col" for flat (top-level) join columns. For NESTED joins, use the full dot-path through parents: if physician -> account -> territory, use "physician.account.account_name" and "physician.account.territory.region". NEVER use bare "account.col" for a nested alias. NEVER use bare column names when joins are present.
 - NEVER substitute a placeholder column from an unrelated table or alias. If a dimension is called "Region", its expr MUST reference the actual region column from the correct alias (e.g. "territory.region"), NOT an unrelated column like "source.channel". If a column is unreachable through the join path, DROP the dimension entirely rather than using a fake placeholder.
 - Share/mix measures (X as % of total) CANNOT be computed in metric views because window functions are banned. Do NOT create measures like SUM(x)/NULLIF(SUM(x),0) -- this always equals 1.0. Instead, provide the raw numerator; the consumer computes shares at query time.
@@ -8045,6 +8064,7 @@ RULES:
 - Only use column names that appear in the metadata.
 - comment fields: describe the user-facing intent of the view or column -- what it measures, from what source, and for whom. Reference source tables if helpful. NEVER reference KPI numbers, question numbers, the generation process, or which business questions are addressed (e.g. "Implements KPIs 1, 10" is WRONG; "Answers question about revenue" is WRONG). Write as if documenting a catalog object for a data consumer who has no knowledge of the generation pipeline.
 - For year-month dimensions, use DATE_FORMAT(col, 'yyyy-MM'). NEVER use SUBSTR on date columns.
+- Prefer ANSI SQL functions for federation pushdown: use PERCENTILE_CONT(p) WITHIN GROUP (ORDER BY col) instead of PERCENTILE(col, p). Use standard aggregates (SUM, COUNT, AVG, MIN, MAX) over Spark-specific variants where possible.
 
 {_REFERENCE_RULES_BLOCK}
 
