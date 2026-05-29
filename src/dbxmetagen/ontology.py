@@ -4120,6 +4120,7 @@ class OntologyBuilder:
                 JOIN {ent_table} de ON de.entity_type = r.dst_entity_type
                     AND COALESCE(de.entity_role, 'primary') = 'primary'
                 WHERE se.entity_id != de.entity_id
+                  AND r.source != 'configured'
             """)
             if raw.count() > 0:
                 ref_edges = raw.select(
@@ -4309,6 +4310,60 @@ class OntologyBuilder:
         logger.info("classify_entity_roles: %d primary, %d referenced", n_primary, n_referenced)
         return n_primary + n_referenced
 
+    def _deduplicate_primary_entities(self) -> int:
+        """Ensure each source table has at most one primary entity.
+
+        When multiple entities share entity_role='primary' for the same
+        source_tables entry, keep only the highest-confidence one and
+        demote the rest to 'referenced'. Validated entities always win
+        the ranking and are never demoted.
+        """
+        ent_table = self.config.fully_qualified_entities
+        self.spark.sql(f"""
+            MERGE INTO {ent_table} AS target
+            USING (
+                WITH exploded AS (
+                    SELECT entity_id, confidence, validated, tbl
+                    FROM {ent_table}
+                    LATERAL VIEW EXPLODE(source_tables) AS tbl
+                    WHERE entity_role = 'primary'
+                ),
+                ranked AS (
+                    SELECT entity_id, tbl,
+                           ROW_NUMBER() OVER (
+                               PARTITION BY tbl
+                               ORDER BY
+                                   CASE WHEN validated = TRUE THEN 0 ELSE 1 END,
+                                   confidence DESC
+                           ) AS rn
+                    FROM exploded
+                ),
+                losers AS (
+                    SELECT entity_id
+                    FROM ranked
+                    WHERE rn > 1
+                    GROUP BY entity_id
+                    HAVING entity_id NOT IN (
+                        SELECT entity_id FROM ranked WHERE rn = 1
+                    )
+                )
+                SELECT entity_id FROM losers
+            ) AS source
+            ON target.entity_id = source.entity_id
+            WHEN MATCHED AND target.validated = FALSE THEN UPDATE SET
+                entity_role = 'referenced',
+                updated_at = CURRENT_TIMESTAMP()
+        """)
+        counts = self.spark.sql(f"""
+            SELECT entity_role, COUNT(*) AS cnt
+            FROM {ent_table}
+            WHERE entity_role = 'primary'
+            GROUP BY entity_role
+        """).collect()
+        n_primary = counts[0].cnt if counts else 0
+        logger.info("_deduplicate_primary_entities: %d primary entities remain", n_primary)
+        return n_primary
+
     def _build_bundle_property_index(self, entity_type: str) -> Dict[str, Tuple[str, str, Optional[str], Optional[Any]]]:
         """Build column_name_lower -> (role, property_name, edge, target_entity) from bundle properties."""
         edef = self.discoverer._entity_def_map.get(entity_type)
@@ -4403,6 +4458,13 @@ class OntologyBuilder:
                 or any(col_lower.endswith(s) for s in _LABEL_SUFFIXES)):
             return "label", "heuristic_weak", 0.55
         if dtype in ("INT", "INTEGER", "BIGINT", "LONG", "DOUBLE", "FLOAT", "DECIMAL"):
+            if re.search(r'_(day|days|hour|hours|minute|minutes|month|months|year|years|weeks?)$', col_lower):
+                return "temporal", "heuristic_weak", 0.60
+            if re.search(r'_(score|grade|rating|rank|level|tier|version|revision)$', col_lower):
+                return "dimension", "heuristic_weak", 0.60
+            if (re.search(r'_(count|number|num|qty)$', col_lower)
+                    and not re.search(r'(amount|total|sum|revenue|cost|price|fee|charge)', col_lower)):
+                return "dimension", "heuristic_weak", 0.55
             return "measure", "heuristic_weak", 0.60
         return "dimension", "fallback", 0.40
 
@@ -5427,6 +5489,8 @@ class OntologyBuilder:
 
         roles_classified = _step("classify_entity_roles", self.classify_entity_roles)
         logger.info(f"Classified {roles_classified} entity roles (primary/referenced)")
+
+        _step("deduplicate_primary_entities", self._deduplicate_primary_entities)
 
         col_props = _step("classify_column_properties", self.classify_column_properties)
         logger.info(f"Classified {col_props} column properties")
