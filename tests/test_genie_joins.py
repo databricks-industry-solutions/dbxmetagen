@@ -351,7 +351,8 @@ class TestAssembleMetricViewSplit:
         assert ds["metric_views"][0]["identifier"] == "c.s.mv_applied"
         aliases = [m.get("alias") for m in out["sql_snippets"].get("measures", [])]
         assert "measure_from_draft" in aliases
-        assert "measure_from_applied" not in aliases
+        # Applied MV measures are now included via _build_applied_mv_snippets
+        assert "measure_from_applied" in aliases
 
     def test_all_applied_no_mv_yaml_measures_in_snippets(self):
         asm = self._make_assembler()
@@ -378,7 +379,8 @@ class TestAssembleMetricViewSplit:
              patch.object(asm, "_load_genie_reference", return_value=""):
             out = asm.assemble(["c.s.orders"], metric_view_names=["mv_only"])
         aliases = [m.get("alias") for m in out["sql_snippets"].get("measures", [])]
-        assert "only_in_applied" not in aliases
+        # Applied MV measures are now included via _build_applied_mv_snippets
+        assert "only_in_applied" in aliases
 
 
 # ---------------------------------------------------------------------------
@@ -400,3 +402,114 @@ class TestBuildSqlSnippets:
         sn = asm._build_sql_snippets([mv], {}, col_meta)
         assert any(m.get("alias") == "total_amt" for m in sn.get("measures", []))
         assert len(sn.get("filters", [])) >= 1
+
+
+# ---------------------------------------------------------------------------
+# _build_applied_mv_snippets
+# ---------------------------------------------------------------------------
+class TestBuildAppliedMvSnippets:
+    def test_measures_and_filter_extracted(self):
+        asm = object.__new__(GenieContextAssembler)
+        mv = {
+            "metric_view_name": "mv_sales",
+            "json_definition": json.dumps({
+                "measures": [{"name": "total_revenue", "expr": "SUM(revenue)", "comment": "Total rev"}],
+                "dimensions": [{"name": "region", "expr": "region"}],
+                "filter": "status = 'active'",
+            }),
+        }
+        sn = asm._build_applied_mv_snippets([mv])
+        assert len(sn["measures"]) == 1
+        assert sn["measures"][0]["alias"] == "total_revenue"
+        assert sn["measures"][0]["sql"] == ["SUM(revenue)"]
+        assert len(sn["filters"]) == 1
+        assert "active" in sn["filters"][0]["sql"][0]
+
+    def test_dimension_expression_as_expression_snippet(self):
+        asm = object.__new__(GenieContextAssembler)
+        mv = {
+            "metric_view_name": "mv_time",
+            "json_definition": json.dumps({
+                "measures": [],
+                "dimensions": [{"name": "year", "expr": "YEAR(order_date)", "comment": "Order year"}],
+            }),
+        }
+        sn = asm._build_applied_mv_snippets([mv])
+        assert len(sn["expressions"]) == 1
+        assert sn["expressions"][0]["alias"] == "year"
+
+    def test_dimension_same_as_name_skipped(self):
+        asm = object.__new__(GenieContextAssembler)
+        mv = {
+            "metric_view_name": "mv_x",
+            "json_definition": json.dumps({
+                "measures": [{"name": "cnt", "expr": "COUNT(*)"}],
+                "dimensions": [{"name": "region", "expr": "region"}],
+            }),
+        }
+        sn = asm._build_applied_mv_snippets([mv])
+        assert len(sn["expressions"]) == 0
+
+    def test_fallback_to_column_key(self):
+        asm = object.__new__(GenieContextAssembler)
+        mv = {
+            "metric_view_name": "mv_fb",
+            "json_definition": json.dumps({
+                "measures": [{"column": "amount", "display_name": "Amount"}],
+                "dimensions": [],
+            }),
+        }
+        sn = asm._build_applied_mv_snippets([mv])
+        assert len(sn["measures"]) == 1
+        assert sn["measures"][0]["alias"] == "amount"
+
+
+# ---------------------------------------------------------------------------
+# _build_mv_example_sql seed fallback
+# ---------------------------------------------------------------------------
+class TestBuildMvExampleSqlFallback:
+    def _make_asm(self):
+        asm = object.__new__(GenieContextAssembler)
+        asm.catalog = "cat"
+        asm.schema = "sch"
+        return asm
+
+    def test_name_key_works(self):
+        asm = self._make_asm()
+        mv = {
+            "metric_view_name": "mv_test",
+            "json_definition": json.dumps({
+                "measures": [{"name": "total"}],
+                "dimensions": [{"name": "region"}],
+            }),
+        }
+        with patch.object(GenieContextAssembler, "_resolve_mv_location", return_value=("cat", "sch")):
+            result = asm._build_mv_example_sql([mv])
+        assert len(result) >= 1
+
+    def test_column_fallback(self):
+        asm = self._make_asm()
+        mv = {
+            "metric_view_name": "mv_fb",
+            "json_definition": json.dumps({
+                "measures": [{"column": "amount"}],
+                "dimensions": [{"column": "region"}],
+            }),
+        }
+        with patch.object(GenieContextAssembler, "_resolve_mv_location", return_value=("cat", "sch")):
+            result = asm._build_mv_example_sql([mv])
+        assert len(result) >= 1
+        assert "amount" in result[0]["sql"]
+
+    def test_display_name_fallback(self):
+        asm = self._make_asm()
+        mv = {
+            "metric_view_name": "mv_dn",
+            "json_definition": json.dumps({
+                "measures": [{"display_name": "Total Sales"}],
+                "dimensions": [],
+            }),
+        }
+        with patch.object(GenieContextAssembler, "_resolve_mv_location", return_value=("cat", "sch")):
+            result = asm._build_mv_example_sql([mv])
+        assert len(result) >= 1

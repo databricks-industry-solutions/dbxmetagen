@@ -250,6 +250,9 @@ class GenieContextAssembler:
         sql_snippets = self._build_sql_snippets(
             unapplied_mvs, value_samples, column_meta
         )
+        applied_snippets = self._build_applied_mv_snippets(applied_mvs)
+        for key in ("measures", "filters", "expressions"):
+            sql_snippets.setdefault(key, []).extend(applied_snippets.get(key, []))
         mv_seed_examples = self._build_mv_example_sql(applied_mvs)
 
         reference_text = self._load_genie_reference()
@@ -673,20 +676,48 @@ class GenieContextAssembler:
                 defn = {}
             measures = defn.get("measures", [])
             dims = defn.get("dimensions", [])
-            filters = defn.get("filters", [])
+            joins = defn.get("joins", [])
+            filt = defn.get("filter") or ""
+            filt_list = defn.get("filters", [])
+            comment = defn.get("comment", "")
             parts.append(f"\n## Metric View: {name}")
+            if comment:
+                parts.append(f"  Description: {comment}")
             if source:
                 parts.append(f"  Source table: {source}")
             if status:
                 parts.append(f"  Status: {status}")
             if measures:
-                m_names = [m.get("name", m.get("column", "?")) for m in measures]
-                parts.append(f"  Measures: {', '.join(m_names)}")
+                parts.append("  Measures:")
+                for m in measures:
+                    m_name = m.get("name") or m.get("column") or m.get("display_name", "?")
+                    m_expr = m.get("expr", "")
+                    m_comment = m.get("comment", "")
+                    line = f"    - {m_name}"
+                    if m_expr:
+                        line += f": {m_expr}"
+                    if m_comment:
+                        line += f" -- {m_comment}"
+                    parts.append(line)
             if dims:
-                d_names = [d.get("name", d.get("column", "?")) for d in dims]
-                parts.append(f"  Dimensions: {', '.join(d_names)}")
-            if filters:
-                f_names = [f.get("name", f.get("expression", "?")) for f in filters]
+                parts.append("  Dimensions:")
+                for d in dims:
+                    d_name = d.get("name") or d.get("column") or d.get("display_name", "?")
+                    d_expr = d.get("expr", "")
+                    d_comment = d.get("comment", "")
+                    line = f"    - {d_name}"
+                    if d_expr and d_expr != d_name:
+                        line += f": {d_expr}"
+                    if d_comment:
+                        line += f" -- {d_comment}"
+                    parts.append(line)
+            if joins:
+                j_summaries = [f"{j.get('name', '?')} ({j.get('source', '?')}) ON {j.get('on', '?')}" for j in joins]
+                parts.append(f"  Joins: {'; '.join(j_summaries)}")
+            if filt:
+                parts.append(f"  Default filter: {filt}")
+            if filt_list:
+                f_names = [f.get("name", f.get("expression", "?")) for f in filt_list]
                 parts.append(f"  Filters: {', '.join(f_names)}")
         return "\n".join(parts)
 
@@ -1195,6 +1226,50 @@ class GenieContextAssembler:
             "expressions": expressions,
         }
 
+    def _build_applied_mv_snippets(self, applied_mvs: list[dict]) -> dict:
+        """Build sql_snippets from applied metric views using MV-native references."""
+        measures: list[dict] = []
+        filters: list[dict] = []
+        expressions: list[dict] = []
+        for mv in applied_mvs:
+            raw = mv.get("json_definition", "")
+            try:
+                defn = json.loads(raw) if isinstance(raw, str) else (raw or {})
+            except (json.JSONDecodeError, TypeError):
+                continue
+            for m in defn.get("measures", []):
+                alias = m.get("name") or m.get("column") or m.get("display_name", "")
+                expr = m.get("expr", "")
+                if not alias:
+                    continue
+                measures.append({
+                    "alias": alias,
+                    "display_name": m.get("display_name") or alias,
+                    "sql": [expr] if expr else [alias],
+                    "description": m.get("comment", ""),
+                    "synonyms": m.get("synonyms") or _generate_synonyms(alias, comment=m.get("comment", "")),
+                })
+            for d in defn.get("dimensions", []):
+                alias = d.get("name") or d.get("column") or d.get("display_name", "")
+                expr = d.get("expr", "")
+                if not alias or not expr or expr == alias:
+                    continue
+                expressions.append({
+                    "alias": alias,
+                    "display_name": d.get("display_name") or alias,
+                    "sql": [expr],
+                    "description": d.get("comment", ""),
+                    "synonyms": d.get("synonyms") or _generate_synonyms(alias, comment=d.get("comment", "")),
+                })
+            filt = defn.get("filter") or ""
+            if filt:
+                mv_name = mv.get("metric_view_name", "unknown")
+                filters.append({
+                    "display_name": f"{mv_name} default filter",
+                    "sql": [filt],
+                })
+        return {"measures": measures, "filters": filters, "expressions": expressions}
+
     def _build_mv_example_sql(self, applied_mvs: list[dict]) -> list[dict]:
         """Generate deterministic seed example SQL from applied metric view definitions."""
         examples: list[dict] = []
@@ -1209,8 +1284,12 @@ class GenieContextAssembler:
                 continue
             mv_cat, mv_sch = self._resolve_mv_location(mv, self.catalog, self.schema)
             fq_mv = f"`{mv_cat}`.`{mv_sch}`.`{mv_name}`"
-            dims = [d.get("name") for d in defn.get("dimensions", []) if d.get("name")]
-            measures = [m.get("name") for m in defn.get("measures", []) if m.get("name")]
+            dims = [d.get("name") or d.get("column") or d.get("display_name")
+                    for d in defn.get("dimensions", [])
+                    if d.get("name") or d.get("column") or d.get("display_name")]
+            measures = [m.get("name") or m.get("column") or m.get("display_name")
+                        for m in defn.get("measures", [])
+                        if m.get("name") or m.get("column") or m.get("display_name")]
             if not measures:
                 continue
             measure_col = measures[0]

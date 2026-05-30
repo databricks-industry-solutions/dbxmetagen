@@ -149,6 +149,44 @@ They expose pre-defined measures (aggregations) and dimensions (grouping columns
 Generate example SQL that queries metric views directly -- they are first-class data sources.
 {seed_examples}"""
 
+_TABLE_PHASE2_PATTERNS = (
+    "Generate 10 diverse example_sql pairs covering these patterns:\n"
+    "1. Simple aggregation (non-parameterized)\n"
+    "2. Multi-table join using FK relationships from context (non-parameterized)\n"
+    "3. Time-series trend GROUP BY date dimension (non-parameterized)\n"
+    "4. Filtered query with a :parameter for a categorical column like status or strategy (parameterized)\n"
+    "5. Top-N or ratio query with a :parameter for a threshold or date filter (parameterized)\n"
+    "6. Window function -- running total, rank, or lag/lead comparison (non-parameterized)\n"
+    "7. CASE WHEN segmentation or bucketing (non-parameterized)\n"
+    "8. Subquery or CTE for a derived metric (non-parameterized)\n"
+    "9. Multi-join across 3+ tables if available (non-parameterized)\n"
+    "10. Date comparison -- YoY, MoM, or period-over-period (parameterized with :date or :period)"
+)
+
+_MV_ONLY_PHASE2_PATTERNS = (
+    "Generate 6 diverse example_sql pairs covering these metric-view patterns:\n"
+    "1. Simple measure query -- GROUP BY one dimension (non-parameterized)\n"
+    "2. Multi-measure comparison -- SELECT two or more measures grouped by a shared dimension (non-parameterized)\n"
+    "3. Filtered aggregation -- apply a WHERE on a dimension or use the metric view's built-in filter (non-parameterized)\n"
+    "4. Date range query -- parameterized with :start_date / :end_date on a temporal dimension (parameterized)\n"
+    "5. Top-N by measure -- ORDER BY measure DESC LIMIT N (non-parameterized)\n"
+    "6. Cross-MV comparison -- join or UNION across multiple metric views if available, otherwise a CASE segmentation (non-parameterized)"
+)
+
+
+def _apply_mv_only_phase2(prompt: str) -> str:
+    """Replace table-centric Phase 2 patterns with MV-appropriate ones."""
+    result = prompt.replace(_TABLE_PHASE2_PATTERNS, _MV_ONLY_PHASE2_PATTERNS)
+    if result == prompt:
+        logger.warning("MV-only Phase 2 pattern replacement failed -- using original prompt")
+    return result
+
+_MV_ONLY_PHASE3_EXTRA = """
+IMPORTANT: This space uses ONLY metric views (no raw tables). All snippet column references
+should use metric view measure/dimension names directly, NOT table.column format.
+Measures are pre-aggregated -- reference them by name as they appear in the metric view definition.
+"""
+
 # -- Phase 3: SQL Snippets --
 _PHASE3_PROMPT = _CONTEXT_BLOCK + """
 === PRE-BUILT SQL SNIPPETS (will be merged -- do NOT duplicate) ===
@@ -413,6 +451,10 @@ def run_genie_agent(
                     serialized.setdefault("instructions", {})["join_specs"] = extra_joins
                 phases_completed += 1
 
+        ref_mv_only = bool(
+            context.get("data_sources", {}).get("metric_views")
+            and not context.get("data_sources", {}).get("tables")
+        )
         if 2 in target_phases:
             progress_queue.put({"stage": "generating", "message": "Refining example SQL..."})
             ref_mv_guidance = ""
@@ -424,7 +466,10 @@ def run_genie_agent(
                         f'  Q: {s["question"]}\n  SQL: {s["sql"]}' for s in ref_seeds[:4]
                     )
                 ref_mv_guidance = _MV_GUIDANCE_BLOCK.format(seed_examples=ref_seed_text)
-            p2_prompt = (_PHASE2_PROMPT + SAFETY_PROMPT_BLOCK).format(
+            ref_p2_base = _PHASE2_PROMPT
+            if ref_mv_only:
+                ref_p2_base = _apply_mv_only_phase2(ref_p2_base)
+            p2_prompt = (ref_p2_base + SAFETY_PROMPT_BLOCK).format(
                 **ctx_subs,
                 description=serialized.get("description", ""),
                 mv_guidance=ref_mv_guidance,
@@ -437,7 +482,10 @@ def run_genie_agent(
 
         if 3 in target_phases:
             progress_queue.put({"stage": "generating", "message": "Refining SQL snippets..."})
-            p3_prompt = (_PHASE3_PROMPT + SAFETY_PROMPT_BLOCK).format(
+            ref_p3_base = _PHASE3_PROMPT
+            if ref_mv_only:
+                ref_p3_base = ref_p3_base + _MV_ONLY_PHASE3_EXTRA
+            p3_prompt = (ref_p3_base + SAFETY_PROMPT_BLOCK).format(
                 **ctx_subs,
                 sql_snippets=json.dumps(context.get("sql_snippets", {}), indent=2),
             ) + feedback_suffix
@@ -479,6 +527,10 @@ def run_genie_agent(
 
         # Phase 2: Example SQL
         progress_queue.put({"stage": "generating", "message": "Phase 2/3: Generating example SQL..."})
+        mv_only = bool(
+            context.get("data_sources", {}).get("metric_views")
+            and not context.get("data_sources", {}).get("tables")
+        )
         mv_guidance = ""
         mv_seeds = context.get("mv_seed_examples", [])
         if context.get("data_sources", {}).get("metric_views"):
@@ -488,7 +540,10 @@ def run_genie_agent(
                     f'  Q: {s["question"]}\n  SQL: {s["sql"]}' for s in mv_seeds[:4]
                 )
             mv_guidance = _MV_GUIDANCE_BLOCK.format(seed_examples=seed_text)
-        p2_prompt = (_PHASE2_PROMPT + SAFETY_PROMPT_BLOCK).format(
+        p2_base = _PHASE2_PROMPT
+        if mv_only:
+            p2_base = _apply_mv_only_phase2(p2_base)
+        p2_prompt = (p2_base + SAFETY_PROMPT_BLOCK).format(
             **ctx_subs,
             description=serialized.get("description", ""),
             mv_guidance=mv_guidance,
@@ -503,7 +558,10 @@ def run_genie_agent(
 
         # Phase 3: SQL Snippets
         progress_queue.put({"stage": "generating", "message": "Phase 3/3: Generating SQL snippets..."})
-        p3_prompt = (_PHASE3_PROMPT + SAFETY_PROMPT_BLOCK).format(
+        p3_base = _PHASE3_PROMPT
+        if mv_only:
+            p3_base = p3_base + _MV_ONLY_PHASE3_EXTRA
+        p3_prompt = (p3_base + SAFETY_PROMPT_BLOCK).format(
             **ctx_subs,
             sql_snippets=json.dumps(context.get("sql_snippets", {}), indent=2),
         )
