@@ -217,7 +217,7 @@
     "ALL string literals in expr fields MUST be single-quoted, including multi-word values and values with parentheses. Examples: source.State = 'Active', source.Risk IN ('1 - High', '2 - Medium'), THEN 'Mild (Grade 1)', THEN 'Serious (Grade 3+)', status IN ('Related', 'Possibly Related').",
     "NEVER use SQL window functions (OVER, PARTITION BY, ROW_NUMBER, LAG, LEAD) in measure expressions. Metric views do not support window functions in SQL. For rolling/trailing calculations, use the 'window' property on the measure definition instead.",
     "NEVER place chained joins as flat siblings (e.g. customer and nation both at root level with nation.on referencing customer). Use nested joins instead.",
-    "NEVER aggregate dimension-table numeric columns (SUM, AVG) from a fact-sourced metric view with joins. SUM(accounts.bed_count) from a prescriptions-sourced view counts bed_count once per prescription, not once per account. Source the view from the dimension table instead, or use dimension columns only as grouping dimensions.",
+    "NEVER aggregate dimension-table numeric columns (SUM, AVG) from a fact-sourced metric view with joins. SUM(accounts.bed_count) from a prescriptions-sourced view counts bed_count once per prescription, not once per account. Use dimension columns only as grouping dimensions, or create a SEPARATE dimension-only metric view with NO fact-table joins.",
     "NEVER create share-of-total measures like SUM(x)/SUM(x) or SUM(x)/SUM(total). The denominator is grouped identically to the numerator, always producing 1.0. Metric views cannot use OVER() for ungrouped totals. Use conditional aggregates (FILTER) or within-grain rates instead."
   ],
 

@@ -6476,6 +6476,11 @@ def _build_sl_context(
     except Exception:
         pass
 
+    # Schema profile: adaptive signal so LLM calibrates output complexity
+    from dbxmetagen.semantic_layer import profile_schema
+    sp = profile_schema(fq_tables, fk_rows)
+    parts.append(sp["profile_text"])
+
     result = "\n".join(parts) + "\n".join(enrichment_parts)
     with _sl_context_lock:
         _sl_context_cache[cache_key] = result
@@ -6639,7 +6644,9 @@ def _build_prompt(questions: list[str], context: str, generation_style: str = "c
             "- Within a single grain, create SEPARATE views for different analytical themes "
             "(e.g. from the same encounters table: one view for throughput analysis, another for staffing efficiency, "
             "another for readmission patterns)\n"
-            "- Name views to reflect both grain and theme: encounter_throughput_metrics, prescription_fill_channel_analysis"
+            "- Name views to reflect both grain and theme: encounter_throughput_metrics, prescription_fill_channel_analysis\n"
+            "- When no FK relationships or join paths are available, create simple single-table metric views with direct aggregations. Do NOT fabricate joins. "
+            "Dimension-only views (sourced from a dimension table with no joins) are valid for entity-level analytics (e.g. customer counts by region)"
         )
     else:
         org_block = (
@@ -6648,7 +6655,9 @@ def _build_prompt(questions: list[str], context: str, generation_style: str = "c
             "- Prefer ONE broad view per grain with all relevant measures and dimensions. "
             "The consumer (Genie, agent, SQL) selects dimensions/measures per query.\n"
             "- Split into multiple views from the same source ONLY when the persistent filter, "
-            "join path, or grain changes -- NOT because of different \"themes\"."
+            "join path, or grain changes -- NOT because of different \"themes\".\n"
+            "- When no FK relationships or join paths are available, create simple single-table metric views with direct aggregations. Do NOT fabricate joins. "
+            "Dimension-only views (sourced from a dimension table with no joins) are valid for entity-level analytics (e.g. customer counts by region)"
         )
     return f"""You are a data modeler building a semantic layer for Databricks Unity Catalog.
 
@@ -7995,7 +8004,9 @@ def _build_plan_prompt(questions: list[str], context: str, generation_style: str
             "- Within a single grain, create SEPARATE views for different analytical themes "
             "(e.g. from the same orders table: one view for revenue analysis, another for fulfillment tracking).\n"
             "- Name views to reflect both grain and theme: order_revenue_metrics, order_fulfillment_analysis.\n"
-            "- Multiple views from the same source table are encouraged when they serve different analytical audiences or drill paths."
+            "- Multiple views from the same source table are encouraged when they serve different analytical audiences or drill paths.\n"
+            "- When no FK relationships or join paths are available, create simple single-table metric views with direct aggregations. Do NOT fabricate joins. "
+            "Dimension-only views (sourced from a dimension table with no joins) are valid for entity-level analytics (e.g. customer counts by region)"
         )
     else:
         org_block = (
@@ -8004,7 +8015,9 @@ def _build_plan_prompt(questions: list[str], context: str, generation_style: str
             "- Prefer ONE broad view per grain with all relevant measures and dimensions. "
             "The consumer (Genie, agent, SQL) selects dimensions/measures per query.\n"
             "- Split into multiple views from the same source ONLY when the persistent filter, "
-            "join path, or grain changes -- NOT because of different \"themes\"."
+            "join path, or grain changes -- NOT because of different \"themes\".\n"
+            "- When no FK relationships or join paths are available, create simple single-table metric views with direct aggregations. Do NOT fabricate joins. "
+            "Dimension-only views (sourced from a dimension table with no joins) are valid for entity-level analytics (e.g. customer counts by region)"
         )
     return f"""You are a data modeler planning a semantic layer for Databricks Unity Catalog.
 
@@ -8059,7 +8072,7 @@ RULES:
 - NEVER substitute a placeholder column from an unrelated table or alias. If a dimension is called "Region", its expr MUST reference the actual region column from the correct alias (e.g. "territory.region"), NOT an unrelated column like "source.channel". If a column is unreachable through the join path, DROP the dimension entirely rather than using a fake placeholder.
 - Share/mix measures (X as % of total) CANNOT be computed in metric views because window functions are banned. Do NOT create measures like SUM(x)/NULLIF(SUM(x),0) -- this always equals 1.0. Instead, provide the raw numerator; the consumer computes shares at query time.
 - Ratios must use NULLIF in denominator. AVG of pre-aggregated values is usually wrong.
-- REVERSE STAR: When sourcing from a dimension table and joining to a fact table, SUM and COUNT of fact columns are valid. But AVG of a source dimension attribute inflates because each row is duplicated by the fan-out. Prefer COUNT(DISTINCT fact.pk) and SUM(fact.amount); avoid AVG(source.attribute) when a fact join is present.
+- STAR SCHEMA SOURCE RULE: When joins are present, the source MUST be the fact table (the table at the grain of the analysis). The join relationship from source to join should be many-to-one. If you need metrics about a dimension entity itself with no fact-table aggregation, source from the dimension with NO fact-table joins. NEVER source from a dimension table and join to a fact table -- this fans out rows and produces incorrect aggregates.
 - Do NOT create duplicate measures with identical expressions but different names. Each measure expr must be semantically distinct.
 - Only use column names that appear in the metadata.
 - comment fields: describe the user-facing intent of the view or column -- what it measures, from what source, and for whom. Reference source tables if helpful. NEVER reference KPI numbers, question numbers, the generation process, or which business questions are addressed (e.g. "Implements KPIs 1, 10" is WRONG; "Answers question about revenue" is WRONG). Write as if documenting a catalog object for a data consumer who has no knowledge of the generation pipeline.
@@ -8092,8 +8105,11 @@ def _parse_single_json_safe(response: str) -> dict:
         return {}
 
 
-def _inject_fk_joins(plan_views: list[dict], tables: list[str], cat: str, sch: str):
-    """Add high-confidence FK joins to plan views, capped at 3 per view."""
+def _inject_fk_joins(plan_views: list[dict], tables: list[str], cat: str, sch: str) -> tuple:
+    """Add high-confidence FK joins to plan views, capped at 3 per view.
+
+    Returns (plan_views, fk_rows) so callers can reuse FK data for source validation.
+    """
     fq_tables = [t if "." in t else f"{cat}.{sch}.{t}" for t in tables]
     in_clause = ", ".join(f"'{t}'" for t in fq_tables)
     try:
@@ -8103,9 +8119,9 @@ def _inject_fk_joins(plan_views: list[dict], tables: list[str], cat: str, sch: s
             f"AND (src_table IN ({in_clause}) OR dst_table IN ({in_clause}))"
         )
     except Exception:
-        return plan_views
+        return plan_views, []
     if not fk_rows:
-        return plan_views
+        return plan_views, []
 
     fk_by_table: dict[str, list[dict]] = {}
     for fk in fk_rows:
@@ -8140,7 +8156,7 @@ def _inject_fk_joins(plan_views: list[dict], tables: list[str], cat: str, sch: s
             })
             existing_join_sources.add(join_table)
             added += 1
-    return plan_views
+    return plan_views, fk_rows
 
 
 def _yaml_dry_run(defn: dict, cat: str, sch: str) -> Optional[str]:
@@ -8277,8 +8293,9 @@ def _run_sl_generation(
             except Exception:
                 pass
 
+        sl_fk_rows = []
         if plan_views:
-            plan_views = _inject_fk_joins(plan_views, tables, cat, sch)
+            plan_views, sl_fk_rows = _inject_fk_joins(plan_views, tables, cat, sch)
 
         # Phase 2: Generate each view individually, or fall back to single-shot
         response = ""
@@ -8299,14 +8316,26 @@ def _run_sl_generation(
                         definitions.append(defn)
                 except Exception as exc:
                     logger.warning("Phase 2 generation failed for '%s': %s", pv.get("name", ""), exc)
-        else:
-            # Fallback to single-shot
+            if not definitions:
+                logger.warning("All Phase 2 per-view calls failed, falling back to single-shot")
+        if not definitions:
+            # Single-shot fallback with retry (either plan was empty or all Phase 2 calls failed)
             task["stage"] = "calling_ai"
             prompt = _build_prompt(questions, context, generation_style=generation_style)
             escaped = prompt.replace("'", "''")
-            rows = execute_sql(f"SELECT AI_QUERY('{model}', '{escaped}') as response", timeout=180)
-            response = rows[0]["response"] if rows else ""
-            definitions = _parse_ai_json(response)
+            for ss_attempt in range(2):
+                try:
+                    rows = execute_sql(f"SELECT AI_QUERY('{model}', '{escaped}') as response", timeout=180)
+                    response = rows[0]["response"] if rows else ""
+                    definitions = _parse_ai_json(response)
+                    if definitions:
+                        break
+                    logger.warning("Single-shot attempt %d returned 0 definitions", ss_attempt + 1)
+                except Exception as exc:
+                    logger.warning("Single-shot attempt %d failed: %s", ss_attempt + 1, exc)
+                    if ss_attempt == 0:
+                        continue
+                    response = ""
         if not definitions:
             snippet = (response[:200] + "...") if len(response) > 200 else response
             task.update(
@@ -8490,6 +8519,42 @@ def _run_sl_generation(
                 if match:
                     source = match[0]
 
+            # Source validation: warn on dim+fact, recover if failed
+            from dbxmetagen.semantic_layer import check_dim_source_pattern, _swap_source_and_join
+            src_warning = check_dim_source_pattern(defn, sl_fk_rows)
+            if src_warning:
+                logger.warning("Source pattern warning for '%s': %s", mv_name, src_warning["message"])
+                if errors:
+                    # Tier 1: swap source and join
+                    swapped = _swap_source_and_join(defn, src_warning["suspected_fact"])
+                    swap_errors = _validate_defn(swapped)
+                    if not swap_errors:
+                        yaml_err = _yaml_dry_run(swapped, cat, sch)
+                        if yaml_err:
+                            swap_errors = [yaml_err]
+                    if not swap_errors:
+                        logger.info("Tier 1 recovery (swap) succeeded for '%s'", mv_name)
+                        defn = swapped
+                        source = defn.get("source", source)
+                        errors = []
+                    else:
+                        # Tier 2: strip fact joins, keep dim-only
+                        import copy
+                        dim_only = copy.deepcopy(defn)
+                        dim_only["joins"] = [
+                            j for j in dim_only.get("joins", [])
+                            if j.get("source", "").split(".")[-1].lower() != src_warning["suspected_fact"].lower()
+                        ]
+                        dim_errors = _validate_defn(dim_only)
+                        if not dim_errors:
+                            yaml_err = _yaml_dry_run(dim_only, cat, sch)
+                            if yaml_err:
+                                dim_errors = [yaml_err]
+                        if not dim_errors:
+                            logger.info("Tier 2 recovery (dim-only) succeeded for '%s'", mv_name)
+                            defn = dim_only
+                            errors = []
+
             json_str = json.dumps(defn).replace("'", "''")
             status = "validated" if not errors else "failed"
             error_str = "; ".join(errors).replace("'", "''") if errors else ""
@@ -8566,6 +8631,12 @@ Return ONLY a JSON object: {{"covered": [<1-based question indices>], "not_cover
                 logger.warning("KPI coverage check failed: %s", exc)
 
         stats["definitions"] = per_definition_results
+        if stats["generated"] > 0 and stats["validated"] == 0:
+            logger.warning("All %d generated metric views failed validation", stats["generated"])
+            stats.setdefault("warnings", []).append(
+                f"All {stats['generated']} generated metric view(s) failed validation. "
+                "Review the errors for each definition and consider adjusting the questions or table scope."
+            )
         task.update({"status": "done", "stage": "done", "result": stats})
 
     except Exception as e:
