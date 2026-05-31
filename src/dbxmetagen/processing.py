@@ -3745,9 +3745,9 @@ def ensure_fully_scoped_table_names(
     for table_name in table_names:
         parts = table_name.split(".")
         if len(parts) == 2:
-            fully_scoped_table_names.append(f"{default_catalog}.{table_name}")
+            fully_scoped_table_names.append(f"{default_catalog}.{table_name}".lower())
         elif len(parts) == 3:
-            fully_scoped_table_names.append(table_name)
+            fully_scoped_table_names.append(table_name.lower())
         else:
             raise ValueError(f"Invalid table name format: {table_name}")
     return fully_scoped_table_names
@@ -3950,7 +3950,7 @@ def get_tables_in_schema(
             elif exclude_infrastructure and is_infrastructure_table(row.table_name):
                 infra_skipped.append(row.table_name)
             else:
-                table_names.append(f"{catalog_name}.{schema_name}.{row.table_name}")
+                table_names.append(f"{catalog_name.lower()}.{schema_name.lower()}.{row.table_name}")
 
         if skipped:
             print(f"Skipped {len(skipped)} non-readable objects: {', '.join(skipped)}")

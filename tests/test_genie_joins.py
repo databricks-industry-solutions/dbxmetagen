@@ -408,7 +408,8 @@ class TestBuildSqlSnippets:
 # _build_applied_mv_snippets
 # ---------------------------------------------------------------------------
 class TestBuildAppliedMvSnippets:
-    def test_measures_and_filter_extracted(self):
+    def test_no_measures_emitted_filter_extracted(self):
+        """Applied MV measures are auto-discovered by Genie -- no snippets needed."""
         asm = object.__new__(GenieContextAssembler)
         mv = {
             "metric_view_name": "mv_sales",
@@ -419,13 +420,12 @@ class TestBuildAppliedMvSnippets:
             }),
         }
         sn = asm._build_applied_mv_snippets([mv])
-        assert len(sn["measures"]) == 1
-        assert sn["measures"][0]["alias"] == "total_revenue"
-        assert sn["measures"][0]["sql"] == ["SUM(revenue)"]
+        assert len(sn["measures"]) == 0
         assert len(sn["filters"]) == 1
         assert "active" in sn["filters"][0]["sql"][0]
 
-    def test_dimension_expression_as_expression_snippet(self):
+    def test_dimension_expressions_skipped_for_applied_mvs(self):
+        """Applied MV dimensions are already columns -- no expression snippets needed."""
         asm = object.__new__(GenieContextAssembler)
         mv = {
             "metric_view_name": "mv_time",
@@ -435,8 +435,7 @@ class TestBuildAppliedMvSnippets:
             }),
         }
         sn = asm._build_applied_mv_snippets([mv])
-        assert len(sn["expressions"]) == 1
-        assert sn["expressions"][0]["alias"] == "year"
+        assert len(sn["expressions"]) == 0
 
     def test_dimension_same_as_name_skipped(self):
         asm = object.__new__(GenieContextAssembler)
@@ -450,7 +449,8 @@ class TestBuildAppliedMvSnippets:
         sn = asm._build_applied_mv_snippets([mv])
         assert len(sn["expressions"]) == 0
 
-    def test_fallback_to_column_key(self):
+    def test_no_measures_even_with_column_key(self):
+        """Applied MV measures are never emitted as snippets regardless of key format."""
         asm = object.__new__(GenieContextAssembler)
         mv = {
             "metric_view_name": "mv_fb",
@@ -460,8 +460,7 @@ class TestBuildAppliedMvSnippets:
             }),
         }
         sn = asm._build_applied_mv_snippets([mv])
-        assert len(sn["measures"]) == 1
-        assert sn["measures"][0]["alias"] == "amount"
+        assert len(sn["measures"]) == 0
 
 
 # ---------------------------------------------------------------------------
@@ -486,6 +485,7 @@ class TestBuildMvExampleSqlFallback:
         with patch.object(GenieContextAssembler, "_resolve_mv_location", return_value=("cat", "sch")):
             result = asm._build_mv_example_sql([mv])
         assert len(result) >= 1
+        assert "MEASURE(`total`)" in result[0]["sql"]
 
     def test_column_fallback(self):
         asm = self._make_asm()
@@ -499,7 +499,7 @@ class TestBuildMvExampleSqlFallback:
         with patch.object(GenieContextAssembler, "_resolve_mv_location", return_value=("cat", "sch")):
             result = asm._build_mv_example_sql([mv])
         assert len(result) >= 1
-        assert "amount" in result[0]["sql"]
+        assert "MEASURE(`amount`)" in result[0]["sql"]
 
     def test_display_name_fallback(self):
         asm = self._make_asm()
@@ -513,3 +513,4 @@ class TestBuildMvExampleSqlFallback:
         with patch.object(GenieContextAssembler, "_resolve_mv_location", return_value=("cat", "sch")):
             result = asm._build_mv_example_sql([mv])
         assert len(result) >= 1
+        assert "MEASURE(" in result[0]["sql"]

@@ -287,11 +287,16 @@ def _name_from_sql(sql_list: list[str]) -> str:
 
 
 def _extract_table_refs_from_sql(sql: str) -> set[str]:
-    """Extract fully-qualified or short table references from a SQL string."""
+    """Extract fully-qualified or short table references from a SQL string.
+
+    Handles backtick-quoted multi-part identifiers like ```cat`.`sch`.`tbl```.
+    """
     refs: set[str] = set()
-    for m in re.finditer(r"\bFROM\s+(`?[\w.]+`?)", sql, re.IGNORECASE):
+    # Matches backtick-quoted multi-part (e.g. `cat`.`sch`.`tbl`) or unquoted identifiers
+    ident = r"((?:`[^`]+`\.)*(?:`[^`]+`|[\w]+(?:\.[\w]+)*))"
+    for m in re.finditer(rf"\bFROM\s+{ident}", sql, re.IGNORECASE):
         refs.add(m.group(1).replace("`", ""))
-    for m in re.finditer(r"\bJOIN\s+(`?[\w.]+`?)", sql, re.IGNORECASE):
+    for m in re.finditer(rf"\bJOIN\s+{ident}", sql, re.IGNORECASE):
         refs.add(m.group(1).replace("`", ""))
     return refs
 

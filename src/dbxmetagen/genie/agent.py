@@ -87,7 +87,8 @@ Output a JSON object wrapped in ```json ``` fences with these fields ONLY:
 
 RULES:
 - 5-8 sample_questions: plain English, no SQL jargon, clickable for business users.
-- text instructions: CONCISE, under 2000 characters. Structure as follows:
+  sample_questions MUST be answerable using only the columns, measures, and dimensions present in the data sources above. Never reference concepts, entities, or relationships not in the schema.
+- text instructions: MUST be 20 lines or fewer (Genie truncates longer instructions). Structure as follows:
   (0) Open with 1-2 plain sentences summarizing what the data covers, the key entities, and the primary analytical use cases. Do NOT use a heading for this intro.
   (1) ## Column Disambiguation -- columns with the SAME NAME in multiple tables
   (2) ## Business Rules -- non-obvious business rules or calculation conventions
@@ -143,10 +144,15 @@ RULES:
 
 _MV_GUIDANCE_BLOCK = """
 === METRIC VIEW GUIDANCE ===
-The data_sources include metric views. Metric views are queryable using standard SQL just like tables:
-  SELECT dimension, measure FROM catalog.schema.metric_view_name GROUP BY dimension
-They expose pre-defined measures (aggregations) and dimensions (grouping columns).
+The data_sources include metric views. Metric views expose pre-defined measures (aggregations) and dimensions (grouping columns).
+CRITICAL: Measure columns MUST be wrapped in MEASURE() when queried. Example:
+  SELECT dimension, MEASURE(measure_col) FROM catalog.schema.metric_view_name GROUP BY dimension
+Never use a measure column without MEASURE() -- it will fail with METRIC_VIEW_MISSING_MEASURE_FUNCTION.
 Generate example SQL that queries metric views directly -- they are first-class data sources.
+ANTI-PATTERN: Do NOT generate multiple examples that all follow the same shape:
+  SELECT dim, MEASURE(x) FROM mv GROUP BY dim ORDER BY MEASURE(x) DESC
+Instead vary patterns: multi-measure comparisons, HAVING clauses, CASE WHEN over dimensions,
+filtered aggregations with WHERE, subqueries, ratios (measure/measure), window functions, etc.
 {seed_examples}"""
 
 _TABLE_PHASE2_PATTERNS = (
@@ -160,17 +166,20 @@ _TABLE_PHASE2_PATTERNS = (
     "7. CASE WHEN segmentation or bucketing (non-parameterized)\n"
     "8. Subquery or CTE for a derived metric (non-parameterized)\n"
     "9. Multi-join across 3+ tables if available (non-parameterized)\n"
-    "10. Date comparison -- YoY, MoM, or period-over-period (parameterized with :date or :period)"
+    "10. Date comparison -- YoY, MoM, or period-over-period (parameterized with :date or :period)\n"
+    "ANTI-PATTERN: Do NOT repeat the same SELECT col, AGG(col) FROM t GROUP BY col ORDER BY AGG(col) DESC shape. "
+    "Each example must use a structurally DIFFERENT query shape."
 )
 
 _MV_ONLY_PHASE2_PATTERNS = (
-    "Generate 6 diverse example_sql pairs covering these metric-view patterns:\n"
-    "1. Simple measure query -- GROUP BY one dimension (non-parameterized)\n"
-    "2. Multi-measure comparison -- SELECT two or more measures grouped by a shared dimension (non-parameterized)\n"
-    "3. Filtered aggregation -- apply a WHERE on a dimension or use the metric view's built-in filter (non-parameterized)\n"
-    "4. Date range query -- parameterized with :start_date / :end_date on a temporal dimension (parameterized)\n"
-    "5. Top-N by measure -- ORDER BY measure DESC LIMIT N (non-parameterized)\n"
-    "6. Cross-MV comparison -- join or UNION across multiple metric views if available, otherwise a CASE segmentation (non-parameterized)"
+    "The seed examples above already cover basic measure-by-dimension breakdowns. "
+    "Generate 6 DIFFERENT example_sql pairs that answer analytically interesting questions:\n"
+    "1. Comparison -- how do two or more measures relate or contrast across a dimension? (non-parameterized)\n"
+    "2. Filtered deep-dive -- answer a question scoped to a specific segment or category (parameterized with :param)\n"
+    "3. Trend or change -- how has a measure changed over time or between periods? (non-parameterized)\n"
+    "4. Anomaly or outlier -- which dimension values are unusually high or low? (non-parameterized)\n"
+    "5. Ratio or proportion -- what share does a segment represent of the total? (non-parameterized)\n"
+    "6. Cross-entity -- combine data from multiple metric views or relate different entities (non-parameterized)"
 )
 
 
@@ -514,7 +523,13 @@ def run_genie_agent(
         p1 = _llm_phase(llm, p1_prompt, "Generate the core Genie config JSON now.", "core")
         if p1:
             serialized["description"] = p1.get("description", "")
-            serialized["instructions"] = {"text": p1.get("instructions", {}).get("text", "")}
+            inst_text = p1.get("instructions", {}).get("text", "")
+            # Genie truncates instructions beyond 20 lines
+            lines = inst_text.split("\n")
+            if len(lines) > 20:
+                logger.info("Truncating instructions from %d to 20 lines", len(lines))
+                inst_text = "\n".join(lines[:20])
+            serialized["instructions"] = {"text": inst_text}
             serialized["sample_questions"] = p1.get("sample_questions", [])
             extra_joins = p1.get("join_specs", [])
             if extra_joins:
@@ -536,7 +551,7 @@ def run_genie_agent(
         if context.get("data_sources", {}).get("metric_views"):
             seed_text = ""
             if mv_seeds:
-                seed_text = "\nReference examples (metric view queries):\n" + "\n".join(
+                seed_text = "\nSyntax reference (correct MEASURE() usage -- generate DIFFERENT, more analytical questions):\n" + "\n".join(
                     f'  Q: {s["question"]}\n  SQL: {s["sql"]}' for s in mv_seeds[:4]
                 )
             mv_guidance = _MV_GUIDANCE_BLOCK.format(seed_examples=seed_text)
@@ -556,33 +571,27 @@ def run_genie_agent(
             logger.warning("Phase 2 (example_sql) failed -- continuing without examples")
             serialized["instructions"]["example_sql"] = []
 
-        # Phase 3: SQL Snippets
-        progress_queue.put({"stage": "generating", "message": "Phase 3/3: Generating SQL snippets..."})
-        p3_base = _PHASE3_PROMPT
+        # Phase 3: SQL Snippets (skip for MV-only -- pre-built MV snippets are sufficient)
+        p3 = None
         if mv_only:
-            p3_base = p3_base + _MV_ONLY_PHASE3_EXTRA
-        p3_prompt = (p3_base + SAFETY_PROMPT_BLOCK).format(
-            **ctx_subs,
-            sql_snippets=json.dumps(context.get("sql_snippets", {}), indent=2),
-        )
-        p3 = _llm_phase(llm, p3_prompt, "Generate the sql_snippets JSON now.", "snippets")
-        if p3:
-            snippets = p3.get("sql_snippets", p3)
-            if isinstance(snippets, dict) and any(k in snippets for k in ("measures", "filters", "expressions")):
-                serialized["instructions"]["sql_snippets"] = snippets
+            logger.info("MV-only mode: skipping Phase 3 snippet generation (pre-built snippets cover all measures/dimensions)")
         else:
-            logger.warning("Phase 3 (snippets) failed -- continuing without extra snippets")
+            progress_queue.put({"stage": "generating", "message": "Phase 3/3: Generating SQL snippets..."})
+            p3_base = _PHASE3_PROMPT
+            p3_prompt = (p3_base + SAFETY_PROMPT_BLOCK).format(
+                **ctx_subs,
+                sql_snippets=json.dumps(context.get("sql_snippets", {}), indent=2),
+            )
+            p3 = _llm_phase(llm, p3_prompt, "Generate the sql_snippets JSON now.", "snippets")
+            if p3:
+                snippets = p3.get("sql_snippets", p3)
+                if isinstance(snippets, dict) and any(k in snippets for k in ("measures", "filters", "expressions")):
+                    serialized["instructions"]["sql_snippets"] = snippets
+            else:
+                logger.warning("Phase 3 (snippets) failed -- continuing without extra snippets")
 
-    # ---- Merge MV seed examples before validation so they get checked too ----
-    mv_seeds = context.get("mv_seed_examples", [])
-    if mv_seeds:
-        existing = serialized.get("instructions", {}).get("example_sql", [])
-        existing_sqls = {(e.get("sql") or "").strip().lower() for e in existing}
-        for seed in mv_seeds:
-            if seed["sql"].strip().lower() not in existing_sqls:
-                existing.append(seed)
-                existing_sqls.add(seed["sql"].strip().lower())
-        serialized.setdefault("instructions", {})["example_sql"] = existing
+    # MV seed examples are used only as syntax reference in the Phase 2 prompt.
+    # They are NOT merged into the final example_sql to avoid monotonous output.
 
     # ---- SQL validation ----
     progress_queue.put({"stage": "validating_sql"})

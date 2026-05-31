@@ -184,10 +184,15 @@ class GenieContextAssembler:
         self._cached_entity_rows = entity_rows
         entity_rels = self._get_entity_relationships(table_identifiers)
 
-        if metric_view_names:
+        if metric_view_names is None:
+            # No MV selection provided -- auto-discover from source tables
+            metric_views, mv_warnings = self._get_metric_views(table_identifiers)
+        elif metric_view_names:
+            # Explicit MV selection
             metric_views, mv_warnings = self._get_metric_views_by_name(metric_view_names)
         else:
-            metric_views, mv_warnings = self._get_metric_views(table_identifiers)
+            # Explicit empty list -- user chose no MVs
+            metric_views, mv_warnings = [], []
         value_samples = self._sample_categorical_values(column_meta)
 
         applied_mvs = [mv for mv in metric_views if mv.get("status") == "applied"]
@@ -247,12 +252,33 @@ class GenieContextAssembler:
         ]
         if len(join_specs) < pre:
             logger.warning("Dropped %d join_specs not matching data_sources", pre - len(join_specs))
-        sql_snippets = self._build_sql_snippets(
-            unapplied_mvs, value_samples, column_meta
-        )
-        applied_snippets = self._build_applied_mv_snippets(applied_mvs)
-        for key in ("measures", "filters", "expressions"):
-            sql_snippets.setdefault(key, []).extend(applied_snippets.get(key, []))
+        mv_only = bool(applied_mvs or unapplied_mvs) and not table_identifiers
+        if mv_only and not unapplied_mvs:
+            # MV-only room with only applied MVs: snippets use MEASURE() syntax
+            sql_snippets: dict = {"measures": [], "filters": [], "expressions": []}
+            applied_snippets = self._build_applied_mv_snippets(applied_mvs)
+            for key in ("measures", "filters", "expressions"):
+                sql_snippets.setdefault(key, []).extend(applied_snippets.get(key, []))
+        elif mv_only:
+            # MV-only room with unapplied MVs: expr-based for unapplied, MEASURE() for applied
+            sql_snippets = self._build_sql_snippets(
+                unapplied_mvs, value_samples, column_meta
+            )
+            applied_snippets = self._build_applied_mv_snippets(applied_mvs)
+            for key in ("measures", "filters", "expressions"):
+                sql_snippets.setdefault(key, []).extend(applied_snippets.get(key, []))
+        else:
+            # Table-based room: ALL MVs contribute expr-based SQL (real aggregations)
+            all_mvs = applied_mvs + unapplied_mvs
+            sql_snippets = self._build_sql_snippets(
+                all_mvs, value_samples, column_meta
+            )
+        # Cap snippets to avoid overwhelming Genie space definition
+        _SNIPPET_CAPS = {"measures": 25, "filters": 15, "expressions": 20}
+        for key, cap in _SNIPPET_CAPS.items():
+            if len(sql_snippets.get(key, [])) > cap:
+                logger.info("Capping %s snippets from %d to %d", key, len(sql_snippets[key]), cap)
+                sql_snippets[key] = sql_snippets[key][:cap]
         mv_seed_examples = self._build_mv_example_sql(applied_mvs)
 
         reference_text = self._load_genie_reference()
@@ -502,7 +528,7 @@ class GenieContextAssembler:
             self.wh,
             f"""
             SELECT metric_view_name, source_table, json_definition, status,
-                   deployed_catalog, deployed_schema
+                   deployed_catalog, deployed_schema, source_questions
             FROM {self._fq('metric_view_definitions')}
             WHERE metric_view_name IN ({match_list})
               AND status = 'applied'
@@ -553,7 +579,7 @@ class GenieContextAssembler:
             self.wh,
             f"""
             SELECT metric_view_name, source_table, json_definition, status,
-                   deployed_catalog, deployed_schema
+                   deployed_catalog, deployed_schema, source_questions
             FROM {self._fq('metric_view_definitions')}
             WHERE status IN ('applied', 'validated')
               AND source_table IN ({match_list})
@@ -719,6 +745,9 @@ class GenieContextAssembler:
             if filt_list:
                 f_names = [f.get("name", f.get("expression", "?")) for f in filt_list]
                 parts.append(f"  Filters: {', '.join(f_names)}")
+            source_qs = mv.get("source_questions", "")
+            if source_qs:
+                parts.append(f"  Business questions this MV answers: {source_qs}")
         return "\n".join(parts)
 
     def _format_context(
@@ -1166,6 +1195,7 @@ class GenieContextAssembler:
                         "sql": [expr],
                         "description": comment or f"From {tbl_alias}",
                         "synonyms": syns or None,
+                        "instruction": [f"Use when users ask about {(m.get('display_name') or alias).lower()}"],
                     }
                 )
 
@@ -1227,40 +1257,21 @@ class GenieContextAssembler:
         }
 
     def _build_applied_mv_snippets(self, applied_mvs: list[dict]) -> dict:
-        """Build sql_snippets from applied metric views using MV-native references."""
-        measures: list[dict] = []
+        """Build sql_snippets from applied metric views.
+
+        For applied MVs, Genie auto-discovers measures and dimensions from the
+        MV metadata -- we do NOT emit measure snippets (the snippet sql field
+        expects raw aggregation expressions, not MEASURE() syntax, and duplicating
+        what Genie already knows causes validation errors). We only emit filters
+        from MV-level filter clauses since those aren't auto-discovered.
+        """
         filters: list[dict] = []
-        expressions: list[dict] = []
         for mv in applied_mvs:
             raw = mv.get("json_definition", "")
             try:
                 defn = json.loads(raw) if isinstance(raw, str) else (raw or {})
             except (json.JSONDecodeError, TypeError):
                 continue
-            for m in defn.get("measures", []):
-                alias = m.get("name") or m.get("column") or m.get("display_name", "")
-                expr = m.get("expr", "")
-                if not alias:
-                    continue
-                measures.append({
-                    "alias": alias,
-                    "display_name": m.get("display_name") or alias,
-                    "sql": [expr] if expr else [alias],
-                    "description": m.get("comment", ""),
-                    "synonyms": m.get("synonyms") or _generate_synonyms(alias, comment=m.get("comment", "")),
-                })
-            for d in defn.get("dimensions", []):
-                alias = d.get("name") or d.get("column") or d.get("display_name", "")
-                expr = d.get("expr", "")
-                if not alias or not expr or expr == alias:
-                    continue
-                expressions.append({
-                    "alias": alias,
-                    "display_name": d.get("display_name") or alias,
-                    "sql": [expr],
-                    "description": d.get("comment", ""),
-                    "synonyms": d.get("synonyms") or _generate_synonyms(alias, comment=d.get("comment", "")),
-                })
             filt = defn.get("filter") or ""
             if filt:
                 mv_name = mv.get("metric_view_name", "unknown")
@@ -1268,10 +1279,15 @@ class GenieContextAssembler:
                     "display_name": f"{mv_name} default filter",
                     "sql": [filt],
                 })
-        return {"measures": measures, "filters": filters, "expressions": expressions}
+        return {"measures": [], "filters": filters, "expressions": []}
 
     def _build_mv_example_sql(self, applied_mvs: list[dict]) -> list[dict]:
-        """Generate deterministic seed example SQL from applied metric view definitions."""
+        """Generate syntax-demonstration seed examples for applied metric views.
+
+        These seeds teach the Phase 2 LLM correct MEASURE() syntax. They are
+        intentionally simple and mechanical -- the LLM's job is to generate
+        analytically interesting questions on top of these.
+        """
         examples: list[dict] = []
         for mv in applied_mvs:
             raw = mv.get("json_definition", "")
@@ -1292,23 +1308,19 @@ class GenieContextAssembler:
                         if m.get("name") or m.get("column") or m.get("display_name")]
             if not measures:
                 continue
+
             measure_col = measures[0]
             dim_col = dims[0] if dims else None
-            mv_label = mv_name.replace("_", " ").title()
+
             if dim_col:
                 examples.append({
                     "question": f"What is the {measure_col.replace('_', ' ')} by {dim_col.replace('_', ' ')}?",
-                    "sql": f"SELECT `{dim_col}`, `{measure_col}` FROM {fq_mv} GROUP BY `{dim_col}` ORDER BY `{measure_col}` DESC",
+                    "sql": f"SELECT `{dim_col}`, MEASURE(`{measure_col}`) FROM {fq_mv} GROUP BY `{dim_col}` ORDER BY MEASURE(`{measure_col}`) DESC",
                 })
             else:
                 examples.append({
-                    "question": f"What is the total {measure_col.replace('_', ' ')} from {mv_label}?",
-                    "sql": f"SELECT `{measure_col}` FROM {fq_mv}",
-                })
-            if len(dims) >= 2 and len(measures) >= 2:
-                examples.append({
-                    "question": f"Show {measures[1].replace('_', ' ')} by {dims[1].replace('_', ' ')} from {mv_label}",
-                    "sql": f"SELECT `{dims[1]}`, `{measures[1]}` FROM {fq_mv} GROUP BY `{dims[1]}` ORDER BY `{measures[1]}` DESC",
+                    "question": f"What is the total {measure_col.replace('_', ' ')}?",
+                    "sql": f"SELECT MEASURE(`{measure_col}`) FROM {fq_mv}",
                 })
         return examples
 

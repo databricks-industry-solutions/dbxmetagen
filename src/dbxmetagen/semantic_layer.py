@@ -1667,6 +1667,9 @@ OUTPUT (one JSON object only, no array, no explanation):"""
         "ORDER",
         "ASC",
         "DESC",
+        "CURRENT_DATE",
+        "CURRENT_TIMESTAMP",
+        "CURRENT_TIME",
     }
 
     @classmethod
@@ -1909,6 +1912,11 @@ OUTPUT (one JSON object only, no array, no explanation):"""
         return expr
 
     @classmethod
+    def _fix_bare_whitespace_separator(cls, expr: str) -> str:
+        """Quote bare whitespace between commas: f(a,  , b) -> f(a, ' ', b)."""
+        return re.sub(r",(\s+),", ", ' ',", expr)
+
+    @classmethod
     def _fix_bare_comparison(cls, expr: str) -> str:
         """Insert '' when a comparison operator has no RHS value (LLM omitted empty string literal)."""
         return re.sub(
@@ -1986,6 +1994,7 @@ OUTPUT (one JSON object only, no array, no explanation):"""
         expr = cls._fix_in_clause_literals(expr)
         expr = cls._fix_concat_separators(expr)
         expr = cls._fix_like_patterns(expr)
+        expr = cls._fix_bare_whitespace_separator(expr)
         return expr
 
     def _validate_expressions(self, defn: dict) -> list[str]:

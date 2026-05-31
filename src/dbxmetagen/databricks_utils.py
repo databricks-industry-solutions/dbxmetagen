@@ -143,6 +143,12 @@ def setup_widgets(dbutils):
     )
     dbutils.widgets.text("override_csv_path", "", "Override CSV Path")
     dbutils.widgets.text("comment_style", "standard", "Comment Style (concise, standard, detailed)")
+    dbutils.widgets.dropdown(
+        "use_kb_comments", "false", ["true", "false"], "Use KB Comments"
+    )
+    dbutils.widgets.dropdown(
+        "use_customer_context", "false", ["true", "false"], "Use Customer Context"
+    )
 
 
 def get_widgets(dbutils):
@@ -168,6 +174,8 @@ def get_widgets(dbutils):
     allow_manual_override = dbutils.widgets.get("allow_manual_override")
     override_csv_path = dbutils.widgets.get("override_csv_path")
     comment_style = dbutils.widgets.get("comment_style")
+    use_kb_comments = dbutils.widgets.get("use_kb_comments")
+    use_customer_context = dbutils.widgets.get("use_customer_context")
     notebook_variables = {
         "cleanup_control_table": cleanup_control_table,
         "mode": mode,
@@ -190,6 +198,8 @@ def get_widgets(dbutils):
         "allow_manual_override": allow_manual_override,
         "override_csv_path": override_csv_path,
         "comment_style": comment_style,
+        "use_kb_comments": use_kb_comments,
+        "use_customer_context": use_customer_context,
     }
     return {k: v for k, v in notebook_variables.items() if v is not None and v != ""}
 

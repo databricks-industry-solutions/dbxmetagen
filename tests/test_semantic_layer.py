@@ -242,6 +242,8 @@ class TestAutofixDoesNotCorruptGoodExprs:
         "source.ProjectName",
         "proj.ProjectName",
         "source.Custom_MilestoneStatus",
+        # CURRENT_DATE without parentheses
+        "SUM(CASE WHEN source.expected_close_date < CURRENT_DATE AND source.actual_close_date IS NULL THEN 1 ELSE 0 END)",
     ])
     def test_good_expr_unchanged(self, expr):
         assert SemanticLayerGenerator._autofix_expr(expr) == expr
@@ -333,6 +335,30 @@ class TestFixConcatSeparators:
         expr = "CONCAT(a, '-Q', b)"
         result = SemanticLayerGenerator._fix_concat_separators(expr)
         assert result == expr
+
+
+class TestFixBareWhitespaceSeparator:
+
+    def test_quotes_bare_double_space(self):
+        result = SemanticLayerGenerator._fix_bare_whitespace_separator("CONCAT(a,  , b)")
+        assert result == "CONCAT(a, ' ', b)"
+
+    def test_quotes_bare_triple_space(self):
+        result = SemanticLayerGenerator._fix_bare_whitespace_separator("CONCAT(a,   , b)")
+        assert result == "CONCAT(a, ' ', b)"
+
+    def test_preserves_already_quoted(self):
+        expr = "CONCAT(contact.first_name, ' ', contact.last_name)"
+        assert SemanticLayerGenerator._fix_bare_whitespace_separator(expr) == expr
+
+    def test_preserves_normal_expression(self):
+        expr = "SUM(CASE WHEN source.stage = 'Closed Won' THEN 1 ELSE 0 END)"
+        assert SemanticLayerGenerator._fix_bare_whitespace_separator(expr) == expr
+
+    def test_full_autofix_chain_fixes_concat_space(self):
+        bad = "CONCAT(contact.first_name,  , contact.last_name)"
+        result = SemanticLayerGenerator._autofix_expr(bad)
+        assert result == "CONCAT(contact.first_name, ' ', contact.last_name)"
 
 
 # ── JSON Parsers ──────────────────────────────────────────────────────
@@ -784,3 +810,57 @@ class TestProfileSchema:
         ]
         result = profile_schema(tables, fk_rows)
         assert result["schema_type"] == "SIMPLE"
+
+
+# ── KPI Reference Stripping Regex ────────────────────────────────────
+
+import re
+
+_KPI_REF_RE = re.compile(
+    r"\.?\s*(?:Implements|Supports|Addresses|Answers|Covers|Partially implements)"
+    r"\s+(?:KPI|question|Q)s?\s*(?::\s*[^.]*(?:\.\s*)?|[\d,\s\-and#()]+\.?)"
+    r"|\s*\(KPI:\s*[^)]+\)"
+    r"|\s*\bKPI\s*#\d+\b(?:\s*\([^)]*\))?\.?"
+    r"|\s*\(#\d+\)",
+    re.IGNORECASE,
+)
+
+
+class TestKpiRefRegex:
+    """Tests for _KPI_REF_RE -- must strip KPI/question references from MV comments."""
+
+    def _strip(self, text):
+        result = _KPI_REF_RE.sub("", text)
+        result = re.sub(r"  +", " ", result).strip().rstrip(".")
+        return (result + ".") if result else ""
+
+    def test_numbered_kpis(self):
+        assert self._strip("Tracks revenue growth. Implements KPIs 1, 3, 10.") == "Tracks revenue growth."
+
+    def test_named_kpis_with_colon(self):
+        text = "Tracks deal pipeline metrics. Implements KPIs: Enterprise Segment Weighted Pipeline Concentration (#2), New Business Deal Share of Pipeline (#4)."
+        assert self._strip(text) == "Tracks deal pipeline metrics."
+
+    def test_inline_kpi_hash(self):
+        assert self._strip("Total weighted deal value KPI #6 (Customer Win Rate).") == "Total weighted deal value."
+
+    def test_inline_hash_number(self):
+        assert self._strip("Revenue growth metric (#3) by region.") == "Revenue growth metric by region."
+
+    def test_parenthetical_kpi(self):
+        assert self._strip("Shows overdue deals (KPI: Pipeline Risk).") == "Shows overdue deals."
+
+    def test_supports_questions(self):
+        assert self._strip("Pipeline analysis. Supports questions 1, 2 and 5.") == "Pipeline analysis."
+
+    def test_no_match_preserves_text(self):
+        assert self._strip("Clean description with no references.") == "Clean description with no references."
+
+    def test_partially_implements(self):
+        assert self._strip("Deal metrics. Partially implements KPI 7.") == "Deal metrics."
+
+    def test_multiple_patterns_in_one(self):
+        text = "Revenue growth KPI #2 (Win Rate). Implements KPIs: Overdue Risk (#1)."
+        result = self._strip(text)
+        assert "KPI" not in result
+        assert "#" not in result

@@ -9,7 +9,7 @@ const STAGES = {
   building_context: 'Building metadata context...',
   planning: 'Planning generation strategy...',
   generating: 'Generating metric view definitions...',
-  calling_ai: 'Generating metric views with AI...',
+  retrying: 'Retrying failed views with simplified prompts...',
   checking_coverage: 'Checking question coverage...',
   validating: 'Validating expressions...',
   done: 'Complete',
@@ -224,6 +224,7 @@ export default function SemanticLayer({ onNavigate, pipelineStats }) {
   const [questionsText, setQuestionsText] = useState('')
   const [businessContext, setBusinessContext] = useState('')
   const [generationStyle, setGenerationStyle] = useState('comprehensive')
+  const [maxViews, setMaxViews] = useState(null)
 
   // Generation
   const [taskId, setTaskId] = useState(null)
@@ -694,6 +695,7 @@ export default function SemanticLayer({ onNavigate, pipelineStats }) {
         business_context: businessContext || undefined,
         profile_id: activeProfileId || undefined,
         generation_style: generationStyle,
+        max_views: maxViews || undefined,
       }
       if (selectedProjectId) body.project_id = selectedProjectId
       const res = await fetch('/api/semantic-layer/generate', {
@@ -1397,11 +1399,13 @@ export default function SemanticLayer({ onNavigate, pipelineStats }) {
           </div>
         )}
         {kpis.length > 0 && (() => {
+          const kpiStatusBadge = () => null
           const KpiRow = ({ k, dimmed }) => (
             <div className={`flex items-start justify-between gap-3 border rounded-lg px-3 py-2 text-sm ${dimmed ? 'border-slate-200/60 dark:border-slate-700/50 opacity-60' : 'border-slate-200 dark:border-slate-700'}`}>
               <div className="flex-1 min-w-0">
                 <span className="font-medium dark:text-gray-200">{k.name}</span>
                 {k.domain && <span className="ml-2 text-xs px-1.5 py-0.5 rounded bg-blue-100 dark:bg-blue-900/40 text-blue-700 dark:text-blue-300">{k.domain}</span>}
+                {kpiStatusBadge(k.validation_status, k.validation_error)}
                 {k.description && <p className="text-xs text-gray-500 dark:text-gray-400 mt-0.5 truncate">{k.description}</p>}
                 {k.formula && <code className="text-xs text-gray-400 dark:text-gray-500 block mt-0.5 truncate">{k.formula}</code>}
               </div>
@@ -1546,6 +1550,20 @@ export default function SemanticLayer({ onNavigate, pipelineStats }) {
               : 'Best practice: one comprehensive view per fact-table grain'}
           </span>
         </label>
+        <div className="flex items-center gap-2 mb-4">
+          <label className="text-sm font-medium text-slate-700 dark:text-slate-200 whitespace-nowrap">Max views</label>
+          <input type="number" min={1}
+            max={Math.max(Math.floor(selectedTables.length / 2), 2)}
+            placeholder={String(Math.min(Math.max(Math.floor(selectedTables.length / 3), 2), 15))}
+            value={maxViews ?? ''}
+            onChange={e => setMaxViews(e.target.value ? parseInt(e.target.value) : null)}
+            className="w-16 px-2 py-1 border rounded text-sm dark:bg-slate-700 dark:border-slate-600 dark:text-white" />
+          <span className="text-xs text-slate-400 dark:text-slate-500"
+            title="Each metric view costs 1-2 AI_QUERY calls. More views = more cost and generation time. Recommended: ~1/3 the number of tables.">
+            of {selectedTables.length} tables
+            {selectedTables.length > 0 && ` (recommended: ${Math.min(Math.max(Math.floor(selectedTables.length / 3), 2), 15)})`}
+          </span>
+        </div>
         <div className="flex gap-3 flex-wrap">
           <button onClick={() => startGeneration('replace')}
             disabled={loading || isGenerating || !selectedTables.length || !questionLines.length}
@@ -1575,6 +1593,11 @@ export default function SemanticLayer({ onNavigate, pipelineStats }) {
             <span className={`text-sm ${taskStatus.status === 'error' ? 'text-red-600 dark:text-red-400' : taskStatus.status === 'done' ? 'text-green-600 dark:text-green-400' : 'text-gray-700 dark:text-gray-300'}`}>
               {STAGES[taskStatus.stage] || taskStatus.stage}
             </span>
+            {taskStatus.planned && (
+              <span className="text-xs text-gray-500 dark:text-gray-400">
+                ({taskStatus.planned} views{taskStatus.effective_max ? ` of ${taskStatus.effective_max} max` : ''}{taskStatus.retry_count ? `, retrying ${taskStatus.retry_count}` : ''})
+              </span>
+            )}
             {taskStatus.generated && (
               <span className="text-xs text-gray-500 dark:text-gray-400">({taskStatus.generated} definitions)</span>
             )}
@@ -1583,9 +1606,62 @@ export default function SemanticLayer({ onNavigate, pipelineStats }) {
             <p className="text-sm text-red-600 dark:text-red-400 mt-2">{taskStatus.error}</p>
           )}
           {taskStatus.status === 'done' && taskStatus.result && (
-            <div className="text-sm mt-2 text-gray-700 dark:text-gray-300">
-              Generated: {taskStatus.result.generated}, Validated: {taskStatus.result.validated}, Failed: {taskStatus.result.failed}
-              <p className="mt-1 text-xs text-gray-500 dark:text-gray-400">
+            <div className="text-sm mt-2 space-y-2 text-gray-700 dark:text-gray-300">
+              <div className="flex flex-wrap gap-3">
+                <span>Generated: <strong>{taskStatus.result.generated}</strong></span>
+                <span>Validated: <strong className="text-green-600 dark:text-green-400">{taskStatus.result.validated}</strong></span>
+                <span>Failed: <strong className={taskStatus.result.failed ? 'text-red-600 dark:text-red-400' : ''}>{taskStatus.result.failed}</strong></span>
+                {taskStatus.result.repaired > 0 && <span>Repaired: <strong className="text-amber-600 dark:text-amber-400">{taskStatus.result.repaired}</strong></span>}
+                {taskStatus.result.skipped > 0 && <span>Skipped: <strong>{taskStatus.result.skipped}</strong></span>}
+              </div>
+              {taskStatus.retry_recovered > 0 && (
+                <span className="text-xs text-amber-600 dark:text-amber-400">
+                  {taskStatus.retry_recovered} view(s) recovered with simplified retry
+                </span>
+              )}
+              {taskStatus.phase2_failures?.length > 0 && (
+                <details className="text-xs text-amber-600 dark:text-amber-400 mt-1">
+                  <summary className="cursor-pointer hover:underline">{taskStatus.phase2_failures.length} view(s) failed both attempts</summary>
+                  <ul className="mt-1 ml-3 list-disc space-y-0.5 text-gray-600 dark:text-gray-400">
+                    {taskStatus.phase2_failures.map((f, i) => (
+                      <li key={i}><strong>{f.name}</strong>: {f.error?.slice(0, 200)}</li>
+                    ))}
+                  </ul>
+                </details>
+              )}
+              {taskStatus.result.warnings?.length > 0 && (
+                <div className="text-xs text-amber-700 dark:text-amber-400 space-y-0.5">
+                  {taskStatus.result.warnings.map((w, i) => <p key={i}>{w}</p>)}
+                </div>
+              )}
+              {taskStatus.result.coverage && (
+                <p className="text-xs text-gray-500 dark:text-gray-400">
+                  Question coverage: {taskStatus.result.coverage.covered?.length || 0} of {(taskStatus.result.coverage.covered?.length || 0) + (taskStatus.result.coverage.not_covered?.length || 0)} covered
+                </p>
+              )}
+              {taskStatus.result.kpi_coverage && (
+                <p className="text-xs text-gray-500 dark:text-gray-400">
+                  KPI coverage: {(taskStatus.result.kpi_coverage.implemented || []).length} of {taskStatus.result.kpi_coverage.total || 0} KPIs implemented
+                </p>
+              )}
+              {taskStatus.result.definitions?.length > 0 && (
+                <details className="text-xs">
+                  <summary className="cursor-pointer text-gray-500 dark:text-gray-400 hover:text-gray-700 dark:hover:text-gray-200">
+                    Per-definition breakdown ({taskStatus.result.definitions.length})
+                  </summary>
+                  <div className="mt-1 space-y-1 pl-2 border-l-2 border-slate-200 dark:border-slate-700">
+                    {taskStatus.result.definitions.map((d, i) => (
+                      <div key={i} className="flex items-start gap-2">
+                        <span className={`shrink-0 px-1 rounded ${d.status === 'validated' ? 'bg-green-100 dark:bg-green-900/40 text-green-700 dark:text-green-300' : d.status === 'failed' ? 'bg-red-100 dark:bg-red-900/40 text-red-700 dark:text-red-300' : 'bg-slate-100 dark:bg-slate-800 text-slate-500'}`}>{d.status}</span>
+                        <span className="font-medium">{d.name}</span>
+                        {d.source && <span className="text-gray-400">({d.source.split('.').pop()})</span>}
+                        {d.validation_errors?.length > 0 && <span className="text-red-500 truncate">{d.validation_errors[0]}</span>}
+                      </div>
+                    ))}
+                  </div>
+                </details>
+              )}
+              <p className="text-xs text-gray-500 dark:text-gray-400">
                 Validated and applied metric views will be added to the vector index on the next full analytics pipeline or standalone vector index build run.
               </p>
             </div>

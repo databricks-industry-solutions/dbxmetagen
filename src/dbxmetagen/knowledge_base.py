@@ -143,7 +143,7 @@ class KnowledgeBaseBuilder:
         tf = table_filter_sql(self.config.table_names or [], column="`table`")
         df = self.spark.sql(f"""
             SELECT 
-                `table` as table_name,
+                LOWER(`table`) as table_name,
                 metadata_type,
                 ddl_type,
                 column_name,
@@ -342,9 +342,10 @@ class KnowledgeBaseBuilder:
         merge_sql = f"""
         MERGE INTO {self.config.fully_qualified_target} AS target
         USING staged_updates AS source
-        ON target.table_name = source.table_name
+        ON LOWER(target.table_name) = LOWER(source.table_name)
 
         WHEN MATCHED THEN UPDATE SET
+            target.table_name = source.table_name,
             target.catalog = COALESCE(source.catalog, target.catalog),
             target.`schema` = COALESCE(source.`schema`, target.`schema`),
             target.table_short_name = COALESCE(source.table_short_name, target.table_short_name),
