@@ -88,20 +88,19 @@ vector search, SQL queries on metadata tables, and structured data retrieval
 
 ## Ontology Entity Model
 
-The ontology uses a per-instance entity model:
-- Each discovered entity gets its own UUID (`entity_id`) and row in `ontology_entities`.
-- `entity_type` (e.g. Person, Metric, Reference) is the class label -- many entity
-  instances can share the same `entity_type`. Multiple UUIDs per type is by design,
-  not a deduplication issue.
-- `instance_of` edges link table nodes (src=table FQN) to entity nodes (dst=entity UUID)
-  with a fixed weight of 1.0. The discovery confidence is on the entity node's
-  `quality_score`, not the edge weight.
+The ontology uses a **canonical concept node** model in graph_nodes:
+- There is exactly ONE graph node per entity type per ontology bundle, with a
+  deterministic ID: `entity::{{bundle}}::{{entity_name}}` (e.g. `entity::_default::Person`).
+- `instance_of` edges fan in from ALL tables classified as that entity type to the
+  single concept node. To find all "Person" tables, traverse instance_of edges from
+  the Person concept node.
+- `has_property` edges fan out from concept nodes to column nodes.
+- The `ontology_entities` table stores per-table discovery details (audit trail) but
+  these are NOT individual graph nodes.
 - Entity types come from the active ontology bundle (e.g. general.yaml, healthcare.yaml).
-  Only entities with matching source_tables were actually discovered in user data;
-  entity types that appear only in bundle definitions or relationship metadata
-  (without source_tables) are not confirmed in user tables.
-- Distinguish clearly between "entity types defined in the bundle" and "entity instances
-  actually discovered and mapped to tables in this catalog."
+  Only entities with matching source_tables were actually discovered in user data.
+- Multiple ontology bundles can coexist: `entity::fhir_r4::Patient` and
+  `entity::schema_org::Person` are separate concept nodes.
 
 ## Response Format
 

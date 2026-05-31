@@ -1515,7 +1515,7 @@ class TestResolveEdgeName:
                     target_entity="Person",
                 ),
             ],
-            relationships={"contains": {"target": "Product"}},
+            relationships={"contains": {"target": "Product"}, "purchased_at": {"target": "Location"}},
         )
         builder.discoverer._entity_def_map = {"Transaction": edef}
         builder.discoverer._edge_catalog = EdgeCatalog({
@@ -1535,14 +1535,19 @@ class TestResolveEdgeName:
         name = builder._resolve_edge_name("Transaction", "Person", "customer_id")
         assert name == "placed_by"
 
-    def test_legacy_relationship_block(self, builder):
-        """No column match but legacy relationships block has target -> returns that name."""
+    def test_legacy_relationship_block_blocklisted(self, builder):
+        """Blocklisted structural names in legacy relationships block fall through to 'references'."""
         name = builder._resolve_edge_name("Transaction", "Product", "product_id")
-        assert name == "contains"
+        assert name == "references"
+
+    def test_legacy_relationship_block_non_blocklisted(self, builder):
+        """Non-blocklisted names in legacy relationships block pass through."""
+        name = builder._resolve_edge_name("Transaction", "Location", None)
+        assert name == "purchased_at"
 
     def test_fallback_to_references(self, builder):
         """No match at all -> returns 'references'."""
-        name = builder._resolve_edge_name("Transaction", "Location", "location_id")
+        name = builder._resolve_edge_name("Transaction", "UnknownEntity", "location_id")
         assert name == "references"
 
 
