@@ -58,6 +58,8 @@ export default function GenieBuilder({ onNavigate, pipelineStats }) {
   const [catalogs, setCatalogs] = useState([])
   const [selectedCatalog, setSelectedCatalog] = useState('')
   const [tableFilter, setTableFilter] = useState('')
+  const [projects, setProjects] = useState([])
+  const [selectedProject, setSelectedProject] = useState('')
   const pollRef = useRef(null)
   const [elapsed, setElapsed] = useState(0)
   const timerRef = useRef(null)
@@ -79,6 +81,7 @@ export default function GenieBuilder({ onNavigate, pipelineStats }) {
     fetch('/api/semantic/metric-views?status=applied')
       .then(r => r.ok ? r.json() : []).then(d => { setMetricViews(d); setMvsLoading(false) })
       .catch(e => { setMvsLoading(false); setFetchErrors(prev => ({ ...prev, metricViews: e.message })) })
+    fetch('/api/semantic-layer/projects').then(r => r.ok ? r.json() : []).then(d => { if (Array.isArray(d)) setProjects(d) }).catch(() => {})
     fetch('/api/kpis').then(r => r.ok ? r.json() : []).then(setKpis)
       .catch(e => setFetchErrors(prev => ({ ...prev, kpis: e.message })))
     fetch('/api/config').then(r => r.ok ? r.json() : {}).then(c => {
@@ -93,6 +96,15 @@ export default function GenieBuilder({ onNavigate, pipelineStats }) {
     fetch('/api/genie/spaces').then(r => r.ok ? r.json() : []).then(setTrackedSpaces)
       .catch(e => setFetchErrors(prev => ({ ...prev, spaces: e.message })))
   }
+
+  useEffect(() => {
+    setMvsLoading(true)
+    const url = selectedProject
+      ? `/api/semantic/metric-views?status=applied&project_id=${selectedProject}`
+      : '/api/semantic/metric-views?status=applied'
+    fetch(url).then(r => r.ok ? r.json() : []).then(d => { setMetricViews(d); setMvsLoading(false) })
+      .catch(() => setMvsLoading(false))
+  }, [selectedProject])
 
   const catalogChangeRef = useRef(false)
   useEffect(() => {
@@ -324,10 +336,11 @@ export default function GenieBuilder({ onNavigate, pipelineStats }) {
       <div className="card p-4 text-xs text-slate-600 dark:text-slate-300 leading-relaxed space-y-1">
         <p className="font-semibold text-sm text-slate-700 dark:text-slate-200">How to build a Genie space</p>
         <ol className="list-decimal list-inside space-y-0.5 text-slate-500 dark:text-slate-400">
-          <li><strong>Select tables</strong> below. Expand each schema to pick tables and any applied metric views.</li>
+          <li><strong>Create metric views first</strong> (recommended) &mdash; go to the <em>Semantic Layer</em> tab, generate and validate metric views for your tables. Applied metric views become Genie data sources; validated (unapplied) ones contribute SQL snippets. Metric views give Genie pre-built measures and dimensions, improving answer quality.</li>
+          <li><strong>Select tables</strong> below. Expand each schema to pick tables and any applied metric views. When tables are selected, the AI generates joins, expressions, and SQL snippets. When only metric views are selected, the space is built from existing MV definitions without additional expression generation.</li>
           <li><strong>Add context</strong> (optional) &mdash; describe your business and key terminology to improve the AI output.</li>
           <li><strong>Add questions</strong> (optional) &mdash; write sample questions or click Suggest to auto-generate them from your tables.</li>
-          <li>Click <strong>Generate Genie Config</strong> &mdash; AI builds the space configuration including joins, instructions, and SQL snippets. Most builds take one to three minutes.</li>
+          <li>Click <strong>Generate Genie Config</strong> &mdash; AI builds the space configuration. Most builds take one to three minutes.</li>
           <li>Review the <strong>Config Preview</strong>, optionally refine, then enter a title and click <strong>Create Genie Space</strong> to deploy it.</li>
         </ol>
       </div>
@@ -344,6 +357,16 @@ export default function GenieBuilder({ onNavigate, pipelineStats }) {
             {!catalogs.length && selectedCatalog && <option value={selectedCatalog}>{selectedCatalog}</option>}
             {catalogs.map(c => <option key={c} value={c}>{c}</option>)}
           </select>
+          {projects.length > 0 && (
+            <select
+              value={selectedProject}
+              onChange={e => { setSelectedProject(e.target.value); setSelectedMVs(new Set()) }}
+              className="border border-slate-200 dark:border-slate-600 rounded-md px-3 py-1.5 text-sm bg-dbx-oat-light dark:bg-slate-700 text-slate-800 dark:text-slate-200"
+            >
+              <option value="">All projects</option>
+              {projects.map(p => <option key={p.project_id} value={p.project_id}>{p.project_name}</option>)}
+            </select>
+          )}
           <input
             type="text"
             value={tableFilter}

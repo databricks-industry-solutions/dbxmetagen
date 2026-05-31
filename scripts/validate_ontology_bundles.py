@@ -336,9 +336,68 @@ def validate_bundle(bundle_dir: Path, result: ValidationResult):
             result.warn(f"{bundle_dir}: Edge '{ename}' inverse '{inv}' not defined as an edge")
 
 
+def validate_standalone_bundle(yaml_path: Path, result: ValidationResult):
+    """Validate a root YAML bundle that has no tier subdirectory."""
+    raw = load_yaml(yaml_path)
+    if not raw or not isinstance(raw, dict):
+        result.error(f"{yaml_path}: Could not parse YAML")
+        return
+
+    ontology = raw.get("ontology", {})
+    entities_block = ontology.get("entities", {})
+    definitions = entities_block.get("definitions", {})
+    if not definitions:
+        result.error(f"{yaml_path}: No entity definitions found")
+        return
+
+    entity_names = set(definitions.keys())
+    is_formal = raw.get("metadata", {}).get("bundle_type") == "formal_ontology"
+
+    for name, defn in definitions.items():
+        if not isinstance(defn, dict):
+            result.error(f"{yaml_path}: Entity '{name}' definition must be a dict")
+            continue
+        if "description" not in defn:
+            result.warn(f"{yaml_path}: Entity '{name}' missing 'description'")
+
+        if not is_formal:
+            for rel_name, rel_info in (defn.get("relationships") or {}).items():
+                target = rel_info.get("target") if isinstance(rel_info, dict) else None
+                if target and target not in entity_names:
+                    result.warn(
+                        f"{yaml_path}: Entity '{name}' relationship '{rel_name}' "
+                        f"targets undefined entity '{target}'"
+                    )
+
+        validate_properties(
+            defn.get("properties"), name, yaml_path, result,
+            all_entities=entity_names,
+            edge_catalog_names=set(ontology.get("edge_catalog", {}).keys()),
+        )
+
+    edge_catalog = ontology.get("edge_catalog", {})
+    if not is_formal and edge_catalog:
+        for edge_name, info in edge_catalog.items():
+            if not isinstance(info, dict):
+                continue
+            domain = info.get("domain") or info.get("source")
+            rng = info.get("range") or info.get("target")
+            if domain and domain != "Any" and domain not in entity_names:
+                result.warn(f"{yaml_path}: edge_catalog '{edge_name}' domain '{domain}' not a defined entity")
+            if rng and rng != "Any" and rng not in entity_names:
+                result.warn(f"{yaml_path}: edge_catalog '{edge_name}' range '{rng}' not a defined entity")
+
+    # Check domains key vs domain_config (common authoring mistake)
+    if "domain_config" in raw and "domains" not in raw:
+        result.warn(
+            f"{yaml_path}: Uses 'domain_config' top-level key instead of 'domains'. "
+            "Domain classification will not read domains from this bundle."
+        )
+
+
 def main():
     parser = argparse.ArgumentParser(description="Validate ontology bundle YAMLs")
-    parser.add_argument("--bundle", help="Validate only this bundle (directory name)")
+    parser.add_argument("--bundle", help="Validate only this bundle (directory or YAML name)")
     parser.add_argument("--strict", action="store_true", help="Treat warnings as errors")
     args = parser.parse_args()
 
@@ -351,14 +410,29 @@ def main():
         if d.is_dir() and not d.name.startswith(".")
     )
 
+    # Find standalone bundles: YAML files with no corresponding tier subdir
+    existing_subdirs = {d.name for d in bundle_dirs}
+    standalone_yamls = sorted(
+        f for f in BUNDLES_DIR.iterdir()
+        if f.suffix == ".yaml" and f.stem not in existing_subdirs
+        and not f.name.startswith(".")
+    )
+
     if args.bundle:
         bundle_dirs = [d for d in bundle_dirs if d.name == args.bundle]
-        if not bundle_dirs:
-            print(f"Bundle '{args.bundle}' not found in {BUNDLES_DIR}")
-            sys.exit(1)
+        standalone_yamls = [f for f in standalone_yamls if f.stem == args.bundle]
+        if not bundle_dirs and not standalone_yamls:
+            # Also try matching against YAML files that DO have subdirs
+            yaml_match = BUNDLES_DIR / f"{args.bundle}.yaml"
+            if yaml_match.exists() and args.bundle in existing_subdirs:
+                pass  # will be validated via bundle_dirs
+            else:
+                print(f"Bundle '{args.bundle}' not found in {BUNDLES_DIR}")
+                sys.exit(1)
 
     total_errors = 0
     total_warnings = 0
+    bundles_checked = 0
 
     for bundle_dir in bundle_dirs:
         result = ValidationResult()
@@ -369,7 +443,7 @@ def main():
             status = "WARN"
 
         print(f"\n{'='*60}")
-        print(f"Bundle: {bundle_dir.name}  [{status}]")
+        print(f"Bundle: {bundle_dir.name}  [{status}]  (tiered)")
         print(f"  Entities: {len(collect_entity_names(bundle_dir))}")
         print(f"  Errors: {len(result.errors)}, Warnings: {len(result.warnings)}")
 
@@ -380,9 +454,35 @@ def main():
 
         total_errors += len(result.errors)
         total_warnings += len(result.warnings)
+        bundles_checked += 1
+
+    for yaml_path in standalone_yamls:
+        result = ValidationResult()
+        validate_standalone_bundle(yaml_path, result)
+
+        status = "PASS" if result.ok else "FAIL"
+        if result.warnings and result.ok:
+            status = "WARN"
+
+        raw = load_yaml(yaml_path)
+        entity_count = len((raw or {}).get("ontology", {}).get("entities", {}).get("definitions", {}))
+
+        print(f"\n{'='*60}")
+        print(f"Bundle: {yaml_path.stem}  [{status}]  (standalone)")
+        print(f"  Entities: {entity_count}")
+        print(f"  Errors: {len(result.errors)}, Warnings: {len(result.warnings)}")
+
+        for err in result.errors:
+            print(f"  ERROR: {err}")
+        for warn in result.warnings:
+            print(f"  WARN:  {warn}")
+
+        total_errors += len(result.errors)
+        total_warnings += len(result.warnings)
+        bundles_checked += 1
 
     print(f"\n{'='*60}")
-    print(f"Total: {len(bundle_dirs)} bundles, {total_errors} errors, {total_warnings} warnings")
+    print(f"Total: {bundles_checked} bundles, {total_errors} errors, {total_warnings} warnings")
 
     if total_errors > 0 or (args.strict and total_warnings > 0):
         sys.exit(1)

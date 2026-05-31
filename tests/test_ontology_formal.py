@@ -1343,5 +1343,281 @@ class TestAiClassifyTableFallback(unittest.TestCase):
                       "Should log a fallback message")
 
 
+# ---------------------------------------------------------------------------
+# Broadened ontology import: SKOS, SHACL, bare subclass, diagnostics
+# ---------------------------------------------------------------------------
+
+class TestSkosImport(unittest.TestCase):
+    """Verify owl_to_bundle_yaml handles SKOS concept schemes."""
+
+    def test_skos_concepts_discovered(self):
+        try:
+            import rdflib  # noqa: F401
+        except ImportError:
+            self.skipTest("rdflib not installed")
+
+        with tempfile.NamedTemporaryFile(suffix=".ttl", mode="w", delete=False) as f:
+            f.write("""
+            @prefix skos: <http://www.w3.org/2004/02/skos/core#> .
+            @prefix rdf:  <http://www.w3.org/1999/02/22-rdf-syntax-ns#> .
+            <http://ex.org/Cardiology> rdf:type skos:Concept ;
+                skos:prefLabel "Cardiology"@en ;
+                skos:altLabel "Heart Medicine"@en ;
+                skos:definition "Branch of medicine dealing with heart disorders" .
+            <http://ex.org/Neurology> rdf:type skos:Concept ;
+                skos:prefLabel "Neurology" ;
+                skos:broader <http://ex.org/Cardiology> .
+            """)
+            f.flush()
+            from dbxmetagen.ontology_import import owl_to_bundle_yaml
+            bundle = owl_to_bundle_yaml(f.name, bundle_name="skos_test")
+            defs = bundle["ontology"]["entities"]["definitions"]
+            self.assertIn("Cardiology", defs)
+            self.assertIn("Neurology", defs)
+            self.assertIn("cardiology", defs["Cardiology"]["keywords"])
+            self.assertIn("heart medicine", defs["Cardiology"]["keywords"])
+            self.assertEqual(defs["Cardiology"]["description"],
+                             "Branch of medicine dealing with heart disorders")
+            self.assertEqual(defs["Neurology"].get("parent"), "Cardiology")
+            self.assertNotIn("_diagnostics", bundle)
+            os.unlink(f.name)
+
+
+class TestShaclImport(unittest.TestCase):
+    """Verify owl_to_bundle_yaml handles SHACL NodeShapes."""
+
+    def test_shacl_shapes_discovered(self):
+        try:
+            import rdflib  # noqa: F401
+        except ImportError:
+            self.skipTest("rdflib not installed")
+
+        with tempfile.NamedTemporaryFile(suffix=".ttl", mode="w", delete=False) as f:
+            f.write("""
+            @prefix sh:   <http://www.w3.org/ns/shacl#> .
+            @prefix rdf:  <http://www.w3.org/1999/02/22-rdf-syntax-ns#> .
+            @prefix ex:   <http://ex.org/> .
+            ex:PersonShape rdf:type sh:NodeShape ;
+                sh:targetClass ex:Person ;
+                sh:description "Validates a Person record" ;
+                sh:name "Person Shape" ;
+                sh:property [
+                    sh:path ex:firstName ;
+                ] ;
+                sh:property [
+                    sh:path ex:lastName ;
+                ] .
+            """)
+            f.flush()
+            from dbxmetagen.ontology_import import owl_to_bundle_yaml
+            bundle = owl_to_bundle_yaml(f.name, bundle_name="shacl_test")
+            defs = bundle["ontology"]["entities"]["definitions"]
+            self.assertIn("PersonShape", defs)
+            self.assertEqual(defs["PersonShape"]["description"], "Validates a Person record")
+            self.assertIn("person shape", defs["PersonShape"]["keywords"])
+            self.assertIn("firstName", defs["PersonShape"]["typical_attributes"])
+            self.assertIn("lastName", defs["PersonShape"]["typical_attributes"])
+            os.unlink(f.name)
+
+    def test_shacl_deduplicates_against_owl_class(self):
+        try:
+            import rdflib  # noqa: F401
+        except ImportError:
+            self.skipTest("rdflib not installed")
+
+        with tempfile.NamedTemporaryFile(suffix=".ttl", mode="w", delete=False) as f:
+            f.write("""
+            @prefix owl:  <http://www.w3.org/2002/07/owl#> .
+            @prefix sh:   <http://www.w3.org/ns/shacl#> .
+            @prefix rdf:  <http://www.w3.org/1999/02/22-rdf-syntax-ns#> .
+            @prefix rdfs: <http://www.w3.org/2000/01/rdf-schema#> .
+            @prefix ex:   <http://ex.org/> .
+            ex:Patient rdf:type owl:Class ; rdfs:comment "A patient" .
+            ex:PatientShape rdf:type sh:NodeShape ;
+                sh:targetClass ex:Patient ;
+                sh:property [ sh:path ex:mrn ] .
+            """)
+            f.flush()
+            from dbxmetagen.ontology_import import owl_to_bundle_yaml
+            bundle = owl_to_bundle_yaml(f.name)
+            defs = bundle["ontology"]["entities"]["definitions"]
+            self.assertIn("Patient", defs)
+            # PatientShape should be skipped because it targets already-seen Patient
+            self.assertNotIn("PatientShape", defs)
+            os.unlink(f.name)
+
+
+class TestBareSubclassImport(unittest.TestCase):
+    """Verify bare rdfs:subClassOf subjects (not typed as owl:Class) are found."""
+
+    def test_bare_subclass_discovered(self):
+        try:
+            import rdflib  # noqa: F401
+        except ImportError:
+            self.skipTest("rdflib not installed")
+
+        with tempfile.NamedTemporaryFile(suffix=".ttl", mode="w", delete=False) as f:
+            f.write("""
+            @prefix rdfs: <http://www.w3.org/2000/01/rdf-schema#> .
+            @prefix ex:   <http://ex.org/> .
+            ex:Vehicle rdfs:subClassOf ex:Thing ;
+                rdfs:comment "A vehicle" .
+            ex:Car rdfs:subClassOf ex:Vehicle ;
+                rdfs:comment "A car" .
+            """)
+            f.flush()
+            from dbxmetagen.ontology_import import owl_to_bundle_yaml
+            bundle = owl_to_bundle_yaml(f.name)
+            defs = bundle["ontology"]["entities"]["definitions"]
+            self.assertIn("Vehicle", defs)
+            self.assertIn("Car", defs)
+            self.assertEqual(defs["Vehicle"].get("parent"), "Thing")
+            self.assertEqual(defs["Car"].get("parent"), "Vehicle")
+            os.unlink(f.name)
+
+
+class TestMixedOntologyImport(unittest.TestCase):
+    """Verify a file mixing OWL classes and SKOS concepts works."""
+
+    def test_mixed_owl_and_skos(self):
+        try:
+            import rdflib  # noqa: F401
+        except ImportError:
+            self.skipTest("rdflib not installed")
+
+        with tempfile.NamedTemporaryFile(suffix=".ttl", mode="w", delete=False) as f:
+            f.write("""
+            @prefix owl:  <http://www.w3.org/2002/07/owl#> .
+            @prefix skos: <http://www.w3.org/2004/02/skos/core#> .
+            @prefix rdf:  <http://www.w3.org/1999/02/22-rdf-syntax-ns#> .
+            @prefix rdfs: <http://www.w3.org/2000/01/rdf-schema#> .
+            @prefix ex:   <http://ex.org/> .
+            ex:Patient rdf:type owl:Class ; rdfs:comment "A patient" .
+            ex:Diagnosis rdf:type skos:Concept ;
+                skos:prefLabel "Diagnosis" ;
+                skos:definition "A clinical diagnosis" .
+            """)
+            f.flush()
+            from dbxmetagen.ontology_import import owl_to_bundle_yaml
+            bundle = owl_to_bundle_yaml(f.name)
+            defs = bundle["ontology"]["entities"]["definitions"]
+            self.assertIn("Patient", defs)
+            self.assertIn("Diagnosis", defs)
+            os.unlink(f.name)
+
+
+class TestZeroEntityDiagnostics(unittest.TestCase):
+    """Verify diagnostics are produced when 0 entities are extracted."""
+
+    def test_dcat_file_produces_diagnostics(self):
+        try:
+            import rdflib  # noqa: F401
+        except ImportError:
+            self.skipTest("rdflib not installed")
+
+        with tempfile.NamedTemporaryFile(suffix=".ttl", mode="w", delete=False) as f:
+            f.write("""
+            @prefix dcat: <http://www.w3.org/ns/dcat#> .
+            @prefix dct:  <http://purl.org/dc/terms/> .
+            @prefix rdf:  <http://www.w3.org/1999/02/22-rdf-syntax-ns#> .
+            <http://ex.org/ds1> rdf:type dcat:Dataset ;
+                dct:title "Sales data" ;
+                dct:description "Monthly sales figures" .
+            <http://ex.org/ds2> rdf:type dcat:Dataset ;
+                dct:title "Inventory data" .
+            """)
+            f.flush()
+            from dbxmetagen.ontology_import import owl_to_bundle_yaml
+            bundle = owl_to_bundle_yaml(f.name)
+            defs = bundle["ontology"]["entities"]["definitions"]
+            self.assertEqual(len(defs), 0)
+            self.assertIn("_diagnostics", bundle)
+            diag = bundle["_diagnostics"]
+            self.assertGreater(diag["total_triples"], 0)
+            self.assertIn("DCAT", diag["hint"])
+            os.unlink(f.name)
+
+    def test_empty_file_diagnostics(self):
+        try:
+            import rdflib  # noqa: F401
+        except ImportError:
+            self.skipTest("rdflib not installed")
+
+        with tempfile.NamedTemporaryFile(suffix=".ttl", mode="w", delete=False) as f:
+            f.write("")
+            f.flush()
+            from dbxmetagen.ontology_import import owl_to_bundle_yaml
+            bundle = owl_to_bundle_yaml(f.name)
+            self.assertIn("_diagnostics", bundle)
+            self.assertEqual(bundle["_diagnostics"]["total_triples"], 0)
+            os.unlink(f.name)
+
+
+class TestFormatDetection(unittest.TestCase):
+    """Verify the extension-based format detection map."""
+
+    def test_ext_format_map(self):
+        from dbxmetagen.ontology_import import _EXT_FORMAT
+        self.assertEqual(_EXT_FORMAT[".ttl"], "turtle")
+        self.assertEqual(_EXT_FORMAT[".owl"], "xml")
+        self.assertEqual(_EXT_FORMAT[".rdf"], "xml")
+        self.assertEqual(_EXT_FORMAT[".jsonld"], "json-ld")
+        self.assertEqual(_EXT_FORMAT[".nt"], "nt")
+        self.assertEqual(_EXT_FORMAT[".n3"], "n3")
+
+    def test_ntriples_import(self):
+        try:
+            import rdflib  # noqa: F401
+        except ImportError:
+            self.skipTest("rdflib not installed")
+
+        with tempfile.NamedTemporaryFile(suffix=".nt", mode="w", delete=False) as f:
+            f.write(
+                '<http://ex.org/Dog> <http://www.w3.org/1999/02/22-rdf-syntax-ns#type> '
+                '<http://www.w3.org/2002/07/owl#Class> .\n'
+                '<http://ex.org/Dog> <http://www.w3.org/2000/01/rdf-schema#comment> '
+                '"A dog" .\n'
+            )
+            f.flush()
+            from dbxmetagen.ontology_import import owl_to_bundle_yaml
+            bundle = owl_to_bundle_yaml(f.name)
+            defs = bundle["ontology"]["entities"]["definitions"]
+            self.assertIn("Dog", defs)
+            os.unlink(f.name)
+
+
+class TestKeywordEnrichment(unittest.TestCase):
+    """Verify _get_keywords extracts from multiple label predicates."""
+
+    def test_keywords_from_multiple_sources(self):
+        try:
+            import rdflib  # noqa: F401
+        except ImportError:
+            self.skipTest("rdflib not installed")
+
+        with tempfile.NamedTemporaryFile(suffix=".ttl", mode="w", delete=False) as f:
+            f.write("""
+            @prefix skos: <http://www.w3.org/2004/02/skos/core#> .
+            @prefix rdfs: <http://www.w3.org/2000/01/rdf-schema#> .
+            @prefix rdf:  <http://www.w3.org/1999/02/22-rdf-syntax-ns#> .
+            <http://ex.org/MI> rdf:type skos:Concept ;
+                rdfs:label "Myocardial Infarction"@en ;
+                skos:prefLabel "Heart Attack"@en ;
+                skos:altLabel "MI"@en ;
+                skos:hiddenLabel "coronary event" ;
+                skos:notation "I21" .
+            """)
+            f.flush()
+            from dbxmetagen.ontology_import import owl_to_bundle_yaml
+            bundle = owl_to_bundle_yaml(f.name)
+            kw = bundle["ontology"]["entities"]["definitions"]["MI"]["keywords"]
+            self.assertIn("mi", kw)
+            self.assertIn("heart attack", kw)
+            self.assertIn("myocardial infarction", kw)
+            self.assertIn("coronary event", kw)
+            self.assertIn("i21", kw)
+            os.unlink(f.name)
+
+
 if __name__ == "__main__":
     unittest.main()

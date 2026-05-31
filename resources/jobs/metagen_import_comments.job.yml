@@ -53,6 +53,8 @@ resources:
           default: "databricks-claude-sonnet-4-6"
         - name: spacy_model_names
           default: ${var.spacy_model_names}
+        - name: use_customer_context
+          default: "false"
 
       tasks:
         - task_key: bootstrap_knowledge_bases
@@ -119,6 +121,7 @@ resources:
               include_previously_failed_tables: "{{job.parameters.include_previously_failed_tables}}"
               include_existing_table_comment: "true"
               use_kb_comments: "true"
+              use_customer_context: "{{job.parameters.use_customer_context}}"
               ontology_bundle: "{{job.parameters.ontology_bundle}}"
               domain_config_path: "{{job.parameters.domain_config_path}}"
               sample_size: "{{job.parameters.sample_size}}"
@@ -151,6 +154,7 @@ resources:
               include_previously_failed_tables: "{{job.parameters.include_previously_failed_tables}}"
               include_existing_table_comment: "true"
               use_kb_comments: "true"
+              use_customer_context: "{{job.parameters.use_customer_context}}"
               ontology_bundle: "{{job.parameters.ontology_bundle}}"
               domain_config_path: "{{job.parameters.domain_config_path}}"
               sample_size: "{{job.parameters.sample_size}}"

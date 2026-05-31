@@ -9,17 +9,20 @@ GRAPH_SCHEMA_CONTEXT = """
 === KNOWLEDGE GRAPH SCHEMA ===
 
 TABLE: public.graph_nodes
-  Primary key: id (STRING) -- fully qualified identifier, e.g. "catalog.schema.table" or "catalog.schema.table.column"
+  Primary key: id (STRING) -- fully qualified identifier:
+    - Tables: "catalog.schema.table"
+    - Columns: "catalog.schema.table.column"
+    - Entity concepts: "entity::{bundle}::{EntityName}" (one per type per ontology)
   Key columns:
     node_type     -- one of: table, column, schema, entity
     domain        -- business domain classification
     parent_id     -- parent node id (column -> table, table -> schema; NULL for entities)
     display_name  -- human-readable label
     short_description -- AI-generated one-line summary
-    ontology_id   -- linked ontology entity id (if classified)
+    ontology_id   -- linked ontology entity id (for entity nodes: same as id)
     ontology_type -- entity type classification (for entity nodes)
     sensitivity   -- data sensitivity level (public, PII, PHI)
-    status        -- lifecycle status or entity role (discovered, primary, referenced)
+    status        -- lifecycle status (discovered, primary, referenced)
     source_system -- origin: "knowledge_graph" or "ontology"
     comment       -- full AI-generated description
     has_pii, has_phi -- boolean flags

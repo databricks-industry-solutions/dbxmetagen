@@ -87,14 +87,15 @@ Output a JSON object wrapped in ```json ``` fences with these fields ONLY:
 
 RULES:
 - 5-8 sample_questions: plain English, no SQL jargon, clickable for business users.
-- text instructions: CONCISE, under 2000 characters. Structure as follows:
+  sample_questions MUST be answerable using only the columns, measures, and dimensions present in the data sources above. Never reference concepts, entities, or relationships not in the schema.
+  Each question must represent a DIFFERENT analytical intent -- mix comparisons, trends, rankings, anomaly detection, correlations, and breakdowns. NEVER produce multiple questions of the form "What is [metric] by [dimension]?"
+- text instructions: MUST be 20 lines or fewer (Genie truncates longer instructions). Structure as follows:
   (0) Open with 1-2 plain sentences summarizing what the data covers, the key entities, and the primary analytical use cases. Do NOT use a heading for this intro.
   (1) ## Column Disambiguation -- columns with the SAME NAME in multiple tables
   (2) ## Business Rules -- non-obvious business rules or calculation conventions
   (3) ## Date & Unit Notes -- critical date/unit handling notes
   Do NOT repeat table descriptions, list all columns, or describe what each table contains -- other sections carry that detail.
-- Only generate join_specs for relationships NOT covered by pre-built joins.
-  If no pre-built joins exist but FK relationships or shared columns are in context, generate join_specs.
+- join_specs: If all data_sources are metric_views (no tables), output an EMPTY join_specs array. Metric views are self-contained -- they cannot be joined via FK relationships. Only generate join_specs when tables are present and relationships are NOT covered by pre-built joins.
   Format: {{"left": {{"identifier": "catalog.schema.t1"}}, "right": {{"identifier": "catalog.schema.t2"}}, "sql": ["t1.col = t2.col"]}}
 - Output ONLY JSON. No explanation.
 """
@@ -118,22 +119,13 @@ Output a JSON object wrapped in ```json ``` fences:
   ]
 }}
 
-Generate 10 diverse example_sql pairs covering these patterns:
-1. Simple aggregation (non-parameterized)
-2. Multi-table join using FK relationships from context (non-parameterized)
-3. Time-series trend GROUP BY date dimension (non-parameterized)
-4. Filtered query with a :parameter for a categorical column like status or strategy (parameterized)
-5. Top-N or ratio query with a :parameter for a threshold or date filter (parameterized)
-6. Window function -- running total, rank, or lag/lead comparison (non-parameterized)
-7. CASE WHEN segmentation or bucketing (non-parameterized)
-8. Subquery or CTE for a derived metric (non-parameterized)
-9. Multi-join across 3+ tables if available (non-parameterized)
-10. Date comparison -- YoY, MoM, or period-over-period (parameterized with :date or :period)
+{patterns}
 
 RULES:
 - SQL must use fully qualified identifiers (catalog.schema.table or catalog.schema.metric_view).
 - Each question must be different. Cover diverse analytical patterns.
-- For parameterized queries (patterns 4, 5, 10):
+- NEVER generate multiple examples with the same query shape. Each must be structurally unique.
+- For parameterized queries:
   - Use :param_name syntax in SQL for user-adjustable values
   - Include "parameters" array with name, type_hint (STRING, INT, or DATE), and default_value.values
   - Include "usage_guidance" with a short note on when to use the query
@@ -143,11 +135,137 @@ RULES:
 
 _MV_GUIDANCE_BLOCK = """
 === METRIC VIEW GUIDANCE ===
-The data_sources include metric views. Metric views are queryable using standard SQL just like tables:
-  SELECT dimension, measure FROM catalog.schema.metric_view_name GROUP BY dimension
-They expose pre-defined measures (aggregations) and dimensions (grouping columns).
-Generate example SQL that queries metric views directly -- they are first-class data sources.
-{seed_examples}"""
+The data_sources include metric views. Metric views expose pre-defined measures and dimensions.
+CRITICAL RULES:
+1. Measure columns MUST be wrapped in MEASURE(): SELECT dim, MEASURE(measure_col) FROM fq_mv GROUP BY ALL
+2. Dimension and measure names that contain spaces MUST be backtick-quoted:
+   SELECT `System Organ Class`, MEASURE(`Serious AE Rate (Grade 3+)`) FROM catalog.schema.mv GROUP BY ALL
+3. MEASURE() CANNOT be used inside window functions or as argument to other aggregates.
+4. Use bare dimension names -- no table prefix.
+5. Always use fully qualified metric view names (catalog.schema.metric_view_name).
+ANTI-PATTERN (FORBIDDEN): Do NOT produce examples that all look like:
+  SELECT `dim`, MEASURE(`x`) FROM mv GROUP BY ALL ORDER BY MEASURE(`x`) DESC
+Instead EVERY example must use a DIFFERENT analytical shape:
+  - Multi-measure: SELECT `dim`, MEASURE(`a`), MEASURE(`b`) FROM mv GROUP BY ALL
+  - Ratio: SELECT `dim`, MEASURE(`a`) / MEASURE(`b`) AS ratio FROM mv GROUP BY ALL
+  - HAVING: SELECT `dim`, MEASURE(`x`) FROM mv GROUP BY ALL HAVING MEASURE(`x`) > threshold
+  - Filtered: SELECT `dim`, MEASURE(`x`) FROM mv WHERE `dim` = 'value' GROUP BY ALL
+  - Multi-dimension: SELECT `dim1`, `dim2`, MEASURE(`x`) FROM mv GROUP BY ALL
+"""
+
+_TABLE_PHASE2_PATTERNS = (
+    "Generate 10 diverse example_sql pairs. Each MUST use a different query structure:\n"
+    "1. Simple aggregation -- SUM, COUNT, AVG with GROUP BY (non-parameterized)\n"
+    "2. Multi-table JOIN using FK relationships from context (non-parameterized)\n"
+    "3. Time-series trend -- GROUP BY date/month dimension (non-parameterized)\n"
+    "4. Filtered query with a :parameter for a categorical column (parameterized)\n"
+    "5. Top-N or ratio -- ranking or proportion calculation (parameterized with :limit or :date)\n"
+    "6. Window function -- running total, RANK, or LAG/LEAD comparison (non-parameterized)\n"
+    "7. CASE WHEN -- segmentation, bucketing, or conditional logic (non-parameterized)\n"
+    "8. Subquery or CTE -- derived metric or intermediate calculation (non-parameterized)\n"
+    "9. Multi-join across 3+ tables if available (non-parameterized)\n"
+    "10. Date comparison -- YoY, MoM, or period-over-period (parameterized with :date or :period)\n"
+    "CRITICAL: If any two examples share the same SELECT-GROUP BY-ORDER BY skeleton, the output is INVALID."
+)
+
+_MV_ONLY_PHASE2_PATTERNS = (
+    "Generate 5 diverse example_sql pairs for metric view queries. "
+    "Each MUST use MEASURE() with fully qualified metric view names and GROUP BY ALL.\n"
+    "IMPORTANT: Backtick-quote ALL dimension and measure names that contain spaces.\n"
+    "1. Multi-measure comparison -- SELECT `dim`, MEASURE(`a`), MEASURE(`b`) FROM catalog.schema.mv GROUP BY ALL (non-parameterized)\n"
+    "2. Ratio -- SELECT `dim`, MEASURE(`x`) / MEASURE(`y`) AS ratio_name FROM catalog.schema.mv GROUP BY ALL (non-parameterized)\n"
+    "3. Filtered with parameter -- SELECT `dim`, MEASURE(`x`) FROM catalog.schema.mv WHERE `dim` = :param GROUP BY ALL (parameterized)\n"
+    "4. HAVING threshold -- SELECT `dim`, MEASURE(`x`) FROM catalog.schema.mv GROUP BY ALL HAVING MEASURE(`x`) > value (non-parameterized)\n"
+    "5. Multi-dimension breakdown -- SELECT `dim1`, `dim2`, MEASURE(`x`) FROM catalog.schema.mv GROUP BY ALL (non-parameterized)\n"
+    "Use bare dimension names (no table prefix). Do NOT use MEASURE() inside window functions or CTEs."
+)
+
+_MV_ONLY_PHASE2_QUESTION_DRIVEN = """For each of the following business questions, write a SQL query using MEASURE() that answers it.
+Use the metric views and their dimensions/measures described in the context above.
+
+QUESTIONS TO ANSWER:
+{questions}
+
+RULES:
+- Generate one example_sql entry per question (target: {count} total).
+- Every query MUST use MEASURE() for measure columns and GROUP BY ALL.
+- Always use fully qualified metric view names (catalog.schema.metric_view_name).
+- Backtick-quote ALL dimension and measure names that contain spaces.
+- MEASURE() CANNOT be used inside window functions or as argument to other aggregates.
+- Use bare dimension names (no table prefix on dimensions).
+- Vary query complexity: some should use multiple measures, some should use ratios (MEASURE(a)/MEASURE(b)),
+  some should use HAVING thresholds, some should filter with WHERE on a dimension, some should break down by multiple dimensions.
+- For at least 2 queries, use derived calculations: MEASURE(a) - MEASURE(b), MEASURE(a) / NULLIF(MEASURE(b), 0), etc.
+- For at least 2 queries, add ORDER BY MEASURE(...) DESC LIMIT 10 for top-N analysis.
+- If a question spans concepts from multiple metric views, pick the single best metric view that covers it.
+- Do NOT use MEASURE() inside window functions or CTEs.
+"""
+
+
+def _get_phase2_patterns(mv_only: bool) -> str:
+    """Return the appropriate Phase 2 pattern block."""
+    return _MV_ONLY_PHASE2_PATTERNS if mv_only else _TABLE_PHASE2_PATTERNS
+
+
+def _build_mv_fallback_examples(data_sources: dict) -> list[dict]:
+    """Generate diverse deterministic MEASURE() examples when LLM examples all fail validation."""
+    mvs = data_sources.get("metric_views", [])
+    if not mvs:
+        return []
+
+    def _q(name: str) -> str:
+        return f"`{name}`" if " " in name else name
+
+    examples: list[dict] = []
+    for mv in mvs:
+        fq = mv.get("identifier", "")
+        dims = mv.get("_dimensions", [])
+        measures = mv.get("_measures", [])
+        if not dims or not measures:
+            continue
+
+        d0 = dims[0]
+        m0 = measures[0]
+        # Pattern 1: single dimension + single measure
+        examples.append({
+            "question": f"What is {m0} by {d0}?",
+            "sql": f"SELECT {_q(d0)}, MEASURE({_q(m0)}) FROM {fq} GROUP BY ALL",
+        })
+        # Pattern 2: multi-measure (if available)
+        if len(measures) >= 2:
+            m1 = measures[1]
+            examples.append({
+                "question": f"Compare {m0} and {m1} by {d0}",
+                "sql": f"SELECT {_q(d0)}, MEASURE({_q(m0)}), MEASURE({_q(m1)}) FROM {fq} GROUP BY ALL",
+            })
+        # Pattern 3: multi-dimension (if available)
+        if len(dims) >= 2:
+            d1 = dims[1]
+            examples.append({
+                "question": f"Break down {m0} by {d0} and {d1}",
+                "sql": f"SELECT {_q(d0)}, {_q(d1)}, MEASURE({_q(m0)}) FROM {fq} GROUP BY ALL",
+            })
+        # Pattern 4: HAVING threshold
+        if len(measures) >= 1:
+            examples.append({
+                "question": f"Which {d0} values have significant {m0}?",
+                "sql": f"SELECT {_q(d0)}, MEASURE({_q(m0)}) FROM {fq} GROUP BY ALL HAVING MEASURE({_q(m0)}) > 0",
+            })
+        # Pattern 5: ratio (if 2+ measures)
+        if len(measures) >= 2:
+            m1 = measures[1]
+            examples.append({
+                "question": f"What is the ratio of {m0} to {m1} by {d0}?",
+                "sql": f"SELECT {_q(d0)}, MEASURE({_q(m0)}) / NULLIF(MEASURE({_q(m1)}), 0) AS ratio FROM {fq} GROUP BY ALL",
+            })
+
+    return examples[:8]
+
+_MV_ONLY_PHASE3_EXTRA = """
+IMPORTANT: This space uses ONLY metric views (no raw tables). All snippet column references
+should use metric view measure/dimension names directly, NOT table.column format.
+Measures are pre-aggregated -- reference them by name as they appear in the metric view definition.
+"""
 
 # -- Phase 3: SQL Snippets --
 _PHASE3_PROMPT = _CONTEXT_BLOCK + """
@@ -413,21 +531,18 @@ def run_genie_agent(
                     serialized.setdefault("instructions", {})["join_specs"] = extra_joins
                 phases_completed += 1
 
+        ref_mv_only = bool(
+            context.get("data_sources", {}).get("metric_views")
+            and not context.get("data_sources", {}).get("tables")
+        )
         if 2 in target_phases:
             progress_queue.put({"stage": "generating", "message": "Refining example SQL..."})
-            ref_mv_guidance = ""
-            if context.get("data_sources", {}).get("metric_views"):
-                ref_seeds = context.get("mv_seed_examples", [])
-                ref_seed_text = ""
-                if ref_seeds:
-                    ref_seed_text = "\nReference examples (metric view queries):\n" + "\n".join(
-                        f'  Q: {s["question"]}\n  SQL: {s["sql"]}' for s in ref_seeds[:4]
-                    )
-                ref_mv_guidance = _MV_GUIDANCE_BLOCK.format(seed_examples=ref_seed_text)
+            ref_mv_guidance = _MV_GUIDANCE_BLOCK if context.get("data_sources", {}).get("metric_views") else ""
             p2_prompt = (_PHASE2_PROMPT + SAFETY_PROMPT_BLOCK).format(
                 **ctx_subs,
                 description=serialized.get("description", ""),
                 mv_guidance=ref_mv_guidance,
+                patterns=_get_phase2_patterns(ref_mv_only),
             ) + feedback_suffix
             p2 = _llm_phase(llm, p2_prompt, "Revise the example_sql JSON now.", "refine_sql")
             if p2:
@@ -437,7 +552,10 @@ def run_genie_agent(
 
         if 3 in target_phases:
             progress_queue.put({"stage": "generating", "message": "Refining SQL snippets..."})
-            p3_prompt = (_PHASE3_PROMPT + SAFETY_PROMPT_BLOCK).format(
+            ref_p3_base = _PHASE3_PROMPT
+            if ref_mv_only:
+                ref_p3_base = ref_p3_base + _MV_ONLY_PHASE3_EXTRA
+            p3_prompt = (ref_p3_base + SAFETY_PROMPT_BLOCK).format(
                 **ctx_subs,
                 sql_snippets=json.dumps(context.get("sql_snippets", {}), indent=2),
             ) + feedback_suffix
@@ -458,7 +576,16 @@ def run_genie_agent(
 
         # Phase 1: Core Config
         progress_queue.put({"stage": "generating", "message": "Phase 1/3: Generating core config..."})
-        p1_prompt = (_PHASE1_PROMPT + SAFETY_PROMPT_BLOCK).format(
+        mv_only = bool(
+            context.get("data_sources", {}).get("metric_views")
+            and not context.get("data_sources", {}).get("tables")
+        )
+        p1_mv_extra = (
+            "\nOVERRIDE: Generate 12-15 sample_questions (not 5-8) because this space uses only metric views "
+            "and the questions will be used to generate example SQL. Make them analytically rich and diverse -- "
+            "include comparisons, ratios, top-N, threshold analysis, multi-dimension breakdowns, and trend questions."
+        ) if mv_only else ""
+        p1_prompt = (_PHASE1_PROMPT + p1_mv_extra + SAFETY_PROMPT_BLOCK).format(
             **ctx_subs,
             join_specs=json.dumps(context.get("join_specs", []), indent=2),
             questions=questions_text,
@@ -466,7 +593,13 @@ def run_genie_agent(
         p1 = _llm_phase(llm, p1_prompt, "Generate the core Genie config JSON now.", "core")
         if p1:
             serialized["description"] = p1.get("description", "")
-            serialized["instructions"] = {"text": p1.get("instructions", {}).get("text", "")}
+            inst_text = p1.get("instructions", {}).get("text", "")
+            # Genie truncates instructions beyond 20 lines
+            lines = inst_text.split("\n")
+            if len(lines) > 20:
+                logger.info("Truncating instructions from %d to 20 lines", len(lines))
+                inst_text = "\n".join(lines[:20])
+            serialized["instructions"] = {"text": inst_text}
             serialized["sample_questions"] = p1.get("sample_questions", [])
             extra_joins = p1.get("join_specs", [])
             if extra_joins:
@@ -479,19 +612,19 @@ def run_genie_agent(
 
         # Phase 2: Example SQL
         progress_queue.put({"stage": "generating", "message": "Phase 2/3: Generating example SQL..."})
-        mv_guidance = ""
-        mv_seeds = context.get("mv_seed_examples", [])
-        if context.get("data_sources", {}).get("metric_views"):
-            seed_text = ""
-            if mv_seeds:
-                seed_text = "\nReference examples (metric view queries):\n" + "\n".join(
-                    f'  Q: {s["question"]}\n  SQL: {s["sql"]}' for s in mv_seeds[:4]
-                )
-            mv_guidance = _MV_GUIDANCE_BLOCK.format(seed_examples=seed_text)
+        mv_guidance = _MV_GUIDANCE_BLOCK if context.get("data_sources", {}).get("metric_views") else ""
+        if mv_only and serialized.get("sample_questions"):
+            questions_block = "\n".join(f"- {q}" for q in serialized["sample_questions"])
+            patterns = _MV_ONLY_PHASE2_QUESTION_DRIVEN.format(
+                questions=questions_block, count=len(serialized["sample_questions"])
+            )
+        else:
+            patterns = _get_phase2_patterns(mv_only)
         p2_prompt = (_PHASE2_PROMPT + SAFETY_PROMPT_BLOCK).format(
             **ctx_subs,
             description=serialized.get("description", ""),
             mv_guidance=mv_guidance,
+            patterns=patterns,
         )
         p2 = _llm_phase(llm, p2_prompt, "Generate the example_sql JSON now.", "example_sql")
         if p2:
@@ -501,34 +634,34 @@ def run_genie_agent(
             logger.warning("Phase 2 (example_sql) failed -- continuing without examples")
             serialized["instructions"]["example_sql"] = []
 
-        # Phase 3: SQL Snippets
-        progress_queue.put({"stage": "generating", "message": "Phase 3/3: Generating SQL snippets..."})
-        p3_prompt = (_PHASE3_PROMPT + SAFETY_PROMPT_BLOCK).format(
-            **ctx_subs,
-            sql_snippets=json.dumps(context.get("sql_snippets", {}), indent=2),
-        )
-        p3 = _llm_phase(llm, p3_prompt, "Generate the sql_snippets JSON now.", "snippets")
-        if p3:
-            snippets = p3.get("sql_snippets", p3)
-            if isinstance(snippets, dict) and any(k in snippets for k in ("measures", "filters", "expressions")):
-                serialized["instructions"]["sql_snippets"] = snippets
+        # Phase 3: SQL Snippets (skip for MV-only -- pre-built MV snippets are sufficient)
+        p3 = None
+        if mv_only:
+            logger.info("MV-only mode: skipping Phase 3 snippet generation (pre-built snippets cover all measures/dimensions)")
         else:
-            logger.warning("Phase 3 (snippets) failed -- continuing without extra snippets")
-
-    # ---- Merge MV seed examples before validation so they get checked too ----
-    mv_seeds = context.get("mv_seed_examples", [])
-    if mv_seeds:
-        existing = serialized.get("instructions", {}).get("example_sql", [])
-        existing_sqls = {(e.get("sql") or "").strip().lower() for e in existing}
-        for seed in mv_seeds:
-            if seed["sql"].strip().lower() not in existing_sqls:
-                existing.append(seed)
-                existing_sqls.add(seed["sql"].strip().lower())
-        serialized.setdefault("instructions", {})["example_sql"] = existing
+            progress_queue.put({"stage": "generating", "message": "Phase 3/3: Generating SQL snippets..."})
+            p3_base = _PHASE3_PROMPT
+            p3_prompt = (p3_base + SAFETY_PROMPT_BLOCK).format(
+                **ctx_subs,
+                sql_snippets=json.dumps(context.get("sql_snippets", {}), indent=2),
+            )
+            p3 = _llm_phase(llm, p3_prompt, "Generate the sql_snippets JSON now.", "snippets")
+            if p3:
+                snippets = p3.get("sql_snippets", p3)
+                if isinstance(snippets, dict) and any(k in snippets for k in ("measures", "filters", "expressions")):
+                    serialized["instructions"]["sql_snippets"] = snippets
+            else:
+                logger.warning("Phase 3 (snippets) failed -- continuing without extra snippets")
 
     # ---- SQL validation ----
     progress_queue.put({"stage": "validating_sql"})
     serialized = _validate_and_strip_sql(serialized, ws, warehouse_id, progress_queue)
+
+    # Log how many MV examples survived validation (no fallback -- prefer none over weak ones)
+    if mv_only:
+        inst_check = serialized.get("instructions", {})
+        examples_check = inst_check.get("example_sql") or inst_check.get("example_question_sqls") or []
+        logger.info("MV-only: %d example_sql survived validation", len(examples_check))
 
     # ---- Post-processing ----
     progress_queue.put({"stage": "parsing"})
@@ -714,13 +847,17 @@ def _validate_output(raw: dict, context: dict | None = None) -> list[str]:
     examples = inst.get("example_sql") or inst.get("example_question_sqls") or []
     if len(examples) < 5:
         warnings.append(f"Only {len(examples)} example_sql pairs (target: 10)")
-    snip = inst.get("sql_snippets") or raw.get("sql_snippets") or {}
-    if len(snip.get("measures", [])) < 2:
-        warnings.append(f"Only {len(snip.get('measures', []))} measures (target: 3+)")
-    if len(snip.get("filters", [])) < 2:
-        warnings.append(f"Only {len(snip.get('filters', []))} filters (target: 3+)")
-    if len(snip.get("expressions", [])) < 1:
-        warnings.append(f"Only {len(snip.get('expressions', []))} expressions (target: 2+)")
+    # Snippet thresholds only apply to table-based rooms; MV rooms have Genie
+    # auto-discover measures/dimensions from the metric view definitions.
+    is_mv_only = bool(ds.get("metric_views") and not ds.get("tables"))
+    if not is_mv_only:
+        snip = inst.get("sql_snippets") or raw.get("sql_snippets") or {}
+        if len(snip.get("measures", [])) < 2:
+            warnings.append(f"Only {len(snip.get('measures', []))} measures (target: 3+)")
+        if len(snip.get("filters", [])) < 2:
+            warnings.append(f"Only {len(snip.get('filters', []))} filters (target: 3+)")
+        if len(snip.get("expressions", [])) < 1:
+            warnings.append(f"Only {len(snip.get('expressions', []))} expressions (target: 2+)")
     sqs = raw.get("sample_questions", [])
     if len(sqs) < 4:
         warnings.append(f"Only {len(sqs)} sample questions (target: 5+)")

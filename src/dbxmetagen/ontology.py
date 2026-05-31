@@ -818,6 +818,9 @@ class OntologyLoader:
                     if config and "ontology" in config:
                         loaded_config = config.get("ontology", {})
                         OntologyLoader._validate_config(loaded_config)
+                        metadata = config.get("metadata", {})
+                        is_formal = metadata.get("bundle_type") == "formal_ontology"
+                        OntologyLoader._validate_cross_refs(loaded_config, is_formal)
                         if "metadata" in config:
                             loaded_config["_bundle_metadata"] = config["metadata"]
                         fmt_ver = config.get("metadata", {}).get("format_version", "1.0")
@@ -900,6 +903,66 @@ class OntologyLoader:
                     raise ValueError(
                         f"validation.{key} must be numeric, got {type(val).__name__}"
                     )
+
+    _VALID_PROPERTY_ROLES = frozenset({
+        "primary_key", "business_key", "object_property", "measure",
+        "dimension", "temporal", "geographic", "label", "audit",
+        "derived", "composite_component",
+    })
+
+    @staticmethod
+    def _validate_cross_refs(config: Dict[str, Any], is_formal: bool = False) -> None:
+        """Warn on referential integrity issues (never raises).
+
+        Skipped for formal ontologies where relationship targets commonly
+        reference FHIR datatypes (Reference, CodeableConcept, etc.) that
+        are not entity definitions.
+        """
+        try:
+            definitions = config.get("entities", {}).get("definitions", {})
+            entity_names = set(definitions.keys())
+
+            if not is_formal:
+                for name, defn in definitions.items():
+                    if not isinstance(defn, dict):
+                        continue
+                    for rel_name, rel_info in (defn.get("relationships") or {}).items():
+                        target = rel_info.get("target") if isinstance(rel_info, dict) else None
+                        if target and target not in entity_names:
+                            logger.warning(
+                                "Entity '%s' relationship '%s' targets undefined entity '%s'",
+                                name, rel_name, target,
+                            )
+
+                    for prop_name, prop_info in (defn.get("properties") or {}).items():
+                        if not isinstance(prop_info, dict):
+                            continue
+                        role = prop_info.get("role")
+                        if role and role not in OntologyLoader._VALID_PROPERTY_ROLES:
+                            logger.warning(
+                                "Entity '%s' property '%s' uses unknown role '%s'",
+                                name, prop_name, role,
+                            )
+
+            edge_catalog = config.get("edge_catalog", {})
+            if not is_formal and edge_catalog:
+                for edge_name, info in edge_catalog.items():
+                    if not isinstance(info, dict):
+                        continue
+                    domain = info.get("domain") or info.get("source")
+                    rng = info.get("range") or info.get("target")
+                    if domain and domain != "Any" and domain not in entity_names:
+                        logger.warning(
+                            "edge_catalog '%s' domain '%s' is not a defined entity",
+                            edge_name, domain,
+                        )
+                    if rng and rng != "Any" and rng not in entity_names:
+                        logger.warning(
+                            "edge_catalog '%s' range '%s' is not a defined entity",
+                            edge_name, rng,
+                        )
+        except Exception as e:
+            logger.debug("Cross-reference validation skipped: %s", e)
 
     @staticmethod
     def get_entity_definitions(config: Dict[str, Any]) -> List[EntityDefinition]:
@@ -985,7 +1048,11 @@ class OntologyLoader:
                     relationships=rels,
                     synonyms=details.get("synonyms", []),
                     business_questions=details.get("business_questions", []),
-                    parent=details.get("parent") or details.get("subclass_of"),
+                    parent=details.get("parent") or details.get("subclass_of") or (
+                        details.get("parents", [None])[0]
+                        if isinstance(details.get("parents"), list) and details.get("parents")
+                        else None
+                    ),
                     properties=props,
                     uri=details.get("uri"),
                     source_ontology=details.get("source_ontology"),
@@ -1003,9 +1070,28 @@ class OntologyLoader:
         """Extract the global property_roles taxonomy from config."""
         return config.get("property_roles", {})
 
+    _STRUCTURAL_EDGES: Dict[str, Dict[str, Any]] = {
+        "instance_of": {"inverse": "type_of", "symmetric": False, "category": "structural"},
+        "subclass_of": {"inverse": "superclass_of", "symmetric": False, "category": "structural"},
+        "has_part": {"inverse": "part_of", "symmetric": False, "category": "structural"},
+        "contains": {"inverse": "contained_in", "symmetric": False, "category": "structural"},
+        "member_of": {"inverse": "has_member", "symmetric": False, "category": "structural"},
+    }
+
+    _INFER_BLOCKLIST: frozenset = frozenset({
+        "about", "subjectOf", "type_of", "instance_of", "is_a",
+        "subclass_of", "superclass_of", "has_part", "part_of",
+        "contains", "contained_in", "member_of", "has_member",
+    })
+
     @staticmethod
     def get_edge_catalog(config: Dict[str, Any]) -> Dict[str, EdgeCatalogEntry]:
-        """Extract the global edge catalog from config."""
+        """Extract the global edge catalog from config.
+
+        Structural edges (instance_of, subclass_of, has_part, contains,
+        member_of) are auto-merged when not explicitly defined so that
+        hierarchy and structural edge operations work for all bundles.
+        """
         raw = config.get("edge_catalog", {})
         catalog: Dict[str, EdgeCatalogEntry] = {}
         for edge_name, info in raw.items():
@@ -1021,6 +1107,14 @@ class OntologyLoader:
                 uri=info.get("uri"),
                 owl_type=info.get("owl_type"),
             )
+        for sname, sinfo in OntologyLoader._STRUCTURAL_EDGES.items():
+            if sname not in catalog:
+                catalog[sname] = EdgeCatalogEntry(
+                    name=sname,
+                    inverse=sinfo["inverse"],
+                    symmetric=sinfo["symmetric"],
+                    category=sinfo["category"],
+                )
         return catalog
 
 
@@ -2852,40 +2946,32 @@ class OntologyBuilder:
         logger.info("Relationships table %s ready", self.config.fully_qualified_relationships)
 
     def _purge_stale_bundle_entities(self, current_bundle: str) -> int:
-        """Remove auto-discovered, unvalidated entities from a different bundle."""
+        """Remove all system-owned entities from a different bundle."""
         if not current_bundle:
             return 0
         esc = current_bundle.replace("'", "''")
         # DELETE: Remove auto-discovered entities that belong to a DIFFERENT ontology
-        # bundle than the one currently being run, but only if they haven't been
-        # validated by a steward (validated = FALSE).
+        # bundle than the one currently being run.
         # WHY: When switching bundles (e.g., healthcare -> schema_org), the old
-        # bundle's entity types are no longer relevant. Keeping them pollutes the
-        # entity table and graph with stale types. Validated entities are preserved
-        # because a steward explicitly approved them.
-        # TRADEOFFS: Entities from prior bundles are permanently deleted (not soft-
-        # deleted). If the user switches back, they must re-run discovery. An
-        # alternative would be soft-delete with a bundle_active flag, but that adds
-        # complexity to every downstream query for minimal benefit.
+        # bundle's entity types are no longer relevant. Human-owned entities
+        # (auto_discovered=false) are preserved -- only system-owned are purged.
         result = self.spark.sql(
             f"""
             DELETE FROM {self.config.fully_qualified_entities}
             WHERE ontology_bundle IS NOT NULL
               AND ontology_bundle != '{esc}'
               AND auto_discovered = TRUE
-              AND validated = FALSE
             """
         )
         count = result.first()[0] if result.first() else 0
         if count:
-            msg = f"Purged {count} stale entities from previous bundle (keeping validated)"
-            logger.info(msg)
+            logger.info(f"Purged {count} stale entities from previous bundle")
         return count
 
     def _purge_current_bundle_stale(self, granularity: str) -> int:
-        """Delete auto-discovered entities from the current bundle before a full rebuild.
+        """Delete system-owned entities from the current bundle before a full rebuild.
 
-        Only called in non-incremental mode. Steward overrides (auto_discovered=false)
+        Only called in non-incremental mode. Human-owned entities (auto_discovered=false)
         are preserved. The subsequent MERGE will re-insert freshly discovered entities.
         """
         bundle = self.config.ontology_bundle
@@ -2893,21 +2979,9 @@ class OntologyBuilder:
             return 0
         esc = bundle.replace("'", "''")
         try:
-            # DELETE: Wipe auto-discovered entities for the CURRENT bundle at the
-            # specified granularity (table or column) before a full rebuild. Steward
-            # overrides (auto_discovered=false) are preserved.
-            # WHY: In non-incremental mode, discovery runs from scratch. Without
-            # this purge, entities that no longer match any table would persist as
-            # orphans. The subsequent _store_entities MERGE re-inserts fresh ones.
-        # TRADEOFFS: Full-delete + re-insert means entity_id changes between
-        # runs because entity_id uses uuid4() (non-deterministic). Edges
-        # referencing deleted entities become orphaned until the edge-build
-        # step re-runs later in the same pipeline. Incremental mode skips
-        # this entirely, preferring to update in place.
             result = self.spark.sql(f"""
                 DELETE FROM {self.config.fully_qualified_entities}
                 WHERE auto_discovered = TRUE
-                  AND validated = FALSE
                   AND ontology_bundle = '{esc}'
                   AND COALESCE(attributes['granularity'], 'table') = '{granularity}'
             """)
@@ -2985,25 +3059,19 @@ class OntologyBuilder:
         df = self.spark.createDataFrame(rows, schema=self.ENTITIES_SCHEMA)
         df.createOrReplaceTempView(view_name)
 
-        match_condition = "WHEN MATCHED AND target.auto_discovered = TRUE AND target.validated = FALSE THEN UPDATE SET"
-        extra_sets = ""
+        # Content-change guard: only update system-owned entities when discovery
+        # produces meaningfully different results. Resets validated + validation_notes
+        # so the validator re-evaluates after upstream changes.
+        match_condition = (
+            "WHEN MATCHED AND target.auto_discovered = TRUE"
+            " AND (target.confidence != source.confidence"
+            " OR COALESCE(array_join(target.source_columns, ','), '') != COALESCE(array_join(source.source_columns, ','), '')"
+            " OR COALESCE(target.entity_uri, '') != COALESCE(source.entity_uri, '')"
+            " OR COALESCE(target.source_ontology, '') != COALESCE(source.source_ontology, ''))"
+            " THEN UPDATE SET"
+        )
+        extra_sets = ",\n            target.validated = FALSE,\n            target.validation_notes = NULL"
 
-        # MERGE: Upsert discovered entities into ontology_entities. Keyed on the
-        # composite of (entity_name, sorted source_tables, granularity) -- this
-        # means "Patient from [table_a, table_b] at table-level" is a distinct
-        # entity from "Patient from [table_c] at column-level".
-        # Only updates rows that are auto_discovered AND not yet validated by a
-        # steward, preserving manual overrides in both incremental and full modes.
-        # To re-classify a validated entity, un-check validated via entity-review.
-        # WHY: The entity table is the central registry for all ontology entities.
-        # Multiple pipeline stages (discovery, column properties, role classification)
-        # write to it. MERGE ensures idempotency across re-runs without duplicating.
-        # TRADEOFFS: The array_join(array_sort(...)) ON clause is expensive because
-        # Delta can't use a Z-order index on a derived expression. An alternative
-        # would be a materialized hash column, but that adds schema complexity.
-        # The composite key also means renaming a source table creates a new entity
-        # rather than updating the old one -- acceptable because table renames are
-        # rare and the old entity is cleaned up by the purge step.
         self.spark.sql(
             f"""
         MERGE INTO {self.config.fully_qualified_entities} AS target
@@ -3708,7 +3776,9 @@ class OntologyBuilder:
         # Compute entity pairs via SQL joins (no driver-side collect + nested loop)
         try:
             ent_df = self.spark.sql(
-                f"SELECT entity_id, entity_type, EXPLODE(source_tables) AS tbl "
+                f"SELECT entity_id, entity_type, "
+                f"COALESCE(ontology_bundle, '_default') AS ontology_bundle, "
+                f"EXPLODE(source_tables) AS tbl "
                 f"FROM {ent_table} WHERE COALESCE(attributes['granularity'], 'table') = 'table' "
                 f"AND confidence >= 0.4"
             )
@@ -3729,11 +3799,11 @@ class OntologyBuilder:
             fk_df
             .join(src_ent, fk_df.src_table == F.col("se.tbl"))
             .join(dst_ent, fk_df.dst_table == F.col("de.tbl"))
-            .where(F.col("se.entity_id") != F.col("de.entity_id"))
+            .where(F.col("se.entity_type") != F.col("de.entity_type"))
             .select(
-                F.col("se.entity_id").alias("src_eid"),
+                F.concat(F.lit("entity::"), F.col("se.ontology_bundle"), F.lit("::"), F.col("se.entity_type")).alias("src_canonical"),
                 F.col("se.entity_type").alias("src_type"),
-                F.col("de.entity_id").alias("dst_eid"),
+                F.concat(F.lit("entity::"), F.col("de.ontology_bundle"), F.lit("::"), F.col("de.entity_type")).alias("dst_canonical"),
                 F.col("de.entity_type").alias("dst_type"),
             )
             .distinct()
@@ -3750,8 +3820,8 @@ class OntologyBuilder:
                 (pairs.src_type == decl_df.d_src) & (pairs.dst_type == decl_df.d_dst),
                 "left",
             ).select(
-                pairs.src_eid.alias("src"),
-                pairs.dst_eid.alias("dst"),
+                pairs.src_canonical.alias("src"),
+                pairs.dst_canonical.alias("dst"),
                 F.coalesce(decl_df.rel_name, F.lit("references")).alias("relationship"),
                 F.when(decl_df.rel_name.isNotNull(), F.lit(0.8)).otherwise(F.lit(0.6)).alias("weight"),
                 pairs.src_type, pairs.dst_type,
@@ -3759,7 +3829,7 @@ class OntologyBuilder:
             )
         else:
             edges_df = pairs.select(
-                pairs.src_eid.alias("src"), pairs.dst_eid.alias("dst"),
+                pairs.src_canonical.alias("src"), pairs.dst_canonical.alias("dst"),
                 F.lit("references").alias("relationship"), F.lit(0.6).alias("weight"),
                 pairs.src_type, pairs.dst_type,
                 F.lit(None).cast("string").alias("_matched_rel"),
@@ -3814,40 +3884,50 @@ class OntologyBuilder:
     def _build_hierarchy_edges(self) -> Optional[DataFrame]:
         """Build is_a edges from child entity types to their parent types.
 
-        Returns a DataFrame of hierarchy edges, or None if none exist.
+        Uses canonical concept node IDs so hierarchy edges connect concept
+        nodes directly (e.g., entity::_default::Encounter -> entity::_default::Event).
+        Supports both singular `parent:` and plural `parents:` list in bundle YAML.
         """
         entity_defs = self.ontology_config.get("entities", {}).get("definitions", {})
-        parent_map: Dict[str, str] = {}
+        parent_map: Dict[str, List[str]] = {}
         for name, defn in entity_defs.items():
-            parent = defn.get("parent")
-            if parent:
-                parent_map[name] = parent
+            parents: List[str] = []
+            single = defn.get("parent")
+            if single:
+                parents.append(single)
+            else:
+                plist = defn.get("parents", [])
+                if isinstance(plist, list):
+                    parents = [p for p in plist if isinstance(p, str)]
+            if parents:
+                parent_map[name] = parents
 
         if not parent_map:
             return None
 
         ent_table = self.config.fully_qualified_entities
         try:
-            ent_rows = self.spark.sql(
-                f"SELECT entity_id, entity_type FROM {ent_table} "
-                f"WHERE COALESCE(attributes['granularity'], 'table') = 'table'"
-            ).collect()
+            discovered_types = {
+                r.entity_type
+                for r in self.spark.sql(
+                    f"SELECT DISTINCT entity_type FROM {ent_table}"
+                ).collect()
+            }
         except Exception:
             return None
 
-        type_to_ids: Dict[str, List[str]] = {}
-        for r in ent_rows:
-            type_to_ids.setdefault(r.entity_type, []).append(r.entity_id)
+        bundle = self.config.ontology_bundle or None
 
         new_edges = []
-        for child_type, parent_type in parent_map.items():
-            child_ids = type_to_ids.get(child_type, [])
-            parent_ids = type_to_ids.get(parent_type, [])
-            if not parent_ids:
+        for child_type, parent_types in parent_map.items():
+            if child_type not in discovered_types:
                 continue
-            parent_id = parent_ids[0]
-            for cid in child_ids:
-                new_edges.append((cid, parent_id, "is_a", 1.0))
+            for parent_type in parent_types:
+                if parent_type not in discovered_types:
+                    continue
+                child_id = self.canonical_entity_id(child_type, bundle)
+                parent_id = self.canonical_entity_id(parent_type, bundle)
+                new_edges.append((child_id, parent_id, "is_a", 1.0))
 
         if not new_edges:
             return None
@@ -3879,43 +3959,77 @@ class OntologyBuilder:
         logger.info("Built %d hierarchy (is_a) edges", len(new_edges))
         return edge_df
 
-    def _sync_entity_nodes_to_graph(self) -> int:
-        """Merge ontology entities into graph_nodes so edges have valid targets.
+    @staticmethod
+    def canonical_entity_id(entity_name: str, ontology_bundle: Optional[str] = None) -> str:
+        """Deterministic graph node ID for an ontology entity concept.
 
-        Uses MERGE to keep existing entity nodes up-to-date when confidence,
-        entity_type, or description change across runs.
+        One node per (entity_name, ontology_bundle) pair in graph_nodes.
+        """
+        bundle = ontology_bundle or "_default"
+        return f"entity::{bundle}::{entity_name}"
+
+    CANONICAL_ID_SQL = "CONCAT('entity::', COALESCE(ontology_bundle, '_default'), '::', entity_name)"
+
+    def _sync_entity_nodes_to_graph(self) -> int:
+        """Merge one canonical entity concept node per (entity_name, bundle) into graph_nodes.
+
+        Each unique entity type gets exactly one graph node with a deterministic ID
+        (entity::{bundle}::{entity_name}). Multiple instance rows in ontology_entities
+        are collapsed: highest confidence wins, description from the highest-confidence
+        row is used.
         """
         nodes_table = f"{self.config.catalog_name}.{self.config.schema_name}.{self.config.nodes_table}"
+        edges_table = f"{self.config.catalog_name}.{self.config.schema_name}.graph_edges"
         ent_table = self.config.fully_qualified_entities
-        # MERGE: Sync ontology entities into graph_nodes as node_type='entity'.
-        # Keyed on entity_id -> node id. Existing entity nodes get their name,
-        # description, confidence, and role updated; new entities are inserted
-        # with default values for graph-specific fields (has_pii=FALSE, etc.).
-        # WHY: The knowledge graph visualization and GraphRAG agent need entity
-        # nodes to exist in graph_nodes so they can be connected by edges
-        # (instance_of, has_attribute, is_a). Without this sync, ontology
-        # entities would be invisible to graph consumers.
-        # TRADEOFFS: Entity nodes share the graph_nodes table with table/column
-        # nodes, distinguished by node_type. This simplifies graph queries but
-        # means entity-specific fields (entity_role) are stored in generic
-        # columns (status). A separate entity_nodes table would be cleaner but
-        # would require JOINs in every graph query.
+        canonical_id = self.CANONICAL_ID_SQL
         try:
+            # Self-healing: only run legacy cleanup if UUID-based entity nodes exist
+            has_legacy = self.spark.sql(f"""
+                SELECT 1 FROM {nodes_table}
+                WHERE node_type = 'entity' AND source_system = 'ontology' AND id NOT LIKE 'entity::%'
+                LIMIT 1
+            """).count() > 0
+
+            if has_legacy:
+                self.spark.sql(f"""
+                    DELETE FROM {nodes_table}
+                    WHERE node_type = 'entity'
+                      AND source_system = 'ontology'
+                      AND id NOT LIKE 'entity::%'
+                """)
+                self.spark.sql(f"""
+                    DELETE FROM {edges_table}
+                    WHERE source_system = 'ontology'
+                      AND (
+                        (edge_type = 'instance_of' AND dst NOT LIKE 'entity::%' AND dst NOT LIKE '%%.%%')
+                        OR (edge_type IN ('has_property', 'has_attribute') AND src NOT LIKE 'entity::%' AND src NOT LIKE '%%.%%')
+                        OR (edge_type = 'is_a' AND src NOT LIKE 'entity::%')
+                        OR (edge_type NOT IN ('instance_of','has_property','has_attribute','is_a','same_entity_type')
+                            AND src NOT LIKE 'entity::%' AND src NOT LIKE '%%.%%'
+                            AND dst NOT LIKE 'entity::%' AND dst NOT LIKE '%%.%%')
+                      )
+                """)
+                logger.info("Cleaned up legacy UUID-based entity nodes and associated edges")
+
             self.spark.sql(f"""
                 MERGE INTO {nodes_table} AS target
                 USING (
-                    SELECT entity_id, entity_name, entity_type,
-                           COALESCE(entity_role, 'primary') AS entity_role,
-                           description, confidence, created_at, updated_at
+                    SELECT {canonical_id} AS canonical_id,
+                           FIRST(entity_name) AS entity_name,
+                           FIRST(entity_type) AS entity_type,
+                           FIRST(description) AS description,
+                           MAX(confidence) AS confidence,
+                           MIN(created_at) AS created_at,
+                           MAX(updated_at) AS updated_at
                     FROM {ent_table}
+                    GROUP BY entity_name, COALESCE(ontology_bundle, '_default')
                 ) AS source
-                ON target.id = source.entity_id
+                ON target.id = source.canonical_id
                     AND target.node_type = 'entity'
 
                 WHEN MATCHED AND (
                     target.quality_score != source.confidence
                     OR target.ontology_type != source.entity_type
-                    OR target.status != source.entity_role
                     OR COALESCE(target.comment, '') != COALESCE(source.description, '')
                 ) THEN UPDATE SET
                     target.table_short_name = source.entity_name,
@@ -3924,7 +4038,7 @@ class OntologyBuilder:
                     target.ontology_type = source.entity_type,
                     target.display_name = source.entity_name,
                     target.short_description = COALESCE(source.description, target.short_description),
-                    target.status = source.entity_role,
+                    target.status = 'primary',
                     target.updated_at = source.updated_at
 
                 WHEN NOT MATCHED THEN INSERT (
@@ -3936,51 +4050,44 @@ class OntologyBuilder:
                     sensitivity, status, source_system, keywords,
                     created_at, updated_at
                 ) VALUES (
-                    source.entity_id, NULL, NULL, NULL, source.entity_name,
+                    source.canonical_id, NULL, NULL, NULL, source.entity_name,
                     NULL, NULL, FALSE, FALSE, 'PUBLIC',
                     source.description, 'entity', NULL, NULL,
                     source.confidence, NULL,
-                    source.entity_id, source.entity_type, source.entity_name, source.description,
-                    'public', source.entity_role, 'ontology', NULL,
+                    source.canonical_id, source.entity_type, source.entity_name, source.description,
+                    'public', 'primary', 'ontology', NULL,
                     source.created_at, source.updated_at
                 )
             """)
             count = self.spark.sql(
                 f"SELECT COUNT(*) as cnt FROM {nodes_table} WHERE node_type = 'entity'"
             ).collect()[0].cnt
-            logger.info("Entity nodes in graph: %d", count)
+            logger.info("Entity concept nodes in graph: %d", count)
             return count
         except Exception as e:
             logger.warning("Could not sync entity nodes to graph: %s", e)
             return 0
 
     def _enrich_table_nodes_with_ontology(self) -> int:
-        """Backfill ontology_id/ontology_type on table-type graph nodes from primary entities."""
+        """Backfill ontology_id/ontology_type on table-type graph nodes from primary entities.
+
+        Sets ontology_id to the canonical concept node ID so it matches the
+        entity node's id in graph_nodes (enabling direct lookup).
+        """
         nodes_table = f"{self.config.catalog_name}.{self.config.schema_name}.{self.config.nodes_table}"
         ent_table = self.config.fully_qualified_entities
-        # MERGE: Set ontology_id and ontology_type on table-type graph nodes from
-        # the highest-confidence primary entity associated with each table. Uses
-        # ROW_NUMBER to pick exactly one entity per table (the most confident),
-        # preventing the DELTA_MULTIPLE_SOURCE_ROW_MATCHING_TARGET_ROW_IN_MERGE
-        # error that would occur if multiple primary entities shared a table.
-        # WHY: Table nodes in the graph need to know which ontology entity they
-        # represent so the dashboard can display "this table is a Patient table"
-        # and the Genie builder can use entity-aware join logic.
-        # TRADEOFFS: ROW_NUMBER picks a single winner -- if two entities have
-        # equal confidence for the same table, the choice is arbitrary (depends
-        # on Spark's sort stability). A future enhancement could store all
-        # associated entities and let the UI disambiguate. The EXPLODE in the
-        # source subquery fans out multi-table entities, which is necessary
-        # because source_tables is an array.
+        canonical_id = self.CANONICAL_ID_SQL
         try:
             result = self.spark.sql(f"""
                 MERGE INTO {nodes_table} AS target
                 USING (
-                    SELECT table_name, entity_id, entity_type FROM (
-                        SELECT table_name, entity_id, entity_type,
+                    SELECT table_name, canonical_id, entity_type FROM (
+                        SELECT table_name, canonical_id, entity_type,
                                ROW_NUMBER() OVER (PARTITION BY table_name ORDER BY confidence DESC) AS rn
                         FROM (
-                            SELECT EXPLODE(source_tables) AS table_name, entity_id, entity_type, confidence
+                            SELECT EXPLODE(source_tables) AS table_name,
+                                   {canonical_id} AS canonical_id,
+                                   entity_type, confidence
                             FROM {ent_table}
                             WHERE COALESCE(entity_role, 'primary') = 'primary'
                               AND source_tables IS NOT NULL AND SIZE(source_tables) > 0
@@ -3989,7 +4096,7 @@ class OntologyBuilder:
                 ) AS source
                 ON target.id = source.table_name AND target.node_type = 'table'
                 WHEN MATCHED THEN UPDATE SET
-                    target.ontology_id = source.entity_id,
+                    target.ontology_id = source.canonical_id,
                     target.ontology_type = source.entity_type
             """)
             count = self.spark.sql(
@@ -4075,17 +4182,23 @@ class OntologyBuilder:
                 F.current_timestamp().alias("updated_at"),
             )
 
+        canonical_id = self.CANONICAL_ID_SQL
+        ent_table = self.config.fully_qualified_entities
+
         try:
             table_entities = self.spark.sql(f"""
-                SELECT entity_id, entity_name, EXPLODE(source_tables) as table_name
-                FROM {self.config.fully_qualified_entities}
+                SELECT DISTINCT
+                    tbl AS table_name,
+                    {canonical_id} AS canonical_dst
+                FROM {ent_table}
+                LATERAL VIEW EXPLODE(source_tables) AS tbl
                 WHERE source_tables IS NOT NULL AND SIZE(source_tables) > 0
                   AND COALESCE(entity_role, 'primary') = 'primary'
             """)
             if table_entities.count() > 0:
                 raw = table_entities.select(
                     F.col("table_name").alias("src"),
-                    F.col("entity_id").alias("dst"),
+                    F.col("canonical_dst").alias("dst"),
                     F.lit(1.0).alias("weight"),
                 )
                 dfs.append(_add_edge_columns(raw, "instance_of", "instance_of"))
@@ -4095,10 +4208,12 @@ class OntologyBuilder:
         try:
             cp_table = self.config.fully_qualified_column_properties
             raw = self.spark.sql(f"""
-                SELECT owning_entity_id AS src,
-                       CONCAT(table_name, '.', column_name) AS dst,
-                       CAST(1.0 AS DOUBLE) AS weight
-                FROM {cp_table}
+                SELECT DISTINCT
+                    CONCAT('entity::', COALESCE(e.ontology_bundle, '_default'), '::', cp.owning_entity_type) AS src,
+                    CONCAT(cp.table_name, '.', cp.column_name) AS dst,
+                    CAST(1.0 AS DOUBLE) AS weight
+                FROM {cp_table} cp
+                JOIN {ent_table} e ON cp.owning_entity_id = e.entity_id
             """)
             if raw.count() > 0:
                 dfs.append(_add_edge_columns(raw, "has_property", "has_property"))
@@ -4107,20 +4222,29 @@ class OntologyBuilder:
 
         try:
             rels_table = self.config.fully_qualified_relationships
-            ent_table = self.config.fully_qualified_entities
             raw = self.spark.sql(f"""
-                SELECT DISTINCT se.entity_id AS src, de.entity_id AS dst,
-                       r.relationship_name AS rel_name,
-                       r.confidence AS weight,
-                       r.label AS rel_label,
-                       r.facet AS rel_facet
+                SELECT DISTINCT
+                    CONCAT('entity::', COALESCE(se.ontology_bundle, '_default'), '::', r.src_entity_type) AS src,
+                    CONCAT('entity::', COALESCE(de.ontology_bundle, '_default'), '::', r.dst_entity_type) AS dst,
+                    r.relationship_name AS rel_name,
+                    r.confidence AS weight,
+                    r.label AS rel_label,
+                    r.facet AS rel_facet
                 FROM {rels_table} r
-                JOIN {ent_table} se ON se.entity_type = r.src_entity_type
-                    AND COALESCE(se.entity_role, 'primary') = 'primary'
-                JOIN {ent_table} de ON de.entity_type = r.dst_entity_type
-                    AND COALESCE(de.entity_role, 'primary') = 'primary'
-                WHERE se.entity_id != de.entity_id
+                JOIN (
+                    SELECT DISTINCT entity_type, COALESCE(ontology_bundle, '_default') AS ontology_bundle
+                    FROM {ent_table}
+                ) se ON se.entity_type = r.src_entity_type
+                JOIN (
+                    SELECT DISTINCT entity_type, COALESCE(ontology_bundle, '_default') AS ontology_bundle
+                    FROM {ent_table}
+                ) de ON de.entity_type = r.dst_entity_type
+                WHERE r.src_entity_type != r.dst_entity_type
                   AND r.source != 'configured'
+                  AND r.relationship_name NOT IN (
+                    'instance_of', 'type_of', 'subclass_of', 'superclass_of',
+                    'is_a', 'about', 'subjectOf'
+                  )
             """)
             if raw.count() > 0:
                 ref_edges = raw.select(
@@ -4700,13 +4824,12 @@ class OntologyBuilder:
         if edef:
             for rn, ri in edef.relationships.items():
                 if ri.get("target") == dst_type:
-                    if catalog.get(rn):
+                    if rn not in OntologyLoader._INFER_BLOCKLIST:
                         return rn
-                    return rn
 
         # Search edge catalog by domain/range match
         match = catalog.find_edge(src_type, dst_type)
-        if match:
+        if match and match.name not in OntologyLoader._INFER_BLOCKLIST:
             return match.name
 
         return "references"
@@ -4747,19 +4870,7 @@ class OntologyBuilder:
         """
         disc = self.discoverer
         loader = disc._get_index_loader() if hasattr(disc, "_get_index_loader") else None
-        if not loader or not loader.has_tier_indexes:
-            logger.info("emit_bundle_edges: no tier indexes available, skipping")
-            return 0
-
-        edges_t1 = loader.get_edges_tier1()
-        if not edges_t1:
-            return 0
-
-        edges_t2_raw = loader._load("edges_tier2.yaml") or {}
-        edges_t2_ranges: Dict[str, List[str]] = {}
-        for ename, edata in edges_t2_raw.items():
-            if isinstance(edata, dict) and edata.get("ranges"):
-                edges_t2_ranges[ename] = edata["ranges"]
+        has_tiers = loader and loader.has_tier_indexes
 
         ent_table = self.config.fully_qualified_entities
         rels_table = self.config.fully_qualified_relationships
@@ -4786,56 +4897,98 @@ class OntologyBuilder:
         seen: set = set()
         ref_resolved = 0
 
-        for edge in edges_t1:
-            domain = edge.get("domain")
-            rng = edge.get("range")
-            name = edge.get("name")
-            if not domain or not name:
-                continue
-            if domain not in discovered_types:
-                continue
+        if has_tiers:
+            # Tier-based path: iterate tier-1 edges with multi-range and
+            # Reference resolution from tier-2
+            edges_t1 = loader.get_edges_tier1() or []
+            edges_t2_raw = loader._load("edges_tier2.yaml") or {}
+            edges_t2_ranges: Dict[str, List[str]] = {}
+            for ename, edata in edges_t2_raw.items():
+                if isinstance(edata, dict) and edata.get("ranges"):
+                    edges_t2_ranges[ename] = edata["ranges"]
 
-            resolved_range = None
-            if rng and rng in discovered_types:
-                resolved_range = rng
-            elif rng and rng not in discovered_types:
-                # Multi-range fallback: check tier-2 ranges list
-                for alt in edges_t2_ranges.get(name, []):
-                    if alt in discovered_types:
-                        resolved_range = alt
-                        break
-                # Reference resolution: resolve from property name suffix
-                if not resolved_range and rng == "Reference":
-                    resolved_range = self._resolve_reference_target(name, discovered_lower)
-                    if resolved_range:
-                        ref_resolved += 1
+            for edge in edges_t1:
+                domain = edge.get("domain")
+                rng = edge.get("range")
+                name = edge.get("name")
+                if not domain or not name:
+                    continue
+                if domain not in discovered_types:
+                    continue
 
-            if not resolved_range:
-                continue
+                resolved_range = None
+                if rng and rng in discovered_types:
+                    resolved_range = rng
+                elif rng and rng not in discovered_types:
+                    for alt in edges_t2_ranges.get(name, []):
+                        if alt in discovered_types:
+                            resolved_range = alt
+                            break
+                    if not resolved_range and rng == "Reference":
+                        resolved_range = self._resolve_reference_target(name, discovered_lower)
+                        if resolved_range:
+                            ref_resolved += 1
 
-            key = (domain, resolved_range, name)
-            if key in seen:
-                continue
-            seen.add(key)
-            rels.append({
-                "relationship_id": str(uuid.uuid4()),
-                "src_entity_type": domain,
-                "relationship_name": name,
-                "dst_entity_type": resolved_range,
-                "cardinality": edge.get("cardinality", "unknown"),
-                "evidence_column": None,
-                "evidence_table": None,
-                "source": "bundle",
-                "confidence": 0.8,
-                "label": edge.get("label"),
-                "facet": edge.get("facet"),
-                "sub_property_of": edge.get("sub_property_of"),
-                "ranges": edges_t2_ranges.get(name, []),
-                "source_ontology": edge.get("source_ontology"),
-                "edge_uri": edge.get("uri") or edge.get("edge_uri"),
-                "created_at": now,
-                "updated_at": now,
-            })
+                if not resolved_range:
+                    continue
+
+                key = (domain, resolved_range, name)
+                if key in seen:
+                    continue
+                seen.add(key)
+                rels.append({
+                    "relationship_id": str(uuid.uuid4()),
+                    "src_entity_type": domain,
+                    "relationship_name": name,
+                    "dst_entity_type": resolved_range,
+                    "cardinality": edge.get("cardinality", "unknown"),
+                    "evidence_column": None,
+                    "evidence_table": None,
+                    "source": "bundle",
+                    "confidence": 0.8,
+                    "label": edge.get("label"),
+                    "facet": edge.get("facet"),
+                    "sub_property_of": edge.get("sub_property_of"),
+                    "ranges": edges_t2_ranges.get(name, []),
+                    "source_ontology": edge.get("source_ontology"),
+                    "edge_uri": edge.get("uri") or edge.get("edge_uri"),
+                    "created_at": now,
+                    "updated_at": now,
+                })
+        else:
+            # Root-YAML fallback: derive edges from entity relationship
+            # declarations when tier indexes are not available.
+            logger.info("emit_bundle_edges: using root YAML relationships (no tier indexes)")
+            for edef in disc.entity_definitions:
+                if edef.name not in discovered_types:
+                    continue
+                for rel_name, rel_info in edef.relationships.items():
+                    target = rel_info.get("target")
+                    if not target or target not in discovered_types:
+                        continue
+                    key = (edef.name, target, rel_name)
+                    if key in seen:
+                        continue
+                    seen.add(key)
+                    rels.append({
+                        "relationship_id": str(uuid.uuid4()),
+                        "src_entity_type": edef.name,
+                        "relationship_name": rel_name,
+                        "dst_entity_type": target,
+                        "cardinality": rel_info.get("cardinality", "unknown"),
+                        "evidence_column": None,
+                        "evidence_table": None,
+                        "source": "bundle",
+                        "confidence": 0.8,
+                        "label": None,
+                        "facet": None,
+                        "sub_property_of": None,
+                        "ranges": [],
+                        "source_ontology": edef.source_ontology,
+                        "edge_uri": None,
+                        "created_at": now,
+                        "updated_at": now,
+                    })
 
         if not rels:
             logger.info("emit_bundle_edges: no matching entity pairs found in tier-1 edges")

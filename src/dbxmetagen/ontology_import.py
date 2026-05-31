@@ -1,14 +1,23 @@
-"""Utility to convert OWL/TTL ontology files to dbxmetagen bundle YAML format.
+"""Utility to convert OWL/TTL/SKOS/SHACL ontology files to dbxmetagen bundle YAML.
 
-Supports both v1 (existing) and v2 (OWL-aligned) output formats.
+Supports OWL (owl:Class), RDFS (rdfs:Class), SKOS (skos:Concept),
+SHACL (sh:NodeShape), and bare rdfs:subClassOf patterns.
+Output is v1 or v2 (OWL-aligned) format.
 """
 
 import logging
 import yaml
+from collections import Counter
 from pathlib import Path
 from typing import Any, Dict, List, Optional
 
 logger = logging.getLogger(__name__)
+
+_EXT_FORMAT = {
+    ".ttl": "turtle", ".owl": "xml", ".rdf": "xml",
+    ".jsonld": "json-ld", ".nt": "nt", ".n3": "n3",
+    ".nq": "nquads", ".trig": "trig",
+}
 
 
 def owl_to_bundle_yaml(
@@ -17,18 +26,18 @@ def owl_to_bundle_yaml(
     bundle_name: str = "imported",
     format_version: str = "2.0",
 ) -> Dict[str, Any]:
-    """Convert an OWL/TTL file to dbxmetagen bundle YAML.
+    """Convert an OWL/TTL/SKOS/SHACL file to dbxmetagen bundle YAML.
 
     Requires rdflib. Install with: pip install 'dbxmetagen[ontology]'
 
     Args:
-        owl_path: Path to .owl, .ttl, or .rdf file
+        owl_path: Path to .owl, .ttl, .rdf, .jsonld, .nt, or .n3 file
         output_path: If provided, writes YAML to this path
         bundle_name: Name for the bundle metadata
         format_version: "1.0" for legacy v1 output, "2.0" for OWL-aligned v2
 
     Returns:
-        The bundle dict
+        The bundle dict (includes ``_diagnostics`` key when 0 entities found)
     """
     try:
         import rdflib
@@ -38,8 +47,12 @@ def owl_to_bundle_yaml(
             "rdflib is required for ontology import. Install with: pip install 'dbxmetagen[ontology]'"
         ) from exc
 
+    SKOS = rdflib.Namespace("http://www.w3.org/2004/02/skos/core#")
+    SH = rdflib.Namespace("http://www.w3.org/ns/shacl#")
+
     g = rdflib.Graph()
-    fmt = "turtle" if owl_path.endswith(".ttl") else "xml"
+    ext = Path(owl_path).suffix.lower()
+    fmt = _EXT_FORMAT.get(ext, "turtle")
     g.parse(owl_path, format=fmt)
 
     source_file = Path(owl_path).name
@@ -47,7 +60,9 @@ def owl_to_bundle_yaml(
 
     entities: Dict[str, Dict[str, Any]] = {}
     seen_uris: set = set()
-    for cls_type in (OWL.Class, RDFS.Class):
+
+    # --- Pass 1: explicit class types (OWL, RDFS, SKOS, SHACL) ---
+    for cls_type in (OWL.Class, RDFS.Class, SKOS.Concept, SH.NodeShape):
         for cls in g.subjects(RDF.type, cls_type):
             if cls in seen_uris:
                 continue
@@ -55,13 +70,22 @@ def owl_to_bundle_yaml(
             name = _local_name(cls)
             if not name or name.startswith("_"):
                 continue
-            comment = _get_comment(g, cls, RDFS) or f"{name} entity"
-            parents = [_local_name(p) for p in g.objects(cls, RDFS.subClassOf) if _local_name(p)]
+
+            # SHACL dedup: skip shapes that target an already-found OWL class
+            if cls_type == SH.NodeShape:
+                target_cls = next(g.objects(cls, SH.targetClass), None)
+                if target_cls and target_cls in seen_uris:
+                    continue
+
+            desc = _get_description(g, cls, RDFS, SKOS, SH) or f"{name} entity"
+            keywords = _get_keywords(g, cls, name, RDFS, SKOS, SH)
+            parents = _get_parents(g, cls, RDFS, SKOS)
+            typical_attrs = _get_shacl_attributes(g, cls, SH) if cls_type == SH.NodeShape else []
 
             entry: Dict[str, Any] = {
-                "description": comment,
-                "keywords": [name.lower()],
-                "typical_attributes": [],
+                "description": desc,
+                "keywords": keywords,
+                "typical_attributes": typical_attrs,
                 "relationships": {},
                 "properties": {},
             }
@@ -79,6 +103,62 @@ def owl_to_bundle_yaml(
                 entry["owl_properties"] = []
 
             entities[name] = entry
+
+    # --- Pass 2: bare rdfs:subClassOf subjects ---
+    for subj in g.subjects(RDFS.subClassOf, None):
+        if subj in seen_uris:
+            continue
+        name = _local_name(subj)
+        if not name or name.startswith("_"):
+            continue
+        seen_uris.add(subj)
+        desc = _get_description(g, subj, RDFS, SKOS, SH) or f"{name} entity"
+        keywords = _get_keywords(g, subj, name, RDFS, SKOS, SH)
+        parents = [_local_name(p) for p in g.objects(subj, RDFS.subClassOf) if _local_name(p)]
+        entry: Dict[str, Any] = {
+            "description": desc,
+            "keywords": keywords,
+            "typical_attributes": [],
+            "relationships": {},
+            "properties": {},
+        }
+        if parents:
+            entry["parent"] = parents[0]
+        if format_version.startswith("2"):
+            entry["uri"] = str(subj)
+            entry["source_ontology"] = source_label
+            if parents:
+                entry["subclass_of"] = parents[0]
+            entry["owl_properties"] = []
+        entities[name] = entry
+
+    # --- Pass 3: bare skos:broader subjects ---
+    for subj in g.subjects(SKOS.broader, None):
+        if subj in seen_uris:
+            continue
+        name = _local_name(subj)
+        if not name or name.startswith("_"):
+            continue
+        seen_uris.add(subj)
+        desc = _get_description(g, subj, RDFS, SKOS, SH) or f"{name} entity"
+        keywords = _get_keywords(g, subj, name, RDFS, SKOS, SH)
+        parents = [_local_name(p) for p in g.objects(subj, SKOS.broader) if _local_name(p)]
+        entry: Dict[str, Any] = {
+            "description": desc,
+            "keywords": keywords,
+            "typical_attributes": [],
+            "relationships": {},
+            "properties": {},
+        }
+        if parents:
+            entry["parent"] = parents[0]
+        if format_version.startswith("2"):
+            entry["uri"] = str(subj)
+            entry["source_ontology"] = source_label
+            if parents:
+                entry["subclass_of"] = parents[0]
+            entry["owl_properties"] = []
+        entities[name] = entry
 
     # Data properties
     for prop in g.subjects(RDF.type, OWL.DatatypeProperty):
@@ -149,9 +229,6 @@ def owl_to_bundle_yaml(
                         "inverse": inverse_props[0] if inverse_props else None,
                     })
 
-    # Schema.org-style properties: schema:domainIncludes / schema:rangeIncludes
-    # These are used by Schema.org (and similar ontologies) instead of
-    # owl:ObjectProperty with rdfs:domain/range.
     _extract_schema_style_properties(g, rdflib, entities, edge_catalog, format_version)
 
     metadata: Dict[str, Any] = {
@@ -164,7 +241,7 @@ def owl_to_bundle_yaml(
     if format_version.startswith("2"):
         metadata["format_version"] = "2.0"
 
-    bundle = {
+    bundle: Dict[str, Any] = {
         "metadata": metadata,
         "ontology": {
             "version": "3.0",
@@ -189,6 +266,9 @@ def owl_to_bundle_yaml(
         },
         "domains": {},
     }
+
+    if not entities:
+        bundle["_diagnostics"] = _build_diagnostics(g, RDF, owl_path)
 
     if output_path:
         with open(output_path, "w", encoding="utf-8") as f:
@@ -305,6 +385,10 @@ def _detect_source_ontology(g) -> Optional[str]:
         return "OMOP CDM"
     if "schema.org" in ns_str:
         return "Schema.org"
+    if "w3.org/2004/02/skos" in ns_str:
+        return "SKOS"
+    if "w3.org/ns/shacl" in ns_str:
+        return "SHACL"
     return None
 
 
@@ -317,10 +401,96 @@ def _local_name(uri) -> Optional[str]:
     return None
 
 
+def _strip_lang(literal) -> str:
+    """Return the string value of an rdflib Literal, stripping language tags."""
+    return str(literal).strip()
+
+
 def _get_comment(g, subject, rdfs) -> Optional[str]:
+    """Legacy helper: extract rdfs:comment only. Used by ontology_chunker."""
     for comment in g.objects(subject, rdfs.comment):
         return str(comment)
     return None
+
+
+def _get_description(g, subject, rdfs, skos, sh) -> Optional[str]:
+    """Extract description from rdfs:comment, skos:definition, or sh:description."""
+    for pred in (rdfs.comment, skos.definition, sh.description):
+        for val in g.objects(subject, pred):
+            return _strip_lang(val)
+    return None
+
+
+def _get_keywords(g, subject, name: str, rdfs, skos, sh) -> List[str]:
+    """Collect keywords from rdfs:label, SKOS labels, sh:name, and skos:notation."""
+    kw_set: set = {name.lower()}
+    for pred in (rdfs.label, skos.prefLabel, skos.altLabel, skos.hiddenLabel, sh.name):
+        for val in g.objects(subject, pred):
+            token = _strip_lang(val).lower()
+            if token:
+                kw_set.add(token)
+    for val in g.objects(subject, skos.notation):
+        token = _strip_lang(val).strip()
+        if token:
+            kw_set.add(token.lower())
+    return sorted(kw_set)
+
+
+def _get_parents(g, subject, rdfs, skos) -> List[str]:
+    """Collect parent names from rdfs:subClassOf and skos:broader."""
+    parents = []
+    for pred in (rdfs.subClassOf, skos.broader):
+        for obj in g.objects(subject, pred):
+            pname = _local_name(obj)
+            if pname and pname not in parents:
+                parents.append(pname)
+    return parents
+
+
+def _get_shacl_attributes(g, shape, sh) -> List[str]:
+    """Extract typical attribute names from sh:property paths on a SHACL shape."""
+    attrs = []
+    for prop_node in g.objects(shape, sh.property):
+        path = next(g.objects(prop_node, sh.path), None)
+        if path:
+            attr_name = _local_name(path)
+            if attr_name:
+                attrs.append(attr_name)
+    return attrs
+
+
+def _build_diagnostics(g, rdf, owl_path: str) -> Dict[str, Any]:
+    """Build a diagnostics dict when 0 entities are extracted."""
+    total = sum(1 for _ in g)
+    type_counter: Counter = Counter()
+    for _, _, obj in g.triples((None, rdf.type, None)):
+        type_counter[str(obj)] += 1
+
+    top_types = [{"type": t, "count": c} for t, c in type_counter.most_common(10)]
+
+    hints = []
+    type_strs = " ".join(type_counter.keys()).lower()
+    if "dcat" in type_strs:
+        hints.append("File appears to be a DCAT data catalog, not an ontology. "
+                      "Consider importing as metadata enrichment instead.")
+    elif "foaf" in type_strs:
+        hints.append("File uses FOAF vocabulary. Entity extraction expects "
+                      "owl:Class, rdfs:Class, skos:Concept, or sh:NodeShape.")
+    elif total == 0:
+        hints.append("File parsed to 0 triples. Check that the file format "
+                      "matches the extension.")
+    else:
+        hints.append(
+            f"File has {total} triples but no recognized class/concept patterns. "
+            "Supported: owl:Class, rdfs:Class, skos:Concept, sh:NodeShape, "
+            "rdfs:subClassOf, skos:broader."
+        )
+
+    return {
+        "total_triples": total,
+        "top_rdf_types": top_types,
+        "hint": " ".join(hints),
+    }
 
 
 def owl_to_chunks(owl_path: str, bundle_name: str) -> List[Dict[str, Any]]:

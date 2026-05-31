@@ -1030,6 +1030,26 @@ function ReviewEditor() {
                           </div>
                         )
                       })()}
+                      <details className="text-xs">
+                        <summary className="cursor-pointer text-purple-600 hover:text-purple-800 font-medium">+ Add Entity Mapping</summary>
+                        <div className="mt-1 flex items-center gap-2 flex-wrap p-2 bg-purple-50 dark:bg-purple-900/20 rounded border border-purple-200 dark:border-purple-700/40">
+                          <input placeholder="Entity type" id={`add-ent-type-${tblIdx}`} className="text-xs border border-purple-300 rounded px-2 py-0.5 w-32 dark:bg-dbx-navy/60 dark:text-slate-200" />
+                          <input placeholder="Source columns (comma-sep)" id={`add-ent-cols-${tblIdx}`} className="text-xs border border-purple-300 rounded px-2 py-0.5 w-48 dark:bg-dbx-navy/60 dark:text-slate-200" />
+                          <button onClick={async () => {
+                            const etEl = document.getElementById(`add-ent-type-${tblIdx}`)
+                            const colsEl = document.getElementById(`add-ent-cols-${tblIdx}`)
+                            const et = (etEl?.value || '').trim()
+                            if (!et) return
+                            const cols = (colsEl?.value || '').split(',').map(c => c.trim()).filter(Boolean)
+                            try {
+                              await fetch('/api/ontology/entity-add', { method: 'POST', headers: { 'Content-Type': 'application/json' },
+                                body: JSON.stringify({ entity_type: et, table_name: tbl.table_name, source_columns: cols.length ? cols : null }) })
+                              etEl.value = ''; colsEl.value = ''
+                              loadData()
+                            } catch {}
+                          }} className="text-[10px] px-2 py-0.5 bg-purple-600 text-white rounded hover:bg-purple-700">Add</button>
+                        </div>
+                      </details>
                       {!Array.isArray(tbl.ontology_entities) ? (
                         <p className="text-xs text-slate-400 italic">Ontology data not available for this table.</p>
                       ) : tbl.ontology_entities.length === 0 ? (
@@ -1079,29 +1099,61 @@ function ReviewEditor() {
                                     title="Negative confidence means the AI validator rejected this entity mapping.">
                                     {conf.toFixed(2)}
                                   </span>
-                                  {e.validated !== undefined && (
-                                    <span className={`text-[10px] px-1.5 py-0.5 rounded-full font-medium ${e.validated === true || e.validated === 'true' ? 'bg-blue-100 text-blue-700' : 'bg-slate-100 text-slate-500'}`}>
-                                      {e.validated === true || e.validated === 'true' ? 'validated' : 'unvalidated'}
-                                    </span>
-                                  )}
+                                  {e.validated !== undefined && (() => {
+                                    const isValidated = e.validated === true || e.validated === 'true'
+                                    const isRejected = isValidated && (e.validation_notes || '').startsWith('REJECTED')
+                                    const cls = isRejected ? 'bg-red-100 text-red-700' : isValidated ? 'bg-blue-100 text-blue-700' : 'bg-slate-100 text-slate-500'
+                                    const label = isRejected ? 'rejected' : isValidated ? 'approved' : 'unreviewed'
+                                    return <span className={`text-[10px] px-1.5 py-0.5 rounded-full font-medium ${cls}`}>{label}</span>
+                                  })()}
                                   {srcCols.length > 0 && (
                                     <span className="text-[10px] text-slate-500 dark:text-slate-400">
                                       {srcCols.map((c, ci) => <code key={ci} className="bg-white/80 dark:bg-dbx-navy/40 border border-slate-200 dark:border-dbx-navy-400/30 rounded px-1 py-0.5 text-slate-600 dark:text-slate-300 mr-1">{c}</code>)}
                                     </span>
                                   )}
-                                  <button onClick={async (ev) => {
-                                    ev.stopPropagation()
-                                    const et = entityTypeOverrides[e.entity_id] || e.entity_type
-                                    try {
-                                      const r = await fetch('/api/ontology/apply-tags', { method: 'POST', headers: { 'Content-Type': 'application/json' },
-                                        body: JSON.stringify({ selections: [{ entity_type: et, source_tables: [tbl.table_name], source_columns: srcCols, entity_role: role }] }) })
-                                      const j = await r.json().catch(() => ({}))
-                                      setOntoApplyResults(p => ({ ...p, [tbl.table_name]: j }))
-                                    } catch (err) { setOntoApplyResults(p => ({ ...p, [tbl.table_name]: { error: err.message } })) }
-                                  }} className="ml-auto text-[10px] px-1.5 py-0.5 bg-purple-600 text-white rounded hover:bg-purple-700"
-                                    title={isPrimary ? 'Apply entity_type tag to table and columns (ignores threshold)' : 'Apply entity_type tag to columns only (ignores threshold)'}>
-                                    Apply Tag
-                                  </button>
+                                  <span className="ml-auto flex items-center gap-1">
+                                    {e.entity_id && (
+                                      <>
+                                        <button onClick={async (ev) => {
+                                          ev.stopPropagation()
+                                          try {
+                                            await fetch('/api/ontology/entity-review', { method: 'POST', headers: { 'Content-Type': 'application/json' },
+                                              body: JSON.stringify({ entity_id: e.entity_id, validated: true, validation_notes: 'Approved' }) })
+                                            loadData()
+                                          } catch {}
+                                        }} title="Approve this mapping" className="text-[10px] px-1.5 py-0.5 bg-green-600 text-white rounded hover:bg-green-700">Approve</button>
+                                        <button onClick={async (ev) => {
+                                          ev.stopPropagation()
+                                          try {
+                                            await fetch('/api/ontology/entity-review', { method: 'POST', headers: { 'Content-Type': 'application/json' },
+                                              body: JSON.stringify({ entity_id: e.entity_id, validated: false, validation_notes: 'REJECTED: User rejected' }) })
+                                            loadData()
+                                          } catch {}
+                                        }} title="Reject this mapping (prevents re-discovery)" className="text-[10px] px-1.5 py-0.5 bg-orange-500 text-white rounded hover:bg-orange-600">Reject</button>
+                                        <button onClick={async (ev) => {
+                                          ev.stopPropagation()
+                                          if (!confirm('Delete this entity mapping?')) return
+                                          try {
+                                            await fetch(`/api/ontology/entity/${encodeURIComponent(e.entity_id)}`, { method: 'DELETE' })
+                                            loadData()
+                                          } catch {}
+                                        }} title="Delete this entity mapping" className="text-[10px] px-1.5 py-0.5 bg-red-500 text-white rounded hover:bg-red-600">Del</button>
+                                      </>
+                                    )}
+                                    <button onClick={async (ev) => {
+                                      ev.stopPropagation()
+                                      const et = entityTypeOverrides[e.entity_id] || e.entity_type
+                                      try {
+                                        const r = await fetch('/api/ontology/apply-tags', { method: 'POST', headers: { 'Content-Type': 'application/json' },
+                                          body: JSON.stringify({ selections: [{ entity_type: et, source_tables: [tbl.table_name], source_columns: srcCols, entity_role: role }] }) })
+                                        const j = await r.json().catch(() => ({}))
+                                        setOntoApplyResults(p => ({ ...p, [tbl.table_name]: j }))
+                                      } catch (err) { setOntoApplyResults(p => ({ ...p, [tbl.table_name]: { error: err.message } })) }
+                                    }} className="text-[10px] px-1.5 py-0.5 bg-purple-600 text-white rounded hover:bg-purple-700"
+                                      title={isPrimary ? 'Apply entity_type tag to table and columns (ignores threshold)' : 'Apply entity_type tag to columns only (ignores threshold)'}>
+                                      Apply Tag
+                                    </button>
+                                  </span>
                                 </div>
                                 {isOpen && e.validation_notes && (
                                   <div className="px-3 pb-2 border-t border-purple-200 dark:border-purple-700/30 mt-0">
@@ -1211,6 +1263,28 @@ function ReviewEditor() {
                       <p className="text-[10px] text-slate-400 dark:text-slate-500 italic">
                         Applying FK constraints requires MANAGE on the source table. If dbxmetagen only has APPLY_TAG, use "Tag All" above instead -- it sets <code className="text-[10px]">fk_references</code> column tags which only require APPLY_TAG.
                       </p>
+                      <details className="text-xs">
+                        <summary className="cursor-pointer text-indigo-600 hover:text-indigo-800 font-medium">+ Add FK Relationship</summary>
+                        <div className="mt-1 flex items-center gap-2 flex-wrap p-2 bg-indigo-50 dark:bg-indigo-900/20 rounded border border-indigo-200 dark:border-indigo-700/40">
+                          <input placeholder="Source column" id={`add-fk-src-col-${tblIdx}`} className="text-xs border border-indigo-300 rounded px-2 py-0.5 w-28 dark:bg-dbx-navy/60 dark:text-slate-200" />
+                          <input placeholder="Dest table" id={`add-fk-dst-tbl-${tblIdx}`} className="text-xs border border-indigo-300 rounded px-2 py-0.5 w-32 dark:bg-dbx-navy/60 dark:text-slate-200" />
+                          <input placeholder="Dest column" id={`add-fk-dst-col-${tblIdx}`} className="text-xs border border-indigo-300 rounded px-2 py-0.5 w-28 dark:bg-dbx-navy/60 dark:text-slate-200" />
+                          <button onClick={async () => {
+                            const srcCol = document.getElementById(`add-fk-src-col-${tblIdx}`)?.value?.trim()
+                            const dstTbl = document.getElementById(`add-fk-dst-tbl-${tblIdx}`)?.value?.trim()
+                            const dstCol = document.getElementById(`add-fk-dst-col-${tblIdx}`)?.value?.trim()
+                            if (!srcCol || !dstTbl || !dstCol) return
+                            try {
+                              await fetch('/api/analytics/fk-add', { method: 'POST', headers: { 'Content-Type': 'application/json' },
+                                body: JSON.stringify({ src_column: `${tbl.table_name}.${srcCol}`, dst_column: `${dstTbl}.${dstCol}`, src_table: tbl.table_name, dst_table: dstTbl }) })
+                              document.getElementById(`add-fk-src-col-${tblIdx}`).value = ''
+                              document.getElementById(`add-fk-dst-tbl-${tblIdx}`).value = ''
+                              document.getElementById(`add-fk-dst-col-${tblIdx}`).value = ''
+                              loadData()
+                            } catch {}
+                          }} className="text-[10px] px-2 py-0.5 bg-indigo-600 text-white rounded hover:bg-indigo-700">Add</button>
+                        </div>
+                      </details>
                       {fkGenSql != null && (
                         <div className="relative">
                           <pre className="text-[10px] bg-slate-800 dark:bg-slate-900 text-green-300 dark:text-green-400 rounded p-2 overflow-x-auto whitespace-pre-wrap max-h-40 font-mono">{fkGenSql}</pre>
@@ -1261,24 +1335,43 @@ function ReviewEditor() {
                                 <td className="px-2 py-1 text-slate-600 dark:text-slate-300 font-mono">{localCol}</td>
                                 <td className="px-2 py-1 text-slate-600 dark:text-slate-300 font-mono">{remoteCol}</td>
                                 <td className="px-2 py-1"><span className={`text-[10px] px-1.5 py-0.5 rounded-full font-medium ${confCls}`}>{fconf.toFixed(2)}</span></td>
+                                <td className="px-1 py-1">{fk.review_updated_at ? (
+                                  <span className={`text-[9px] px-1 py-0.5 rounded-full font-medium ${fk.is_fk === true || fk.is_fk === 'true' ? 'bg-green-100 text-green-700' : 'bg-red-100 text-red-700'}`}>
+                                    {fk.is_fk === true || fk.is_fk === 'true' ? 'approved' : 'rejected'}
+                                  </span>
+                                ) : null}</td>
                                 <td className="px-2 py-1 text-slate-500 dark:text-slate-400">{Number(fk.ai_confidence ?? 0).toFixed(2)}</td>
                                 <td className="px-2 py-1 text-slate-500 dark:text-slate-400">{Number(fk.col_similarity ?? 0).toFixed(2)}</td>
                                 <td className="px-2 py-1 text-slate-500 dark:text-slate-400 max-w-xs truncate cursor-pointer" title="Click to expand"
                                   onClick={() => setExpandedFKs(p => ({ ...p, [fkKey]: !p[fkKey] }))}>
                                   {fk.ai_reasoning || '--'}
                                 </td>
-                                <td className="px-1 py-1">
+                                <td className="px-1 py-1 flex items-center gap-1">
+                                  <button onClick={async () => {
+                                    try {
+                                      await fetch('/api/analytics/fk-review', { method: 'POST', headers: { 'Content-Type': 'application/json' },
+                                        body: JSON.stringify({ src_column: fk.src_column, dst_column: fk.dst_column, src_table: fk.src_table, dst_table: fk.dst_table, is_fk: true }) })
+                                      loadData()
+                                    } catch {}
+                                  }} title="Approve this FK" className="text-green-500 hover:text-green-700 text-xs font-bold">&#x2713;</button>
+                                  <button onClick={async () => {
+                                    try {
+                                      await fetch('/api/analytics/fk-review', { method: 'POST', headers: { 'Content-Type': 'application/json' },
+                                        body: JSON.stringify({ src_column: fk.src_column, dst_column: fk.dst_column, src_table: fk.src_table, dst_table: fk.dst_table, is_fk: false }) })
+                                      loadData()
+                                    } catch {}
+                                  }} title="Reject this FK" className="text-orange-500 hover:text-orange-700 text-xs font-bold">&#x2717;</button>
                                   <button onClick={() => deleteFkPredictions([{
                                     src_table: fk.src_table, src_column: fk.src_column,
                                     dst_table: fk.dst_table, dst_column: fk.dst_column,
-                                  }])} disabled={fkDeleting} title="Remove this FK prediction"
+                                  }])} disabled={fkDeleting} title="Delete this FK prediction"
                                     className="text-red-400 hover:text-red-600 disabled:opacity-50 text-xs">
                                     &#x2715;
                                   </button>
                                 </td>
                               </tr>
                               {isExpReasoning && fk.ai_reasoning && (
-                                <tr><td colSpan={8} className="px-3 py-2 bg-slate-50 dark:bg-dbx-navy-500/30 text-xs text-slate-600 dark:text-slate-300 italic">{fk.ai_reasoning}</td></tr>
+                                <tr><td colSpan={9} className="px-3 py-2 bg-slate-50 dark:bg-dbx-navy-500/30 text-xs text-slate-600 dark:text-slate-300 italic">{fk.ai_reasoning}</td></tr>
                               )}
                             </React.Fragment>
                           )
@@ -1295,6 +1388,7 @@ function ReviewEditor() {
                                     <th className="text-left px-2 py-1 font-semibold text-slate-500 dark:text-slate-400">Column</th>
                                     <th className="text-left px-2 py-1 font-semibold text-slate-500 dark:text-slate-400">References</th>
                                     <th className="text-left px-2 py-1 font-semibold text-slate-500 dark:text-slate-400" title="Combined final confidence">Final</th>
+                                    <th className="text-left px-1 py-1 font-semibold text-slate-500 dark:text-slate-400">Status</th>
                                     <th className="text-left px-2 py-1 font-semibold text-slate-500 dark:text-slate-400" title="AI model confidence">AI</th>
                                     <th className="text-left px-2 py-1 font-semibold text-slate-500 dark:text-slate-400" title="Column embedding similarity">Sim</th>
                                     <th className="text-left px-2 py-1 font-semibold text-slate-500 dark:text-slate-400">Reasoning</th>
@@ -1318,6 +1412,7 @@ function ReviewEditor() {
                                     <th className="text-left px-2 py-1 font-semibold text-slate-500 dark:text-slate-400">From</th>
                                     <th className="text-left px-2 py-1 font-semibold text-slate-500 dark:text-slate-400">Column</th>
                                     <th className="text-left px-2 py-1 font-semibold text-slate-500 dark:text-slate-400" title="Combined final confidence">Final</th>
+                                    <th className="text-left px-1 py-1 font-semibold text-slate-500 dark:text-slate-400">Status</th>
                                     <th className="text-left px-2 py-1 font-semibold text-slate-500 dark:text-slate-400" title="AI model confidence">AI</th>
                                     <th className="text-left px-2 py-1 font-semibold text-slate-500 dark:text-slate-400" title="Column embedding similarity">Sim</th>
                                     <th className="text-left px-2 py-1 font-semibold text-slate-500 dark:text-slate-400">Reasoning</th>

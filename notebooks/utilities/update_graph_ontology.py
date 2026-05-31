@@ -27,23 +27,28 @@ print(f"Schema: {schema_name}")
 
 # COMMAND ----------
 
-# MERGE: Upserts ontology entity rows into `graph_nodes`; match key `target.id = source.entity_id`.
-#   On match updates table_short_name, comment, quality_score (from confidence), ontology_type,
-#   display_name, short_description, status (entity_role), updated_at; on insert creates `node_type='entity'`,
-#   `source_system='ontology'`, fills identity/display fields from `ontology_entities` (table/column FK fields nullable).
-# WHY: Mirrors discovered ontology entities as first-class graph nodes so dashboards, traversal, and Genie/context
-#   consumers see the same entity catalog the ontology pipeline emitted.
-# TRADEOFFS: MERGE is idempotent and correct for notebooks, but skips library helpers that dedupe/maintain columns
-#   parity; DELETE+reload or deprecated drift vs `OntologyBuilder` sync is possible — prefer library paths for prod.
+# Remove legacy per-UUID entity nodes
+spark.sql(f"""
+DELETE FROM {catalog_name}.{schema_name}.graph_nodes
+WHERE node_type = 'entity' AND source_system = 'ontology' AND id NOT LIKE 'entity::%'
+""")
+
+# MERGE: One canonical concept node per (entity_name, ontology_bundle).
+# ID format: entity::{bundle}::{entity_name} -- deterministic and deduplicated.
 spark.sql(f"""
 MERGE INTO {catalog_name}.{schema_name}.graph_nodes AS target
 USING (
-    SELECT entity_id, entity_name, entity_type,
-           COALESCE(entity_role, 'primary') AS entity_role,
-           description, confidence, created_at, updated_at
+    SELECT CONCAT('entity::', COALESCE(ontology_bundle, '_default'), '::', entity_name) AS canonical_id,
+           FIRST(entity_name) AS entity_name,
+           FIRST(entity_type) AS entity_type,
+           FIRST(description) AS description,
+           MAX(confidence) AS confidence,
+           MIN(created_at) AS created_at,
+           MAX(updated_at) AS updated_at
     FROM {catalog_name}.{schema_name}.ontology_entities
+    GROUP BY entity_name, COALESCE(ontology_bundle, '_default')
 ) AS source
-ON target.id = source.entity_id
+ON target.id = source.canonical_id AND target.node_type = 'entity'
 
 WHEN MATCHED THEN UPDATE SET
     target.table_short_name = source.entity_name,
@@ -52,7 +57,7 @@ WHEN MATCHED THEN UPDATE SET
     target.ontology_type = source.entity_type,
     target.display_name = source.entity_name,
     target.short_description = COALESCE(source.description, target.short_description),
-    target.status = source.entity_role,
+    target.status = 'primary',
     target.updated_at = source.updated_at
 
 WHEN NOT MATCHED THEN INSERT (
@@ -64,48 +69,39 @@ WHEN NOT MATCHED THEN INSERT (
     sensitivity, status, source_system, keywords,
     created_at, updated_at
 ) VALUES (
-    source.entity_id, NULL, NULL, NULL, source.entity_name,
+    source.canonical_id, NULL, NULL, NULL, source.entity_name,
     NULL, NULL, FALSE, FALSE, 'PUBLIC',
     source.description, 'entity', NULL, NULL,
     source.confidence, NULL,
-    source.entity_id, source.entity_type, source.entity_name, source.description,
-    'public', source.entity_role, 'ontology', NULL,
+    source.canonical_id, source.entity_type, source.entity_name, source.description,
+    'public', 'primary', 'ontology', NULL,
     source.created_at, source.updated_at
 )
 """)
 
-print("Merged entity nodes into graph")
+print("Merged canonical entity concept nodes into graph")
 
 # COMMAND ----------
 
-# DELETE: Removes rows from `graph_edges` where `relationship = 'instance_of'` and source is ontology
-#   (`source_system IS NULL OR source_system = 'ontology'`) so stale links do not coexist with the next INSERT.
-# WHY: Instance links are rebuilt fully from current `ontology_entities.source_tables`; partial MERGE-by-edge_id is not used here.
-# TRADEOFFS: Brief window/table scan cost on delete-then-insert vs single MERGE sweep; clears legacy NULL source_system edges
-#   but treats any non-ontology `instance_of` as out of scope — may orphan if edges were stamped with another system.
+# DELETE + rebuild instance_of edges pointing to canonical concept nodes.
 spark.sql(f"""
 DELETE FROM {catalog_name}.{schema_name}.graph_edges
 WHERE relationship = 'instance_of'
   AND (source_system IS NULL OR source_system = 'ontology')
 """)
 
-# INSERT: Appends new `instance_of` edges: `src` = physical table id (`graph_nodes.id`), `dst` = `entity_id`,
-#   deterministic `edge_id = CONCAT(src,'::',dst,'::instance_of')`, weight from entity confidence,
-#   `source_system='ontology'`, status `candidate`, timestamps `current_timestamp`.
-# WHY: Materializes table→ontology-entity containment for graph queries and lineage-style navigation after node sync.
-# TRADEOFFS: Requires matching `graph_nodes` rows keyed by exploded `source_tables` names JOIN `t.id = table_name`
-#   (misses entities whose table names lack node rows); LATERAL EXPLODE duplicates if arrays repeat — normalization is caller's duty.
+# INSERT instance_of edges: src = table FQN, dst = canonical concept node ID.
 spark.sql(f"""
 INSERT INTO {catalog_name}.{schema_name}.graph_edges
     (src, dst, relationship, weight, edge_id, edge_type, direction,
      join_expression, join_confidence, ontology_rel,
      source_system, status, created_at, updated_at)
-SELECT
-    t.table_name AS src,
-    e.entity_id AS dst,
+SELECT DISTINCT
+    tbl AS src,
+    CONCAT('entity::', COALESCE(e.ontology_bundle, '_default'), '::', e.entity_name) AS dst,
     'instance_of' AS relationship,
     e.confidence AS weight,
-    CONCAT(t.table_name, '::', e.entity_id, '::instance_of') AS edge_id,
+    CONCAT(tbl, '::', CONCAT('entity::', COALESCE(e.ontology_bundle, '_default'), '::', e.entity_name), '::instance_of') AS edge_id,
     'instance_of' AS edge_type,
     'out' AS direction,
     NULL AS join_expression,
@@ -116,11 +112,12 @@ SELECT
     current_timestamp() AS created_at,
     current_timestamp() AS updated_at
 FROM {catalog_name}.{schema_name}.ontology_entities e
-LATERAL VIEW EXPLODE(e.source_tables) exploded AS table_name
-JOIN {catalog_name}.{schema_name}.graph_nodes t ON t.id = table_name
+LATERAL VIEW EXPLODE(e.source_tables) exploded AS tbl
+WHERE e.source_tables IS NOT NULL AND SIZE(e.source_tables) > 0
+  AND COALESCE(e.entity_role, 'primary') = 'primary'
 """)
 
-print("Added instance_of edges to graph")
+print("Added instance_of edges to graph (canonical concept nodes)")
 
 # COMMAND ----------
 

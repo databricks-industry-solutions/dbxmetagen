@@ -518,6 +518,7 @@ Evaluate each entity independently. Consider whether table purpose, columns, and
             LEFT JOIN {kb_table} kb ON e.source_tables[0] = kb.table_name
             WHERE COALESCE(e.attributes['granularity'], 'table') = 'table'
               AND (e.validated = FALSE OR e.validated IS NULL)
+              AND e.auto_discovered = TRUE
               {tn_scope}
         """)
         entity_rows = entities_df.collect()
@@ -681,6 +682,7 @@ Evaluate each entity independently. Consider whether table purpose, columns, and
                 LEFT JOIN {kb_table} kb ON e.source_tables[0] = kb.table_name
                 WHERE e.attributes['granularity'] = 'column'
                   AND (e.validated = FALSE OR e.validated IS NULL)
+                  AND e.auto_discovered = TRUE
             """)
             entity_rows = entities_df.collect()
         except AnalysisException:
@@ -695,6 +697,7 @@ Evaluate each entity independently. Consider whether table purpose, columns, and
                 LEFT JOIN {kb_table} kb ON e.source_tables[0] = kb.table_name
                 WHERE e.attributes['granularity'] = 'column'
                   AND (e.validated = FALSE OR e.validated IS NULL)
+                  AND e.auto_discovered = TRUE
             """)
             entity_rows = entities_df.collect()
 

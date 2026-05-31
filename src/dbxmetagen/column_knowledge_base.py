@@ -81,7 +81,7 @@ class ColumnKnowledgeBaseBuilder:
         tf = table_filter_sql(self.config.table_names or [], column="`table`")
         df = self.spark.sql(f"""
             SELECT 
-                `table` as table_name,
+                LOWER(`table`) as table_name,
                 metadata_type,
                 ddl_type,
                 column_name,

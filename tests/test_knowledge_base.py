@@ -296,7 +296,7 @@ class TestMergeSQLGeneration:
         """MERGE should match on table_name as the unique key."""
         merge_sql = self._get_merge_sql()
         
-        assert "ON target.table_name = source.table_name" in merge_sql
+        assert "ON LOWER(target.table_name) = LOWER(source.table_name)" in merge_sql
 
     def test_merge_inserts_all_columns_when_not_matched(self):
         """When table doesn't exist, all columns should be inserted."""

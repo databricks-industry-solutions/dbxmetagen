@@ -265,6 +265,41 @@ class TestExtractMVJoinSpecs:
         specs = self._asm()._extract_mv_join_specs([mv], set(), {"orders"})
         assert len(specs) == 0
 
+    def test_empty_selected_skips_all_joins(self):
+        """When table_identifiers is empty (MV-only room), no joins should be emitted."""
+        mv = {
+            "source_table": "rdl_redshift.ppm.dwh.trainprogram",
+            "json_definition": json.dumps({
+                "joins": [{"name": "project", "source": "rdl_redshift.ppm.dwh.project",
+                           "on": "source.project_id = project.id"}]
+            }),
+        }
+        specs = self._asm()._extract_mv_join_specs([mv], set(), set())
+        assert len(specs) == 0
+
+    def test_none_selected_skips_all_joins(self):
+        """None for selected_short_names should also skip all joins."""
+        mv = {
+            "source_table": "cat.sch.orders",
+            "json_definition": json.dumps({
+                "joins": [{"name": "c", "source": "cat.sch.c", "on": "source.id = c.id"}]
+            }),
+        }
+        specs = self._asm()._extract_mv_join_specs([mv], set(), None)
+        assert len(specs) == 0
+
+    def test_left_side_not_in_selected_skips(self):
+        """If the MV's source_table is not in selected tables, skip its joins."""
+        mv = {
+            "source_table": "other_cat.other_sch.unselected_table",
+            "json_definition": json.dumps({
+                "joins": [{"name": "customers", "source": "cat.sch.customers",
+                           "on": "source.cust_id = customers.id"}]
+            }),
+        }
+        specs = self._asm()._extract_mv_join_specs([mv], set(), {"customers"})
+        assert len(specs) == 0
+
 
 # ---------------------------------------------------------------------------
 # assemble() — applied vs unapplied MV contract
@@ -316,9 +351,11 @@ class TestAssembleMetricViewSplit:
         assert ds["metric_views"][0]["identifier"] == "c.s.mv_applied"
         aliases = [m.get("alias") for m in out["sql_snippets"].get("measures", [])]
         assert "measure_from_draft" in aliases
+        # Applied MV measures are NOT emitted as snippets -- Genie auto-discovers them
         assert "measure_from_applied" not in aliases
 
-    def test_all_applied_no_mv_yaml_measures_in_snippets(self):
+    def test_all_applied_no_measures_in_snippets(self):
+        """Applied MVs in hybrid rooms should NOT produce measure snippets."""
         asm = self._make_assembler()
         mvs = [
             {
@@ -343,6 +380,7 @@ class TestAssembleMetricViewSplit:
              patch.object(asm, "_load_genie_reference", return_value=""):
             out = asm.assemble(["c.s.orders"], metric_view_names=["mv_only"])
         aliases = [m.get("alias") for m in out["sql_snippets"].get("measures", [])]
+        # Applied MV measures NOT emitted -- Genie auto-discovers them
         assert "only_in_applied" not in aliases
 
 
@@ -365,3 +403,64 @@ class TestBuildSqlSnippets:
         sn = asm._build_sql_snippets([mv], {}, col_meta)
         assert any(m.get("alias") == "total_amt" for m in sn.get("measures", []))
         assert len(sn.get("filters", [])) >= 1
+
+
+# ---------------------------------------------------------------------------
+# _build_applied_mv_snippets
+# ---------------------------------------------------------------------------
+class TestBuildAppliedMvSnippets:
+    def test_no_measures_emitted_filter_extracted(self):
+        """Applied MV measures are auto-discovered by Genie -- no snippets needed."""
+        asm = object.__new__(GenieContextAssembler)
+        mv = {
+            "metric_view_name": "mv_sales",
+            "json_definition": json.dumps({
+                "measures": [{"name": "total_revenue", "expr": "SUM(revenue)", "comment": "Total rev"}],
+                "dimensions": [{"name": "region", "expr": "region"}],
+                "filter": "status = 'active'",
+            }),
+        }
+        sn = asm._build_applied_mv_snippets([mv])
+        assert len(sn["measures"]) == 0
+        assert len(sn["filters"]) == 1
+        assert "active" in sn["filters"][0]["sql"][0]
+
+    def test_dimension_expressions_skipped_for_applied_mvs(self):
+        """Applied MV dimensions are already columns -- no expression snippets needed."""
+        asm = object.__new__(GenieContextAssembler)
+        mv = {
+            "metric_view_name": "mv_time",
+            "json_definition": json.dumps({
+                "measures": [],
+                "dimensions": [{"name": "year", "expr": "YEAR(order_date)", "comment": "Order year"}],
+            }),
+        }
+        sn = asm._build_applied_mv_snippets([mv])
+        assert len(sn["expressions"]) == 0
+
+    def test_dimension_same_as_name_skipped(self):
+        asm = object.__new__(GenieContextAssembler)
+        mv = {
+            "metric_view_name": "mv_x",
+            "json_definition": json.dumps({
+                "measures": [{"name": "cnt", "expr": "COUNT(*)"}],
+                "dimensions": [{"name": "region", "expr": "region"}],
+            }),
+        }
+        sn = asm._build_applied_mv_snippets([mv])
+        assert len(sn["expressions"]) == 0
+
+    def test_no_measures_even_with_column_key(self):
+        """Applied MV measures are never emitted as snippets regardless of key format."""
+        asm = object.__new__(GenieContextAssembler)
+        mv = {
+            "metric_view_name": "mv_fb",
+            "json_definition": json.dumps({
+                "measures": [{"column": "amount", "display_name": "Amount"}],
+                "dimensions": [],
+            }),
+        }
+        sn = asm._build_applied_mv_snippets([mv])
+        assert len(sn["measures"]) == 0
+
+

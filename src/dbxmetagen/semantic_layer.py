@@ -38,6 +38,163 @@ def _trace_span(name: str):
 
 logger = logging.getLogger(__name__)
 
+_DIM_PREFIXES = {"dim_", "dimension_", "d_"}
+_FACT_PREFIXES = {"fct_", "fact_", "f_"}
+_MART_KEYWORDS = {"summary", "agg", "mart", "report", "rollup", "cube", "snapshot"}
+
+
+def profile_schema(table_names: list[str], fk_rows: list[dict],
+                    col_by_table: dict[str, list] | None = None) -> dict:
+    """Classify schema type and emit a SCHEMA PROFILE block for LLM context.
+
+    Returns dict with keys: table_count, fk_count, fact_tables, dim_tables,
+    mart_tables, schema_type, profile_text.
+    """
+    shorts = {t.split(".")[-1].lower() for t in table_names}
+    fact_tables = [s for s in shorts if any(s.startswith(p) for p in _FACT_PREFIXES)]
+    dim_tables = [s for s in shorts if any(s.startswith(p) for p in _DIM_PREFIXES)]
+    mart_tables = [s for s in shorts if any(kw in s for kw in _MART_KEYWORDS)]
+
+    # Detect multi-hop FK chains (A->B->C where B is both src and dst)
+    if fk_rows:
+        dst_set = {fk.get("dst_table", "").split(".")[-1].lower() for fk in fk_rows}
+        src_set = {fk.get("src_table", "").split(".")[-1].lower() for fk in fk_rows}
+        bridge_tables = dst_set & src_set
+    else:
+        bridge_tables = set()
+
+    fk_count = len(fk_rows)
+    n_tables = len(table_names)
+
+    if mart_tables and not fact_tables and fk_count == 0:
+        schema_type = "DATA_MART"
+        guidance = "pre-aggregated/summary tables -- create simple single-table metric views with direct aggregations, no joins needed"
+    elif fk_count == 0 or (fk_count <= 1 and n_tables <= 3):
+        schema_type = "SIMPLE"
+        guidance = "few or no FK relationships -- create single-table metric views with direct aggregations; do not fabricate joins"
+    elif bridge_tables:
+        schema_type = "SNOWFLAKE"
+        guidance = "multi-hop FK chains detected -- use nested joins for dimension hierarchies and maximize dimension reach"
+    else:
+        schema_type = "STAR"
+        guidance = "FK relationships available -- maximize cross-table joins and multi-dimension breakdowns"
+
+    lines = [
+        "\nSCHEMA PROFILE:",
+        f"  Tables: {n_tables}, FK relationships: {fk_count}",
+    ]
+    if fact_tables:
+        lines.append(f"  Fact tables (by naming): {', '.join(sorted(fact_tables))}")
+    if dim_tables:
+        lines.append(f"  Dimension tables (by naming): {', '.join(sorted(dim_tables))}")
+    if mart_tables:
+        lines.append(f"  Data mart / summary tables: {', '.join(sorted(mart_tables))}")
+    lines.append(f"  Schema type: {schema_type} ({guidance})")
+
+    return {
+        "table_count": n_tables,
+        "fk_count": fk_count,
+        "fact_tables": fact_tables,
+        "dim_tables": dim_tables,
+        "mart_tables": mart_tables,
+        "schema_type": schema_type,
+        "profile_text": "\n".join(lines),
+    }
+
+
+def check_dim_source_pattern(defn: dict, fk_rows: list[dict]) -> Optional[dict]:
+    """Detect dim-source + fact-join anti-pattern. Returns warning dict or None."""
+    source = defn.get("source", "")
+    joins = defn.get("joins", [])
+    if not source or not joins:
+        return None
+
+    src_short = source.split(".")[-1].lower()
+    join_tables = []
+    def _collect_join_sources(jlist):
+        for j in jlist:
+            j_src = j.get("source", "")
+            if j_src:
+                join_tables.append(j_src)
+            if j.get("joins"):
+                _collect_join_sources(j["joins"])
+    _collect_join_sources(joins)
+    if not join_tables:
+        return None
+
+    join_shorts = {t.split(".")[-1].lower() for t in join_tables}
+    signals = []
+
+    # Signal 1: FK direction -- source is PK parent (dst_table) of a FK where child (src_table) is in joins
+    for fk in fk_rows:
+        fk_dst = fk.get("dst_table", "")
+        fk_src = fk.get("src_table", "")
+        if fk_dst.split(".")[-1].lower() == src_short and fk_src.split(".")[-1].lower() in join_shorts:
+            signals.append(("fk_direction", f"source {src_short} is PK parent of {fk_src.split('.')[-1]}"))
+            break
+
+    # Signal 2: Table name prefixes
+    src_is_dim = any(src_short.startswith(p) for p in _DIM_PREFIXES)
+    fact_in_joins = [j for j in join_shorts if any(j.startswith(p) for p in _FACT_PREFIXES)]
+    if src_is_dim and fact_in_joins:
+        signals.append(("name_prefix", f"source {src_short} is dim-prefixed, joins include fact-prefixed {fact_in_joins}"))
+
+    # Signal 3: FK fan-out count -- source appears as dst_table (PK target) far more than as src_table
+    if fk_rows:
+        as_dst = sum(1 for fk in fk_rows if fk.get("dst_table", "").split(".")[-1].lower() == src_short)
+        as_src = sum(1 for fk in fk_rows if fk.get("src_table", "").split(".")[-1].lower() == src_short)
+        if as_dst >= 2 and as_src == 0:
+            signals.append(("fk_fanout", f"source {src_short} appears as FK target {as_dst}x, never as FK source"))
+
+    if not signals:
+        return None
+
+    suspected_fact = fact_in_joins[0] if fact_in_joins else next(iter(join_shorts), "unknown")
+    return {
+        "source": source,
+        "signals": signals,
+        "suspected_fact": suspected_fact,
+        "suspected_dim": src_short,
+        "message": f"Dim-source pattern detected: {src_short} (dim) joined to {suspected_fact} (fact). "
+                   f"Signals: {', '.join(s[0] for s in signals)}. This may produce inflated aggregates.",
+    }
+
+
+def _swap_source_and_join(defn: dict, fact_table: str) -> dict:
+    """Create a copy with source/join swapped: fact becomes source, old source becomes join."""
+    import copy
+    swapped = copy.deepcopy(defn)
+    old_source = swapped["source"]
+    old_source_short = old_source.split(".")[-1]
+
+    # Find the fact join to promote
+    new_joins = []
+    fact_join = None
+    for j in swapped.get("joins", []):
+        if j.get("source", "").split(".")[-1].lower() == fact_table.lower():
+            fact_join = j
+        else:
+            new_joins.append(j)
+
+    if not fact_join:
+        return swapped
+
+    swapped["source"] = fact_join["source"]
+    # Flip the on clause direction
+    on_clause = fact_join.get("on", "")
+    if on_clause:
+        parts = on_clause.split("=", 1)
+        if len(parts) == 2:
+            on_clause = f"{parts[1].strip()} = {parts[0].strip()}"
+
+    new_joins.append({
+        "name": old_source_short,
+        "source": old_source,
+        "on": on_clause,
+    })
+    swapped["joins"] = new_joins
+    return swapped
+
 
 @dataclass
 class SemanticLayerConfig:
@@ -560,12 +717,13 @@ class SemanticLayerGenerator:
             for c in batch_cols:
                 col_by_table.setdefault(c["table_name"], []).append(c)
 
-        # FK predictions (optional; filter by confidence only - fk_predictions has no is_fk column)
+        # FK predictions (optional; stash on self for source validation reuse)
         fk_rows = self._safe_collect(
             f"SELECT src_table, dst_table, src_column, dst_column, final_confidence "
             f"FROM {fq('fk_predictions')} "
             f"WHERE final_confidence >= {self.config.fk_confidence_threshold}"
         )
+        self._fk_rows = fk_rows
 
         # Ontology: primary entities per table
         ont_rows = self._safe_collect(
@@ -783,6 +941,10 @@ class SemanticLayerGenerator:
                 parts.append("\nREFERENCE: METRIC VIEW BEST PRACTICES (follow these rules strictly)")
                 parts.append(ref_text)
 
+        # Schema profile: adaptive signal so LLM calibrates output complexity
+        sp = profile_schema(table_names_list, fk_rows)
+        parts.append(sp["profile_text"])
+
         return "\n".join(parts)
 
     def _safe_collect(self, sql: str) -> list[dict]:
@@ -940,6 +1102,55 @@ class SemanticLayerGenerator:
                         val_span.set_inputs({"metric_view_name": mv_name, "source": source})
                         val_span.set_outputs({"outcome": "validated" if not errors else "failed", "validation_errors": errors or None})
 
+                # Source validation: warn on dim+fact pattern, recover if failed
+                fk_data = getattr(self, "_fk_rows", []) or []
+                src_warning = check_dim_source_pattern(defn, fk_data)
+                if src_warning:
+                    logger.warning("Source pattern warning for '%s': %s", mv_name, src_warning["message"])
+                    if errors:
+                        suspected_fact = src_warning["suspected_fact"]
+                        # Tier 1: try swapping source and join
+                        swapped = _swap_source_and_join(defn, suspected_fact)
+                        swap_errors = self._validate_definition(swapped)
+                        if not swap_errors and self.config.validate_expressions:
+                            swap_errors = self._validate_expressions(swapped)
+                        if not swap_errors and self.config.validate_before_store:
+                            try:
+                                yaml_body = self._definition_to_yaml(swapped)
+                                dry_name = f"{self.config.catalog_name}.{self.config.schema_name}.{mv_name}_swap_dry"
+                                self.spark.sql(f"CREATE OR REPLACE VIEW {dry_name}\nWITH METRICS LANGUAGE YAML AS $$\n{yaml_body}$$")
+                                self.spark.sql(f"DROP VIEW IF EXISTS {dry_name}")
+                            except Exception as e:
+                                swap_errors = [f"swap dry-run failed: {e}"]
+                        if not swap_errors:
+                            logger.info("Tier 1 recovery (swap) succeeded for '%s'", mv_name)
+                            defn = swapped
+                            source = defn.get("source", source)
+                            errors = []
+                        else:
+                            # Tier 2: strip fact joins, keep dim-only
+                            import copy
+                            dim_only = copy.deepcopy(defn)
+                            dim_only["joins"] = [
+                                j for j in dim_only.get("joins", [])
+                                if j.get("source", "").split(".")[-1].lower() != suspected_fact.lower()
+                            ]
+                            dim_errors = self._validate_definition(dim_only)
+                            if not dim_errors and self.config.validate_expressions:
+                                dim_errors = self._validate_expressions(dim_only)
+                            if not dim_errors and self.config.validate_before_store:
+                                try:
+                                    yaml_body = self._definition_to_yaml(dim_only)
+                                    dry_name = f"{self.config.catalog_name}.{self.config.schema_name}.{mv_name}_dim_dry"
+                                    self.spark.sql(f"CREATE OR REPLACE VIEW {dry_name}\nWITH METRICS LANGUAGE YAML AS $$\n{yaml_body}$$")
+                                    self.spark.sql(f"DROP VIEW IF EXISTS {dry_name}")
+                                except Exception as e:
+                                    dim_errors = [f"dim-only dry-run failed: {e}"]
+                            if not dim_errors:
+                                logger.info("Tier 2 recovery (dim-only) succeeded for '%s'", mv_name)
+                                defn = dim_only
+                                errors = []
+
                 status = "validated" if not errors else "failed"
                 error_str = "; ".join(errors).replace("'", "''") if errors else ""
                 json_str = json.dumps(defn).replace("'", "''")
@@ -966,6 +1177,9 @@ class SemanticLayerGenerator:
             for src, names in source_seen.items():
                 if len(names) > 1:
                     logger.warning("Duplicate source grain '%s' across views: %s", src, names)
+
+            if stats["generated"] > 0 and stats["validated"] == 0:
+                logger.warning("All %d generated metric views failed validation", stats["generated"])
 
             # Mark questions: processed if at least one definition stored, failed if all definitions failed validation
             id_list = ", ".join(f"'{qid}'" for qid in q_ids)
@@ -1010,6 +1224,7 @@ ORGANIZING PRINCIPLE -- one comprehensive view per fact-table grain:
 - Prefer ONE broad view per grain with all relevant measures and dimensions, rather than splitting by analytical theme. The consumer (Genie, agent, SQL) selects which dimensions/measures to use per query
 - Split into multiple views from the same source ONLY when the persistent filter, join path, or grain changes -- NOT because of different "themes"
 - Use nested joins to maximize dimension reach through FK chains (e.g. line_items -> orders -> customers -> regions)
+- When no FK relationships or join paths are available, create simple single-table metric views with direct aggregations. Do NOT fabricate joins. Dimension-only views (sourced from a dimension table with no joins) are valid for entity-level analytics (e.g. customer counts by region)
 
 RULES:
 1. Create measures that directly support answering the business questions. Do NOT add a generic "row count" or "Record Count" measure unless a question explicitly asks for "how many records" or "count of X". Prefer ratios (e.g. rate, per capita), conditional aggregates (FILTER), and entity-specific KPIs (e.g. readmission rate, avg length of stay) over raw COUNT(*) when the question implies a more specific metric.
@@ -1059,8 +1274,8 @@ RULES:
     - For measures, use what a business user would say: "Total Sales", "Avg Order Value", "Fulfillment Rate"
     - NEVER prefix dimension names with the join alias (use "Industry" not "account.Industry")
     - LIKE patterns MUST be quoted: product_code LIKE 'HW%', NOT product_code LIKE HW%
-21. GRAIN INTEGRITY with joins: When joining a fact table to a dimension table, only use dimension columns as GROUP BY dimensions or in FILTER clauses. NEVER aggregate a dimension-table numeric attribute (e.g. SUM(dim.bed_count), AVG(dim.capacity)) from a fact-grain view -- the value fans out by the number of fact rows per dimension row, producing inflated results. If you need to analyze dimension attributes directly, create a SEPARATE metric view sourced from the dimension table
-    REVERSE STAR (dimension as source): When a metric view is sourced from a dimension table and joins to a fact table, the join fans out (one physician -> many prescriptions). SUM and COUNT of fact columns are valid (they aggregate the fan-out). But AVG of a pre-aggregated dimension attribute (e.g. AVG(dim.score)) becomes wrong because each row is duplicated by the fan-out. Use COUNT(DISTINCT fact.pk) and SUM(fact.amount) but avoid AVG(source.attribute) when a fact join is present
+21. GRAIN INTEGRITY with joins: When joining a fact table to a dimension table, only use dimension columns as GROUP BY dimensions or in FILTER clauses. NEVER aggregate a dimension-table numeric attribute (e.g. SUM(dim.bed_count), AVG(dim.capacity)) from a fact-grain view -- the value fans out by the number of fact rows per dimension row, producing inflated results. If you need to analyze dimension attributes directly, create a SEPARATE dimension-only metric view with NO fact-table joins
+    STAR SCHEMA SOURCE RULE: When joins are present, the source MUST be the fact table (the table at the grain of the analysis, typically the one with the most rows and multiple foreign keys to dimension tables). The join relationship from source to join should be many-to-one. If you need metrics about a dimension entity itself (e.g. count of customers by region) with no fact-table aggregation, source from the dimension with NO fact-table joins -- this is valid. NEVER source from a dimension table and join to a fact table -- this fans out rows and produces incorrect aggregates
 22. NEVER create share-of-total or percent-of-total measures (e.g. SUM(x)/SUM(total_x), COUNT(*)/COUNT(*)). These require window functions (OVER()) for the denominator, which are not supported. The denominator collapses to the same group as the numerator, always producing 1.0. Instead use: conditional ratios with FILTER, within-grain rates, or describe the share concept in the view comment for downstream Genie SQL
 23. NEVER nest aggregate functions inside other aggregate functions (e.g. SUM(COUNT(*)), AVG(SUM(x))). Databricks SQL does not allow nested aggregates. If you need a two-stage aggregation, use a conditional aggregate with CASE/WHEN or create a separate metric view for the inner aggregation
 24. If EXISTING METRIC VIEWS are listed in the metadata, do NOT recreate views with the same name or identical measures/dimensions. Instead create complementary views that cover different analytical angles, grains, or join paths. Reference existing views when planning to ensure coverage without overlap
@@ -1089,17 +1304,23 @@ ORGANIZING PRINCIPLE -- one comprehensive view per fact-table grain:
 - Prefer ONE broad view per grain with all relevant measures/dimensions, rather than splitting by theme
 - Split into multiple views from the same source ONLY when the filter, join path, or grain differs
 - Use nested joins to maximize dimension reach through FK chains
+- When no FK relationships or join paths are available, create simple single-table metric views with direct aggregations. Do NOT fabricate joins. Dimension-only views (sourced from a dimension table with no joins) are valid for entity-level analytics (e.g. customer counts by region)
 
 For each metric view in "views", include:
 - "name": unique snake_case name reflecting the grain (e.g. prescription_metrics, order_line_metrics)
 - "source": fully qualified source table (catalog.schema.table)
 - "comment": one sentence describing what the view measures and its source lineage. Do NOT reference question numbers or KPI numbers
-- "joins": array of {{ "name": "<alias>", "source": "catalog.schema.table", "on": "source.<fk_col> = <alias>.<pk_col>" }} when RECOMMENDED JOINS exist and questions need breakdowns by another table
+- "joins": array of {{ "name": "<alias>", "source": "catalog.schema.table", "on": "source.<fk_col> = <alias>.<pk_col>" }}
+  Include joins supported by high-confidence FK relationships to maximize dimension reach. Use nested joins for dimension hierarchies (e.g. orders -> customers -> regions):
+  {{ "name": "customer", ..., "joins": [{{ "name": "nation", ..., "on": "customer.nation_id = nation.id" }}] }}
+  Do NOT join the same physical table via multiple paths unless each join serves a genuinely different FK role (e.g. ship_to_address vs bill_to_address). If the source table already has a direct FK to a dimension, do NOT also reach that dimension through a nested join chain.
 - "dimensions": array of {{ "name": "Display Name", "comment": "what it is" }} (no expr)
 - "measures": array of {{ "name": "Display Name", "comment": "what it measures" }} (no expr)
 - "question_indices": array of 0-based question indices this view answers
 
-Create measures that match the business questions (ratios, rates, KPIs); avoid generic row count unless a question explicitly asks for it. Use RECOMMENDED JOINS when questions ask for breakdown by attributes in another table. Each view must have at least one dimension and one measure.
+STAR SCHEMA SOURCE RULE: When joins are present, the source MUST be the fact table (the table at the grain of the analysis, typically the one with the most rows and multiple foreign keys to dimension tables). The join relationship from source to join should be many-to-one. If you need metrics about a dimension entity itself with no fact-table aggregation, source from the dimension with NO fact-table joins. NEVER source from a dimension table and join to a fact table -- this fans out rows and produces incorrect aggregates.
+
+Create measures that match the business questions (ratios, rates, KPIs); avoid generic row count unless a question explicitly asks for it. Each view must have at least one dimension and one measure. Cross-table breakdowns using joined dimension tables are strongly preferred.
 
 CATALOG METADATA:
 {context}
@@ -1446,6 +1667,9 @@ OUTPUT (one JSON object only, no array, no explanation):"""
         "ORDER",
         "ASC",
         "DESC",
+        "CURRENT_DATE",
+        "CURRENT_TIMESTAMP",
+        "CURRENT_TIME",
     }
 
     @classmethod
@@ -1688,6 +1912,11 @@ OUTPUT (one JSON object only, no array, no explanation):"""
         return expr
 
     @classmethod
+    def _fix_bare_whitespace_separator(cls, expr: str) -> str:
+        """Quote bare whitespace between commas: f(a,  , b) -> f(a, ' ', b)."""
+        return re.sub(r",(\s+),", ", ' ',", expr)
+
+    @classmethod
     def _fix_bare_comparison(cls, expr: str) -> str:
         """Insert '' when a comparison operator has no RHS value (LLM omitted empty string literal)."""
         return re.sub(
@@ -1765,6 +1994,7 @@ OUTPUT (one JSON object only, no array, no explanation):"""
         expr = cls._fix_in_clause_literals(expr)
         expr = cls._fix_concat_separators(expr)
         expr = cls._fix_like_patterns(expr)
+        expr = cls._fix_bare_whitespace_separator(expr)
         return expr
 
     def _validate_expressions(self, defn: dict) -> list[str]:

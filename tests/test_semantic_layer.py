@@ -9,6 +9,9 @@ from dbxmetagen.semantic_layer import (
     _normalize_window_specs,
     _infer_format_specs,
     _fix_percentage_scaling,
+    check_dim_source_pattern,
+    _swap_source_and_join,
+    profile_schema,
 )
 
 
@@ -239,6 +242,8 @@ class TestAutofixDoesNotCorruptGoodExprs:
         "source.ProjectName",
         "proj.ProjectName",
         "source.Custom_MilestoneStatus",
+        # CURRENT_DATE without parentheses
+        "SUM(CASE WHEN source.expected_close_date < CURRENT_DATE AND source.actual_close_date IS NULL THEN 1 ELSE 0 END)",
     ])
     def test_good_expr_unchanged(self, expr):
         assert SemanticLayerGenerator._autofix_expr(expr) == expr
@@ -330,6 +335,30 @@ class TestFixConcatSeparators:
         expr = "CONCAT(a, '-Q', b)"
         result = SemanticLayerGenerator._fix_concat_separators(expr)
         assert result == expr
+
+
+class TestFixBareWhitespaceSeparator:
+
+    def test_quotes_bare_double_space(self):
+        result = SemanticLayerGenerator._fix_bare_whitespace_separator("CONCAT(a,  , b)")
+        assert result == "CONCAT(a, ' ', b)"
+
+    def test_quotes_bare_triple_space(self):
+        result = SemanticLayerGenerator._fix_bare_whitespace_separator("CONCAT(a,   , b)")
+        assert result == "CONCAT(a, ' ', b)"
+
+    def test_preserves_already_quoted(self):
+        expr = "CONCAT(contact.first_name, ' ', contact.last_name)"
+        assert SemanticLayerGenerator._fix_bare_whitespace_separator(expr) == expr
+
+    def test_preserves_normal_expression(self):
+        expr = "SUM(CASE WHEN source.stage = 'Closed Won' THEN 1 ELSE 0 END)"
+        assert SemanticLayerGenerator._fix_bare_whitespace_separator(expr) == expr
+
+    def test_full_autofix_chain_fixes_concat_space(self):
+        bad = "CONCAT(contact.first_name,  , contact.last_name)"
+        result = SemanticLayerGenerator._autofix_expr(bad)
+        assert result == "CONCAT(contact.first_name, ' ', contact.last_name)"
 
 
 # ── JSON Parsers ──────────────────────────────────────────────────────
@@ -649,3 +678,189 @@ class TestParenthesizedStringLiterals:
         expr = "= Requirement change THEN"
         result = SemanticLayerGenerator._fix_unquoted_literals(expr)
         assert "'Requirement change'" in result
+
+
+# ── Source Validation ─────────────────────────────────────────────────
+
+
+class TestCheckDimSourcePattern:
+    def test_no_joins_returns_none(self):
+        defn = {"source": "cat.sch.dim_customer", "joins": []}
+        assert check_dim_source_pattern(defn, []) is None
+
+    def test_dim_prefix_fact_join_detected(self):
+        defn = {
+            "source": "cat.sch.dim_customer",
+            "joins": [{"source": "cat.sch.fct_orders", "on": "source.id = fct_orders.cust_id"}],
+        }
+        result = check_dim_source_pattern(defn, [])
+        assert result is not None
+        assert "name_prefix" in [s[0] for s in result["signals"]]
+
+    def test_fk_direction_signal(self):
+        defn = {
+            "source": "cat.sch.dim_customer",
+            "joins": [{"source": "cat.sch.orders", "on": "source.id = orders.cust_id"}],
+        }
+        fk_rows = [{"src_table": "cat.sch.orders", "dst_table": "cat.sch.dim_customer",
+                     "src_column": "cust_id", "dst_column": "id"}]
+        result = check_dim_source_pattern(defn, fk_rows)
+        assert result is not None
+        assert "fk_direction" in [s[0] for s in result["signals"]]
+
+    def test_fk_fanout_signal(self):
+        defn = {
+            "source": "cat.sch.dim_product",
+            "joins": [{"source": "cat.sch.sales", "on": "source.id = sales.prod_id"}],
+        }
+        fk_rows = [
+            {"src_table": "cat.sch.orders", "dst_table": "cat.sch.dim_product",
+             "src_column": "prod_id", "dst_column": "id"},
+            {"src_table": "cat.sch.sales", "dst_table": "cat.sch.dim_product",
+             "src_column": "prod_id", "dst_column": "id"},
+        ]
+        result = check_dim_source_pattern(defn, fk_rows)
+        assert result is not None
+        assert "fk_fanout" in [s[0] for s in result["signals"]]
+
+    def test_fact_source_not_flagged(self):
+        defn = {
+            "source": "cat.sch.fct_orders",
+            "joins": [{"source": "cat.sch.dim_customer", "on": "source.cust_id = dim_customer.id"}],
+        }
+        result = check_dim_source_pattern(defn, [])
+        assert result is None
+
+    def test_no_signals_returns_none(self):
+        defn = {
+            "source": "cat.sch.events",
+            "joins": [{"source": "cat.sch.users", "on": "source.uid = users.id"}],
+        }
+        assert check_dim_source_pattern(defn, []) is None
+
+
+class TestSwapSourceAndJoin:
+    def test_swap_reverses_source_and_join(self):
+        defn = {
+            "source": "cat.sch.dim_customer",
+            "joins": [{"name": "fct_orders", "source": "cat.sch.fct_orders",
+                        "on": "source.id = fct_orders.cust_id"}],
+            "measures": [{"name": "cnt", "expr": "COUNT(*)"}],
+        }
+        swapped = _swap_source_and_join(defn, "fct_orders")
+        assert swapped["source"] == "cat.sch.fct_orders"
+        assert any(j["source"] == "cat.sch.dim_customer" for j in swapped["joins"])
+
+    def test_swap_no_match_returns_unchanged(self):
+        defn = {
+            "source": "cat.sch.dim_customer",
+            "joins": [{"name": "other", "source": "cat.sch.other", "on": "source.id = other.cid"}],
+        }
+        swapped = _swap_source_and_join(defn, "fct_orders")
+        assert swapped["source"] == "cat.sch.dim_customer"
+
+
+class TestProfileSchema:
+    def test_star_schema(self):
+        tables = ["cat.sch.fct_orders", "cat.sch.dim_customer", "cat.sch.dim_product"]
+        fk_rows = [
+            {"src_table": "cat.sch.fct_orders", "src_column": "cust_id",
+             "dst_table": "cat.sch.dim_customer", "dst_column": "id", "final_confidence": 0.9},
+            {"src_table": "cat.sch.fct_orders", "src_column": "prod_id",
+             "dst_table": "cat.sch.dim_product", "dst_column": "id", "final_confidence": 0.9},
+        ]
+        result = profile_schema(tables, fk_rows)
+        assert result["schema_type"] == "STAR"
+        assert result["table_count"] == 3
+        assert result["fk_count"] == 2
+        assert "fct_orders" in result["fact_tables"]
+        assert "STAR" in result["profile_text"]
+
+    def test_simple_no_fks(self):
+        tables = ["cat.sch.events", "cat.sch.users"]
+        result = profile_schema(tables, [])
+        assert result["schema_type"] == "SIMPLE"
+        assert result["fk_count"] == 0
+        assert "SIMPLE" in result["profile_text"]
+
+    def test_data_mart(self):
+        tables = ["cat.sch.sales_summary", "cat.sch.revenue_rollup"]
+        result = profile_schema(tables, [])
+        assert result["schema_type"] == "DATA_MART"
+        assert "sales_summary" in result["mart_tables"]
+        assert "revenue_rollup" in result["mart_tables"]
+
+    def test_snowflake_multihop(self):
+        tables = ["cat.sch.fct_orders", "cat.sch.dim_customer", "cat.sch.dim_region"]
+        fk_rows = [
+            {"src_table": "cat.sch.fct_orders", "src_column": "cust_id",
+             "dst_table": "cat.sch.dim_customer", "dst_column": "id", "final_confidence": 0.9},
+            {"src_table": "cat.sch.dim_customer", "src_column": "region_id",
+             "dst_table": "cat.sch.dim_region", "dst_column": "id", "final_confidence": 0.9},
+        ]
+        result = profile_schema(tables, fk_rows)
+        assert result["schema_type"] == "SNOWFLAKE"
+        assert "multi-hop" in result["profile_text"]
+
+    def test_single_fk_few_tables_is_simple(self):
+        tables = ["cat.sch.orders", "cat.sch.users"]
+        fk_rows = [
+            {"src_table": "cat.sch.orders", "src_column": "user_id",
+             "dst_table": "cat.sch.users", "dst_column": "id", "final_confidence": 0.8},
+        ]
+        result = profile_schema(tables, fk_rows)
+        assert result["schema_type"] == "SIMPLE"
+
+
+# ── KPI Reference Stripping Regex ────────────────────────────────────
+
+import re
+
+_KPI_REF_RE = re.compile(
+    r"\.?\s*(?:Implements|Supports|Addresses|Answers|Covers|Partially implements)"
+    r"\s+(?:KPI|question|Q)s?\s*(?::\s*[^.]*(?:\.\s*)?|[\d,\s\-and#()]+\.?)"
+    r"|\s*\(KPI:\s*[^)]+\)"
+    r"|\s*\bKPI\s*#\d+\b(?:\s*\([^)]*\))?\.?"
+    r"|\s*\(#\d+\)",
+    re.IGNORECASE,
+)
+
+
+class TestKpiRefRegex:
+    """Tests for _KPI_REF_RE -- must strip KPI/question references from MV comments."""
+
+    def _strip(self, text):
+        result = _KPI_REF_RE.sub("", text)
+        result = re.sub(r"  +", " ", result).strip().rstrip(".")
+        return (result + ".") if result else ""
+
+    def test_numbered_kpis(self):
+        assert self._strip("Tracks revenue growth. Implements KPIs 1, 3, 10.") == "Tracks revenue growth."
+
+    def test_named_kpis_with_colon(self):
+        text = "Tracks deal pipeline metrics. Implements KPIs: Enterprise Segment Weighted Pipeline Concentration (#2), New Business Deal Share of Pipeline (#4)."
+        assert self._strip(text) == "Tracks deal pipeline metrics."
+
+    def test_inline_kpi_hash(self):
+        assert self._strip("Total weighted deal value KPI #6 (Customer Win Rate).") == "Total weighted deal value."
+
+    def test_inline_hash_number(self):
+        assert self._strip("Revenue growth metric (#3) by region.") == "Revenue growth metric by region."
+
+    def test_parenthetical_kpi(self):
+        assert self._strip("Shows overdue deals (KPI: Pipeline Risk).") == "Shows overdue deals."
+
+    def test_supports_questions(self):
+        assert self._strip("Pipeline analysis. Supports questions 1, 2 and 5.") == "Pipeline analysis."
+
+    def test_no_match_preserves_text(self):
+        assert self._strip("Clean description with no references.") == "Clean description with no references."
+
+    def test_partially_implements(self):
+        assert self._strip("Deal metrics. Partially implements KPI 7.") == "Deal metrics."
+
+    def test_multiple_patterns_in_one(self):
+        text = "Revenue growth KPI #2 (Win Rate). Implements KPIs: Overdue Risk (#1)."
+        result = self._strip(text)
+        assert "KPI" not in result
+        assert "#" not in result

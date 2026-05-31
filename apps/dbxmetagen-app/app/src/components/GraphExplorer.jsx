@@ -87,7 +87,7 @@ export default function GraphExplorer({ initialNode, initialEdgeType }) {
     if (!search || search.length < 2) { setNodePicker([]); return }
     const t = setTimeout(async () => {
       setPickerLoading(true)
-      const { data } = await safeFetch(`/api/graph/nodes?search=${encodeURIComponent(search)}&node_type=table&limit=20`)
+      const { data } = await safeFetch(`/api/graph/nodes?search=${encodeURIComponent(search)}&limit=20`)
       setNodePicker(Array.isArray(data) ? data : [])
       setPickerLoading(false)
     }, 300)
