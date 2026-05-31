@@ -2799,10 +2799,14 @@ def get_ontology_review_queue(limit: int = 50, max_confidence: float = 0.6):
 
 @app.post("/api/ontology/entity-review")
 def post_ontology_entity_review(body: OntologyEntityReviewBody):
-    """Update entity_type / entity_uri / validated / validation_notes for a row in ontology_entities."""
+    """Update entity_type / entity_uri / validated / validation_notes for a row in ontology_entities.
+
+    Always sets auto_discovered=false: human review converts the entity to human-owned,
+    protecting it from automated purge, MERGE overwrite, and re-validation.
+    """
     if not _ENTITY_ID_RE.match((body.entity_id or "").strip()):
         raise HTTPException(400, "entity_id must be a UUID or canonical ID (entity::bundle::name)")
-    sets = []
+    sets = ["auto_discovered = false"]
     if body.entity_type is not None:
         et = body.entity_type.strip()
         sets.append(f"entity_type = {_safe_sql_str(et)}")
@@ -2813,8 +2817,6 @@ def post_ontology_entity_review(body: OntologyEntityReviewBody):
         sets.append(f"validated = {str(bool(body.validated)).lower()}")
     if body.validation_notes is not None:
         sets.append(f"validation_notes = {_safe_sql_str(body.validation_notes)}")
-    if not sets:
-        raise HTTPException(400, "Provide at least one of entity_type, entity_uri, validated, validation_notes")
     ent_tbl = fq("ontology_entities")
     eid = _esc_sql(body.entity_id.strip())
     sql = f"UPDATE {ent_tbl} SET {', '.join(sets)} WHERE entity_id = '{eid}'"
@@ -3068,7 +3070,13 @@ async def import_ontology(
     import tempfile
 
     content = await file.read()
-    suffix = ".ttl" if file.filename and file.filename.endswith(".ttl") else ".owl"
+    _IMPORT_EXTS = {".ttl", ".owl", ".rdf", ".jsonld", ".nt", ".n3", ".nq", ".trig"}
+    suffix = ".owl"
+    if file.filename:
+        from pathlib import Path as _P
+        ext = _P(file.filename).suffix.lower()
+        if ext in _IMPORT_EXTS:
+            suffix = ext
     with tempfile.NamedTemporaryFile(suffix=suffix, delete=False) as tmp:
         tmp.write(content)
         tmp_path = tmp.name
@@ -3120,7 +3128,7 @@ async def import_ontology(
 
         entity_count = len(bundle.get("ontology", {}).get("entities", {}).get("definitions", {}))
         edge_count = len(bundle.get("ontology", {}).get("edge_catalog", {}))
-        return {
+        result = {
             "bundle_name": bundle_name,
             "entity_count": entity_count,
             "edge_count": edge_count,
@@ -3130,6 +3138,10 @@ async def import_ontology(
             "persisted_to_volume": vol_path is not None,
             "has_domains": len(bundle.get("domains", {})) > 0,
         }
+        diagnostics = bundle.get("_diagnostics")
+        if diagnostics:
+            result["diagnostics"] = diagnostics
+        return result
     except ImportError:
         return JSONResponse({"error": "rdflib required for import"}, status_code=500)
     except Exception as e:
@@ -10154,6 +10166,8 @@ def _generate_questions_single(req: SuggestQuestionsRequest):
 
     existing_block = _build_existing_questions_block(req.existing_questions)
 
+    mv_only = bool(req.metric_view_names) and not req.table_identifiers
+
     if req.purpose == "metric_views":
         prompt = f"""You are a business intelligence strategist. Your task is to generate questions that would drive the creation of reusable KPI metric views.
 {biz_ctx_block}
@@ -10171,6 +10185,23 @@ Generate exactly {req.count} questions that a BUSINESS LEADER would ask to track
 - Prefer questions that naturally decompose into a measure (SUM, AVG, COUNT) and dimensions (time, category, region)
 - Do NOT mention column names, table names, or SQL concepts -- use business language only
 - A business user who USES the data but doesn't know the data model should understand every question
+{existing_block}
+Return ONLY a JSON array of strings, no other text."""
+    elif mv_only:
+        prompt = f"""You are a data analyst helping business users explore pre-defined metric views through a natural language SQL interface (Databricks Genie).
+{biz_ctx_block}
+Below are the metric views available in this space. Each metric view defines specific MEASURES (pre-aggregated KPIs) and DIMENSIONS (ways to slice the data).
+
+{ctx_text}
+
+Generate exactly {req.count} questions that a BUSINESS USER would naturally ask about these specific metrics. Rules:
+- ONLY use the measures and dimensions listed in the metric views above -- do not invent concepts not present
+- Every question must be answerable by querying one of the metric views above using its measures and dimensions
+- Frame questions around the specific KPIs defined (e.g., if a metric view tracks "Total Adverse Events" with dimensions like "System Organ Class", ask about adverse event patterns by organ class)
+- Focus on trends, comparisons, rankings, thresholds, and ratios USING THE ACTUAL MEASURES provided
+- Vary analytical depth: simple breakdowns, comparisons across dimensions, threshold analysis, ratios between measures
+- Do NOT reference column names, table names, SQL concepts, or MEASURE() syntax -- use business language only
+- Do NOT ask about concepts not represented in the metric views (no products, orders, invoices unless those are actual measures/dimensions listed)
 {existing_block}
 Return ONLY a JSON array of strings, no other text."""
     else:

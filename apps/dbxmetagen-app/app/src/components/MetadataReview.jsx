@@ -1126,7 +1126,7 @@ function ReviewEditor() {
                                           ev.stopPropagation()
                                           try {
                                             await fetch('/api/ontology/entity-review', { method: 'POST', headers: { 'Content-Type': 'application/json' },
-                                              body: JSON.stringify({ entity_id: e.entity_id, validated: true, validation_notes: 'REJECTED: User rejected' }) })
+                                              body: JSON.stringify({ entity_id: e.entity_id, validated: false, validation_notes: 'REJECTED: User rejected' }) })
                                             loadData()
                                           } catch {}
                                         }} title="Reject this mapping (prevents re-discovery)" className="text-[10px] px-1.5 py-0.5 bg-orange-500 text-white rounded hover:bg-orange-600">Reject</button>

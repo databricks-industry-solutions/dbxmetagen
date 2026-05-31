@@ -2946,40 +2946,32 @@ class OntologyBuilder:
         logger.info("Relationships table %s ready", self.config.fully_qualified_relationships)
 
     def _purge_stale_bundle_entities(self, current_bundle: str) -> int:
-        """Remove auto-discovered, unvalidated entities from a different bundle."""
+        """Remove all system-owned entities from a different bundle."""
         if not current_bundle:
             return 0
         esc = current_bundle.replace("'", "''")
         # DELETE: Remove auto-discovered entities that belong to a DIFFERENT ontology
-        # bundle than the one currently being run, but only if they haven't been
-        # validated by a steward (validated = FALSE).
+        # bundle than the one currently being run.
         # WHY: When switching bundles (e.g., healthcare -> schema_org), the old
-        # bundle's entity types are no longer relevant. Keeping them pollutes the
-        # entity table and graph with stale types. Validated entities are preserved
-        # because a steward explicitly approved them.
-        # TRADEOFFS: Entities from prior bundles are permanently deleted (not soft-
-        # deleted). If the user switches back, they must re-run discovery. An
-        # alternative would be soft-delete with a bundle_active flag, but that adds
-        # complexity to every downstream query for minimal benefit.
+        # bundle's entity types are no longer relevant. Human-owned entities
+        # (auto_discovered=false) are preserved -- only system-owned are purged.
         result = self.spark.sql(
             f"""
             DELETE FROM {self.config.fully_qualified_entities}
             WHERE ontology_bundle IS NOT NULL
               AND ontology_bundle != '{esc}'
               AND auto_discovered = TRUE
-              AND validated = FALSE
             """
         )
         count = result.first()[0] if result.first() else 0
         if count:
-            msg = f"Purged {count} stale entities from previous bundle (keeping validated)"
-            logger.info(msg)
+            logger.info(f"Purged {count} stale entities from previous bundle")
         return count
 
     def _purge_current_bundle_stale(self, granularity: str) -> int:
-        """Delete auto-discovered entities from the current bundle before a full rebuild.
+        """Delete system-owned entities from the current bundle before a full rebuild.
 
-        Only called in non-incremental mode. Steward overrides (auto_discovered=false)
+        Only called in non-incremental mode. Human-owned entities (auto_discovered=false)
         are preserved. The subsequent MERGE will re-insert freshly discovered entities.
         """
         bundle = self.config.ontology_bundle
@@ -2987,21 +2979,9 @@ class OntologyBuilder:
             return 0
         esc = bundle.replace("'", "''")
         try:
-            # DELETE: Wipe auto-discovered entities for the CURRENT bundle at the
-            # specified granularity (table or column) before a full rebuild. Steward
-            # overrides (auto_discovered=false) are preserved.
-            # WHY: In non-incremental mode, discovery runs from scratch. Without
-            # this purge, entities that no longer match any table would persist as
-            # orphans. The subsequent _store_entities MERGE re-inserts fresh ones.
-        # TRADEOFFS: Full-delete + re-insert means entity_id changes between
-        # runs because entity_id uses uuid4() (non-deterministic). Edges
-        # referencing deleted entities become orphaned until the edge-build
-        # step re-runs later in the same pipeline. Incremental mode skips
-        # this entirely, preferring to update in place.
             result = self.spark.sql(f"""
                 DELETE FROM {self.config.fully_qualified_entities}
                 WHERE auto_discovered = TRUE
-                  AND validated = FALSE
                   AND ontology_bundle = '{esc}'
                   AND COALESCE(attributes['granularity'], 'table') = '{granularity}'
             """)
@@ -3079,25 +3059,19 @@ class OntologyBuilder:
         df = self.spark.createDataFrame(rows, schema=self.ENTITIES_SCHEMA)
         df.createOrReplaceTempView(view_name)
 
-        match_condition = "WHEN MATCHED AND target.auto_discovered = TRUE AND target.validated = FALSE THEN UPDATE SET"
-        extra_sets = ""
+        # Content-change guard: only update system-owned entities when discovery
+        # produces meaningfully different results. Resets validated + validation_notes
+        # so the validator re-evaluates after upstream changes.
+        match_condition = (
+            "WHEN MATCHED AND target.auto_discovered = TRUE"
+            " AND (target.confidence != source.confidence"
+            " OR COALESCE(array_join(target.source_columns, ','), '') != COALESCE(array_join(source.source_columns, ','), '')"
+            " OR COALESCE(target.entity_uri, '') != COALESCE(source.entity_uri, '')"
+            " OR COALESCE(target.source_ontology, '') != COALESCE(source.source_ontology, ''))"
+            " THEN UPDATE SET"
+        )
+        extra_sets = ",\n            target.validated = FALSE,\n            target.validation_notes = NULL"
 
-        # MERGE: Upsert discovered entities into ontology_entities. Keyed on the
-        # composite of (entity_name, sorted source_tables, granularity) -- this
-        # means "Patient from [table_a, table_b] at table-level" is a distinct
-        # entity from "Patient from [table_c] at column-level".
-        # Only updates rows that are auto_discovered AND not yet validated by a
-        # steward, preserving manual overrides in both incremental and full modes.
-        # To re-classify a validated entity, un-check validated via entity-review.
-        # WHY: The entity table is the central registry for all ontology entities.
-        # Multiple pipeline stages (discovery, column properties, role classification)
-        # write to it. MERGE ensures idempotency across re-runs without duplicating.
-        # TRADEOFFS: The array_join(array_sort(...)) ON clause is expensive because
-        # Delta can't use a Z-order index on a derived expression. An alternative
-        # would be a materialized hash column, but that adds schema complexity.
-        # The composite key also means renaming a source table creates a new entity
-        # rather than updating the old one -- acceptable because table renames are
-        # rare and the old entity is cleaned up by the purge step.
         self.spark.sql(
             f"""
         MERGE INTO {self.config.fully_qualified_entities} AS target

@@ -214,53 +214,64 @@ class GenieContextAssembler:
                     f"{len(unapplied_names)} metric view(s) not yet applied to UC (will contribute SQL snippets only, not Genie data sources): {', '.join(unapplied_names)}"
                 )
 
-        context_text = self._format_context(
-            table_meta, column_meta, fk_rows, entity_rows, value_samples, entity_rels
-        )
-        if metric_views and not context_text.strip():
+        mv_only = bool(applied_mvs or unapplied_mvs) and not table_identifiers
+
+        if mv_only:
+            # MV-only: use metric view context directly. Don't let unscoped
+            # ontology entities (returned unfiltered when tables=[]) pollute
+            # the context and suppress _format_mv_context.
             context_text = self._format_mv_context(metric_views)
-        join_specs = self._build_join_specs(fk_rows)
-        # Build dedup set using short names (handles FQ vs short identifier mismatches)
-        existing_pairs: set[tuple] = set()
-        for js in join_specs:
-            l = js["left"]["identifier"].split(".")[-1].lower()
-            r = js["right"]["identifier"].split(".")[-1].lower()
-            existing_pairs.add(tuple(sorted([l, r])))
-        # Merge ontology joins
-        ontology_joins = self._get_ontology_join_specs(table_identifiers)
-        for oj in ontology_joins:
-            l = oj["left"]["identifier"].split(".")[-1].lower()
-            r = oj["right"]["identifier"].split(".")[-1].lower()
-            pair = tuple(sorted([l, r]))
-            if pair not in existing_pairs:
-                join_specs.append(oj)
-                existing_pairs.add(pair)
-        # Merge metric view joins (all MVs, not just applied — joins are structural)
-        selected_shorts = {t.split(".")[-1].lower() for t in table_identifiers}
-        mv_join_specs = self._extract_mv_join_specs(metric_views, existing_pairs, selected_shorts)
-        join_specs.extend(mv_join_specs)
+        else:
+            context_text = self._format_context(
+                table_meta, column_meta, fk_rows, entity_rows, value_samples, entity_rels
+            )
+            if metric_views and not context_text.strip():
+                context_text = self._format_mv_context(metric_views)
+
         data_sources = self._build_data_sources(
             table_identifiers, table_meta, applied_mvs,
             column_meta=column_meta, entity_rows=entity_rows,
         )
-        ds_ids = {t["identifier"] for t in data_sources.get("tables", [])}
-        ds_ids |= {m["identifier"] for m in data_sources.get("metric_views", [])}
-        pre = len(join_specs)
-        join_specs = [
-            js for js in join_specs
-            if js["left"]["identifier"] in ds_ids and js["right"]["identifier"] in ds_ids
-        ]
-        if len(join_specs) < pre:
-            logger.warning("Dropped %d join_specs not matching data_sources", pre - len(join_specs))
-        mv_only = bool(applied_mvs or unapplied_mvs) and not table_identifiers
+
+        # Join assembly: metric views are self-contained (per Genie API spec,
+        # join_specs are "pre-defined join relationships between tables").
+        if mv_only:
+            join_specs: list = []
+        else:
+            join_specs = self._build_join_specs(fk_rows)
+            existing_pairs: set[tuple] = set()
+            for js in join_specs:
+                l = js["left"]["identifier"].split(".")[-1].lower()
+                r = js["right"]["identifier"].split(".")[-1].lower()
+                existing_pairs.add(tuple(sorted([l, r])))
+            ontology_joins = self._get_ontology_join_specs(table_identifiers)
+            for oj in ontology_joins:
+                l = oj["left"]["identifier"].split(".")[-1].lower()
+                r = oj["right"]["identifier"].split(".")[-1].lower()
+                pair = tuple(sorted([l, r]))
+                if pair not in existing_pairs:
+                    join_specs.append(oj)
+                    existing_pairs.add(pair)
+            selected_shorts = {t.split(".")[-1].lower() for t in table_identifiers}
+            mv_join_specs = self._extract_mv_join_specs(metric_views, existing_pairs, selected_shorts)
+            join_specs.extend(mv_join_specs)
+            ds_ids = {t["identifier"] for t in data_sources.get("tables", [])}
+            ds_ids |= {m["identifier"] for m in data_sources.get("metric_views", [])}
+            pre = len(join_specs)
+            join_specs = [
+                js for js in join_specs
+                if js["left"]["identifier"] in ds_ids and js["right"]["identifier"] in ds_ids
+            ]
+            if len(join_specs) < pre:
+                logger.warning("Dropped %d join_specs not matching data_sources", pre - len(join_specs))
         if mv_only and not unapplied_mvs:
-            # MV-only room with only applied MVs: snippets use MEASURE() syntax
+            # MV-only room (all applied): Genie auto-discovers measures; only emit filters
             sql_snippets: dict = {"measures": [], "filters": [], "expressions": []}
             applied_snippets = self._build_applied_mv_snippets(applied_mvs)
             for key in ("measures", "filters", "expressions"):
                 sql_snippets.setdefault(key, []).extend(applied_snippets.get(key, []))
         elif mv_only:
-            # MV-only room with unapplied MVs: expr-based for unapplied, MEASURE() for applied
+            # MV-only room with unapplied MVs: use expr-based snippets from unapplied only
             sql_snippets = self._build_sql_snippets(
                 unapplied_mvs, value_samples, column_meta
             )
@@ -268,10 +279,18 @@ class GenieContextAssembler:
             for key in ("measures", "filters", "expressions"):
                 sql_snippets.setdefault(key, []).extend(applied_snippets.get(key, []))
         else:
-            # Table-based room: ALL MVs contribute expr-based SQL (real aggregations)
-            all_mvs = applied_mvs + unapplied_mvs
+            # Hybrid/table room: decompose MV definitions into table-level snippets.
+            # Applied MVs that are ALSO data sources get auto-discovered by Genie, so
+            # we exclude those. Applied MVs that just back the tables (not in
+            # data_sources) still contribute their expr-based measures as snippets.
+            ds_mv_names = {m["identifier"].split(".")[-1].lower()
+                           for m in data_sources.get("metric_views", [])}
+            snippet_mvs = unapplied_mvs + [
+                mv for mv in applied_mvs
+                if mv.get("metric_view_name", "").lower() not in ds_mv_names
+            ]
             sql_snippets = self._build_sql_snippets(
-                all_mvs, value_samples, column_meta
+                snippet_mvs, value_samples, column_meta
             )
         # Cap snippets to avoid overwhelming Genie space definition
         _SNIPPET_CAPS = {"measures": 25, "filters": 15, "expressions": 20}
@@ -279,8 +298,6 @@ class GenieContextAssembler:
             if len(sql_snippets.get(key, [])) > cap:
                 logger.info("Capping %s snippets from %d to %d", key, len(sql_snippets[key]), cap)
                 sql_snippets[key] = sql_snippets[key][:cap]
-        mv_seed_examples = self._build_mv_example_sql(applied_mvs)
-
         reference_text = self._load_genie_reference()
 
         return {
@@ -288,7 +305,6 @@ class GenieContextAssembler:
             "join_specs": join_specs,
             "data_sources": data_sources,
             "sql_snippets": sql_snippets,
-            "mv_seed_examples": mv_seed_examples,
             "questions": questions or [],
             "reference_text": reference_text,
             "assembler_warnings": mv_warnings,
@@ -737,9 +753,9 @@ class GenieContextAssembler:
                     if d_comment:
                         line += f" -- {d_comment}"
                     parts.append(line)
-            if joins:
-                j_summaries = [f"{j.get('name', '?')} ({j.get('source', '?')}) ON {j.get('on', '?')}" for j in joins]
-                parts.append(f"  Joins: {'; '.join(j_summaries)}")
+            # Internal MV join definitions (how the MV joins its source tables) are
+            # intentionally excluded -- they describe internal structure, not queryable
+            # dimensions, and cause the LLM to invent invalid join_specs between MVs.
             if filt:
                 parts.append(f"  Default filter: {filt}")
             if filt_list:
@@ -1038,16 +1054,19 @@ class GenieContextAssembler:
         mvs = []
         for mv in metric_views:
             desc_lines = []
+            dim_names: list[str] = []
+            measure_names: list[str] = []
             try:
                 defn = json.loads(mv["json_definition"]) if isinstance(mv.get("json_definition"), str) else mv.get("json_definition") or {}
                 if defn.get("comment"):
                     desc_lines.append(defn["comment"])
                 dims = defn.get("dimensions", [])
                 measures = defn.get("measures", [])
-                if dims or measures:
-                    names = [d.get("name") for d in dims if d.get("name")] + [m.get("name") for m in measures if m.get("name")]
-                    if names:
-                        desc_lines.append(f"Dimensions/measures: {', '.join(names[:12])}{'...' if len(names) > 12 else ''}")
+                dim_names = [d.get("name") for d in dims if d.get("name")]
+                measure_names = [m.get("name") for m in measures if m.get("name")]
+                if dim_names or measure_names:
+                    names = dim_names + measure_names
+                    desc_lines.append(f"Dimensions/measures: {', '.join(names[:12])}{'...' if len(names) > 12 else ''}")
             except (json.JSONDecodeError, TypeError):
                 pass
             if not desc_lines:
@@ -1057,6 +1076,8 @@ class GenieContextAssembler:
                 {
                     "identifier": f"{mv_cat}.{mv_sch}.{mv['metric_view_name']}",
                     "description": desc_lines,
+                    "_dimensions": dim_names,
+                    "_measures": measure_names,
                 }
             )
 
@@ -1280,49 +1301,6 @@ class GenieContextAssembler:
                     "sql": [filt],
                 })
         return {"measures": [], "filters": filters, "expressions": []}
-
-    def _build_mv_example_sql(self, applied_mvs: list[dict]) -> list[dict]:
-        """Generate syntax-demonstration seed examples for applied metric views.
-
-        These seeds teach the Phase 2 LLM correct MEASURE() syntax. They are
-        intentionally simple and mechanical -- the LLM's job is to generate
-        analytically interesting questions on top of these.
-        """
-        examples: list[dict] = []
-        for mv in applied_mvs:
-            raw = mv.get("json_definition", "")
-            try:
-                defn = json.loads(raw) if isinstance(raw, str) else raw
-            except (json.JSONDecodeError, TypeError):
-                continue
-            mv_name = mv.get("metric_view_name", "")
-            if not mv_name:
-                continue
-            mv_cat, mv_sch = self._resolve_mv_location(mv, self.catalog, self.schema)
-            fq_mv = f"`{mv_cat}`.`{mv_sch}`.`{mv_name}`"
-            dims = [d.get("name") or d.get("column") or d.get("display_name")
-                    for d in defn.get("dimensions", [])
-                    if d.get("name") or d.get("column") or d.get("display_name")]
-            measures = [m.get("name") or m.get("column") or m.get("display_name")
-                        for m in defn.get("measures", [])
-                        if m.get("name") or m.get("column") or m.get("display_name")]
-            if not measures:
-                continue
-
-            measure_col = measures[0]
-            dim_col = dims[0] if dims else None
-
-            if dim_col:
-                examples.append({
-                    "question": f"What is the {measure_col.replace('_', ' ')} by {dim_col.replace('_', ' ')}?",
-                    "sql": f"SELECT `{dim_col}`, MEASURE(`{measure_col}`) FROM {fq_mv} GROUP BY `{dim_col}` ORDER BY MEASURE(`{measure_col}`) DESC",
-                })
-            else:
-                examples.append({
-                    "question": f"What is the total {measure_col.replace('_', ' ')}?",
-                    "sql": f"SELECT MEASURE(`{measure_col}`) FROM {fq_mv}",
-                })
-        return examples
 
 
 # ---------------------------------------------------------------------------

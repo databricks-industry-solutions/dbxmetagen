@@ -995,17 +995,18 @@ class TestStoreEntitiesMergeUpdate:
         assert len(merge_sql) == 1
         assert "WHEN MATCHED" in merge_sql[0]
         assert "auto_discovered = TRUE" in merge_sql[0]
-        assert "validated = FALSE" in merge_sql[0]
 
-    def test_merge_does_not_overwrite_validated(self, builder):
-        """WHEN MATCHED guard ensures validated entities are never overwritten."""
+    def test_merge_uses_content_change_guard(self, builder):
+        """MERGE uses content-change guard to only update when discovery output differs."""
         entities = [{"entity_id": "e1", "entity_type": "T", "source_tables": ["t1"], "confidence": 0.9}]
         builder._store_entities(entities)
         merge_sql = [c[0][0] for c in builder.spark.sql.call_args_list if "MERGE" in c[0][0]][0]
-        assert "validated = FALSE" in merge_sql
+        assert "target.confidence != source.confidence" in merge_sql
+        assert "target.validated = FALSE" in merge_sql
+        assert "target.validation_notes = NULL" in merge_sql
 
-    def test_full_mode_does_not_reset_validated(self):
-        """Full mode should NOT reset validated=FALSE in the UPDATE SET clause."""
+    def test_full_mode_resets_validated_on_content_change(self):
+        """Full mode MERGE resets validated when content changes (content-change guard)."""
         mock_spark = MagicMock()
         config = OntologyConfig(catalog_name="cat", schema_name="sch", incremental=False)
         with patch.object(OntologyLoader, 'load_config') as mock_load:
@@ -1014,8 +1015,9 @@ class TestStoreEntitiesMergeUpdate:
         entities = [{"entity_id": "e1", "entity_type": "T", "source_tables": ["t1"], "confidence": 0.8}]
         builder._store_entities(entities)
         merge_sql = [c[0][0] for c in mock_spark.sql.call_args_list if "MERGE" in c[0][0]][0]
-        assert "AND target.validated = FALSE THEN UPDATE SET" in merge_sql
-        assert "target.validation_notes = NULL" not in merge_sql
+        assert "target.confidence != source.confidence" in merge_sql
+        assert "target.validated = FALSE" in merge_sql
+        assert "target.validation_notes = NULL" in merge_sql
 
     def test_merge_updates_expected_columns(self, builder):
         entities = [{"entity_id": "e1", "entity_type": "T", "source_tables": ["t1"], "confidence": 0.5}]
@@ -1078,21 +1080,23 @@ class TestPurgeStaleBundleEntities:
         assert len(delete_sqls) == 1
         assert "ontology_bundle != 'general'" in delete_sqls[0]
         assert "auto_discovered = TRUE" in delete_sqls[0]
-        assert "validated = FALSE" in delete_sqls[0]
+        assert "validated = FALSE" not in delete_sqls[0]
 
     def test_purge_skips_when_no_bundle(self, builder):
         count = builder._purge_stale_bundle_entities("")
         assert count == 0
         builder.spark.sql.assert_not_called()
 
-    def test_purge_preserves_validated_entities(self, builder):
+    def test_purge_preserves_human_owned_entities(self, builder):
+        """Purge only targets auto_discovered=true; human-owned (auto_discovered=false) survive."""
         mock_result = MagicMock()
         mock_result.first.return_value = [0]
         builder.spark.sql.return_value = mock_result
 
         builder._purge_stale_bundle_entities("general")
         sql = builder.spark.sql.call_args[0][0]
-        assert "validated = FALSE" in sql
+        assert "auto_discovered = TRUE" in sql
+        assert "validated = FALSE" not in sql
 
     def test_discover_and_store_calls_purge_when_bundle_set(self, builder):
         builder.discoverer.discover_entities_from_tables = MagicMock(return_value=[])
@@ -1138,7 +1142,7 @@ class TestPurgeCurrentBundleStale:
         sql = b.spark.sql.call_args[0][0]
         assert "DELETE FROM" in sql
         assert "auto_discovered = TRUE" in sql
-        assert "validated = FALSE" in sql
+        assert "validated = FALSE" not in sql
         assert "ontology_bundle = 'schema_org'" in sql
         assert "'table'" in sql
 
@@ -2752,20 +2756,23 @@ class TestStoreEntitiesNonIncremental:
         assert len(merge_sqls) == 1
         return merge_sqls[0]
 
-    def test_incremental_merge_requires_validated_false(self, builder_incremental):
+    def test_incremental_merge_uses_content_change_guard(self, builder_incremental):
         sql = self._get_merge_sql(builder_incremental)
-        assert "target.validated = FALSE THEN UPDATE" in sql
-        assert "target.validated = FALSE," not in sql.split("THEN UPDATE")[1]
+        assert "target.confidence != source.confidence" in sql
+        assert "target.validated = FALSE," in sql.split("THEN UPDATE")[1]
 
-    def test_non_incremental_merge_still_respects_validated(self, builder_non_incremental):
-        """Full mode now preserves validated entities (steward edits survive)."""
+    def test_non_incremental_merge_uses_same_guard(self, builder_non_incremental):
+        """Both modes use the same content-change guard MERGE."""
         sql = self._get_merge_sql(builder_non_incremental)
-        assert "AND target.validated = FALSE THEN UPDATE" in sql
+        assert "auto_discovered = TRUE" in sql
+        assert "target.confidence != source.confidence" in sql
 
-    def test_non_incremental_merge_does_not_reset_validated(self, builder_non_incremental):
-        """Full mode should NOT reset validated=FALSE in the UPDATE SET clause."""
+    def test_non_incremental_merge_resets_validated_on_change(self, builder_non_incremental):
+        """Content change triggers validated + validation_notes reset."""
         sql = self._get_merge_sql(builder_non_incremental)
-        assert "target.validation_notes = NULL" not in sql
+        update_clause = sql.split("THEN UPDATE")[1]
+        assert "target.validated = FALSE" in update_clause
+        assert "target.validation_notes = NULL" in update_clause
 
 
 class TestForceRevalidate:
