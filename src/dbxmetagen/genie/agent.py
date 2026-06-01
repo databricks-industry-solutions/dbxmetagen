@@ -127,7 +127,7 @@ RULES:
 - NEVER generate multiple examples with the same query shape. Each must be structurally unique.
 - For parameterized queries:
   - Use :param_name syntax in SQL for user-adjustable values
-  - Include "parameters" array with name, type_hint (STRING, INT, or DATE), and default_value.values
+  - Include "parameters" array with name, type_hint (STRING or DATE only), and default_value.values (always an array of strings, even for numeric values)
   - Include "usage_guidance" with a short note on when to use the query
 - Post-processing validates SQL and removes broken entries -- aim for correctness.
 - Output ONLY JSON. No explanation.
