@@ -275,6 +275,27 @@ def _ensure_list(val) -> list[str]:
     return []
 
 
+_VALID_TYPE_HINTS = {"STRING", "DATE"}
+
+
+def _sanitize_parameters(params: list[dict]) -> list[dict]:
+    """Normalize parameter type_hints to values accepted by the Genie API (STRING, DATE)."""
+    sanitized = []
+    for p in params:
+        if not isinstance(p, dict):
+            continue
+        p = dict(p)
+        hint = str(p.get("type_hint", "STRING")).upper()
+        if hint not in _VALID_TYPE_HINTS:
+            p["type_hint"] = "STRING"
+            dv = p.get("default_value")
+            if isinstance(dv, dict) and "values" in dv:
+                dv["values"] = [str(v) for v in dv["values"]]
+                p["default_value"] = dv
+        sanitized.append(p)
+    return sanitized or None
+
+
 def _name_from_sql(sql_list: list[str]) -> str:
     """Derive a display name from a SQL expression when the alias is empty."""
     if not sql_list:
@@ -367,9 +388,12 @@ def build_serialized_space(raw: dict) -> dict:
         q = _ensure_list(ex.get("question"))
         s = [_format_sql(_fix_date_func_units(x)) for x in _ensure_list(ex.get("sql"))]
         if q and s:
+            params = ex.get("parameters") or None
+            if params:
+                params = _sanitize_parameters(params)
             examples.append(ExampleSQL(
                 question=q, sql=s,
-                parameters=ex.get("parameters") or None,
+                parameters=params,
                 usage_guidance=_to_str_list(ex.get("usage_guidance")),
             ))
 

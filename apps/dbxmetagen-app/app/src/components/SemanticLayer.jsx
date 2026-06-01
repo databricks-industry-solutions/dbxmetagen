@@ -1312,6 +1312,9 @@ export default function SemanticLayer({ onNavigate, pipelineStats }) {
       <section className={section}>
         <h2 className="text-lg font-semibold mb-1 dark:text-gray-100">Question Profile</h2>
         <p className="text-xs text-slate-500 dark:text-slate-400 mb-3">Write the business questions your analysts would ask. These drive which metric views get generated. Profiles let you save and reuse question sets across projects.</p>
+        <div className="px-3 py-2 mb-3 bg-amber-50 dark:bg-amber-900/20 border border-amber-200 dark:border-amber-700/50 rounded-md text-xs text-amber-800 dark:text-amber-300 leading-relaxed">
+          <span className="font-semibold">Coverage tip:</span> For best results, ensure your questions span all selected tables and key business areas. Each table should be referenced by at least one question. Tables without questions won't produce metric views.
+        </div>
         <div className="grid grid-cols-1 md:grid-cols-2 gap-4 mb-4">
           <div>
             <label className={label}>Load Profile</label>
@@ -1367,6 +1370,7 @@ export default function SemanticLayer({ onNavigate, pipelineStats }) {
           <div>
             <h2 className="text-lg font-semibold dark:text-gray-100">KPI Library</h2>
             <p className="text-xs text-gray-500 dark:text-gray-400 mt-0.5">Define or auto-suggest business KPIs from your selected tables. KPIs feed into metric view generation and Genie space configuration. Run multiple times for broader coverage -- each pass generates different KPIs.</p>
+            <p className="text-xs text-amber-600 dark:text-amber-400 mt-1">Aim for at least 2-3 KPIs per fact table to ensure adequate metric view coverage across your schema.</p>
           </div>
           <div className="flex gap-2">
             <button onClick={suggestKpis} disabled={kpiSuggesting || !selectedTables.length}
