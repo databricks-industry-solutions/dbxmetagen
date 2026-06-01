@@ -1237,7 +1237,8 @@ RULES:
    c. DATEDIFF only returns days with 2 args: DATEDIFF(end, start). For other units use TIMESTAMPDIFF(MINUTE, start, end) with a bare unquoted keyword unit
    d. TIMESTAMPADD: bare unquoted singular unit -- TIMESTAMPADD(MONTH, 1, col), NOT TIMESTAMPADD('MONTHS', 1, col)
    e. For year-month dimensions, use DATE_FORMAT(col, 'yyyy-MM'). NEVER use SUBSTR(col, 1, 7) on date columns
-6. ALWAYS single-quote ALL string literal values everywhere in expressions:
+6. For NULL checks, always use IS NULL / IS NOT NULL. NEVER use = NULL, <> NULL, or != NULL (these evaluate to NULL in SQL, not boolean)
+7. ALWAYS single-quote ALL string literal values everywhere in expressions:
    - Comparisons: status = 'fulfilled', NOT status = fulfilled
    - THEN/ELSE results: CASE WHEN x = 'A' THEN 'Category A' ELSE 'Other' END, NOT THEN Category A
    - IN lists: department IN ('Surgery', 'Pediatrics'), NOT IN (Surgery, Pediatrics)
@@ -1245,20 +1246,20 @@ RULES:
    - CASE results with parens/hyphens: THEN '0-15 min (Excellent)', NOT THEN 0-15 min (Excellent)
    The ONLY unquoted tokens should be column names, SQL keywords, and numbers
    WRONG: status = fulfilled, region IN (North, South). CORRECT: status = 'fulfilled', region IN ('North', 'South')
-7. Join format (Unity Catalog):
+8. Join format (Unity Catalog):
    STAR SCHEMA (default): name: <alias>, source: catalog.schema.table, on: source.<fk> = <alias>.<pk>. The root table is always "source".
    NESTED / SNOWFLAKE JOINS: for dimension hierarchies (e.g. customer -> nation -> region), nest child joins inside the parent's "joins" array. Child "on" references the PARENT alias, not "source":
    {{"name": "customer", "source": "...", "on": "source.customer_id = customer.id", "joins": [{{"name": "nation", "source": "...", "on": "customer.nation_id = nation.id"}}]}}
    Limit nesting to 2 levels. Use nested joins when JOIN PATHS in the metadata show multi-hop FK chains.
    NESTED ALIAS REACHABILITY: all nested join aliases are fully reachable in expressions. If you nest physician -> account -> territory, use "account.bed_count" and "territory.region" directly. NEVER substitute a placeholder column from an unrelated table/alias. If a column is unreachable through joins, DROP the dimension entirely rather than faking it.
-8. Include joins when RECOMMENDED JOINS exist; when questions ask for breakdowns by attributes in another table (e.g. by customer segment, department), you MUST add a join. Prefer at least one metric view with joins when FKs exist
-9. Every metric view MUST have at least one measure and one dimension
-10. Add a top-level "comment" (1-2 sentences) describing what the metric view measures, its analytical purpose, and which source tables it draws from. Do NOT reference question numbers, KPI numbers, or list which questions are/aren't answerable. Focus on content and lineage (e.g. "Analyzes order revenue by product family and sales representative, joining line items to the product catalog and parent order for discount tracking.")
-11. Every dimension and measure MUST have: "comment" (what it represents), "display_name" (human-readable label, max 255 chars), and "synonyms" (array of 2-5 alternative names for Genie discoverability, e.g. ["revenue", "total sales"] for Total Revenue). Every measure MUST have a "format" object: {{"type": "currency"}} for monetary values, {{"type": "percentage"}} for rates/ratios that return a 0-to-1 FRACTION (e.g. 0.167 for 16.7%), or {{"type": "number"}} for counts/averages/scores. CRITICAL: percentage-format expressions must NOT multiply by 100 -- the rendering layer does that automatically. Write `SUM(won)/NULLIF(COUNT(*),0)` (returns 0.167), NOT `100.0 * SUM(won)/NULLIF(COUNT(*),0)` (returns 16.7). Also do NOT wrap percentage expressions in ROUND(); the format handles decimal precision.
-12. Use "filter" (optional) for persistent WHERE clauses (e.g. excluding null/test rows)
-13. Use measure-level FILTER for conditional aggregation: SUM(col) FILTER (WHERE condition)
-14. If some questions are not answerable with metrics (e.g. document search, free-text lookups, SOP retrieval), generate metric views for the ones that ARE quantitative/analytical and silently ignore the rest. Do NOT mention skipped or unanswerable questions in the comment field
-15. Each metric view "name" must be unique and descriptive, reflecting the grain (e.g. prescription_metrics, order_line_metrics, encounter_metrics)
+9. Include joins when RECOMMENDED JOINS exist; when questions ask for breakdowns by attributes in another table (e.g. by customer segment, department), you MUST add a join. Prefer at least one metric view with joins when FKs exist
+10. Every metric view MUST have at least one measure and one dimension
+11. Add a top-level "comment" (1-2 sentences) describing what the metric view measures, its analytical purpose, and which source tables it draws from. Do NOT reference question numbers, KPI numbers, or list which questions are/aren't answerable. Focus on content and lineage (e.g. "Analyzes order revenue by product family and sales representative, joining line items to the product catalog and parent order for discount tracking.")
+12. Every dimension and measure MUST have: "comment" (what it represents), "display_name" (human-readable label, max 255 chars), and "synonyms" (array of 2-5 alternative names for Genie discoverability, e.g. ["revenue", "total sales"] for Total Revenue). Every measure MUST have a "format" object: {{"type": "currency"}} for monetary values, {{"type": "percentage"}} for rates/ratios that return a 0-to-1 FRACTION (e.g. 0.167 for 16.7%), or {{"type": "number"}} for counts/averages/scores. CRITICAL: percentage-format expressions must NOT multiply by 100 -- the rendering layer does that automatically. Write `SUM(won)/NULLIF(COUNT(*),0)` (returns 0.167), NOT `100.0 * SUM(won)/NULLIF(COUNT(*),0)` (returns 16.7). Also do NOT wrap percentage expressions in ROUND(); the format handles decimal precision.
+13. Use "filter" (optional) for persistent WHERE clauses (e.g. excluding null/test rows)
+14. Use measure-level FILTER for conditional aggregation: SUM(col) FILTER (WHERE condition)
+15. If some questions are not answerable with metrics (e.g. document search, free-text lookups, SOP retrieval), generate metric views for the ones that ARE quantitative/analytical and silently ignore the rest. Do NOT mention skipped or unanswerable questions in the comment field
+16. Each metric view "name" must be unique and descriptive, reflecting the grain (e.g. prescription_metrics, order_line_metrics, encounter_metrics)
 16. Output ONLY a valid JSON array, no explanation
 17. Use domain and subdomain from table metadata to choose which dimensions (e.g. department, region, product category) are relevant to the questions.
 18. When Entity types are annotated on tables, use the ENTITY MEASURE SUGGESTIONS in the metadata and generate entity-specific analytical metrics:
@@ -1927,6 +1928,14 @@ OUTPUT (one JSON object only, no array, no explanation):"""
         )
 
     @classmethod
+    def _fix_null_comparison(cls, expr: str) -> str:
+        """Rewrite <> NULL / != NULL to IS NOT NULL, = NULL to IS NULL."""
+        expr = re.sub(r'\s*<>\s*NULL\b', ' IS NOT NULL', expr, flags=re.IGNORECASE)
+        expr = re.sub(r'\s*!=\s*NULL\b', ' IS NOT NULL', expr, flags=re.IGNORECASE)
+        expr = re.sub(r'(?<![!<>])\s*=\s*NULL\b', ' IS NULL', expr, flags=re.IGNORECASE)
+        return expr
+
+    @classmethod
     def _fix_none_literal(cls, expr: str) -> str:
         """Replace Python None leaked into SQL with NULL."""
         return re.sub(r"\bNone\b", "NULL", expr)
@@ -1984,6 +1993,7 @@ OUTPUT (one JSON object only, no array, no explanation):"""
         expr = re.sub(r"SUBSTR\(([^,]+),\s*1\s*,\s*(4|7)\)", _fix_substr_date, expr, flags=re.IGNORECASE)
 
         expr = cls._fix_bare_comparison(expr)
+        expr = cls._fix_null_comparison(expr)
         expr = cls._fix_none_literal(expr)
         expr = cls._fix_double_commas(expr)
         expr = cls._fix_position_bare_char(expr)

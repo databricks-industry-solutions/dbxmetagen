@@ -244,6 +244,11 @@ class TestAutofixDoesNotCorruptGoodExprs:
         "source.Custom_MilestoneStatus",
         # CURRENT_DATE without parentheses
         "SUM(CASE WHEN source.expected_close_date < CURRENT_DATE AND source.actual_close_date IS NULL THEN 1 ELSE 0 END)",
+        # NULL comparison -- correct forms must not be corrupted
+        "source.x IS NOT NULL",
+        "COALESCE(source.x, NULL)",
+        "NULLIF(source.total, 0)",
+        "SUM(CASE WHEN source.flag != 'N' THEN 1 ELSE 0 END)",
     ])
     def test_good_expr_unchanged(self, expr):
         assert SemanticLayerGenerator._autofix_expr(expr) == expr
@@ -309,6 +314,24 @@ class TestAutofixFixesBadExprs:
         result = SemanticLayerGenerator._autofix_expr(bad)
         assert "!= ''" in result
         assert "!= )" not in result
+
+    def test_fixes_neq_null(self):
+        bad = "SUM(CASE WHEN source.reason <> NULL THEN 1 ELSE 0 END)"
+        result = SemanticLayerGenerator._autofix_expr(bad)
+        assert "IS NOT NULL" in result
+        assert "<> NULL" not in result
+
+    def test_fixes_eq_null(self):
+        bad = "SUM(CASE WHEN source.reason = NULL THEN 1 ELSE 0 END)"
+        result = SemanticLayerGenerator._autofix_expr(bad)
+        assert "IS NULL" in result
+        assert "= NULL" not in result
+
+    def test_fixes_excl_eq_null(self):
+        bad = "SUM(CASE WHEN source.reason != NULL THEN 1 ELSE 0 END)"
+        result = SemanticLayerGenerator._autofix_expr(bad)
+        assert "IS NOT NULL" in result
+        assert "!= NULL" not in result
 
 
 class TestFixConcatSeparators:
