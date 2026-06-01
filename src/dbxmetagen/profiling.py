@@ -329,6 +329,7 @@ class ProfilingBuilder:
 
         # Classify columns by type
         numeric_cols, string_cols, bool_cols, date_cols, other_cols = [], [], [], [], []
+        non_orderable_cols: set = set()
         col_type_map: Dict[str, Any] = {}
         for f in schema.fields[:50]:
             col_type_map[f.name] = f.dataType
@@ -342,6 +343,8 @@ class ProfilingBuilder:
                 date_cols.append(f.name)
             else:
                 other_cols.append(f.name)
+                if isinstance(f.dataType, (SparkMapType, SparkArrayType, StructType)):
+                    non_orderable_cols.add(f.name)
 
         # --- Pass 1: single SQL with all aggregates ---
         agg_parts = ["COUNT(*) AS `_row_count`"]
@@ -349,9 +352,10 @@ class ProfilingBuilder:
             qc = f"`{c}`"
             agg_parts.append(f"COUNT({qc}) AS `{c}__non_null`")
             agg_parts.append(f"SUM(CASE WHEN {qc} IS NULL THEN 1 ELSE 0 END) AS `{c}__null_count`")
-            agg_parts.append(f"APPROX_COUNT_DISTINCT({qc}) AS `{c}__distinct`")
-            agg_parts.append(f"CAST(MIN({qc}) AS STRING) AS `{c}__min`")
-            agg_parts.append(f"CAST(MAX({qc}) AS STRING) AS `{c}__max`")
+            if c not in non_orderable_cols:
+                agg_parts.append(f"APPROX_COUNT_DISTINCT({qc}) AS `{c}__distinct`")
+                agg_parts.append(f"CAST(MIN({qc}) AS STRING) AS `{c}__min`")
+                agg_parts.append(f"CAST(MAX({qc}) AS STRING) AS `{c}__max`")
 
         for c in numeric_cols:
             qc = f"`{c}`"
@@ -400,7 +404,8 @@ class ProfilingBuilder:
         for c in columns:
             non_null = int(row[f"{c}__non_null"] or 0)
             null_count = int(row[f"{c}__null_count"] or 0)
-            distinct_count = int(row[f"{c}__distinct"] or 0)
+            is_non_orderable = c in non_orderable_cols
+            distinct_count = 0 if is_non_orderable else int(row[f"{c}__distinct"] or 0)
             null_rate = float(null_count / row_count) if row_count > 0 else 0.0
             cardinality_ratio = float(distinct_count / non_null) if non_null > 0 else 0.0
             is_unique = cardinality_ratio > 0.95 and null_rate < 0.01 and row_count > 10
@@ -431,8 +436,8 @@ class ProfilingBuilder:
                 "distinct_count": distinct_count,
                 "cardinality_ratio": cardinality_ratio,
                 "is_unique_candidate": is_unique,
-                "min_value": str(row[f"{c}__min"] or "")[:100],
-                "max_value": str(row[f"{c}__max"] or "")[:100],
+                "min_value": "" if is_non_orderable else str(row[f"{c}__min"] or "")[:100],
+                "max_value": "" if is_non_orderable else str(row[f"{c}__max"] or "")[:100],
                 "mean_value": 0.0,
                 "stddev_value": 0.0,
                 "percentiles": {},
@@ -522,6 +527,7 @@ class ProfilingBuilder:
         column_count = len(schema.fields)
 
         numeric_cols, string_cols = [], []
+        non_orderable_cols: set = set()
         col_type_map: Dict[str, Any] = {}
         for f in schema.fields[:50]:
             col_type_map[f.name] = f.dataType
@@ -529,17 +535,21 @@ class ProfilingBuilder:
                 numeric_cols.append(f.name)
             elif isinstance(f.dataType, SparkStringType):
                 string_cols.append(f.name)
+            elif isinstance(f.dataType, (SparkMapType, SparkArrayType, StructType)):
+                non_orderable_cols.add(f.name)
 
         # Guaranteed-pushdown aggregates only: bare-column COUNT/MIN/MAX/AVG.
         # STDDEV_SAMP and AGG(EXPR(col)) like MIN(LENGTH(col)) are NOT guaranteed
         # to push down across all LF connectors. Those stats are derived from
         # the LIMIT-based sample pull below instead.
+        # Skip MIN/MAX for non-orderable types (MAP, ARRAY, STRUCT).
         agg_parts = ["COUNT(*) AS `_row_count`"]
         for c in columns:
             qc = f"`{c}`"
             agg_parts.append(f"COUNT({qc}) AS `{c}__non_null`")
-            agg_parts.append(f"CAST(MIN({qc}) AS STRING) AS `{c}__min`")
-            agg_parts.append(f"CAST(MAX({qc}) AS STRING) AS `{c}__max`")
+            if c not in non_orderable_cols:
+                agg_parts.append(f"CAST(MIN({qc}) AS STRING) AS `{c}__min`")
+                agg_parts.append(f"CAST(MAX({qc}) AS STRING) AS `{c}__max`")
 
         for c in numeric_cols:
             qc = f"`{c}`"
@@ -559,6 +569,7 @@ class ProfilingBuilder:
             non_null = int(row[f"{c}__non_null"] or 0)
             null_count = row_count - non_null
             null_rate = float(null_count / row_count) if row_count > 0 else 0.0
+            is_non_orderable = c in non_orderable_cols
 
             dtype = col_type_map[c]
             data_type_str = self._get_data_type_string(dtype)
@@ -584,8 +595,8 @@ class ProfilingBuilder:
                 "distinct_count": 0,
                 "cardinality_ratio": 0.0,
                 "is_unique_candidate": False,
-                "min_value": str(row[f"{c}__min"] or "")[:100],
-                "max_value": str(row[f"{c}__max"] or "")[:100],
+                "min_value": "" if is_non_orderable else str(row[f"{c}__min"] or "")[:100],
+                "max_value": "" if is_non_orderable else str(row[f"{c}__max"] or "")[:100],
                 "mean_value": 0.0,
                 "stddev_value": 0.0,
                 "percentiles": {},
@@ -864,8 +875,13 @@ class ProfilingBuilder:
 
         drift_baselines = self._load_all_drift_baselines(tables)
 
+        # Patterns indicating the table is unreadable (VS indexes, unsupported formats)
+        # These are skipped rather than counted as failures.
+        _SKIP_PATTERNS = ("DATA_SOURCE_NOT_FOUND", "unsupported.DefaultSource")
+
         successful = 0
         failed = 0
+        skipped = 0
         errors: list[str] = []
         max_workers = min(4 if federation_mode else 8, len(tables))
 
@@ -881,12 +897,17 @@ class ProfilingBuilder:
                     self.write_snapshot(snapshot)
                     successful += 1
                 except Exception as e:
-                    logger.error(f"Profiling failed for {tbl}: {e}")
-                    errors.append(f"{tbl}: {e}")
-                    failed += 1
+                    err_str = str(e)
+                    if any(p in err_str for p in _SKIP_PATTERNS):
+                        logger.warning(f"Skipping unreadable table {tbl}: {err_str[:120]}")
+                        skipped += 1
+                    else:
+                        logger.error(f"Profiling failed for {tbl}: {e}")
+                        errors.append(f"{tbl}: {e}")
+                        failed += 1
 
         logger.info(
-            f"Profiling complete. Tables: {successful} success, {failed} failed. "
+            f"Profiling complete. Tables: {successful} success, {failed} failed, {skipped} skipped. "
             f"Columns: {self._stats['total_cols']} total "
             f"({self._stats['numeric_cols']} numeric, {self._stats['string_cols']} string, "
             f"{self._stats['other_cols']} other)"
@@ -901,6 +922,7 @@ class ProfilingBuilder:
         return {
             "tables_profiled": successful,
             "tables_failed": failed,
+            "tables_skipped": skipped,
             "total_tables": len(tables),
             "columns_profiled": self._stats["total_cols"],
             "numeric_columns": self._stats["numeric_cols"],

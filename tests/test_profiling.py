@@ -33,10 +33,11 @@ class _TimestampType:
     pass
 
 class _ArrayType:
-    pass
+    elementType = _StringType()
 
 class _MapType:
-    pass
+    keyType = _StringType()
+    valueType = _StringType()
 
 class _StructType:
     pass
@@ -454,6 +455,154 @@ class TestFederatedSinglePass:
 
         for rec in result["column_stat_records"]:
             assert rec["distinct_count"] == 0
+
+
+class TestNonOrderableTypes:
+    """Tests for MAP/ARRAY/STRUCT columns skipping MIN/MAX/APPROX_COUNT_DISTINCT."""
+
+    @pytest.fixture
+    def mock_spark(self):
+        spark = MagicMock()
+        schema = _make_schema([
+            ("id", _IntType()),
+            ("metadata", _MapType()),
+            ("tags", _ArrayType()),
+            ("info", _StructType()),
+            ("name", _StringType()),
+        ])
+        mock_df = MagicMock()
+        mock_df.schema = schema
+        spark.table.return_value = mock_df
+        return spark
+
+    @pytest.fixture
+    def config(self):
+        return ProfilingConfig(catalog_name="cat", schema_name="sch")
+
+    @pytest.fixture
+    def builder(self, mock_spark, config):
+        return ProfilingBuilder(mock_spark, config)
+
+    def _setup_responses(self, mock_spark, row_count=100):
+        agg_data = {
+            "_row_count": row_count,
+            "id__non_null": 100, "id__null_count": 0, "id__distinct": 100,
+            "id__min": "1", "id__max": "100", "id__mean": 50.0, "id__stddev": 29.0,
+            "id__pcts": [25.0, 50.0, 75.0, 95.0, 99.0],
+            "metadata__non_null": 90, "metadata__null_count": 10,
+            "tags__non_null": 80, "tags__null_count": 20,
+            "info__non_null": 95, "info__null_count": 5,
+            "name__non_null": 98, "name__null_count": 2, "name__distinct": 50,
+            "name__min": "Alice", "name__max": "Zoe",
+            "name__min_len": 3, "name__max_len": 10, "name__avg_len": 6.0,
+            "name__empty": 0,
+        }
+        agg_row = MagicMock()
+        agg_row.__getitem__ = lambda self, k: agg_data.get(k)
+        agg_row.get = lambda k, d=None: agg_data.get(k, d)
+
+        sample_row = MagicMock()
+        sample_data = {"id": "1", "metadata": "{}", "tags": "[]", "info": "{}", "name": "Alice"}
+        sample_row.__getitem__ = lambda self, k: sample_data.get(k)
+
+        detail_row = MagicMock()
+        detail_row.sizeInBytes = 5000
+        detail_row.numFiles = 1
+        detail_row.lastModified = None
+
+        def sql_side_effect(query):
+            result = MagicMock()
+            q = query.strip()
+            if "_row_count" in q and "COUNT(*)" in q:
+                result.collect.return_value = [agg_row]
+            elif "LIMIT 100" in q:
+                result.collect.return_value = [sample_row]
+            elif "DESCRIBE DETAIL" in q:
+                result.collect.return_value = [detail_row]
+            elif "UNION ALL" in q:
+                result.collect.return_value = []
+            elif "ROW_NUMBER" in q:
+                result.collect.return_value = []
+            else:
+                result.collect.return_value = []
+            return result
+
+        mock_spark.sql.side_effect = sql_side_effect
+
+    @_patch_types
+    def test_delta_skips_min_max_for_map_columns(self, builder, mock_spark):
+        """MIN/MAX/APPROX_COUNT_DISTINCT must not be emitted for MAP columns."""
+        self._setup_responses(mock_spark)
+
+        builder._profile_table_delta("cat.sch.tbl")
+
+        first_sql = mock_spark.sql.call_args_list[0][0][0]
+        assert "MIN(`metadata`)" not in first_sql
+        assert "MAX(`metadata`)" not in first_sql
+        assert "APPROX_COUNT_DISTINCT(`metadata`)" not in first_sql
+        # But COUNT should still be present
+        assert "COUNT(`metadata`)" in first_sql
+
+    @_patch_types
+    def test_delta_skips_min_max_for_array_columns(self, builder, mock_spark):
+        """MIN/MAX/APPROX_COUNT_DISTINCT must not be emitted for ARRAY columns."""
+        self._setup_responses(mock_spark)
+
+        builder._profile_table_delta("cat.sch.tbl")
+
+        first_sql = mock_spark.sql.call_args_list[0][0][0]
+        assert "MIN(`tags`)" not in first_sql
+        assert "MAX(`tags`)" not in first_sql
+        assert "APPROX_COUNT_DISTINCT(`tags`)" not in first_sql
+
+    @_patch_types
+    def test_delta_skips_min_max_for_struct_columns(self, builder, mock_spark):
+        """MIN/MAX/APPROX_COUNT_DISTINCT must not be emitted for STRUCT columns."""
+        self._setup_responses(mock_spark)
+
+        builder._profile_table_delta("cat.sch.tbl")
+
+        first_sql = mock_spark.sql.call_args_list[0][0][0]
+        assert "MIN(`info`)" not in first_sql
+        assert "MAX(`info`)" not in first_sql
+        assert "APPROX_COUNT_DISTINCT(`info`)" not in first_sql
+
+    @_patch_types
+    def test_delta_still_profiles_orderable_columns(self, builder, mock_spark):
+        """Orderable columns (int, string) should still get full aggregates."""
+        self._setup_responses(mock_spark)
+
+        builder._profile_table_delta("cat.sch.tbl")
+
+        first_sql = mock_spark.sql.call_args_list[0][0][0]
+        assert "MIN(`id`)" in first_sql
+        assert "MAX(`id`)" in first_sql
+        assert "APPROX_COUNT_DISTINCT(`id`)" in first_sql
+        assert "MIN(`name`)" in first_sql
+
+    @_patch_types
+    def test_delta_non_orderable_records_have_defaults(self, builder, mock_spark):
+        """Non-orderable columns should have empty min/max and 0 distinct."""
+        self._setup_responses(mock_spark)
+
+        result = builder._profile_table_delta("cat.sch.tbl")
+
+        meta_rec = next(r for r in result["column_stat_records"] if r["column_name"] == "metadata")
+        assert meta_rec["min_value"] == ""
+        assert meta_rec["max_value"] == ""
+        assert meta_rec["distinct_count"] == 0
+
+    @_patch_types
+    def test_federated_skips_min_max_for_map_columns(self, builder, mock_spark):
+        """Federated path must also skip MIN/MAX for MAP columns."""
+        self._setup_responses(mock_spark)
+
+        builder._profile_table_federated("cat.sch.tbl")
+
+        first_sql = mock_spark.sql.call_args_list[0][0][0]
+        assert "MIN(`metadata`)" not in first_sql
+        assert "MAX(`metadata`)" not in first_sql
+        assert "COUNT(`metadata`)" in first_sql
 
 
 class TestProfileTableDispatch:
