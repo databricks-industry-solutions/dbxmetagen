@@ -249,6 +249,8 @@ class TestAutofixDoesNotCorruptGoodExprs:
         "COALESCE(source.x, NULL)",
         "NULLIF(source.total, 0)",
         "SUM(CASE WHEN source.flag != 'N' THEN 1 ELSE 0 END)",
+        # Unquoted computation in THEN -- correct form must not be corrupted
+        "AVG(CASE WHEN source.order_date IS NOT NULL THEN (UNIX_TIMESTAMP(source.result_date) - UNIX_TIMESTAMP(source.order_date)) / 3600.0 ELSE NULL END)",
     ])
     def test_good_expr_unchanged(self, expr):
         assert SemanticLayerGenerator._autofix_expr(expr) == expr
@@ -332,6 +334,18 @@ class TestAutofixFixesBadExprs:
         result = SemanticLayerGenerator._autofix_expr(bad)
         assert "IS NOT NULL" in result
         assert "!= NULL" not in result
+
+    def test_fixes_quoted_computation(self):
+        bad = "AVG(CASE WHEN order_proc.order_date IS NOT NULL AND source.result_date IS NOT NULL THEN '(UNIX_TIMESTAMP(source.result_date) - UNIX_TIMESTAMP(order_proc.order_date)) / 3600.0' ELSE NULL END)"
+        result = SemanticLayerGenerator._autofix_expr(bad)
+        assert "THEN (UNIX_TIMESTAMP" in result
+        assert "' ELSE" not in result
+
+    def test_quoted_computation_leaves_short_strings(self):
+        bad = "CASE WHEN x = 1 THEN 'High' ELSE 'Low' END"
+        result = SemanticLayerGenerator._autofix_expr(bad)
+        assert "'High'" in result
+        assert "'Low'" in result
 
 
 class TestFixConcatSeparators:
@@ -830,6 +844,18 @@ class TestCheckDimSourcePattern:
             "joins": [{"source": "cat.sch.users", "on": "source.uid = users.id"}],
         }
         assert check_dim_source_pattern(defn, []) is None
+
+    def test_non_dim_source_with_dim_joins_suppressed(self):
+        """FK signals alone should not fire when source is not dim-prefixed and joins are dim-prefixed."""
+        defn = {
+            "source": "cat.sch.surgical_hx",
+            "joins": [{"source": "cat.sch.dim_department", "on": "source.dept_key = dim_department.dept_key"}],
+        }
+        fk_rows = [
+            {"src_table": "cat.sch.dim_department", "dst_table": "cat.sch.surgical_hx", "final_confidence": 0.8},
+            {"src_table": "cat.sch.other_table", "dst_table": "cat.sch.surgical_hx", "final_confidence": 0.7},
+        ]
+        assert check_dim_source_pattern(defn, fk_rows) is None
 
 
 class TestSwapSourceAndJoin:

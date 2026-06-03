@@ -149,6 +149,12 @@ def check_dim_source_pattern(defn: dict, fk_rows: list[dict]) -> Optional[dict]:
     if not signals:
         return None
 
+    # Counter-signal: if source is NOT dim-prefixed and no join is fact-prefixed
+    # but joins ARE dim-prefixed, FK signals alone are unreliable -- suppress.
+    dim_in_joins = any(any(j.startswith(p) for p in _DIM_PREFIXES) for j in join_shorts)
+    if not src_is_dim and not fact_in_joins and dim_in_joins:
+        return None
+
     suspected_fact = fact_in_joins[0] if fact_in_joins else next(iter(join_shorts), "unknown")
     return {
         "source": source,
@@ -1005,11 +1011,11 @@ class SemanticLayerGenerator:
             definitions = []
             if self.config.use_two_phase:
                 plan_prompt = self._build_plan_prompt(questions, context)
-                plan_escaped = plan_prompt.replace("'", "''")
                 plan_response = ""
                 try:
                     plan_response = self.spark.sql(
-                        f"SELECT AI_QUERY('{self.config.model_endpoint}', '{plan_escaped}') as response"
+                        "SELECT AI_QUERY(:model, :prompt) as response",
+                        args={"model": self.config.model_endpoint, "prompt": plan_prompt},
                     ).collect()[0]["response"]
                 except Exception as e:
                     logger.warning("Plan phase failed, falling back to single-phase: %s", e)
@@ -1017,10 +1023,10 @@ class SemanticLayerGenerator:
                 if plan_views:
                     for idx, plan_view in enumerate(plan_views):
                         gen_prompt = self._build_generate_prompt_for_plan(plan_view, questions, context)
-                        gen_escaped = gen_prompt.replace("'", "''")
                         try:
                             gen_response = self.spark.sql(
-                                f"SELECT AI_QUERY('{self.config.model_endpoint}', '{gen_escaped}') as response"
+                                "SELECT AI_QUERY(:model, :prompt) as response",
+                                args={"model": self.config.model_endpoint, "prompt": gen_prompt},
                             ).collect()[0]["response"]
                             one = self._parse_single_definition(gen_response)
                             if one and one.get("dimensions") and one.get("measures"):
@@ -1036,7 +1042,6 @@ class SemanticLayerGenerator:
                     logger.info("Plan returned no views, falling back to single-phase")
             if not definitions:
                 prompt = self._build_prompt(questions, context)
-                escaped = prompt.replace("'", "''")
                 last_response = ""
                 max_retries = 3
                 with _trace_span("ai_generate_definitions") as ai_span:
@@ -1049,7 +1054,8 @@ class SemanticLayerGenerator:
                     for attempt in range(max_retries):
                         try:
                             last_response = self.spark.sql(
-                                f"SELECT AI_QUERY('{self.config.model_endpoint}', '{escaped}') as response"
+                                "SELECT AI_QUERY(:model, :prompt) as response",
+                                args={"model": self.config.model_endpoint, "prompt": prompt},
                             ).collect()[0]["response"]
                             definitions = self._parse_ai_response(last_response)
                             if definitions:
@@ -1285,6 +1291,8 @@ RULES:
     - LIKE patterns MUST be quoted: product_code LIKE 'HW%', NOT product_code LIKE HW%
 21. GRAIN INTEGRITY with joins: When joining a fact table to a dimension table, only use dimension columns as GROUP BY dimensions or in FILTER clauses. NEVER aggregate a dimension-table numeric attribute (e.g. SUM(dim.bed_count), AVG(dim.capacity)) from a fact-grain view -- the value fans out by the number of fact rows per dimension row, producing inflated results. If you need to analyze dimension attributes directly, create a SEPARATE dimension-only metric view with NO fact-table joins
     STAR SCHEMA SOURCE RULE: When joins are present, the source MUST be the fact table (the table at the grain of the analysis, typically the one with the most rows and multiple foreign keys to dimension tables). The join relationship from source to join should be many-to-one. If you need metrics about a dimension entity itself (e.g. count of customers by region) with no fact-table aggregation, source from the dimension with NO fact-table joins -- this is valid. NEVER source from a dimension table and join to a fact table -- this fans out rows and produces incorrect aggregates
+    FACT-TO-FACT JOIN PROHIBITION: Do NOT join from a fact source to another fact table (tables prefixed with fact_, fct_, f_ or those with high row counts and their own aggregatable measures). Fact-to-fact joins create one-to-many fan-out that inflates ALL aggregates. If you need columns from another fact table, create a SEPARATE metric view sourced from that table instead.
+    JOIN USAGE REQUIREMENT: Every join you include MUST have at least one dimension or measure expression that references a column from it (via its alias). Do NOT include joins "for completeness" or "in case they are needed." Unused joins waste query resources and risk fan-out inflation.
 22. NEVER create share-of-total or percent-of-total measures (e.g. SUM(x)/SUM(total_x), COUNT(*)/COUNT(*)). These require window functions (OVER()) for the denominator, which are not supported. The denominator collapses to the same group as the numerator, always producing 1.0. Instead use: conditional ratios with FILTER, within-grain rates, or describe the share concept in the view comment for downstream Genie SQL
 23. NEVER nest aggregate functions inside other aggregate functions (e.g. SUM(COUNT(*)), AVG(SUM(x))). Databricks SQL does not allow nested aggregates. If you need a two-stage aggregation, use a conditional aggregate with CASE/WHEN or create a separate metric view for the inner aggregation
 24. If EXISTING METRIC VIEWS are listed in the metadata, do NOT recreate views that serve the same analytical purpose (as described in their comment) or use the same source table with overlapping measures. Instead create complementary views that cover genuinely different grains, join paths, or business questions not already addressed by existing views
@@ -1328,6 +1336,8 @@ For each metric view in "views", include:
 - "question_indices": array of 0-based question indices this view answers
 
 STAR SCHEMA SOURCE RULE: When joins are present, the source MUST be the fact table (the table at the grain of the analysis, typically the one with the most rows and multiple foreign keys to dimension tables). The join relationship from source to join should be many-to-one. If you need metrics about a dimension entity itself with no fact-table aggregation, source from the dimension with NO fact-table joins. NEVER source from a dimension table and join to a fact table -- this fans out rows and produces incorrect aggregates.
+FACT-TO-FACT JOIN PROHIBITION: Do NOT join from a fact source to another fact table (tables prefixed with fact_, fct_, f_ or those with high row counts). Fact-to-fact joins create one-to-many fan-out that inflates ALL aggregates. If you need columns from another fact table, create a SEPARATE metric view sourced from that table.
+JOIN USAGE REQUIREMENT: Only include joins whose columns you intend to use in dimensions or measures. Do NOT include joins "for completeness."
 
 Create measures that match the business questions (ratios, rates, KPIs); avoid generic row count unless a question explicitly asks for it. Each view must have at least one dimension and one measure. Cross-table breakdowns using joined dimension tables are strongly preferred.
 
@@ -1379,6 +1389,10 @@ RULES:
   Multi-word patterns MUST be one quoted string: '%Biological Activity%' -- NEVER split as '%Biological' Activity%.
   IDENTIFIERS WITH SPACES: If a column name contains spaces, wrap it in backticks: source.`assay name`, NOT source."assay name". Double quotes are NOT valid for identifiers in Databricks SQL.
 - joins: use exactly: on: source.<fk_column> = <join_name>.<pk_column>. Keep the same join names and sources as in the plan.
+- JOIN FAN-OUT PROTECTION: When the metric view has joins, use COUNT(DISTINCT source.pk_col) instead of COUNT(source.pk_col) for count measures on the source table. Joins can multiply rows (one-to-many fan-out), making plain COUNT overcount. Apply the same logic to denominators in rate/average calculations.
+- STAR SCHEMA SOURCE RULE: The source MUST be the fact table (the table at the grain of the analysis). Joins should be many-to-one to dimension tables. NEVER source from a dimension and join to a fact table.
+- FACT-TO-FACT JOIN PROHIBITION: Do NOT join from a fact source to another fact table. Fact-to-fact joins create fan-out that inflates ALL aggregates.
+- JOIN USAGE REQUIREMENT: Every join MUST have at least one dimension or measure that references it. Remove any plan joins that you cannot map to a concrete expression.
 - Only use column names that appear in the metadata.
 
 CATALOG METADATA:
@@ -1969,6 +1983,24 @@ OUTPUT (one JSON object only, no array, no explanation):"""
         """Quote bare whitespace between commas: f(a,  , b) -> f(a, ' ', b)."""
         return re.sub(r",(\s+),", ", ' ',", expr)
 
+    _COMPUTATION_FUNC_RE = re.compile(
+        r'(?:UNIX_TIMESTAMP|DATEDIFF|TIMESTAMPDIFF|CAST|COALESCE|NULLIF|ROUND|ABS|CEIL|FLOOR|DATE_ADD|DATE_SUB|MONTHS_BETWEEN)\s*\(',
+        re.IGNORECASE,
+    )
+
+    @classmethod
+    def _fix_quoted_computation(cls, expr: str) -> str:
+        """Strip quotes from THEN/ELSE values that are SQL computations, not string literals."""
+        def _unquote(m):
+            inner = m.group(2)
+            if cls._COMPUTATION_FUNC_RE.search(inner):
+                return f"{m.group(1)}{inner}{m.group(3)}"
+            return m.group(0)
+        return re.sub(
+            r"((?:THEN|ELSE)\s+)'([^']{20,})'(\s*(?:ELSE|END|WHEN|$))",
+            _unquote, expr, flags=re.IGNORECASE,
+        )
+
     @classmethod
     def _fix_bare_comparison(cls, expr: str) -> str:
         """Insert '' when a comparison operator has no RHS value (LLM omitted empty string literal)."""
@@ -2059,6 +2091,7 @@ OUTPUT (one JSON object only, no array, no explanation):"""
         expr = cls._fix_concat_separators(expr)
         expr = cls._fix_like_patterns(expr)
         expr = cls._fix_bare_whitespace_separator(expr)
+        expr = cls._fix_quoted_computation(expr)
         return expr
 
     def _validate_expressions(self, defn: dict) -> list[str]:
