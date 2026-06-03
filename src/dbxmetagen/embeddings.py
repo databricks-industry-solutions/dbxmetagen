@@ -330,7 +330,13 @@ class EmbeddingGenerator:
         # Update nodes
         updated = self.update_node_embeddings(embeddings_df)
         logger.info(f"Updated {updated} nodes with embeddings")
-        
+
+        if total_to_embed > 0 and updated == 0:
+            raise RuntimeError(
+                f"Embedding generation failed: {total_to_embed} nodes needed embeddings "
+                f"but 0 were generated. Check AI_QUERY model endpoint availability."
+            )
+
         return {
             "nodes_embedded": updated,
             "total_candidates": total_to_embed
