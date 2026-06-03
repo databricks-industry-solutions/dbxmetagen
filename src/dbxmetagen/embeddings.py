@@ -47,6 +47,7 @@ class EmbeddingGenerator:
     def __init__(self, spark: SparkSession, config: EmbeddingConfig):
         self.spark = spark
         self.config = config
+        self._last_error: Optional[str] = None
     
     def get_nodes_needing_embeddings(self, table_names=None) -> DataFrame:
         """Get nodes that have comments but no embeddings. Enriches with domain and ontology entity when available."""
@@ -108,18 +109,9 @@ class EmbeddingGenerator:
             raise
     
     def generate_embedding_for_text(self, text: str) -> Optional[List[float]]:
-        """
-        Generate embedding for a single text using AI_QUERY.
-        
-        Args:
-            text: Text to embed
-            
-        Returns:
-            List of floats representing the embedding vector
-        """
+        """Generate embedding for a single text using AI_QUERY."""
         try:
-            # Escape single quotes in text
-            escaped_text = text.replace("'", "''")[:2000]  # Limit length
+            escaped_text = text.replace("'", "''")[:2000]
             
             result = self.spark.sql(f"""
                 SELECT AI_QUERY(
@@ -128,7 +120,6 @@ class EmbeddingGenerator:
                 ) as embedding
             """).collect()[0]['embedding']
             
-            # AI_QUERY returns different formats - handle accordingly
             if isinstance(result, list):
                 return result
             elif isinstance(result, str):
@@ -140,17 +131,11 @@ class EmbeddingGenerator:
             return None
         except Exception as e:
             logger.warning(f"Could not generate embedding: {e}")
+            self._last_error = str(e)
             return None
     
     def generate_embeddings_batch(self, nodes_df: DataFrame) -> DataFrame:
-        """
-        Generate embeddings for a batch of nodes using SQL.
-        
-        Uses a more efficient approach by processing in SQL where possible.
-        """
-        # Register UDF for embedding generation (fallback approach)
-        # For production, consider using batch AI_QUERY
-        
+        """Generate embeddings for a batch of nodes using SQL."""
         nodes_df.createOrReplaceTempView("nodes_to_embed")
         
         try:
@@ -163,9 +148,14 @@ class EmbeddingGenerator:
                     ) as embedding
                 FROM nodes_to_embed
             """)
+            # Materialize once to avoid re-executing AI_QUERY on downstream actions.
+            # collect+recreate works on both classic and serverless (cache/persist don't).
+            _schema = result.schema
+            result = self.spark.createDataFrame(result.collect(), schema=_schema)
             return result
         except Exception as e:
             logger.warning(f"Batch embedding failed, falling back to row-by-row: {e}")
+            self._last_error = str(e)
             return self._generate_embeddings_row_by_row(nodes_df)
 
     def _generate_embeddings_row_by_row(self, nodes_df: DataFrame) -> DataFrame:
@@ -332,9 +322,10 @@ class EmbeddingGenerator:
         logger.info(f"Updated {updated} nodes with embeddings")
 
         if total_to_embed > 0 and updated == 0:
+            detail = f" Last error: {self._last_error}" if self._last_error else ""
             raise RuntimeError(
                 f"Embedding generation failed: {total_to_embed} nodes needed embeddings "
-                f"but 0 were generated. Check AI_QUERY model endpoint availability."
+                f"but 0 were generated.{detail}"
             )
 
         return {

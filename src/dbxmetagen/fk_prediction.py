@@ -1355,8 +1355,8 @@ class FKPredictor:
                     f"SELECT {selects} FROM {tbl} "
                     f"WHERE {where} LIMIT {_FEDERATION_SAMPLE_ROWS}"
                 )
-                df.cache()
-                df.count()
+                _schema = df.schema
+                df = self.spark.createDataFrame(df.collect(), schema=_schema)
                 for c in cols:
                     vn = f"_sample_{tbl.replace('.', '_')}_{c}"
                     df.select(F.col(f"`{c}`").cast("string").alias("val")) \
@@ -1364,7 +1364,6 @@ class FKPredictor:
                       .createOrReplaceTempView(vn)
                     with self._table_samples_lock:
                         self._table_samples[(tbl, c)] = vn
-                df.unpersist()
             except Exception:
                 for c in cols:
                     vn = f"_sample_{tbl.replace('.', '_')}_{c}"
@@ -2303,6 +2302,10 @@ class FKPredictor:
         judged = parts[0]
         for p in parts[1:]:
             judged = judged.unionByName(p, allowMissingColumns=True)
+
+        # Materialize once to avoid re-executing AI_QUERY on every downstream action
+        _schema = judged.schema
+        judged = self.spark.createDataFrame(judged.collect(), schema=_schema)
 
         ai_positive = judged.filter(F.col("ai_is_fk") == True).count()
         ai_negative = judged.filter(F.col("ai_is_fk") == False).count()
