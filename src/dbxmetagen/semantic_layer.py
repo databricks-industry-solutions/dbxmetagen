@@ -829,8 +829,9 @@ class SemanticLayerGenerator:
                     role_str = f" [{cp['role']}]"
                     if cp.get("linked"):
                         role_str = f" [link -> {cp['linked']}]"
+                display = f"`{cname}`" if " " in cname else cname
                 col_strs.append(
-                    f"  - {cname} {c.get('data_type', '')}{role_str} : {c.get('comment', '')}"
+                    f"  - {display} {c.get('data_type', '')}{role_str} : {c.get('comment', '')}"
                 )
             if omitted > 0:
                 col_strs.append(f"  ... ({omitted} additional columns not shown)")
@@ -842,15 +843,21 @@ class SemanticLayerGenerator:
         if fk_rows:
             parts.append("\nFOREIGN KEY RELATIONSHIPS:")
             for fk in fk_rows:
+                sc = fk['src_column']
+                dc = fk['dst_column']
+                sc_d = f"`{sc}`" if " " in sc else sc
+                dc_d = f"`{dc}`" if " " in dc else dc
                 parts.append(
-                    f"  {fk['src_table']}.{fk['src_column']} -> {fk['dst_table']}.{fk['dst_column']} (confidence {fk['final_confidence']:.2f})"
+                    f"  {fk['src_table']}.{sc_d} -> {fk['dst_table']}.{dc_d} (confidence {fk['final_confidence']:.2f})"
                 )
             parts.append(
                 "\nRECOMMENDED JOINS (use these when building metric views; fact tables like encounters/orders should join to dimension tables for breakdowns):"
             )
             for fk in fk_rows:
+                sc_d = f"`{fk['src_column']}`" if " " in fk['src_column'] else fk['src_column']
+                dc_d = f"`{fk['dst_column']}`" if " " in fk['dst_column'] else fk['dst_column']
                 parts.append(
-                    f"  {fk['src_table']} + {fk['dst_table']}: src_column={fk['src_column']}, dst_column={fk['dst_column']}"
+                    f"  {fk['src_table']} + {fk['dst_table']}: src_column={sc_d}, dst_column={dc_d}"
                 )
 
         # Graph-traversed join paths (multi-hop, nested snowflake joins)
@@ -1246,6 +1253,7 @@ RULES:
    - CASE results with parens/hyphens: THEN '0-15 min (Excellent)', NOT THEN 0-15 min (Excellent)
    The ONLY unquoted tokens should be column names, SQL keywords, and numbers
    WRONG: status = fulfilled, region IN (North, South). CORRECT: status = 'fulfilled', region IN ('North', 'South')
+   IDENTIFIERS WITH SPACES: If a column name contains spaces, wrap it in backticks: source.`assay name`, NOT source."assay name". Double quotes are NOT valid for identifiers in Databricks SQL
 8. Join format (Unity Catalog):
    STAR SCHEMA (default): name: <alias>, source: catalog.schema.table, on: source.<fk> = <alias>.<pk>. The root table is always "source".
    NESTED / SNOWFLAKE JOINS: for dimension hierarchies (e.g. customer -> nation -> region), nest child joins inside the parent's "joins" array. Child "on" references the PARENT alias, not "source":
@@ -1279,7 +1287,7 @@ RULES:
     STAR SCHEMA SOURCE RULE: When joins are present, the source MUST be the fact table (the table at the grain of the analysis, typically the one with the most rows and multiple foreign keys to dimension tables). The join relationship from source to join should be many-to-one. If you need metrics about a dimension entity itself (e.g. count of customers by region) with no fact-table aggregation, source from the dimension with NO fact-table joins -- this is valid. NEVER source from a dimension table and join to a fact table -- this fans out rows and produces incorrect aggregates
 22. NEVER create share-of-total or percent-of-total measures (e.g. SUM(x)/SUM(total_x), COUNT(*)/COUNT(*)). These require window functions (OVER()) for the denominator, which are not supported. The denominator collapses to the same group as the numerator, always producing 1.0. Instead use: conditional ratios with FILTER, within-grain rates, or describe the share concept in the view comment for downstream Genie SQL
 23. NEVER nest aggregate functions inside other aggregate functions (e.g. SUM(COUNT(*)), AVG(SUM(x))). Databricks SQL does not allow nested aggregates. If you need a two-stage aggregation, use a conditional aggregate with CASE/WHEN or create a separate metric view for the inner aggregation
-24. If EXISTING METRIC VIEWS are listed in the metadata, do NOT recreate views with the same name or identical measures/dimensions. Instead create complementary views that cover different analytical angles, grains, or join paths. Reference existing views when planning to ensure coverage without overlap
+24. If EXISTING METRIC VIEWS are listed in the metadata, do NOT recreate views that serve the same analytical purpose (as described in their comment) or use the same source table with overlapping measures. Instead create complementary views that cover genuinely different grains, join paths, or business questions not already addressed by existing views
 25. Do NOT create duplicate measures with identical expressions but different names. Each measure must have a semantically distinct expr. "Revenue per Physician" as SUM(cost) is just a duplicate of "Total Revenue" -- the grouping is a query-time choice, not a measure definition property
 
 EXAMPLE:
@@ -1369,6 +1377,7 @@ RULES:
   CORRECT: DATE_TRUNC('MONTH', order_date)
   WRONG:   DATE_TRUNC(MONTH, order_date)
   Multi-word patterns MUST be one quoted string: '%Biological Activity%' -- NEVER split as '%Biological' Activity%.
+  IDENTIFIERS WITH SPACES: If a column name contains spaces, wrap it in backticks: source.`assay name`, NOT source."assay name". Double quotes are NOT valid for identifiers in Databricks SQL.
 - joins: use exactly: on: source.<fk_column> = <join_name>.<pk_column>. Keep the same join names and sources as in the plan.
 - Only use column names that appear in the metadata.
 
@@ -1603,11 +1612,21 @@ OUTPUT (one JSON object only, no array, no explanation):"""
 
         For ``alias.col`` returns ``("alias", "col")``.
         For bare ``col`` returns ``("", "col")``.
+        Handles backtick-quoted identifiers: ``source.`col name``` -> ``("source", "col name")``.
         """
         cleaned = re.sub(r"'[^']*'", "", expr)
         cleaned = re.sub(r'"[^"]*"', "", cleaned)
-        tokens = re.findall(r"\b([a-zA-Z_]\w*(?:\.[a-zA-Z_]\w*)*)\b", cleaned)
         refs: list[tuple[str, str]] = []
+        # Pre-extract backtick-quoted qualified refs
+        for m in re.finditer(r"\b([a-zA-Z_]\w*)\.`([^`]+)`", cleaned):
+            refs.append((m.group(1), m.group(2)))
+        cleaned = re.sub(r"\b[a-zA-Z_]\w*\.`[^`]+`", "", cleaned)
+        # Pre-extract bare backtick refs
+        for m in re.finditer(r"`([^`]+)`", cleaned):
+            refs.append(("", m.group(1)))
+        cleaned = re.sub(r"`[^`]+`", "", cleaned)
+        # Standard word-character refs
+        tokens = re.findall(r"\b([a-zA-Z_]\w*(?:\.[a-zA-Z_]\w*)*)\b", cleaned)
         for t in tokens:
             parts = t.rsplit(".", 1)
             if len(parts) == 2:
@@ -1894,6 +1913,39 @@ OUTPUT (one JSON object only, no array, no explanation):"""
         )
 
     @classmethod
+    def _fix_dquote_identifier(cls, expr: str) -> str:
+        """Convert dotted double-quoted identifiers to backtick-quoted.
+
+        ``source."assay name"`` -> ``source.`assay name```
+        Only matches ``word."..."`` (dotted identifier), never bare ``"..."``
+        (string literals).
+        """
+        return re.sub(r'(\b\w+)\."([^"]+)"', r"\1.`\2`", expr)
+
+    @classmethod
+    def _fix_instr_bare_arg(cls, expr: str) -> str:
+        """Quote bare non-alnum arg in INSTR (2nd arg) and LOCATE (1st arg)."""
+        def _repl_second(m):
+            ch = m.group(2).strip()
+            if ch.startswith("'") or ch.startswith('"'):
+                return m.group(0)
+            return f"{m.group(1)}'{ch}')"
+        expr = re.sub(
+            r"(INSTR\([^,]+,\s*)([^\w\s'\"]+)\)",
+            _repl_second, expr, flags=re.IGNORECASE,
+        )
+        def _repl_first(m):
+            ch = m.group(1).strip()
+            if ch.startswith("'") or ch.startswith('"'):
+                return m.group(0)
+            return f"LOCATE('{ch}'{m.group(2)}"
+        expr = re.sub(
+            r"LOCATE\(\s*([^\w\s'\"]+)(,)",
+            _repl_first, expr, flags=re.IGNORECASE,
+        )
+        return expr
+
+    @classmethod
     def _fix_position_bare_char(cls, expr: str) -> str:
         """Quote bare non-alnum char in POSITION(X IN ...)."""
         def _repl(m):
@@ -1958,6 +2010,7 @@ OUTPUT (one JSON object only, no array, no explanation):"""
     @classmethod
     def _autofix_expr(cls, expr: str) -> str:
         """Fix common AI expression mistakes."""
+        expr = cls._fix_dquote_identifier(expr)
 
         def _fix_date_trunc(m):
             interval = m.group(1)
@@ -1997,6 +2050,7 @@ OUTPUT (one JSON object only, no array, no explanation):"""
         expr = cls._fix_none_literal(expr)
         expr = cls._fix_double_commas(expr)
         expr = cls._fix_position_bare_char(expr)
+        expr = cls._fix_instr_bare_arg(expr)
         expr = cls._fix_concat_bare_first_arg(expr)
         expr = cls._fix_case_quoting(expr)
         expr = cls._fix_unquoted_literals(expr)

@@ -5984,6 +5984,119 @@ def get_kpi_coverage(project_id: Optional[str] = None, profile_id: Optional[str]
     return {"kpi_coverage": cov}
 
 
+@app.get("/api/semantic-layer/duplicates")
+def find_duplicate_metric_views(project_id: Optional[str] = None):
+    """Find likely-duplicate metric view definitions by expression overlap."""
+    _ensure_semantic_layer_tables()
+    proj_filter = f" AND project_id = '{project_id}'" if project_id else ""
+    rows = execute_sql(
+        f"SELECT definition_id, metric_view_name, source_table, json_definition, status, "
+        f"quality_score, created_at "
+        f"FROM {fq('metric_view_definitions')} "
+        f"WHERE status NOT IN ('superseded', 'deleted'){proj_filter}"
+    ) or []
+
+    def _measure_exprs(jd):
+        try:
+            defn = json.loads(jd) if isinstance(jd, str) else jd
+            return {m["expr"].strip().upper() for m in defn.get("measures", []) if m.get("expr")}
+        except Exception:
+            return set()
+
+    def _measure_count(jd):
+        try:
+            defn = json.loads(jd) if isinstance(jd, str) else jd
+            return len(defn.get("measures", []))
+        except Exception:
+            return 0
+
+    # Group by source_table
+    from collections import defaultdict
+    by_source = defaultdict(list)
+    for r in rows:
+        src = r.get("source_table")
+        if src:
+            by_source[src].append(r)
+
+    # Find overlapping groups
+    STATUS_RANK = {"applied": 3, "validated": 2, "created": 1, "failed": 0}
+    duplicate_groups = []
+    for source_table, members in by_source.items():
+        if len(members) < 2:
+            continue
+        expr_sets = [(m, _measure_exprs(m.get("json_definition", "{}"))) for m in members]
+        # Pairwise overlap -- find clusters with >= 0.3 overlap
+        overlapping = set()
+        shared = set()
+        for i in range(len(expr_sets)):
+            for j in range(i + 1, len(expr_sets)):
+                a_exprs, b_exprs = expr_sets[i][1], expr_sets[j][1]
+                if not a_exprs or not b_exprs:
+                    continue
+                intersection = a_exprs & b_exprs
+                union = a_exprs | b_exprs
+                score = len(intersection) / len(union)
+                if score >= 0.3:
+                    overlapping.add(i)
+                    overlapping.add(j)
+                    shared.update(intersection)
+
+        if not overlapping:
+            continue
+
+        cluster = [expr_sets[i][0] for i in sorted(overlapping)]
+        # Rank: status priority, then measure count, then quality_score
+        cluster.sort(key=lambda r: (
+            STATUS_RANK.get(r.get("status", ""), 0),
+            _measure_count(r.get("json_definition", "{}")),
+            r.get("quality_score") or 0,
+        ), reverse=True)
+
+        max_score = 0.0
+        for i in range(len(cluster)):
+            for j in range(i + 1, len(cluster)):
+                a = _measure_exprs(cluster[i].get("json_definition", "{}"))
+                b = _measure_exprs(cluster[j].get("json_definition", "{}"))
+                if a and b:
+                    s = len(a & b) / len(a | b)
+                    max_score = max(max_score, s)
+
+        duplicate_groups.append({
+            "source_table": source_table,
+            "overlap_score": round(max_score, 2),
+            "shared_expressions": sorted(shared)[:5],
+            "definitions": [
+                {
+                    "definition_id": r["definition_id"],
+                    "metric_view_name": r.get("metric_view_name", ""),
+                    "status": r.get("status", ""),
+                    "measure_count": _measure_count(r.get("json_definition", "{}")),
+                    "recommended": idx == 0,
+                }
+                for idx, r in enumerate(cluster)
+            ],
+        })
+
+    return {"duplicate_groups": duplicate_groups}
+
+
+@app.post("/api/semantic-layer/resolve-duplicates")
+def resolve_duplicate_definitions(body: dict):
+    """Supersede duplicate definitions, keeping the specified ones."""
+    _ensure_semantic_layer_tables()
+    keep_ids = body.get("keep_ids", [])
+    supersede_ids = body.get("supersede_ids", [])
+    if not supersede_ids:
+        return {"superseded": 0}
+
+    id_list = ", ".join(f"'{did}'" for did in supersede_ids)
+    execute_sql(
+        f"UPDATE {fq('metric_view_definitions')} SET status = 'superseded' "
+        f"WHERE definition_id IN ({id_list}) AND status != 'superseded'"
+    )
+    return {"superseded": len(supersede_ids), "kept": keep_ids}
+
+
 @app.delete("/api/semantic-layer/definitions/{definition_id}")
 def delete_semantic_definition(
     definition_id: str,
@@ -6503,7 +6616,9 @@ def _build_sl_context(
             col_tag = ""
             if is_pii_table and any(k in cls for k in ("pii", "phi", "personal", "sensitive", "name", "email", "ssn", "phone", "address", "dob")):
                 col_tag = " [PII]"
-            col_strs.append(f"  - {c['column_name']} {c.get('data_type', '')} : {c.get('comment', '')}{col_tag}")
+            cn = c['column_name']
+            cn_d = f"`{cn}`" if " " in cn else cn
+            col_strs.append(f"  - {cn_d} {c.get('data_type', '')} : {c.get('comment', '')}{col_tag}")
         parts.append(
             line + "\n  Columns:\n" + "\n".join(col_strs) if col_strs else line
         )
@@ -6511,8 +6626,12 @@ def _build_sl_context(
     if fk_rows:
         parts.append("\nFOREIGN KEY RELATIONSHIPS:")
         for fk in fk_rows:
+            sc = fk['src_column']
+            dc = fk['dst_column']
+            sc_d = f"`{sc}`" if " " in sc else sc
+            dc_d = f"`{dc}`" if " " in dc else dc
             parts.append(
-                f"  {fk['src_table']}.{fk['src_column']} -> {fk['dst_table']}.{fk['dst_column']} (confidence {fk['final_confidence']})"
+                f"  {fk['src_table']}.{sc_d} -> {fk['dst_table']}.{dc_d} (confidence {fk['final_confidence']})"
             )
 
     if ont_rels:
@@ -6840,6 +6959,7 @@ STRUCTURE:
 SQL SYNTAX REMINDERS:
 - DATE_TRUNC('MONTH', col) -- always single-quote the interval
 - Single-quote ALL string literals in comparisons, CASE results, IN lists, CONCAT separators
+- IDENTIFIERS WITH SPACES: wrap in backticks: source.`assay name`, NOT source."assay name". Double quotes are NOT valid for identifiers in Databricks SQL
 - Standard aggregates: SUM, COUNT, AVG, MIN, MAX, COUNT(DISTINCT ...)
 - NEVER use SQL window functions (OVER, PARTITION BY, ROW_NUMBER, LAG, LEAD) in measure expressions -- they are not supported in metric views. For rolling/trailing calculations, use the "window" property on the measure instead
 - FILTER syntax: SUM(col) FILTER (WHERE condition)
@@ -7000,6 +7120,7 @@ def _extract_column_refs(expr: str) -> list[tuple[str | None, str]]:
 
     ``account.industry`` -> ``("account", "industry")``
     ``status``           -> ``(None, "status")``
+    Handles backtick-quoted identifiers: ``source.`col name``` -> ``("source", "col name")``.
     """
     cleaned = re.sub(r"'[^']*'", "", expr)
     cleaned = re.sub(r'"[^"]*"', "", cleaned)
@@ -7009,6 +7130,24 @@ def _extract_column_refs(expr: str) -> list[tuple[str | None, str]]:
     refs: list[tuple[str | None, str]] = []
     seen: set[str] = set()
     qualified_cols: set[str] = set()
+    # Pre-extract backtick-quoted qualified refs
+    for m in re.finditer(r"\b([a-zA-Z_]\w*)\.`([^`]+)`", cleaned):
+        alias, col = m.group(1), m.group(2)
+        key = f"{alias}.{col}"
+        if key not in seen:
+            refs.append((alias, col))
+            seen.add(key)
+            qualified_cols.add(alias)
+            qualified_cols.add(col)
+    cleaned = re.sub(r"\b[a-zA-Z_]\w*\.`[^`]+`", "", cleaned)
+    # Pre-extract bare backtick refs
+    for m in re.finditer(r"`([^`]+)`", cleaned):
+        col = m.group(1)
+        if col not in seen:
+            refs.append((None, col))
+            seen.add(col)
+    cleaned = re.sub(r"`[^`]+`", "", cleaned)
+    # Standard word-character refs
     for m in re.finditer(r"\b([a-zA-Z_]\w*)\.([a-zA-Z_]\w*)\b", cleaned):
         alias, col = m.group(1), m.group(2)
         if alias.upper() not in _SQL_KEYWORDS and col.upper() not in _SQL_KEYWORDS:
@@ -7405,6 +7544,39 @@ def _fix_like_patterns(expr: str) -> str:
     )
 
 
+def _fix_dquote_identifier(expr: str) -> str:
+    """Convert dotted double-quoted identifiers to backtick-quoted.
+
+    ``source."assay name"`` -> ``source.`assay name```
+    Only matches ``word."..."`` (dotted identifier), never bare ``"..."``
+    (string literals).
+    """
+    return re.sub(r'(\b\w+)\."([^"]+)"', r"\1.`\2`", expr)
+
+
+def _fix_instr_bare_arg(expr: str) -> str:
+    """Quote bare non-alnum arg in INSTR (2nd arg) and LOCATE (1st arg)."""
+    def _repl_second(m):
+        ch = m.group(2).strip()
+        if ch.startswith("'") or ch.startswith('"'):
+            return m.group(0)
+        return f"{m.group(1)}'{ch}')"
+    expr = re.sub(
+        r"(INSTR\([^,]+,\s*)([^\w\s'\"]+)\)",
+        _repl_second, expr, flags=re.IGNORECASE,
+    )
+    def _repl_first(m):
+        ch = m.group(1).strip()
+        if ch.startswith("'") or ch.startswith('"'):
+            return m.group(0)
+        return f"LOCATE('{ch}'{m.group(2)}"
+    expr = re.sub(
+        r"LOCATE\(\s*([^\w\s'\"]+)(,)",
+        _repl_first, expr, flags=re.IGNORECASE,
+    )
+    return expr
+
+
 def _fix_position_bare_char(expr: str) -> str:
     """Quote bare non-alnum char in POSITION(X IN ...): POSITION(- IN col) -> POSITION('-' IN col)."""
     def _repl(m):
@@ -7464,6 +7636,7 @@ def _fix_percentile_cont(expr: str) -> str:
 
 def _autofix_expr(expr: str) -> str:
     """Fix common AI expression mistakes before validation."""
+    expr = _fix_dquote_identifier(expr)
 
     # Fix unquoted DATE_TRUNC intervals: DATE_TRUNC(WEEK, col) -> DATE_TRUNC('WEEK', col)
     def _fix_date_trunc(m):
@@ -7509,6 +7682,7 @@ def _autofix_expr(expr: str) -> str:
     expr = _fix_none_literal(expr)
     expr = _fix_double_commas(expr)
     expr = _fix_position_bare_char(expr)
+    expr = _fix_instr_bare_arg(expr)
     expr = _fix_concat_bare_first_arg(expr)
     expr = _fix_then_else_literals(expr)
     expr = _fix_unquoted_literals(expr)
@@ -8222,9 +8396,14 @@ PLANNED VIEW (names only; you must add "expr" for each dimension and measure):
 {plan_str}
 
 RULES:
+- STRING QUOTING IN EXPR (critical -- the most common generation error):
+  ALL string literals inside "expr" values MUST be single-quoted in the JSON you output.
+  CORRECT: "expr": "SUM(CASE WHEN source.status IN ('No Show', 'Cancelled') THEN 1 ELSE 0 END)"
+  WRONG:   "expr": "SUM(CASE WHEN source.status IN (No Show, Cancelled) THEN 1 ELSE 0 END)"
+  Applies to: IN lists, = comparisons, CASE THEN/ELSE string results, LIKE patterns, FILTER conditions.
 - Output a single object with keys: name, source, comment, filter (optional), dimensions, measures, joins.
 - dimensions: array of {{ "name", "expr", "comment", "display_name", "synonyms" }}. "display_name" and "synonyms" (array of 2-5 alternative names) are REQUIRED. expr must be valid Databricks SQL using ONLY columns from the metadata below.
-- measures: array of {{ "name", "expr", "comment", "display_name", "synonyms", "format" }}. "display_name", "synonyms", and "format" are REQUIRED. format is {{"type": "currency"}}, {{"type": "percentage"}}, or {{"type": "number"}}. Use SUM, COUNT, AVG, FILTER, etc. String literals single-quoted.
+- measures: array of {{ "name", "expr", "comment", "display_name", "synonyms", "format" }}. "display_name", "synonyms", and "format" are REQUIRED. format is {{"type": "currency"}}, {{"type": "percentage"}}, or {{"type": "number"}}. Use SUM, COUNT, AVG, FILTER, etc.
 - For window measures (rolling averages, cumulative): use "window" array: [{{"order": "date_col", "range": "trailing 30 day", "semiadditive": "last"}}]. Use "trailing N day" for rolling, "unbounded" for cumulative.
 - NEVER use SQL window functions (OVER, PARTITION BY, ROW_NUMBER, LAG, LEAD) in measure "expr" fields. They are not supported. Use the "window" property or FILTER syntax instead.
 - joins: You MUST implement ALL joins from the plan exactly. Keep same join names as plan. If the plan includes joins, they are REQUIRED in your output. Add dimensions/measures that reference joined table columns.
@@ -8238,7 +8417,7 @@ RULES:
 - Ratios must use NULLIF in denominator. AVG of pre-aggregated values is usually wrong.
 - STAR SCHEMA SOURCE RULE: When joins are present, the source MUST be the fact table (the table at the grain of the analysis). The join relationship from source to join should be many-to-one. If you need metrics about a dimension entity itself with no fact-table aggregation, source from the dimension with NO fact-table joins. NEVER source from a dimension table and join to a fact table -- this fans out rows and produces incorrect aggregates.
 - Do NOT create duplicate measures with identical expressions but different names. Each measure expr must be semantically distinct.
-- Only use column names that appear in the metadata.
+- Only use column names that appear in the metadata. If a column name contains spaces, wrap it in backticks: source.`assay name`, NOT source."assay name". Double quotes are NOT valid for identifiers in Databricks SQL.
 - comment fields: describe the user-facing intent of the view or column -- what it measures, from what source, and for whom. Reference source tables if helpful. NEVER reference KPI numbers, question numbers, the generation process, or which business questions are addressed (e.g. "Implements KPIs 1, 10" is WRONG; "Answers question about revenue" is WRONG). Write as if documenting a catalog object for a data consumer who has no knowledge of the generation pipeline.
 - For year-month dimensions, use DATE_FORMAT(col, 'yyyy-MM'). NEVER use SUBSTR on date columns.
 - Prefer ANSI SQL functions for federation pushdown: use PERCENTILE_CONT(p) WITHIN GROUP (ORDER BY col) instead of PERCENTILE(col, p). Use standard aggregates (SUM, COUNT, AVG, MIN, MAX) over Spark-specific variants where possible.
@@ -8278,6 +8457,11 @@ def _build_simple_generate_prompt(plan_view: dict, questions: list[str], context
     return f"""You are a data modeler. Output exactly ONE JSON object for a simple metric view (not an array).
 
 RULES:
+- STRING QUOTING IN EXPR (critical -- the most common generation error):
+  ALL string literals inside "expr" values MUST be single-quoted in the JSON you output.
+  CORRECT: "expr": "SUM(CASE WHEN source.status IN ('No Show', 'Cancelled') THEN 1 ELSE 0 END)"
+  WRONG:   "expr": "SUM(CASE WHEN source.status IN (No Show, Cancelled) THEN 1 ELSE 0 END)"
+  Applies to: IN lists, = comparisons, CASE THEN/ELSE string results, LIKE patterns, FILTER conditions.
 - Output a single object with keys: name, source, comment, dimensions, measures.
 - name: "{view_name}"
 - source: "{source}"
@@ -9164,6 +9348,13 @@ _SELF_DIV_RE = re.compile(
     re.IGNORECASE,
 )
 
+_AGG_FN_RE = re.compile(
+    r"\b(SUM|COUNT|AVG|MIN|MAX|STDDEV|VARIANCE|PERCENTILE|"
+    r"COLLECT_LIST|COLLECT_SET|APPROX_COUNT_DISTINCT|"
+    r"ANY_VALUE|FIRST|LAST)\s*\(",
+    re.IGNORECASE,
+)
+
 
 def _drop_broken_measures(defn: dict) -> None:
     """Remove self-dividing share measures (always=1.0) and deduplicate identical exprs."""
@@ -9833,6 +10024,30 @@ def _compute_mv_health(defn: dict) -> dict:
                             "fix_value": fixed_expr,
                         })
 
+    # Fan-out risk detection (issues only, does not affect score)
+    for idx, m in enumerate(measures):
+        expr = m.get("expr", "").strip()
+        if not expr:
+            continue
+        if not m.get("window") and not _AGG_FN_RE.search(expr):
+            issues.append({
+                "field": f"measures[{idx}].expr", "severity": "high",
+                "message": f"Measure '{m.get('name', '')}' has no aggregate function -- will return one row per source row instead of aggregating",
+                "suggestion": "Wrap in an aggregate like SUM(...) or COUNT(...)",
+            })
+        if _SELF_DIV_RE.search(re.sub(r"\s+", " ", expr)):
+            issues.append({
+                "field": f"measures[{idx}].expr", "severity": "high",
+                "message": f"Measure '{m.get('name', '')}' is self-dividing (numerator = denominator) -- always equals 1.0",
+                "suggestion": "Use different expressions for numerator and denominator, or remove this measure",
+            })
+        if not m.get("window") and _NESTED_AGG_RE.search(expr):
+            issues.append({
+                "field": f"measures[{idx}].expr", "severity": "high",
+                "message": f"Measure '{m.get('name', '')}' has nested aggregate functions (e.g. SUM(COUNT(...)))",
+                "suggestion": "Use a conditional aggregate (CASE/WHEN) or create a separate metric view for the inner aggregation",
+            })
+
     # Richness (2 pts): +1 for advanced patterns; +1 for synonyms
     richness_score = 0
     has_advanced = any(
@@ -9872,6 +10087,48 @@ def mv_analyze(definition_id: str):
     defn = json.loads(row["json_definition"]) if isinstance(row["json_definition"], str) else row["json_definition"]
     health = _compute_mv_health(defn)
 
+    # --- FK-based dim-source detection ---
+    dim_source_issues: list[dict] = []
+    source = defn.get("source", "")
+    try:
+        from dbxmetagen.semantic_layer import check_dim_source_pattern
+        fk_rows = execute_sql(
+            f"SELECT * FROM {fq('fk_predictions')} "
+            f"WHERE (src_table = '{source}' OR dst_table = '{source}') AND final_confidence >= 0.5"
+        )
+        warning = check_dim_source_pattern(defn, fk_rows)
+        if warning:
+            dim_source_issues.append({
+                "field": "source", "severity": "high",
+                "message": warning["message"],
+                "suggestion": f"Consider swapping source and join: use {warning['suspected_fact']} as source and join to {warning['suspected_dim']}",
+            })
+    except Exception as e:
+        logger.debug("MV analyze FK lookup skipped: %s", e)
+
+    # --- Optional profiling context for LLM ---
+    profiling_context = ""
+    try:
+        join_tables = []
+        for j in defn.get("joins", []):
+            if j.get("source"):
+                join_tables.append(j["source"])
+        all_tables = [source] + join_tables if source else join_tables
+        if all_tables:
+            table_list = ", ".join(f"'{t}'" for t in all_tables)
+            prof_rows = execute_sql(
+                f"SELECT table_name, column_name, distinct_count, null_count, row_count "
+                f"FROM {fq('profiling_results')} WHERE table_name IN ({table_list})"
+            )
+            if prof_rows:
+                lines = []
+                for r in prof_rows[:30]:
+                    dc = r.get("distinct_count", "?")
+                    lines.append(f"  {r['table_name'].split('.')[-1]}.{r['column_name']}: {dc} distinct")
+                profiling_context = "\n\nCARDINALITY CONTEXT (from profiling):\n" + "\n".join(lines)
+    except Exception as e:
+        logger.debug("MV analyze profiling lookup skipped: %s", e)
+
     prompt = f"""Analyze this metric view definition and identify specific issues and improvements.
 
 DEFINITION:
@@ -9879,6 +10136,14 @@ DEFINITION:
 
 Health score: {health['score']}/{health['max']}
 Known issues: {json.dumps(health['issues'])}
+
+Also check for FAN-OUT RISKS:
+- Measures that lack an aggregate function (SUM, COUNT, AVG, etc.)
+- Joins that multiply rows: if source is a dimension joined to a fact, all aggregates inflate
+- SUM/AVG of non-additive dimension attributes (e.g. SUM(hospital.bed_count) on a prescriptions source)
+- Self-dividing measures: SUM(x)/NULLIF(SUM(x),0) always equals 1.0
+- Missing DISTINCT: COUNT(col) after a one-to-many join inflates vs COUNT(DISTINCT col)
+{profiling_context}
 
 For each issue found, provide:
 - field: the specific JSON path (e.g. "measures[0].expr", "measures[0].comment", "dimensions", "filter")
@@ -9904,14 +10169,15 @@ Output JSON in ```json``` fences: {{"issues": [...]}}"""
         logger.warning("MV analyze LLM failed: %s", e)
         llm_issues = []
 
-    # Merge: deterministic issues first, then LLM issues (dedup by field+message)
+    # Merge: deterministic + dim-source + LLM issues (dedup by field+message)
     seen = {(i["field"], i["message"]) for i in health["issues"]}
     combined = list(health["issues"])
-    for li in llm_issues:
-        key = (li.get("field", ""), li.get("message", ""))
-        if key not in seen:
-            combined.append(li)
-            seen.add(key)
+    for extra in (dim_source_issues, llm_issues):
+        for li in extra:
+            key = (li.get("field", ""), li.get("message", ""))
+            if key not in seen:
+                combined.append(li)
+                seen.add(key)
 
     return {"health": health, "issues": combined}
 

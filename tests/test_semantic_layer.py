@@ -383,6 +383,54 @@ class TestFixBareWhitespaceSeparator:
         result = SemanticLayerGenerator._autofix_expr(bad)
         assert result == "CONCAT(contact.first_name, ' ', contact.last_name)"
 
+    # -- double-quote identifier to backtick --
+
+    def test_fix_dquote_identifier_converts_dotted(self):
+        expr = 'source."assay name"'
+        assert SemanticLayerGenerator._fix_dquote_identifier(expr) == "source.`assay name`"
+
+    def test_fix_dquote_identifier_multiple(self):
+        expr = 'CONCAT(source."project id", source."assay name")'
+        result = SemanticLayerGenerator._fix_dquote_identifier(expr)
+        assert result == "CONCAT(source.`project id`, source.`assay name`)"
+
+    def test_fix_dquote_identifier_ignores_bare_string_literal(self):
+        expr = """CASE WHEN source.status = "Active" THEN 1 END"""
+        result = SemanticLayerGenerator._fix_dquote_identifier(expr)
+        assert result == expr
+
+    def test_fix_dquote_identifier_ignores_date_format(self):
+        expr = 'DATE_FORMAT(source.created_date, "yyyy-MM")'
+        result = SemanticLayerGenerator._fix_dquote_identifier(expr)
+        assert result == expr
+
+    def test_fix_dquote_via_autofix_chain(self):
+        expr = 'SUM(source."total cost")'
+        result = SemanticLayerGenerator._autofix_expr(expr)
+        assert "source.`total cost`" in result
+
+    # -- INSTR bare arg --
+
+    def test_fix_instr_bare_semicolon(self):
+        expr = "INSTR(source.tested_conditions, ;)"
+        result = SemanticLayerGenerator._fix_instr_bare_arg(expr)
+        assert result == "INSTR(source.tested_conditions, ';')"
+
+    def test_fix_instr_already_quoted(self):
+        expr = "INSTR(source.tested_conditions, ';')"
+        result = SemanticLayerGenerator._fix_instr_bare_arg(expr)
+        assert result == expr
+
+    def test_fix_instr_ignores_column_arg(self):
+        expr = "INSTR(source.col1, source.col2)"
+        result = SemanticLayerGenerator._fix_instr_bare_arg(expr)
+        assert result == expr
+
+    def test_fix_locate_bare_char(self):
+        expr = "LOCATE(-, source.phone)"
+        result = SemanticLayerGenerator._fix_instr_bare_arg(expr)
+        assert "LOCATE('-'" in result
+
 
 # ── JSON Parsers ──────────────────────────────────────────────────────
 
@@ -468,6 +516,28 @@ class TestExtractColumnRefs:
         assert "customer_id" in refs
         assert "COUNT" not in refs
         assert "DISTINCT" not in refs
+
+    def test_backtick_qualified_ref(self, gen):
+        refs = gen._extract_column_refs_with_prefix("source.`assay name`")
+        assert ("source", "assay name") in refs
+        # Should NOT split into bare 'assay' and 'name'
+        col_names = [c for _, c in refs]
+        assert "assay" not in col_names
+        assert "name" not in col_names
+
+    def test_backtick_multiple_refs(self, gen):
+        refs = gen._extract_column_refs_with_prefix(
+            "CONCAT(source.`project id`, ' - ', source.`assay name`)"
+        )
+        assert ("source", "project id") in refs
+        assert ("source", "assay name") in refs
+
+    def test_backtick_mixed_with_normal(self, gen):
+        refs = gen._extract_column_refs_with_prefix(
+            "SUM(source.`total cost`) / NULLIF(source.quantity, 0)"
+        )
+        assert ("source", "total cost") in refs
+        assert ("source", "quantity") in refs
 
 
 # ── YAML / Joins ──────────────────────────────────────────────────────
