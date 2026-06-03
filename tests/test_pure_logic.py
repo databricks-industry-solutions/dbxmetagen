@@ -303,6 +303,183 @@ class TestEdgeCatalog:
         assert "not in catalog" in msg
 
 
+class TestEdgeCatalogBundleScoping:
+    """Tests for bundle_name scoping in EdgeCatalog.find_edge()."""
+
+    def test_find_edge_prefers_same_bundle(self):
+        cat = EdgeCatalog({
+            "treats_fhir": EdgeCatalogEntry(
+                name="treats_fhir", domain="Practitioner", range="Patient", bundle_name="fhir_r4"
+            ),
+            "treats_omop": EdgeCatalogEntry(
+                name="treats_omop", domain="Practitioner", range="Patient", bundle_name="omop_cdm"
+            ),
+        })
+        match = cat.find_edge("Practitioner", "Patient", bundle_name="fhir_r4")
+        assert match.name == "treats_fhir"
+        match = cat.find_edge("Practitioner", "Patient", bundle_name="omop_cdm")
+        assert match.name == "treats_omop"
+
+    def test_find_edge_falls_back_to_unscoped(self):
+        cat = EdgeCatalog({
+            "treats": EdgeCatalogEntry(
+                name="treats", domain="Practitioner", range="Patient", bundle_name="fhir_r4"
+            ),
+        })
+        match = cat.find_edge("Practitioner", "Patient", bundle_name="healthcare")
+        assert match is not None
+        assert match.name == "treats"
+
+    def test_find_edge_no_bundle_name_returns_first_match(self):
+        cat = EdgeCatalog({
+            "treats": EdgeCatalogEntry(
+                name="treats", domain="Practitioner", range="Patient", bundle_name="fhir_r4"
+            ),
+        })
+        match = cat.find_edge("Practitioner", "Patient")
+        assert match.name == "treats"
+
+    def test_bundle_name_none_by_default(self):
+        e = EdgeCatalogEntry(name="test", domain="A", range="B")
+        assert e.bundle_name is None
+
+
+class TestGetEdgeCatalogBundleStamping:
+    """Tests that OntologyLoader.get_edge_catalog stamps bundle_name."""
+
+    def test_bundle_name_stamped(self):
+        from dbxmetagen.ontology import OntologyLoader
+        config = {
+            "edge_catalog": {
+                "treats": {"domain": "Practitioner", "range": "Patient"},
+            }
+        }
+        catalog = OntologyLoader.get_edge_catalog(config, bundle_name="healthcare")
+        assert catalog["treats"].bundle_name == "healthcare"
+
+    def test_structural_edges_no_bundle(self):
+        from dbxmetagen.ontology import OntologyLoader
+        catalog = OntologyLoader.get_edge_catalog({}, bundle_name="healthcare")
+        assert "instance_of" in catalog
+        assert catalog["instance_of"].bundle_name is None
+
+
+class TestResolveFhirReferences:
+    """Tests for the FHIR Reference resolution script logic."""
+
+    def test_resolves_known_targets(self):
+        from scripts.resolve_fhir_references import resolve_bundle
+        data = {
+            "ontology": {
+                "entities": {"definitions": {
+                    "Patient": {}, "Practitioner": {}, "Observation": {},
+                    "Encounter": {},
+                }},
+                "edge_catalog": {
+                    "Observation.subject": {"range": "Reference"},
+                    "Observation.encounter": {"range": "Reference"},
+                },
+            }
+        }
+        # Add relationships
+        data["ontology"]["entities"]["definitions"]["Observation"] = {
+            "relationships": {
+                "Observation.subject": {"target": "Reference"},
+                "Observation.encounter": {"target": "Reference"},
+            }
+        }
+        stats = resolve_bundle(data)
+        obs = data["ontology"]["entities"]["definitions"]["Observation"]
+        assert obs["relationships"]["Observation.subject"]["target"] == "Patient"
+        assert obs["relationships"]["Observation.encounter"]["target"] == "Encounter"
+        assert data["ontology"]["edge_catalog"]["Observation.subject"]["range"] == "Patient"
+        assert stats["relationships_resolved"] == 2
+        assert stats["catalog_resolved"] == 2
+
+    def test_keeps_unresolvable_as_reference(self):
+        from scripts.resolve_fhir_references import resolve_bundle
+        data = {
+            "ontology": {
+                "entities": {"definitions": {"Patient": {}}},
+                "edge_catalog": {
+                    "SomeEntity.unknownProp": {"range": "Reference"},
+                },
+            }
+        }
+        stats = resolve_bundle(data)
+        assert data["ontology"]["edge_catalog"]["SomeEntity.unknownProp"]["range"] == "Reference"
+        assert stats["catalog_kept"] == 1
+
+
+class TestBackfillEdgeCatalog:
+    """Tests for the edge catalog backfill script logic."""
+
+    def test_backfills_missing_entries(self):
+        from scripts.backfill_edge_catalog import backfill_bundle
+        data = {
+            "ontology": {
+                "entities": {"definitions": {
+                    "Patient": {
+                        "relationships": {
+                            "has_encounter": {"target": "Encounter"},
+                        }
+                    },
+                    "Encounter": {},
+                }},
+                "edge_catalog": {},
+            }
+        }
+        stats = backfill_bundle(data)
+        ec = data["ontology"]["edge_catalog"]
+        assert "has_encounter" in ec
+        assert ec["has_encounter"]["domain"] == "Patient"
+        assert ec["has_encounter"]["range"] == "Encounter"
+        assert ec["has_encounter"]["inverse"] == "encounter_of"
+        assert stats["added"] == 1
+
+    def test_generates_inverse_when_target_exists(self):
+        from scripts.backfill_edge_catalog import backfill_bundle
+        data = {
+            "ontology": {
+                "entities": {"definitions": {
+                    "Patient": {
+                        "relationships": {
+                            "has_encounter": {"target": "Encounter"},
+                        }
+                    },
+                    "Encounter": {},
+                }},
+                "edge_catalog": {},
+            }
+        }
+        stats = backfill_bundle(data)
+        ec = data["ontology"]["edge_catalog"]
+        assert "encounter_of" in ec
+        assert ec["encounter_of"]["domain"] == "Encounter"
+        assert ec["encounter_of"]["range"] == "Patient"
+        assert stats["inverse_added"] == 1
+
+    def test_skips_existing_entries(self):
+        from scripts.backfill_edge_catalog import backfill_bundle
+        data = {
+            "ontology": {
+                "entities": {"definitions": {
+                    "Patient": {
+                        "relationships": {
+                            "has_encounter": {"target": "Encounter"},
+                        }
+                    },
+                }},
+                "edge_catalog": {
+                    "has_encounter": {"domain": "Patient", "range": "Encounter"},
+                },
+            }
+        }
+        stats = backfill_bundle(data)
+        assert stats["skipped_existing"] == 1
+        assert stats["added"] == 0
+
+
 # ---------------------------------------------------------------------------
 # 11. OntologyBuilder._resolve_reference_target
 # ---------------------------------------------------------------------------
