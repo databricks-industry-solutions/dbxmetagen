@@ -261,6 +261,9 @@ export default function SemanticLayer({ onNavigate, pipelineStats }) {
   const [bulkDeleting, setBulkDeleting] = useState(null)
   const [vectorSyncing, setVectorSyncing] = useState(false)
   const [sgSyncing, setSgSyncing] = useState(false)
+  const [dupLoading, setDupLoading] = useState(false)
+  const [dupGroups, setDupGroups] = useState(null)
+  const [dupKeep, setDupKeep] = useState({})
   const [kpiCoverage, setKpiCoverage] = useState(null)
   const [tableSaveStatus, setTableSaveStatus] = useState(null)
   const [openMenuId, setOpenMenuId] = useState(null)
@@ -789,13 +792,16 @@ export default function SemanticLayer({ onNavigate, pipelineStats }) {
       const existing = mvAppliedFields[defId] || new Set()
       const fixable = issues.filter(iss => iss.field && iss.fix_value && !existing.has(iss.field))
       let failures = 0
+      let currentId = defId
       for (const iss of fixable) {
         try {
-          const res = await fetch(`/api/semantic-layer/definitions/${defId}/field`, {
+          const res = await fetch(`/api/semantic-layer/definitions/${currentId}/field`, {
             method: 'PUT', headers: { 'Content-Type': 'application/json' },
             body: JSON.stringify({ path: iss.field, value: iss.fix_value }),
           })
           if (res.ok) {
+            const data = await res.json()
+            currentId = data.definition_id
             setMvAppliedFields(prev => {
               const s = new Set(prev[defId] || [])
               s.add(iss.field)
@@ -807,7 +813,7 @@ export default function SemanticLayer({ onNavigate, pipelineStats }) {
       if (failures) setError(`${failures} of ${fixable.length} fixes failed to apply`)
       invalidateCache('/api/semantic-layer/definitions')
       refreshDefinitions()
-      fetchMvHealth(defId)
+      fetchMvHealth(currentId)
       setActionLoading(prev => ({ ...prev, [defId]: null }))
       return
     }
@@ -963,6 +969,57 @@ export default function SemanticLayer({ onNavigate, pipelineStats }) {
     } catch (e) {
       setSgSyncing(false)
       alert(`Sync failed: ${e.message}`)
+    }
+  }
+
+  const findDuplicates = async () => {
+    setDupLoading(true)
+    try {
+      const url = selectedProjectId
+        ? `/api/semantic-layer/duplicates?project_id=${selectedProjectId}`
+        : '/api/semantic-layer/duplicates'
+      const res = await fetch(url)
+      const data = await res.json()
+      const groups = data.duplicate_groups || []
+      if (groups.length === 0) {
+        alert('No duplicates found.')
+        setDupGroups(null)
+      } else {
+        const initialKeep = {}
+        groups.forEach((g, i) => {
+          const rec = g.definitions.find(d => d.recommended)
+          initialKeep[i] = rec ? rec.definition_id : g.definitions[0]?.definition_id
+        })
+        setDupKeep(initialKeep)
+        setDupGroups(groups)
+      }
+    } catch (e) {
+      alert(`Failed to find duplicates: ${e.message}`)
+    } finally {
+      setDupLoading(false)
+    }
+  }
+
+  const resolveDuplicates = async () => {
+    if (!dupGroups) return
+    const keepIds = Object.values(dupKeep)
+    const supersede = []
+    dupGroups.forEach((g, i) => {
+      g.definitions.forEach(d => {
+        if (d.definition_id !== dupKeep[i]) supersede.push(d.definition_id)
+      })
+    })
+    if (supersede.length === 0) { setDupGroups(null); return }
+    try {
+      await fetch('/api/semantic-layer/resolve-duplicates', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ keep_ids: keepIds, supersede_ids: supersede })
+      })
+      setDupGroups(null)
+      refreshDefinitions()
+    } catch (e) {
+      alert(`Failed to resolve: ${e.message}`)
     }
   }
 
@@ -1759,6 +1816,10 @@ export default function SemanticLayer({ onNavigate, pipelineStats }) {
                 className="px-2.5 py-1 text-xs text-purple-600 dark:text-purple-400 border border-purple-300 dark:border-purple-700 rounded hover:bg-purple-50 dark:hover:bg-purple-900/20 disabled:opacity-50 whitespace-nowrap">
                 {sgSyncing ? 'Syncing...' : 'Sync to Semantic Graph'}
               </button>
+              <button onClick={findDuplicates} disabled={dupLoading}
+                className="px-2.5 py-1 text-xs text-amber-600 dark:text-amber-400 border border-amber-300 dark:border-amber-700 rounded hover:bg-amber-50 dark:hover:bg-amber-900/20 disabled:opacity-50 whitespace-nowrap">
+                {dupLoading ? 'Scanning...' : 'Find Duplicates'}
+              </button>
             </div>
           )}
 
@@ -1786,6 +1847,47 @@ export default function SemanticLayer({ onNavigate, pipelineStats }) {
                   {kpiCoverage.missing.length} missing
                 </span>
               )}
+            </div>
+          )}
+
+          {dupGroups && dupGroups.length > 0 && (
+            <div className="mb-4 p-4 border border-amber-300 dark:border-amber-700 rounded-lg bg-amber-50/50 dark:bg-amber-900/10">
+              <div className="flex items-center justify-between mb-3">
+                <h3 className="text-sm font-semibold text-amber-800 dark:text-amber-300">
+                  Duplicate Groups ({dupGroups.length})
+                </h3>
+                <div className="flex gap-2">
+                  <button onClick={resolveDuplicates}
+                    className="px-3 py-1 text-xs bg-amber-600 text-white rounded hover:bg-amber-700">
+                    Supersede Unselected
+                  </button>
+                  <button onClick={() => setDupGroups(null)}
+                    className="px-2 py-1 text-xs text-slate-500 border border-slate-300 dark:border-slate-600 rounded hover:bg-slate-100 dark:hover:bg-slate-800">
+                    Dismiss
+                  </button>
+                </div>
+              </div>
+              {dupGroups.map((g, gi) => (
+                <div key={gi} className="mb-3 p-3 rounded bg-white dark:bg-dbx-navy-600 border border-slate-200 dark:border-slate-700">
+                  <div className="text-xs text-slate-500 dark:text-slate-400 mb-1">
+                    <span className="font-medium">{g.source_table}</span> &mdash; {Math.round(g.overlap_score * 100)}% overlap
+                  </div>
+                  <div className="space-y-1">
+                    {g.definitions.map(d => (
+                      <label key={d.definition_id} className="flex items-center gap-2 text-xs cursor-pointer">
+                        <input type="radio" name={`dup-${gi}`} checked={dupKeep[gi] === d.definition_id}
+                          onChange={() => setDupKeep(prev => ({ ...prev, [gi]: d.definition_id }))} />
+                        <span className={dupKeep[gi] === d.definition_id ? 'font-semibold' : 'text-slate-600 dark:text-slate-400'}>
+                          {d.metric_view_name}
+                        </span>
+                        <span className="text-[10px] px-1.5 py-0.5 rounded bg-slate-100 dark:bg-slate-700">{d.status}</span>
+                        <span className="text-[10px] text-slate-400">{d.measure_count} measures</span>
+                        {d.recommended && <span className="text-[10px] text-emerald-600 dark:text-emerald-400 font-medium">recommended</span>}
+                      </label>
+                    ))}
+                  </div>
+                </div>
+              ))}
             </div>
           )}
 

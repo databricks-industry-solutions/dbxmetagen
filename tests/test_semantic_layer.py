@@ -244,6 +244,13 @@ class TestAutofixDoesNotCorruptGoodExprs:
         "source.Custom_MilestoneStatus",
         # CURRENT_DATE without parentheses
         "SUM(CASE WHEN source.expected_close_date < CURRENT_DATE AND source.actual_close_date IS NULL THEN 1 ELSE 0 END)",
+        # NULL comparison -- correct forms must not be corrupted
+        "source.x IS NOT NULL",
+        "COALESCE(source.x, NULL)",
+        "NULLIF(source.total, 0)",
+        "SUM(CASE WHEN source.flag != 'N' THEN 1 ELSE 0 END)",
+        # Unquoted computation in THEN -- correct form must not be corrupted
+        "AVG(CASE WHEN source.order_date IS NOT NULL THEN (UNIX_TIMESTAMP(source.result_date) - UNIX_TIMESTAMP(source.order_date)) / 3600.0 ELSE NULL END)",
     ])
     def test_good_expr_unchanged(self, expr):
         assert SemanticLayerGenerator._autofix_expr(expr) == expr
@@ -310,6 +317,36 @@ class TestAutofixFixesBadExprs:
         assert "!= ''" in result
         assert "!= )" not in result
 
+    def test_fixes_neq_null(self):
+        bad = "SUM(CASE WHEN source.reason <> NULL THEN 1 ELSE 0 END)"
+        result = SemanticLayerGenerator._autofix_expr(bad)
+        assert "IS NOT NULL" in result
+        assert "<> NULL" not in result
+
+    def test_fixes_eq_null(self):
+        bad = "SUM(CASE WHEN source.reason = NULL THEN 1 ELSE 0 END)"
+        result = SemanticLayerGenerator._autofix_expr(bad)
+        assert "IS NULL" in result
+        assert "= NULL" not in result
+
+    def test_fixes_excl_eq_null(self):
+        bad = "SUM(CASE WHEN source.reason != NULL THEN 1 ELSE 0 END)"
+        result = SemanticLayerGenerator._autofix_expr(bad)
+        assert "IS NOT NULL" in result
+        assert "!= NULL" not in result
+
+    def test_fixes_quoted_computation(self):
+        bad = "AVG(CASE WHEN order_proc.order_date IS NOT NULL AND source.result_date IS NOT NULL THEN '(UNIX_TIMESTAMP(source.result_date) - UNIX_TIMESTAMP(order_proc.order_date)) / 3600.0' ELSE NULL END)"
+        result = SemanticLayerGenerator._autofix_expr(bad)
+        assert "THEN (UNIX_TIMESTAMP" in result
+        assert "' ELSE" not in result
+
+    def test_quoted_computation_leaves_short_strings(self):
+        bad = "CASE WHEN x = 1 THEN 'High' ELSE 'Low' END"
+        result = SemanticLayerGenerator._autofix_expr(bad)
+        assert "'High'" in result
+        assert "'Low'" in result
+
 
 class TestFixConcatSeparators:
 
@@ -359,6 +396,54 @@ class TestFixBareWhitespaceSeparator:
         bad = "CONCAT(contact.first_name,  , contact.last_name)"
         result = SemanticLayerGenerator._autofix_expr(bad)
         assert result == "CONCAT(contact.first_name, ' ', contact.last_name)"
+
+    # -- double-quote identifier to backtick --
+
+    def test_fix_dquote_identifier_converts_dotted(self):
+        expr = 'source."assay name"'
+        assert SemanticLayerGenerator._fix_dquote_identifier(expr) == "source.`assay name`"
+
+    def test_fix_dquote_identifier_multiple(self):
+        expr = 'CONCAT(source."project id", source."assay name")'
+        result = SemanticLayerGenerator._fix_dquote_identifier(expr)
+        assert result == "CONCAT(source.`project id`, source.`assay name`)"
+
+    def test_fix_dquote_identifier_ignores_bare_string_literal(self):
+        expr = """CASE WHEN source.status = "Active" THEN 1 END"""
+        result = SemanticLayerGenerator._fix_dquote_identifier(expr)
+        assert result == expr
+
+    def test_fix_dquote_identifier_ignores_date_format(self):
+        expr = 'DATE_FORMAT(source.created_date, "yyyy-MM")'
+        result = SemanticLayerGenerator._fix_dquote_identifier(expr)
+        assert result == expr
+
+    def test_fix_dquote_via_autofix_chain(self):
+        expr = 'SUM(source."total cost")'
+        result = SemanticLayerGenerator._autofix_expr(expr)
+        assert "source.`total cost`" in result
+
+    # -- INSTR bare arg --
+
+    def test_fix_instr_bare_semicolon(self):
+        expr = "INSTR(source.tested_conditions, ;)"
+        result = SemanticLayerGenerator._fix_instr_bare_arg(expr)
+        assert result == "INSTR(source.tested_conditions, ';')"
+
+    def test_fix_instr_already_quoted(self):
+        expr = "INSTR(source.tested_conditions, ';')"
+        result = SemanticLayerGenerator._fix_instr_bare_arg(expr)
+        assert result == expr
+
+    def test_fix_instr_ignores_column_arg(self):
+        expr = "INSTR(source.col1, source.col2)"
+        result = SemanticLayerGenerator._fix_instr_bare_arg(expr)
+        assert result == expr
+
+    def test_fix_locate_bare_char(self):
+        expr = "LOCATE(-, source.phone)"
+        result = SemanticLayerGenerator._fix_instr_bare_arg(expr)
+        assert "LOCATE('-'" in result
 
 
 # ── JSON Parsers ──────────────────────────────────────────────────────
@@ -445,6 +530,28 @@ class TestExtractColumnRefs:
         assert "customer_id" in refs
         assert "COUNT" not in refs
         assert "DISTINCT" not in refs
+
+    def test_backtick_qualified_ref(self, gen):
+        refs = gen._extract_column_refs_with_prefix("source.`assay name`")
+        assert ("source", "assay name") in refs
+        # Should NOT split into bare 'assay' and 'name'
+        col_names = [c for _, c in refs]
+        assert "assay" not in col_names
+        assert "name" not in col_names
+
+    def test_backtick_multiple_refs(self, gen):
+        refs = gen._extract_column_refs_with_prefix(
+            "CONCAT(source.`project id`, ' - ', source.`assay name`)"
+        )
+        assert ("source", "project id") in refs
+        assert ("source", "assay name") in refs
+
+    def test_backtick_mixed_with_normal(self, gen):
+        refs = gen._extract_column_refs_with_prefix(
+            "SUM(source.`total cost`) / NULLIF(source.quantity, 0)"
+        )
+        assert ("source", "total cost") in refs
+        assert ("source", "quantity") in refs
 
 
 # ── YAML / Joins ──────────────────────────────────────────────────────
@@ -737,6 +844,18 @@ class TestCheckDimSourcePattern:
             "joins": [{"source": "cat.sch.users", "on": "source.uid = users.id"}],
         }
         assert check_dim_source_pattern(defn, []) is None
+
+    def test_non_dim_source_with_dim_joins_suppressed(self):
+        """FK signals alone should not fire when source is not dim-prefixed and joins are dim-prefixed."""
+        defn = {
+            "source": "cat.sch.surgical_hx",
+            "joins": [{"source": "cat.sch.dim_department", "on": "source.dept_key = dim_department.dept_key"}],
+        }
+        fk_rows = [
+            {"src_table": "cat.sch.dim_department", "dst_table": "cat.sch.surgical_hx", "final_confidence": 0.8},
+            {"src_table": "cat.sch.other_table", "dst_table": "cat.sch.surgical_hx", "final_confidence": 0.7},
+        ]
+        assert check_dim_source_pattern(defn, fk_rows) is None
 
 
 class TestSwapSourceAndJoin:

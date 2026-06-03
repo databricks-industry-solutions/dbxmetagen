@@ -149,6 +149,12 @@ def check_dim_source_pattern(defn: dict, fk_rows: list[dict]) -> Optional[dict]:
     if not signals:
         return None
 
+    # Counter-signal: if source is NOT dim-prefixed and no join is fact-prefixed
+    # but joins ARE dim-prefixed, FK signals alone are unreliable -- suppress.
+    dim_in_joins = any(any(j.startswith(p) for p in _DIM_PREFIXES) for j in join_shorts)
+    if not src_is_dim and not fact_in_joins and dim_in_joins:
+        return None
+
     suspected_fact = fact_in_joins[0] if fact_in_joins else next(iter(join_shorts), "unknown")
     return {
         "source": source,
@@ -829,8 +835,9 @@ class SemanticLayerGenerator:
                     role_str = f" [{cp['role']}]"
                     if cp.get("linked"):
                         role_str = f" [link -> {cp['linked']}]"
+                display = f"`{cname}`" if " " in cname else cname
                 col_strs.append(
-                    f"  - {cname} {c.get('data_type', '')}{role_str} : {c.get('comment', '')}"
+                    f"  - {display} {c.get('data_type', '')}{role_str} : {c.get('comment', '')}"
                 )
             if omitted > 0:
                 col_strs.append(f"  ... ({omitted} additional columns not shown)")
@@ -842,15 +849,21 @@ class SemanticLayerGenerator:
         if fk_rows:
             parts.append("\nFOREIGN KEY RELATIONSHIPS:")
             for fk in fk_rows:
+                sc = fk['src_column']
+                dc = fk['dst_column']
+                sc_d = f"`{sc}`" if " " in sc else sc
+                dc_d = f"`{dc}`" if " " in dc else dc
                 parts.append(
-                    f"  {fk['src_table']}.{fk['src_column']} -> {fk['dst_table']}.{fk['dst_column']} (confidence {fk['final_confidence']:.2f})"
+                    f"  {fk['src_table']}.{sc_d} -> {fk['dst_table']}.{dc_d} (confidence {fk['final_confidence']:.2f})"
                 )
             parts.append(
                 "\nRECOMMENDED JOINS (use these when building metric views; fact tables like encounters/orders should join to dimension tables for breakdowns):"
             )
             for fk in fk_rows:
+                sc_d = f"`{fk['src_column']}`" if " " in fk['src_column'] else fk['src_column']
+                dc_d = f"`{fk['dst_column']}`" if " " in fk['dst_column'] else fk['dst_column']
                 parts.append(
-                    f"  {fk['src_table']} + {fk['dst_table']}: src_column={fk['src_column']}, dst_column={fk['dst_column']}"
+                    f"  {fk['src_table']} + {fk['dst_table']}: src_column={sc_d}, dst_column={dc_d}"
                 )
 
         # Graph-traversed join paths (multi-hop, nested snowflake joins)
@@ -998,11 +1011,11 @@ class SemanticLayerGenerator:
             definitions = []
             if self.config.use_two_phase:
                 plan_prompt = self._build_plan_prompt(questions, context)
-                plan_escaped = plan_prompt.replace("'", "''")
                 plan_response = ""
                 try:
                     plan_response = self.spark.sql(
-                        f"SELECT AI_QUERY('{self.config.model_endpoint}', '{plan_escaped}') as response"
+                        "SELECT AI_QUERY(:model, :prompt) as response",
+                        args={"model": self.config.model_endpoint, "prompt": plan_prompt},
                     ).collect()[0]["response"]
                 except Exception as e:
                     logger.warning("Plan phase failed, falling back to single-phase: %s", e)
@@ -1010,10 +1023,10 @@ class SemanticLayerGenerator:
                 if plan_views:
                     for idx, plan_view in enumerate(plan_views):
                         gen_prompt = self._build_generate_prompt_for_plan(plan_view, questions, context)
-                        gen_escaped = gen_prompt.replace("'", "''")
                         try:
                             gen_response = self.spark.sql(
-                                f"SELECT AI_QUERY('{self.config.model_endpoint}', '{gen_escaped}') as response"
+                                "SELECT AI_QUERY(:model, :prompt) as response",
+                                args={"model": self.config.model_endpoint, "prompt": gen_prompt},
                             ).collect()[0]["response"]
                             one = self._parse_single_definition(gen_response)
                             if one and one.get("dimensions") and one.get("measures"):
@@ -1029,7 +1042,6 @@ class SemanticLayerGenerator:
                     logger.info("Plan returned no views, falling back to single-phase")
             if not definitions:
                 prompt = self._build_prompt(questions, context)
-                escaped = prompt.replace("'", "''")
                 last_response = ""
                 max_retries = 3
                 with _trace_span("ai_generate_definitions") as ai_span:
@@ -1042,7 +1054,8 @@ class SemanticLayerGenerator:
                     for attempt in range(max_retries):
                         try:
                             last_response = self.spark.sql(
-                                f"SELECT AI_QUERY('{self.config.model_endpoint}', '{escaped}') as response"
+                                "SELECT AI_QUERY(:model, :prompt) as response",
+                                args={"model": self.config.model_endpoint, "prompt": prompt},
                             ).collect()[0]["response"]
                             definitions = self._parse_ai_response(last_response)
                             if definitions:
@@ -1237,7 +1250,8 @@ RULES:
    c. DATEDIFF only returns days with 2 args: DATEDIFF(end, start). For other units use TIMESTAMPDIFF(MINUTE, start, end) with a bare unquoted keyword unit
    d. TIMESTAMPADD: bare unquoted singular unit -- TIMESTAMPADD(MONTH, 1, col), NOT TIMESTAMPADD('MONTHS', 1, col)
    e. For year-month dimensions, use DATE_FORMAT(col, 'yyyy-MM'). NEVER use SUBSTR(col, 1, 7) on date columns
-6. ALWAYS single-quote ALL string literal values everywhere in expressions:
+6. For NULL checks, always use IS NULL / IS NOT NULL. NEVER use = NULL, <> NULL, or != NULL (these evaluate to NULL in SQL, not boolean)
+7. ALWAYS single-quote ALL string literal values everywhere in expressions:
    - Comparisons: status = 'fulfilled', NOT status = fulfilled
    - THEN/ELSE results: CASE WHEN x = 'A' THEN 'Category A' ELSE 'Other' END, NOT THEN Category A
    - IN lists: department IN ('Surgery', 'Pediatrics'), NOT IN (Surgery, Pediatrics)
@@ -1245,20 +1259,21 @@ RULES:
    - CASE results with parens/hyphens: THEN '0-15 min (Excellent)', NOT THEN 0-15 min (Excellent)
    The ONLY unquoted tokens should be column names, SQL keywords, and numbers
    WRONG: status = fulfilled, region IN (North, South). CORRECT: status = 'fulfilled', region IN ('North', 'South')
-7. Join format (Unity Catalog):
+   IDENTIFIERS WITH SPACES: If a column name contains spaces, wrap it in backticks: source.`assay name`, NOT source."assay name". Double quotes are NOT valid for identifiers in Databricks SQL
+8. Join format (Unity Catalog):
    STAR SCHEMA (default): name: <alias>, source: catalog.schema.table, on: source.<fk> = <alias>.<pk>. The root table is always "source".
    NESTED / SNOWFLAKE JOINS: for dimension hierarchies (e.g. customer -> nation -> region), nest child joins inside the parent's "joins" array. Child "on" references the PARENT alias, not "source":
    {{"name": "customer", "source": "...", "on": "source.customer_id = customer.id", "joins": [{{"name": "nation", "source": "...", "on": "customer.nation_id = nation.id"}}]}}
    Limit nesting to 2 levels. Use nested joins when JOIN PATHS in the metadata show multi-hop FK chains.
    NESTED ALIAS REACHABILITY: all nested join aliases are fully reachable in expressions. If you nest physician -> account -> territory, use "account.bed_count" and "territory.region" directly. NEVER substitute a placeholder column from an unrelated table/alias. If a column is unreachable through joins, DROP the dimension entirely rather than faking it.
-8. Include joins when RECOMMENDED JOINS exist; when questions ask for breakdowns by attributes in another table (e.g. by customer segment, department), you MUST add a join. Prefer at least one metric view with joins when FKs exist
-9. Every metric view MUST have at least one measure and one dimension
-10. Add a top-level "comment" (1-2 sentences) describing what the metric view measures, its analytical purpose, and which source tables it draws from. Do NOT reference question numbers, KPI numbers, or list which questions are/aren't answerable. Focus on content and lineage (e.g. "Analyzes order revenue by product family and sales representative, joining line items to the product catalog and parent order for discount tracking.")
-11. Every dimension and measure MUST have: "comment" (what it represents), "display_name" (human-readable label, max 255 chars), and "synonyms" (array of 2-5 alternative names for Genie discoverability, e.g. ["revenue", "total sales"] for Total Revenue). Every measure MUST have a "format" object: {{"type": "currency"}} for monetary values, {{"type": "percentage"}} for rates/ratios that return a 0-to-1 FRACTION (e.g. 0.167 for 16.7%), or {{"type": "number"}} for counts/averages/scores. CRITICAL: percentage-format expressions must NOT multiply by 100 -- the rendering layer does that automatically. Write `SUM(won)/NULLIF(COUNT(*),0)` (returns 0.167), NOT `100.0 * SUM(won)/NULLIF(COUNT(*),0)` (returns 16.7). Also do NOT wrap percentage expressions in ROUND(); the format handles decimal precision.
-12. Use "filter" (optional) for persistent WHERE clauses (e.g. excluding null/test rows)
-13. Use measure-level FILTER for conditional aggregation: SUM(col) FILTER (WHERE condition)
-14. If some questions are not answerable with metrics (e.g. document search, free-text lookups, SOP retrieval), generate metric views for the ones that ARE quantitative/analytical and silently ignore the rest. Do NOT mention skipped or unanswerable questions in the comment field
-15. Each metric view "name" must be unique and descriptive, reflecting the grain (e.g. prescription_metrics, order_line_metrics, encounter_metrics)
+9. Include joins when RECOMMENDED JOINS exist; when questions ask for breakdowns by attributes in another table (e.g. by customer segment, department), you MUST add a join. Prefer at least one metric view with joins when FKs exist
+10. Every metric view MUST have at least one measure and one dimension
+11. Add a top-level "comment" (1-2 sentences) describing what the metric view measures, its analytical purpose, and which source tables it draws from. Do NOT reference question numbers, KPI numbers, or list which questions are/aren't answerable. Focus on content and lineage (e.g. "Analyzes order revenue by product family and sales representative, joining line items to the product catalog and parent order for discount tracking.")
+12. Every dimension and measure MUST have: "comment" (what it represents), "display_name" (human-readable label, max 255 chars), and "synonyms" (array of 2-5 alternative names for Genie discoverability, e.g. ["revenue", "total sales"] for Total Revenue). Every measure MUST have a "format" object: {{"type": "currency"}} for monetary values, {{"type": "percentage"}} for rates/ratios that return a 0-to-1 FRACTION (e.g. 0.167 for 16.7%), or {{"type": "number"}} for counts/averages/scores. CRITICAL: percentage-format expressions must NOT multiply by 100 -- the rendering layer does that automatically. Write `SUM(won)/NULLIF(COUNT(*),0)` (returns 0.167), NOT `100.0 * SUM(won)/NULLIF(COUNT(*),0)` (returns 16.7). Also do NOT wrap percentage expressions in ROUND(); the format handles decimal precision.
+13. Use "filter" (optional) for persistent WHERE clauses (e.g. excluding null/test rows)
+14. Use measure-level FILTER for conditional aggregation: SUM(col) FILTER (WHERE condition)
+15. If some questions are not answerable with metrics (e.g. document search, free-text lookups, SOP retrieval), generate metric views for the ones that ARE quantitative/analytical and silently ignore the rest. Do NOT mention skipped or unanswerable questions in the comment field
+16. Each metric view "name" must be unique and descriptive, reflecting the grain (e.g. prescription_metrics, order_line_metrics, encounter_metrics)
 16. Output ONLY a valid JSON array, no explanation
 17. Use domain and subdomain from table metadata to choose which dimensions (e.g. department, region, product category) are relevant to the questions.
 18. When Entity types are annotated on tables, use the ENTITY MEASURE SUGGESTIONS in the metadata and generate entity-specific analytical metrics:
@@ -1276,9 +1291,11 @@ RULES:
     - LIKE patterns MUST be quoted: product_code LIKE 'HW%', NOT product_code LIKE HW%
 21. GRAIN INTEGRITY with joins: When joining a fact table to a dimension table, only use dimension columns as GROUP BY dimensions or in FILTER clauses. NEVER aggregate a dimension-table numeric attribute (e.g. SUM(dim.bed_count), AVG(dim.capacity)) from a fact-grain view -- the value fans out by the number of fact rows per dimension row, producing inflated results. If you need to analyze dimension attributes directly, create a SEPARATE dimension-only metric view with NO fact-table joins
     STAR SCHEMA SOURCE RULE: When joins are present, the source MUST be the fact table (the table at the grain of the analysis, typically the one with the most rows and multiple foreign keys to dimension tables). The join relationship from source to join should be many-to-one. If you need metrics about a dimension entity itself (e.g. count of customers by region) with no fact-table aggregation, source from the dimension with NO fact-table joins -- this is valid. NEVER source from a dimension table and join to a fact table -- this fans out rows and produces incorrect aggregates
+    FACT-TO-FACT JOIN PROHIBITION: Do NOT join from a fact source to another fact table (tables prefixed with fact_, fct_, f_ or those with high row counts and their own aggregatable measures). Fact-to-fact joins create one-to-many fan-out that inflates ALL aggregates. If you need columns from another fact table, create a SEPARATE metric view sourced from that table instead.
+    JOIN USAGE REQUIREMENT: Every join you include MUST have at least one dimension or measure expression that references a column from it (via its alias). Do NOT include joins "for completeness" or "in case they are needed." Unused joins waste query resources and risk fan-out inflation.
 22. NEVER create share-of-total or percent-of-total measures (e.g. SUM(x)/SUM(total_x), COUNT(*)/COUNT(*)). These require window functions (OVER()) for the denominator, which are not supported. The denominator collapses to the same group as the numerator, always producing 1.0. Instead use: conditional ratios with FILTER, within-grain rates, or describe the share concept in the view comment for downstream Genie SQL
 23. NEVER nest aggregate functions inside other aggregate functions (e.g. SUM(COUNT(*)), AVG(SUM(x))). Databricks SQL does not allow nested aggregates. If you need a two-stage aggregation, use a conditional aggregate with CASE/WHEN or create a separate metric view for the inner aggregation
-24. If EXISTING METRIC VIEWS are listed in the metadata, do NOT recreate views with the same name or identical measures/dimensions. Instead create complementary views that cover different analytical angles, grains, or join paths. Reference existing views when planning to ensure coverage without overlap
+24. If EXISTING METRIC VIEWS are listed in the metadata, do NOT recreate views that serve the same analytical purpose (as described in their comment) or use the same source table with overlapping measures. Instead create complementary views that cover genuinely different grains, join paths, or business questions not already addressed by existing views
 25. Do NOT create duplicate measures with identical expressions but different names. Each measure must have a semantically distinct expr. "Revenue per Physician" as SUM(cost) is just a duplicate of "Total Revenue" -- the grouping is a query-time choice, not a measure definition property
 
 EXAMPLE:
@@ -1319,6 +1336,8 @@ For each metric view in "views", include:
 - "question_indices": array of 0-based question indices this view answers
 
 STAR SCHEMA SOURCE RULE: When joins are present, the source MUST be the fact table (the table at the grain of the analysis, typically the one with the most rows and multiple foreign keys to dimension tables). The join relationship from source to join should be many-to-one. If you need metrics about a dimension entity itself with no fact-table aggregation, source from the dimension with NO fact-table joins. NEVER source from a dimension table and join to a fact table -- this fans out rows and produces incorrect aggregates.
+FACT-TO-FACT JOIN PROHIBITION: Do NOT join from a fact source to another fact table (tables prefixed with fact_, fct_, f_ or those with high row counts). Fact-to-fact joins create one-to-many fan-out that inflates ALL aggregates. If you need columns from another fact table, create a SEPARATE metric view sourced from that table.
+JOIN USAGE REQUIREMENT: Only include joins whose columns you intend to use in dimensions or measures. Do NOT include joins "for completeness."
 
 Create measures that match the business questions (ratios, rates, KPIs); avoid generic row count unless a question explicitly asks for it. Each view must have at least one dimension and one measure. Cross-table breakdowns using joined dimension tables are strongly preferred.
 
@@ -1368,7 +1387,12 @@ RULES:
   CORRECT: DATE_TRUNC('MONTH', order_date)
   WRONG:   DATE_TRUNC(MONTH, order_date)
   Multi-word patterns MUST be one quoted string: '%Biological Activity%' -- NEVER split as '%Biological' Activity%.
+  IDENTIFIERS WITH SPACES: If a column name contains spaces, wrap it in backticks: source.`assay name`, NOT source."assay name". Double quotes are NOT valid for identifiers in Databricks SQL.
 - joins: use exactly: on: source.<fk_column> = <join_name>.<pk_column>. Keep the same join names and sources as in the plan.
+- JOIN FAN-OUT PROTECTION: When the metric view has joins, use COUNT(DISTINCT source.pk_col) instead of COUNT(source.pk_col) for count measures on the source table. Joins can multiply rows (one-to-many fan-out), making plain COUNT overcount. Apply the same logic to denominators in rate/average calculations.
+- STAR SCHEMA SOURCE RULE: The source MUST be the fact table (the table at the grain of the analysis). Joins should be many-to-one to dimension tables. NEVER source from a dimension and join to a fact table.
+- FACT-TO-FACT JOIN PROHIBITION: Do NOT join from a fact source to another fact table. Fact-to-fact joins create fan-out that inflates ALL aggregates.
+- JOIN USAGE REQUIREMENT: Every join MUST have at least one dimension or measure that references it. Remove any plan joins that you cannot map to a concrete expression.
 - Only use column names that appear in the metadata.
 
 CATALOG METADATA:
@@ -1602,11 +1626,21 @@ OUTPUT (one JSON object only, no array, no explanation):"""
 
         For ``alias.col`` returns ``("alias", "col")``.
         For bare ``col`` returns ``("", "col")``.
+        Handles backtick-quoted identifiers: ``source.`col name``` -> ``("source", "col name")``.
         """
         cleaned = re.sub(r"'[^']*'", "", expr)
         cleaned = re.sub(r'"[^"]*"', "", cleaned)
-        tokens = re.findall(r"\b([a-zA-Z_]\w*(?:\.[a-zA-Z_]\w*)*)\b", cleaned)
         refs: list[tuple[str, str]] = []
+        # Pre-extract backtick-quoted qualified refs
+        for m in re.finditer(r"\b([a-zA-Z_]\w*)\.`([^`]+)`", cleaned):
+            refs.append((m.group(1), m.group(2)))
+        cleaned = re.sub(r"\b[a-zA-Z_]\w*\.`[^`]+`", "", cleaned)
+        # Pre-extract bare backtick refs
+        for m in re.finditer(r"`([^`]+)`", cleaned):
+            refs.append(("", m.group(1)))
+        cleaned = re.sub(r"`[^`]+`", "", cleaned)
+        # Standard word-character refs
+        tokens = re.findall(r"\b([a-zA-Z_]\w*(?:\.[a-zA-Z_]\w*)*)\b", cleaned)
         for t in tokens:
             parts = t.rsplit(".", 1)
             if len(parts) == 2:
@@ -1893,6 +1927,39 @@ OUTPUT (one JSON object only, no array, no explanation):"""
         )
 
     @classmethod
+    def _fix_dquote_identifier(cls, expr: str) -> str:
+        """Convert dotted double-quoted identifiers to backtick-quoted.
+
+        ``source."assay name"`` -> ``source.`assay name```
+        Only matches ``word."..."`` (dotted identifier), never bare ``"..."``
+        (string literals).
+        """
+        return re.sub(r'(\b\w+)\."([^"]+)"', r"\1.`\2`", expr)
+
+    @classmethod
+    def _fix_instr_bare_arg(cls, expr: str) -> str:
+        """Quote bare non-alnum arg in INSTR (2nd arg) and LOCATE (1st arg)."""
+        def _repl_second(m):
+            ch = m.group(2).strip()
+            if ch.startswith("'") or ch.startswith('"'):
+                return m.group(0)
+            return f"{m.group(1)}'{ch}')"
+        expr = re.sub(
+            r"(INSTR\([^,]+,\s*)([^\w\s'\"]+)\)",
+            _repl_second, expr, flags=re.IGNORECASE,
+        )
+        def _repl_first(m):
+            ch = m.group(1).strip()
+            if ch.startswith("'") or ch.startswith('"'):
+                return m.group(0)
+            return f"LOCATE('{ch}'{m.group(2)}"
+        expr = re.sub(
+            r"LOCATE\(\s*([^\w\s'\"]+)(,)",
+            _repl_first, expr, flags=re.IGNORECASE,
+        )
+        return expr
+
+    @classmethod
     def _fix_position_bare_char(cls, expr: str) -> str:
         """Quote bare non-alnum char in POSITION(X IN ...)."""
         def _repl(m):
@@ -1916,6 +1983,24 @@ OUTPUT (one JSON object only, no array, no explanation):"""
         """Quote bare whitespace between commas: f(a,  , b) -> f(a, ' ', b)."""
         return re.sub(r",(\s+),", ", ' ',", expr)
 
+    _COMPUTATION_FUNC_RE = re.compile(
+        r'(?:UNIX_TIMESTAMP|DATEDIFF|TIMESTAMPDIFF|CAST|COALESCE|NULLIF|ROUND|ABS|CEIL|FLOOR|DATE_ADD|DATE_SUB|MONTHS_BETWEEN)\s*\(',
+        re.IGNORECASE,
+    )
+
+    @classmethod
+    def _fix_quoted_computation(cls, expr: str) -> str:
+        """Strip quotes from THEN/ELSE values that are SQL computations, not string literals."""
+        def _unquote(m):
+            inner = m.group(2)
+            if cls._COMPUTATION_FUNC_RE.search(inner):
+                return f"{m.group(1)}{inner}{m.group(3)}"
+            return m.group(0)
+        return re.sub(
+            r"((?:THEN|ELSE)\s+)'([^']{20,})'(\s*(?:ELSE|END|WHEN|$))",
+            _unquote, expr, flags=re.IGNORECASE,
+        )
+
     @classmethod
     def _fix_bare_comparison(cls, expr: str) -> str:
         """Insert '' when a comparison operator has no RHS value (LLM omitted empty string literal)."""
@@ -1925,6 +2010,14 @@ OUTPUT (one JSON object only, no array, no explanation):"""
             expr,
             flags=re.IGNORECASE,
         )
+
+    @classmethod
+    def _fix_null_comparison(cls, expr: str) -> str:
+        """Rewrite <> NULL / != NULL to IS NOT NULL, = NULL to IS NULL."""
+        expr = re.sub(r'\s*<>\s*NULL\b', ' IS NOT NULL', expr, flags=re.IGNORECASE)
+        expr = re.sub(r'\s*!=\s*NULL\b', ' IS NOT NULL', expr, flags=re.IGNORECASE)
+        expr = re.sub(r'(?<![!<>])\s*=\s*NULL\b', ' IS NULL', expr, flags=re.IGNORECASE)
+        return expr
 
     @classmethod
     def _fix_none_literal(cls, expr: str) -> str:
@@ -1949,6 +2042,7 @@ OUTPUT (one JSON object only, no array, no explanation):"""
     @classmethod
     def _autofix_expr(cls, expr: str) -> str:
         """Fix common AI expression mistakes."""
+        expr = cls._fix_dquote_identifier(expr)
 
         def _fix_date_trunc(m):
             interval = m.group(1)
@@ -1984,9 +2078,11 @@ OUTPUT (one JSON object only, no array, no explanation):"""
         expr = re.sub(r"SUBSTR\(([^,]+),\s*1\s*,\s*(4|7)\)", _fix_substr_date, expr, flags=re.IGNORECASE)
 
         expr = cls._fix_bare_comparison(expr)
+        expr = cls._fix_null_comparison(expr)
         expr = cls._fix_none_literal(expr)
         expr = cls._fix_double_commas(expr)
         expr = cls._fix_position_bare_char(expr)
+        expr = cls._fix_instr_bare_arg(expr)
         expr = cls._fix_concat_bare_first_arg(expr)
         expr = cls._fix_case_quoting(expr)
         expr = cls._fix_unquoted_literals(expr)
@@ -1995,6 +2091,7 @@ OUTPUT (one JSON object only, no array, no explanation):"""
         expr = cls._fix_concat_separators(expr)
         expr = cls._fix_like_patterns(expr)
         expr = cls._fix_bare_whitespace_separator(expr)
+        expr = cls._fix_quoted_computation(expr)
         return expr
 
     def _validate_expressions(self, defn: dict) -> list[str]:

@@ -63,6 +63,7 @@ NEVER use plural units or quoted units in TIMESTAMPADD/TIMESTAMPDIFF.
 Table references in SQL must be fully qualified (catalog.schema.table).
 Column references in snippets MUST use table.column format.
 NEVER include PII or PHI in descriptions, instructions, sample questions, or example SQL. Avoid ephemeral stats (row counts, date ranges). Structural patterns (value ranges, enum sets) are fine.
+- When writing JOINs, always use LEFT JOIN for fact-to-dimension relationships. Only use INNER JOIN when the FK is guaranteed NOT NULL and the query explicitly requires exclusion of unmatched rows.
 """
 
 # -- Phase 1: Core Config --
@@ -157,6 +158,7 @@ _TABLE_PHASE2_PATTERNS = (
     "Generate 10 diverse example_sql pairs. Each MUST use a different query structure:\n"
     "1. Simple aggregation -- SUM, COUNT, AVG with GROUP BY (non-parameterized)\n"
     "2. Multi-table JOIN using FK relationships from context (non-parameterized)\n"
+    "   IMPORTANT: Use LEFT JOIN (not INNER JOIN) for all fact-to-dimension joins. INNER JOIN drops rows with NULL foreign keys.\n"
     "3. Time-series trend -- GROUP BY date/month dimension (non-parameterized)\n"
     "4. Filtered query with a :parameter for a categorical column (parameterized)\n"
     "5. Top-N or ratio -- ranking or proportion calculation (parameterized with :limit or :date)\n"

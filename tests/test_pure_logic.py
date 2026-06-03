@@ -968,3 +968,66 @@ class TestInfoSchemaConstants:
 
     def test_stats_fields_complete(self):
         assert STATS_FIELDS == {"min", "max", "num_nulls", "distinct_count", "avg_col_len", "max_col_len"}
+
+
+# ---------------------------------------------------------------------------
+# Fan-out detection regexes (mirrored from api_server.py)
+# ---------------------------------------------------------------------------
+import re
+
+_AGG_FN_RE = re.compile(
+    r"\b(SUM|COUNT|AVG|MIN|MAX|STDDEV|VARIANCE|PERCENTILE|"
+    r"COLLECT_LIST|COLLECT_SET|APPROX_COUNT_DISTINCT|"
+    r"ANY_VALUE|FIRST|LAST)\s*\(",
+    re.IGNORECASE,
+)
+_SELF_DIV_RE_TEST = re.compile(
+    r"^(SUM|COUNT|AVG|MIN|MAX)\s*\(([^)]+)\)\s*/\s*NULLIF\s*\(\s*\1\s*\(\2\)",
+    re.IGNORECASE,
+)
+_NESTED_AGG_RE_TEST = re.compile(
+    r"\b(SUM|COUNT|AVG|MIN|MAX|STDDEV|VARIANCE|PERCENTILE)\s*\(\s*"
+    r"(SUM|COUNT|AVG|MIN|MAX|STDDEV|VARIANCE|PERCENTILE)\s*\(",
+    re.IGNORECASE,
+)
+
+
+class TestFanoutDetectionRegexes:
+    def test_bare_column_no_aggregate(self):
+        assert _AGG_FN_RE.search("source.amount") is None
+
+    def test_arithmetic_no_aggregate(self):
+        assert _AGG_FN_RE.search("price * quantity") is None
+
+    def test_sum_has_aggregate(self):
+        assert _AGG_FN_RE.search("SUM(amount)") is not None
+
+    def test_case_with_aggregate(self):
+        assert _AGG_FN_RE.search("SUM(CASE WHEN x THEN 1 ELSE 0 END)") is not None
+
+    def test_count_distinct(self):
+        assert _AGG_FN_RE.search("COUNT(DISTINCT customer_id)") is not None
+
+    def test_approx_count_distinct(self):
+        assert _AGG_FN_RE.search("APPROX_COUNT_DISTINCT(user_id)") is not None
+
+    def test_coalesce_with_aggregate(self):
+        assert _AGG_FN_RE.search("COALESCE(SUM(amount), 0)") is not None
+
+    def test_self_dividing_detected(self):
+        assert _SELF_DIV_RE_TEST.search("SUM(x)/NULLIF(SUM(x),0)") is not None
+
+    def test_self_dividing_with_spaces(self):
+        assert _SELF_DIV_RE_TEST.search("SUM(x) / NULLIF( SUM(x), 0)") is not None
+
+    def test_non_self_dividing_passes(self):
+        assert _SELF_DIV_RE_TEST.search("SUM(revenue)/NULLIF(SUM(cost),0)") is None
+
+    def test_nested_aggregate_detected(self):
+        assert _NESTED_AGG_RE_TEST.search("SUM(COUNT(*))") is not None
+
+    def test_nested_avg_count(self):
+        assert _NESTED_AGG_RE_TEST.search("AVG(COUNT(order_id))") is not None
+
+    def test_non_nested_passes(self):
+        assert _NESTED_AGG_RE_TEST.search("SUM(amount) / COUNT(*)") is None
