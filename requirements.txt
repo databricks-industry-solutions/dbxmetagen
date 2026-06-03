@@ -2,7 +2,7 @@
 #    uv export --no-dev --no-hashes --no-emit-project --no-emit-package databricks-connect --no-emit-package pyspark --no-emit-package py4j --no-emit-package setuptools --format requirements-txt -o /Users/eli.swanson/Projects/solutions_accelerators/industry_solutions_dbxmetagen/dbxmetagen/requirements.txt
 aiohappyeyeballs==2.6.1
     # via aiohttp
-aiohttp==3.13.3
+aiohttp==3.14.0
     # via
     #   aiohttp-retry
     #   langchain-community
