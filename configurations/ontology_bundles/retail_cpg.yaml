@@ -141,6 +141,84 @@ ontology:
     similar_to:
       symmetric: true
       category: semantic
+    part_of:
+      domain: Person
+      range: Organization
+      category: structural
+      inverse: has_part
+    places:
+      domain: Customer
+      range: Order
+      category: business
+    has_return:
+      domain: Customer
+      range: Return
+      category: business
+      inverse: return_of
+    return_of:
+      domain: Return
+      range: Customer
+      inverse: has_return
+      category: business
+    enrolled_in:
+      domain: LoyaltyProgram
+      range: Customer
+      category: business
+    belongs_to:
+      domain: Product
+      range: Category
+      category: structural
+      inverse: contains
+    shipped_via:
+      domain: Order
+      range: Shipment
+      category: business
+    purchased_at:
+      domain: Order
+      range: Store
+      category: business
+    has_inventory:
+      domain: Store
+      range: Inventory
+      category: business
+      inverse: inventory_of
+    inventory_of:
+      domain: Inventory
+      range: Store
+      inverse: has_inventory
+      category: business
+    targets:
+      domain: Campaign
+      range: Customer
+      category: business
+    promotes:
+      domain: Campaign
+      range: Product
+      category: business
+    applies_to:
+      domain: Promotion
+      range: Product
+      category: business
+    supplies:
+      domain: Supplier
+      range: Product
+      category: business
+    for_product:
+      domain: Inventory
+      range: Product
+      category: business
+    at_store:
+      domain: Inventory
+      range: Store
+      category: business
+    for_order:
+      domain: Return
+      range: Order
+      category: business
+    by_customer:
+      domain: Return
+      range: Customer
+      category: business
   entities:
     auto_discover: true
     discovery_confidence_threshold: 0.4

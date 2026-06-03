@@ -65,7 +65,7 @@ ontology:
             target: code
             cardinality: unknown
           Account.subject:
-            target: Reference
+            target: Patient
             cardinality: unknown
           Account.type:
             target: CodeableConcept
@@ -189,7 +189,7 @@ ontology:
             target: dateTime
             cardinality: unknown
           AdverseEvent.encounter:
-            target: Reference
+            target: Encounter
             cardinality: unknown
           AdverseEvent.event:
             target: CodeableConcept
@@ -198,7 +198,7 @@ ontology:
             target: Identifier
             cardinality: unknown
           AdverseEvent.location:
-            target: Reference
+            target: Location
             cardinality: unknown
           AdverseEvent.outcome:
             target: CodeableConcept
@@ -207,7 +207,7 @@ ontology:
             target: dateTime
             cardinality: unknown
           AdverseEvent.recorder:
-            target: Reference
+            target: Practitioner
             cardinality: unknown
           AdverseEvent.referenceDocument:
             target: Reference
@@ -225,7 +225,7 @@ ontology:
             target: Reference
             cardinality: unknown
           AdverseEvent.subject:
-            target: Reference
+            target: Patient
             cardinality: unknown
           AdverseEvent.subjectMedicalHistory:
             target: Reference
@@ -395,7 +395,7 @@ ontology:
             target: AllergyIntoleranceReactionComponent
             cardinality: unknown
           AllergyIntolerance.asserter:
-            target: Reference
+            target: Practitioner
             cardinality: unknown
           AllergyIntolerance.category:
             target: code
@@ -410,7 +410,7 @@ ontology:
             target: code
             cardinality: unknown
           AllergyIntolerance.encounter:
-            target: Reference
+            target: Encounter
             cardinality: unknown
           AllergyIntolerance.identifier:
             target: Identifier
@@ -437,13 +437,13 @@ ontology:
             target: string
             cardinality: unknown
           AllergyIntolerance.patient:
-            target: Reference
+            target: Patient
             cardinality: unknown
           AllergyIntolerance.recordedDate:
             target: dateTime
             cardinality: unknown
           AllergyIntolerance.recorder:
-            target: Reference
+            target: Practitioner
             cardinality: unknown
           AllergyIntolerance.type:
             target: code
@@ -618,7 +618,7 @@ ontology:
             target: CodeableConcept
             cardinality: unknown
           Appointment.basedOn:
-            target: Reference
+            target: ServiceRequest
             cardinality: unknown
           Appointment.cancelationReason:
             target: CodeableConcept
@@ -651,7 +651,7 @@ ontology:
             target: CodeableConcept
             cardinality: unknown
           Appointment.reasonReference:
-            target: Reference
+            target: Condition
             cardinality: unknown
           Appointment.requestedPeriod:
             target: Period
@@ -836,7 +836,7 @@ ontology:
             target: Reference
             cardinality: unknown
           AppointmentResponse.appointment:
-            target: Reference
+            target: Appointment
             cardinality: unknown
           AppointmentResponse.comment:
             target: string
@@ -1158,7 +1158,7 @@ ontology:
             target: CodeableConcept
             cardinality: unknown
           BodyStructure.patient:
-            target: Reference
+            target: Patient
             cardinality: unknown
         properties:
           active:
@@ -1257,10 +1257,10 @@ ontology:
             target: Reference
             cardinality: unknown
           CarePlan.author:
-            target: Reference
+            target: Practitioner
             cardinality: unknown
           CarePlan.basedOn:
-            target: Reference
+            target: ServiceRequest
             cardinality: unknown
           CarePlan.careTeam:
             target: Reference
@@ -1278,7 +1278,7 @@ ontology:
             target: string
             cardinality: unknown
           CarePlan.encounter:
-            target: Reference
+            target: Encounter
             cardinality: unknown
           CarePlan.goal:
             target: Reference
@@ -1311,7 +1311,7 @@ ontology:
             target: code
             cardinality: unknown
           CarePlan.subject:
-            target: Reference
+            target: Patient
             cardinality: unknown
           CarePlan.supportingInfo:
             target: Reference
@@ -1505,13 +1505,13 @@ ontology:
             target: CodeableConcept
             cardinality: unknown
           CareTeam.encounter:
-            target: Reference
+            target: Encounter
             cardinality: unknown
           CareTeam.identifier:
             target: Identifier
             cardinality: unknown
           CareTeam.managingOrganization:
-            target: Reference
+            target: Organization
             cardinality: unknown
           CareTeam.name:
             target: string
@@ -1526,13 +1526,13 @@ ontology:
             target: CodeableConcept
             cardinality: unknown
           CareTeam.reasonReference:
-            target: Reference
+            target: Condition
             cardinality: unknown
           CareTeam.status:
             target: code
             cardinality: unknown
           CareTeam.subject:
-            target: Reference
+            target: Patient
             cardinality: unknown
           CareTeam.telecom:
             target: ContactPoint
@@ -1818,7 +1818,7 @@ ontology:
             target: Money
             cardinality: one-to-one
           ChargeItem.account:
-            target: Reference
+            target: Account
             cardinality: unknown
           ChargeItem.bodysite:
             target: CodeableConcept
@@ -1842,7 +1842,7 @@ ontology:
             target: dateTime
             cardinality: unknown
           ChargeItem.enterer:
-            target: Reference
+            target: Practitioner
             cardinality: unknown
           ChargeItem.factorOverride:
             target: decimal
@@ -1893,7 +1893,7 @@ ontology:
             target: code
             cardinality: unknown
           ChargeItem.subject:
-            target: Reference
+            target: Patient
             cardinality: unknown
           ChargeItem.supportingInformation:
             target: Reference
@@ -2148,10 +2148,10 @@ ontology:
             target: dateTime
             cardinality: unknown
           Claim.enterer:
-            target: Reference
+            target: Practitioner
             cardinality: unknown
           Claim.facility:
-            target: Reference
+            target: Location
             cardinality: unknown
           Claim.fundsReserve:
             target: CodeableConcept
@@ -2160,25 +2160,25 @@ ontology:
             target: Identifier
             cardinality: unknown
           Claim.insurer:
-            target: Reference
+            target: Organization
             cardinality: unknown
           Claim.originalPrescription:
-            target: Reference
+            target: MedicationRequest
             cardinality: unknown
           Claim.patient:
-            target: Reference
+            target: Patient
             cardinality: unknown
           Claim.prescription:
-            target: Reference
+            target: MedicationRequest
             cardinality: unknown
           Claim.priority:
             target: CodeableConcept
             cardinality: unknown
           Claim.provider:
-            target: Reference
+            target: Practitioner
             cardinality: unknown
           Claim.referral:
-            target: Reference
+            target: ServiceRequest
             cardinality: unknown
           Claim.status:
             target: code
@@ -2392,13 +2392,13 @@ ontology:
             target: Identifier
             cardinality: unknown
           ClaimResponse.insurer:
-            target: Reference
+            target: Organization
             cardinality: unknown
           ClaimResponse.outcome:
             target: code
             cardinality: unknown
           ClaimResponse.patient:
-            target: Reference
+            target: Patient
             cardinality: unknown
           ClaimResponse.payeeType:
             target: CodeableConcept
@@ -2610,7 +2610,7 @@ ontology:
             target: Period
             cardinality: unknown
           ClinicalImpression.encounter:
-            target: Reference
+            target: Encounter
             cardinality: unknown
           ClinicalImpression.identifier:
             target: Identifier
@@ -2640,7 +2640,7 @@ ontology:
             target: CodeableConcept
             cardinality: unknown
           ClinicalImpression.subject:
-            target: Reference
+            target: Patient
             cardinality: unknown
           ClinicalImpression.summary:
             target: string
@@ -2817,13 +2817,13 @@ ontology:
             target: Reference
             cardinality: unknown
           Communication.basedOn:
-            target: Reference
+            target: ServiceRequest
             cardinality: unknown
           Communication.category:
             target: CodeableConcept
             cardinality: unknown
           Communication.encounter:
-            target: Reference
+            target: Encounter
             cardinality: unknown
           Communication.identifier:
             target: Identifier
@@ -2853,7 +2853,7 @@ ontology:
             target: CodeableConcept
             cardinality: unknown
           Communication.reasonReference:
-            target: Reference
+            target: Condition
             cardinality: unknown
           Communication.received:
             target: dateTime
@@ -2862,7 +2862,7 @@ ontology:
             target: Reference
             cardinality: unknown
           Communication.sender:
-            target: Reference
+            target: Organization
             cardinality: unknown
           Communication.sent:
             target: dateTime
@@ -2874,7 +2874,7 @@ ontology:
             target: CodeableConcept
             cardinality: unknown
           Communication.subject:
-            target: Reference
+            target: Patient
             cardinality: unknown
           Communication.topic:
             target: CodeableConcept
@@ -3074,7 +3074,7 @@ ontology:
             target: dateTime
             cardinality: unknown
           CommunicationRequest.basedOn:
-            target: Reference
+            target: ServiceRequest
             cardinality: unknown
           CommunicationRequest.category:
             target: CodeableConcept
@@ -3083,7 +3083,7 @@ ontology:
             target: boolean
             cardinality: unknown
           CommunicationRequest.encounter:
-            target: Reference
+            target: Encounter
             cardinality: unknown
           CommunicationRequest.groupIdentifier:
             target: Identifier
@@ -3110,7 +3110,7 @@ ontology:
             target: CodeableConcept
             cardinality: unknown
           CommunicationRequest.reasonReference:
-            target: Reference
+            target: Condition
             cardinality: unknown
           CommunicationRequest.recipient:
             target: Reference
@@ -3119,10 +3119,10 @@ ontology:
             target: Reference
             cardinality: unknown
           CommunicationRequest.requester:
-            target: Reference
+            target: Practitioner
             cardinality: unknown
           CommunicationRequest.sender:
-            target: Reference
+            target: Organization
             cardinality: unknown
           CommunicationRequest.status:
             target: code
@@ -3131,7 +3131,7 @@ ontology:
             target: CodeableConcept
             cardinality: unknown
           CommunicationRequest.subject:
-            target: Reference
+            target: Patient
             cardinality: unknown
         properties:
           about:
@@ -3326,7 +3326,7 @@ ontology:
             target: Composition.SectionComponent
             cardinality: unknown
           Composition.author:
-            target: Reference
+            target: Practitioner
             cardinality: unknown
           Composition.category:
             target: CodeableConcept
@@ -3341,7 +3341,7 @@ ontology:
             target: dateTime
             cardinality: unknown
           Composition.encounter:
-            target: Reference
+            target: Encounter
             cardinality: unknown
           Composition.identifier:
             target: Identifier
@@ -3350,7 +3350,7 @@ ontology:
             target: code
             cardinality: unknown
           Composition.subject:
-            target: Reference
+            target: Patient
             cardinality: unknown
           Composition.title:
             target: string
@@ -3488,7 +3488,7 @@ ontology:
             target: string
             cardinality: unknown
           Condition.asserter:
-            target: Reference
+            target: Practitioner
             cardinality: unknown
           Condition.bodySite:
             target: CodeableConcept
@@ -3503,7 +3503,7 @@ ontology:
             target: CodeableConcept
             cardinality: unknown
           Condition.encounter:
-            target: Reference
+            target: Encounter
             cardinality: unknown
           Condition.identifier:
             target: Identifier
@@ -3530,13 +3530,13 @@ ontology:
             target: dateTime
             cardinality: unknown
           Condition.recorder:
-            target: Reference
+            target: Practitioner
             cardinality: unknown
           Condition.severity:
             target: CodeableConcept
             cardinality: unknown
           Condition.subject:
-            target: Reference
+            target: Patient
             cardinality: unknown
           Condition.verificationStatus:
             target: CodeableConcept
@@ -3735,13 +3735,13 @@ ontology:
             target: Identifier
             cardinality: unknown
           Consent.organization:
-            target: Reference
+            target: Organization
             cardinality: unknown
           Consent.patient:
-            target: Reference
+            target: Patient
             cardinality: unknown
           Consent.performer:
-            target: Reference
+            target: Practitioner
             cardinality: unknown
           Consent.policyRule:
             target: CodeableConcept
@@ -3902,7 +3902,7 @@ ontology:
             target: Period
             cardinality: unknown
           Contract.author:
-            target: Reference
+            target: Practitioner
             cardinality: unknown
           Contract.authority:
             target: Reference
@@ -3956,7 +3956,7 @@ ontology:
             target: CodeableConcept
             cardinality: unknown
           Contract.subject:
-            target: Reference
+            target: Patient
             cardinality: unknown
           Contract.subtitle:
             target: string
@@ -4385,25 +4385,25 @@ ontology:
             target: dateTime
             cardinality: unknown
           CoverageEligibilityRequest.enterer:
-            target: Reference
+            target: Practitioner
             cardinality: unknown
           CoverageEligibilityRequest.facility:
-            target: Reference
+            target: Location
             cardinality: unknown
           CoverageEligibilityRequest.identifier:
             target: Identifier
             cardinality: unknown
           CoverageEligibilityRequest.insurer:
-            target: Reference
+            target: Organization
             cardinality: unknown
           CoverageEligibilityRequest.patient:
-            target: Reference
+            target: Patient
             cardinality: unknown
           CoverageEligibilityRequest.priority:
             target: CodeableConcept
             cardinality: unknown
           CoverageEligibilityRequest.provider:
-            target: Reference
+            target: Practitioner
             cardinality: unknown
           CoverageEligibilityRequest.purpose:
             target: code
@@ -4549,13 +4549,13 @@ ontology:
             target: Identifier
             cardinality: unknown
           CoverageEligibilityResponse.insurer:
-            target: Reference
+            target: Organization
             cardinality: unknown
           CoverageEligibilityResponse.outcome:
             target: code
             cardinality: unknown
           CoverageEligibilityResponse.patient:
-            target: Reference
+            target: Patient
             cardinality: unknown
           CoverageEligibilityResponse.preAuthRef:
             target: string
@@ -4702,7 +4702,7 @@ ontology:
             target: DetectedIssueMitigationComponent
             cardinality: unknown
           DetectedIssue.author:
-            target: Reference
+            target: Practitioner
             cardinality: unknown
           DetectedIssue.code:
             target: CodeableConcept
@@ -4723,7 +4723,7 @@ ontology:
             target: Reference
             cardinality: unknown
           DetectedIssue.patient:
-            target: Reference
+            target: Patient
             cardinality: unknown
           DetectedIssue.reference:
             target: uri
@@ -4871,7 +4871,7 @@ ontology:
             target: Identifier
             cardinality: unknown
           Device.location:
-            target: Reference
+            target: Location
             cardinality: unknown
           Device.lotNumber:
             target: string
@@ -4898,7 +4898,7 @@ ontology:
             target: string
             cardinality: unknown
           Device.patient:
-            target: Reference
+            target: Patient
             cardinality: unknown
           Device.safety:
             target: CodeableConcept
@@ -5287,7 +5287,7 @@ ontology:
             target: Reference
             cardinality: unknown
           DeviceMetric.source:
-            target: Reference
+            target: Patient
             cardinality: unknown
           DeviceMetric.type:
             target: CodeableConcept
@@ -5397,7 +5397,7 @@ ontology:
             target: dateTime
             cardinality: unknown
           DeviceRequest.basedOn:
-            target: Reference
+            target: ServiceRequest
             cardinality: unknown
           DeviceRequest.codeCodeableConcept:
             target: CodeableConcept
@@ -5406,7 +5406,7 @@ ontology:
             target: Reference
             cardinality: unknown
           DeviceRequest.encounter:
-            target: Reference
+            target: Encounter
             cardinality: unknown
           DeviceRequest.groupIdentifier:
             target: Identifier
@@ -5439,7 +5439,7 @@ ontology:
             target: Timing
             cardinality: unknown
           DeviceRequest.performer:
-            target: Reference
+            target: Practitioner
             cardinality: unknown
           DeviceRequest.performerType:
             target: CodeableConcept
@@ -5454,19 +5454,19 @@ ontology:
             target: CodeableConcept
             cardinality: unknown
           DeviceRequest.reasonReference:
-            target: Reference
+            target: Condition
             cardinality: unknown
           DeviceRequest.relevantHistory:
             target: Reference
             cardinality: unknown
           DeviceRequest.requester:
-            target: Reference
+            target: Practitioner
             cardinality: unknown
           DeviceRequest.status:
             target: code
             cardinality: unknown
           DeviceRequest.subject:
-            target: Reference
+            target: Patient
             cardinality: unknown
           DeviceRequest.supportingInfo:
             target: Reference
@@ -5687,16 +5687,16 @@ ontology:
         - DeviceUseStatement.timingTiming
         relationships:
           DeviceUseStatement.basedOn:
-            target: Reference
+            target: ServiceRequest
             cardinality: unknown
           DeviceUseStatement.bodySite:
             target: CodeableConcept
             cardinality: unknown
           DeviceUseStatement.derivedFrom:
-            target: Reference
+            target: Observation
             cardinality: unknown
           DeviceUseStatement.device:
-            target: Reference
+            target: Device
             cardinality: unknown
           DeviceUseStatement.identifier:
             target: Identifier
@@ -5708,19 +5708,19 @@ ontology:
             target: CodeableConcept
             cardinality: unknown
           DeviceUseStatement.reasonReference:
-            target: Reference
+            target: Condition
             cardinality: unknown
           DeviceUseStatement.recordedOn:
             target: dateTime
             cardinality: unknown
           DeviceUseStatement.source:
-            target: Reference
+            target: Patient
             cardinality: unknown
           DeviceUseStatement.status:
             target: code
             cardinality: unknown
           DeviceUseStatement.subject:
-            target: Reference
+            target: Patient
             cardinality: unknown
           DeviceUseStatement.timingDateTime:
             target: dateTime
@@ -5876,7 +5876,7 @@ ontology:
             target: DiagnosticReportMediaComponent
             cardinality: unknown
           DiagnosticReport.basedOn:
-            target: Reference
+            target: ServiceRequest
             cardinality: unknown
           DiagnosticReport.category:
             target: CodeableConcept
@@ -5897,7 +5897,7 @@ ontology:
             target: Period
             cardinality: unknown
           DiagnosticReport.encounter:
-            target: Reference
+            target: Encounter
             cardinality: unknown
           DiagnosticReport.identifier:
             target: Identifier
@@ -5909,7 +5909,7 @@ ontology:
             target: instant
             cardinality: unknown
           DiagnosticReport.performer:
-            target: Reference
+            target: Practitioner
             cardinality: unknown
           DiagnosticReport.presentedForm:
             target: Attachment
@@ -5921,13 +5921,13 @@ ontology:
             target: Reference
             cardinality: unknown
           DiagnosticReport.specimen:
-            target: Reference
+            target: Specimen
             cardinality: unknown
           DiagnosticReport.status:
             target: code
             cardinality: unknown
           DiagnosticReport.subject:
-            target: Reference
+            target: Patient
             cardinality: unknown
         properties:
           basedOn:
@@ -6084,7 +6084,7 @@ ontology:
             target: DocumentManifestRelatedComponent
             cardinality: unknown
           DocumentManifest.author:
-            target: Reference
+            target: Practitioner
             cardinality: unknown
           DocumentManifest.content:
             target: Reference
@@ -6111,7 +6111,7 @@ ontology:
             target: code
             cardinality: unknown
           DocumentManifest.subject:
-            target: Reference
+            target: Patient
             cardinality: unknown
           DocumentManifest.type:
             target: CodeableConcept
@@ -6232,7 +6232,7 @@ ontology:
             target: Reference
             cardinality: unknown
           DocumentReference.author:
-            target: Reference
+            target: Practitioner
             cardinality: unknown
           DocumentReference.category:
             target: CodeableConcept
@@ -6262,7 +6262,7 @@ ontology:
             target: code
             cardinality: unknown
           DocumentReference.subject:
-            target: Reference
+            target: Patient
             cardinality: unknown
           DocumentReference.type:
             target: CodeableConcept
@@ -6675,19 +6675,19 @@ ontology:
             target: Encounter.StatusHistoryComponent
             cardinality: unknown
           Encounter.account:
-            target: Reference
+            target: Account
             cardinality: unknown
           Encounter.appointment:
-            target: Reference
+            target: Appointment
             cardinality: unknown
           Encounter.basedOn:
-            target: Reference
+            target: ServiceRequest
             cardinality: unknown
           Encounter.class:
             target: Coding
             cardinality: unknown
           Encounter.episodeOfCare:
-            target: Reference
+            target: EpisodeOfCare
             cardinality: unknown
           Encounter.identifier:
             target: Identifier
@@ -6708,10 +6708,10 @@ ontology:
             target: CodeableConcept
             cardinality: unknown
           Encounter.reasonReference:
-            target: Reference
+            target: Condition
             cardinality: unknown
           Encounter.serviceProvider:
-            target: Reference
+            target: Organization
             cardinality: unknown
           Encounter.serviceType:
             target: CodeableConcept
@@ -6720,7 +6720,7 @@ ontology:
             target: code
             cardinality: unknown
           Encounter.subject:
-            target: Reference
+            target: Patient
             cardinality: unknown
           Encounter.type:
             target: CodeableConcept
@@ -6887,7 +6887,7 @@ ontology:
             target: Identifier
             cardinality: unknown
           Endpoint.managingOrganization:
-            target: Reference
+            target: Organization
             cardinality: unknown
           Endpoint.name:
             target: string
@@ -7010,10 +7010,10 @@ ontology:
             target: Identifier
             cardinality: unknown
           EnrollmentRequest.insurer:
-            target: Reference
+            target: Organization
             cardinality: unknown
           EnrollmentRequest.provider:
-            target: Reference
+            target: Practitioner
             cardinality: unknown
           EnrollmentRequest.status:
             target: code
@@ -7099,7 +7099,7 @@ ontology:
             target: Identifier
             cardinality: unknown
           EnrollmentResponse.organization:
-            target: Reference
+            target: Organization
             cardinality: unknown
           EnrollmentResponse.outcome:
             target: code
@@ -7201,7 +7201,7 @@ ontology:
             target: EpisodeOfCareStatusHistoryComponent
             cardinality: unknown
           EpisodeOfCare.account:
-            target: Reference
+            target: Account
             cardinality: unknown
           EpisodeOfCare.careManager:
             target: Reference
@@ -7210,10 +7210,10 @@ ontology:
             target: Identifier
             cardinality: unknown
           EpisodeOfCare.managingOrganization:
-            target: Reference
+            target: Organization
             cardinality: unknown
           EpisodeOfCare.patient:
-            target: Reference
+            target: Patient
             cardinality: unknown
           EpisodeOfCare.period:
             target: Period
@@ -7885,10 +7885,10 @@ ontology:
             target: string
             cardinality: unknown
           ExplanationOfBenefit.enterer:
-            target: Reference
+            target: Practitioner
             cardinality: unknown
           ExplanationOfBenefit.facility:
-            target: Reference
+            target: Location
             cardinality: unknown
           ExplanationOfBenefit.form:
             target: Attachment
@@ -7906,16 +7906,16 @@ ontology:
             target: Identifier
             cardinality: unknown
           ExplanationOfBenefit.insurer:
-            target: Reference
+            target: Organization
             cardinality: unknown
           ExplanationOfBenefit.originalPrescription:
-            target: Reference
+            target: MedicationRequest
             cardinality: unknown
           ExplanationOfBenefit.outcome:
             target: code
             cardinality: unknown
           ExplanationOfBenefit.patient:
-            target: Reference
+            target: Patient
             cardinality: unknown
           ExplanationOfBenefit.preAuthRef:
             target: string
@@ -7927,16 +7927,16 @@ ontology:
             target: positiveInt
             cardinality: unknown
           ExplanationOfBenefit.prescription:
-            target: Reference
+            target: MedicationRequest
             cardinality: unknown
           ExplanationOfBenefit.priority:
             target: CodeableConcept
             cardinality: unknown
           ExplanationOfBenefit.provider:
-            target: Reference
+            target: Practitioner
             cardinality: unknown
           ExplanationOfBenefit.referral:
-            target: Reference
+            target: ServiceRequest
             cardinality: unknown
           ExplanationOfBenefit.status:
             target: code
@@ -8240,13 +8240,13 @@ ontology:
             target: Annotation
             cardinality: unknown
           FamilyMemberHistory.patient:
-            target: Reference
+            target: Patient
             cardinality: unknown
           FamilyMemberHistory.reasonCode:
             target: CodeableConcept
             cardinality: unknown
           FamilyMemberHistory.reasonReference:
-            target: Reference
+            target: Condition
             cardinality: unknown
           FamilyMemberHistory.relationship:
             target: CodeableConcept
@@ -8439,7 +8439,7 @@ ontology:
         - Flag.subject
         relationships:
           Flag.author:
-            target: Reference
+            target: Practitioner
             cardinality: unknown
           Flag.category:
             target: CodeableConcept
@@ -8448,7 +8448,7 @@ ontology:
             target: CodeableConcept
             cardinality: unknown
           Flag.encounter:
-            target: Reference
+            target: Encounter
             cardinality: unknown
           Flag.identifier:
             target: Identifier
@@ -8460,7 +8460,7 @@ ontology:
             target: code
             cardinality: unknown
           Flag.subject:
-            target: Reference
+            target: Patient
             cardinality: unknown
         properties:
           author:
@@ -8597,7 +8597,7 @@ ontology:
             target: string
             cardinality: unknown
           Goal.subject:
-            target: Reference
+            target: Patient
             cardinality: unknown
         properties:
           achievementStatus:
@@ -8843,7 +8843,7 @@ ontology:
             target: DataRequirement
             cardinality: unknown
           GuidanceResponse.encounter:
-            target: Reference
+            target: Encounter
             cardinality: unknown
           GuidanceResponse.evaluationMessage:
             target: Reference
@@ -8870,13 +8870,13 @@ ontology:
             target: Reference
             cardinality: unknown
           GuidanceResponse.performer:
-            target: Reference
+            target: Practitioner
             cardinality: unknown
           GuidanceResponse.reasonCode:
             target: CodeableConcept
             cardinality: unknown
           GuidanceResponse.reasonReference:
-            target: Reference
+            target: Condition
             cardinality: unknown
           GuidanceResponse.requestIdentifier:
             target: Identifier
@@ -8888,7 +8888,7 @@ ontology:
             target: code
             cardinality: unknown
           GuidanceResponse.subject:
-            target: Reference
+            target: Patient
             cardinality: unknown
         properties:
           encounter:
@@ -9081,7 +9081,7 @@ ontology:
             target: Identifier
             cardinality: unknown
           HealthcareService.location:
-            target: Reference
+            target: Location
             cardinality: unknown
           HealthcareService.name:
             target: string
@@ -9284,13 +9284,13 @@ ontology:
             target: ImagingStudySeriesComponent
             cardinality: unknown
           ImagingStudy.basedOn:
-            target: Reference
+            target: ServiceRequest
             cardinality: unknown
           ImagingStudy.description:
             target: string
             cardinality: unknown
           ImagingStudy.encounter:
-            target: Reference
+            target: Encounter
             cardinality: unknown
           ImagingStudy.endpoint:
             target: Reference
@@ -9302,7 +9302,7 @@ ontology:
             target: Reference
             cardinality: unknown
           ImagingStudy.location:
-            target: Reference
+            target: Location
             cardinality: unknown
           ImagingStudy.modality:
             target: Coding
@@ -9326,7 +9326,7 @@ ontology:
             target: CodeableConcept
             cardinality: unknown
           ImagingStudy.reasonReference:
-            target: Reference
+            target: Condition
             cardinality: unknown
           ImagingStudy.referrer:
             target: Reference
@@ -9338,7 +9338,7 @@ ontology:
             target: code
             cardinality: unknown
           ImagingStudy.subject:
-            target: Reference
+            target: Patient
             cardinality: unknown
         properties:
           basedOn:
@@ -9528,7 +9528,7 @@ ontology:
             target: SimpleQuantity
             cardinality: unknown
           Immunization.encounter:
-            target: Reference
+            target: Encounter
             cardinality: unknown
           Immunization.expirationDate:
             target: date
@@ -9543,13 +9543,13 @@ ontology:
             target: boolean
             cardinality: unknown
           Immunization.location:
-            target: Reference
+            target: Location
             cardinality: unknown
           Immunization.lotNumber:
             target: string
             cardinality: unknown
           Immunization.manufacturer:
-            target: Reference
+            target: Organization
             cardinality: unknown
           Immunization.note:
             target: Annotation
@@ -9561,7 +9561,7 @@ ontology:
             target: string
             cardinality: unknown
           Immunization.patient:
-            target: Reference
+            target: Patient
             cardinality: unknown
           Immunization.primarySource:
             target: boolean
@@ -9573,7 +9573,7 @@ ontology:
             target: CodeableConcept
             cardinality: unknown
           Immunization.reasonReference:
-            target: Reference
+            target: Condition
             cardinality: unknown
           Immunization.recorded:
             target: dateTime
@@ -9821,7 +9821,7 @@ ontology:
             target: Reference
             cardinality: unknown
           ImmunizationEvaluation.patient:
-            target: Reference
+            target: Patient
             cardinality: unknown
           ImmunizationEvaluation.series:
             target: string
@@ -9968,7 +9968,7 @@ ontology:
             target: Identifier
             cardinality: unknown
           ImmunizationRecommendation.patient:
-            target: Reference
+            target: Patient
             cardinality: unknown
         properties:
           authority:
@@ -10184,7 +10184,7 @@ ontology:
             target: InvoicePriceComponent
             cardinality: unknown
           Invoice.account:
-            target: Reference
+            target: Account
             cardinality: unknown
           Invoice.cancelledReason:
             target: string
@@ -10211,7 +10211,7 @@ ontology:
             target: code
             cardinality: unknown
           Invoice.subject:
-            target: Reference
+            target: Patient
             cardinality: unknown
           Invoice.type:
             target: CodeableConcept
@@ -10312,7 +10312,7 @@ ontology:
             target: boolean
             cardinality: unknown
           Linkage.author:
-            target: Reference
+            target: Practitioner
             cardinality: unknown
         properties:
           active:
@@ -10365,7 +10365,7 @@ ontology:
             target: CodeableConcept
             cardinality: unknown
           List.encounter:
-            target: Reference
+            target: Encounter
             cardinality: unknown
           List.identifier:
             target: Identifier
@@ -10380,13 +10380,13 @@ ontology:
             target: CodeableConcept
             cardinality: unknown
           List.source:
-            target: Reference
+            target: Patient
             cardinality: unknown
           List.status:
             target: code
             cardinality: unknown
           List.subject:
-            target: Reference
+            target: Patient
             cardinality: unknown
           List.title:
             target: string
@@ -10522,7 +10522,7 @@ ontology:
             target: Identifier
             cardinality: unknown
           Location.managingOrganization:
-            target: Reference
+            target: Organization
             cardinality: unknown
           Location.mode:
             target: code
@@ -11042,7 +11042,7 @@ ontology:
             target: code
             cardinality: unknown
           MeasureReport.subject:
-            target: Reference
+            target: Patient
             cardinality: unknown
           MeasureReport.type:
             target: code
@@ -11151,7 +11151,7 @@ ontology:
         - Media.width
         relationships:
           Media.basedOn:
-            target: Reference
+            target: ServiceRequest
             cardinality: unknown
           Media.bodySite:
             target: CodeableConcept
@@ -11166,7 +11166,7 @@ ontology:
             target: Period
             cardinality: unknown
           Media.device:
-            target: Reference
+            target: Device
             cardinality: unknown
           Media.deviceName:
             target: string
@@ -11175,7 +11175,7 @@ ontology:
             target: decimal
             cardinality: unknown
           Media.encounter:
-            target: Reference
+            target: Encounter
             cardinality: unknown
           Media.frames:
             target: positiveInt
@@ -11208,7 +11208,7 @@ ontology:
             target: code
             cardinality: unknown
           Media.subject:
-            target: Reference
+            target: Patient
             cardinality: unknown
           Media.type:
             target: CodeableConcept
@@ -11403,7 +11403,7 @@ ontology:
             target: Identifier
             cardinality: unknown
           Medication.manufacturer:
-            target: Reference
+            target: Organization
             cardinality: unknown
           Medication.status:
             target: code
@@ -11496,7 +11496,7 @@ ontology:
             target: Reference
             cardinality: unknown
           MedicationAdministration.device:
-            target: Reference
+            target: Device
             cardinality: unknown
           MedicationAdministration.effectiveDateTime:
             target: dateTime
@@ -11529,7 +11529,7 @@ ontology:
             target: CodeableConcept
             cardinality: unknown
           MedicationAdministration.reasonReference:
-            target: Reference
+            target: Condition
             cardinality: unknown
           MedicationAdministration.request:
             target: Reference
@@ -11541,7 +11541,7 @@ ontology:
             target: CodeableConcept
             cardinality: unknown
           MedicationAdministration.subject:
-            target: Reference
+            target: Patient
             cardinality: unknown
           MedicationAdministration.supportingInformation:
             target: Reference
@@ -11751,7 +11751,7 @@ ontology:
             target: Identifier
             cardinality: unknown
           MedicationDispense.location:
-            target: Reference
+            target: Location
             cardinality: unknown
           MedicationDispense.medicationCodeableConcept:
             target: CodeableConcept
@@ -11769,7 +11769,7 @@ ontology:
             target: SimpleQuantity
             cardinality: unknown
           MedicationDispense.receiver:
-            target: Reference
+            target: Organization
             cardinality: unknown
           MedicationDispense.status:
             target: code
@@ -11781,7 +11781,7 @@ ontology:
             target: Reference
             cardinality: unknown
           MedicationDispense.subject:
-            target: Reference
+            target: Patient
             cardinality: unknown
           MedicationDispense.supportingInformation:
             target: Reference
@@ -12031,7 +12031,7 @@ ontology:
             target: CodeableConcept
             cardinality: unknown
           MedicationKnowledge.manufacturer:
-            target: Reference
+            target: Organization
             cardinality: unknown
           MedicationKnowledge.preparationInstruction:
             target: markdown
@@ -12172,7 +12172,7 @@ ontology:
             target: dateTime
             cardinality: unknown
           MedicationRequest.basedOn:
-            target: Reference
+            target: ServiceRequest
             cardinality: unknown
           MedicationRequest.category:
             target: CodeableConcept
@@ -12187,7 +12187,7 @@ ontology:
             target: boolean
             cardinality: unknown
           MedicationRequest.encounter:
-            target: Reference
+            target: Encounter
             cardinality: unknown
           MedicationRequest.eventHistory:
             target: Reference
@@ -12220,7 +12220,7 @@ ontology:
             target: Annotation
             cardinality: unknown
           MedicationRequest.performer:
-            target: Reference
+            target: Practitioner
             cardinality: unknown
           MedicationRequest.performerType:
             target: CodeableConcept
@@ -12235,10 +12235,10 @@ ontology:
             target: CodeableConcept
             cardinality: unknown
           MedicationRequest.reasonReference:
-            target: Reference
+            target: Condition
             cardinality: unknown
           MedicationRequest.recorder:
-            target: Reference
+            target: Practitioner
             cardinality: unknown
           MedicationRequest.reportedBoolean:
             target: boolean
@@ -12247,7 +12247,7 @@ ontology:
             target: Reference
             cardinality: unknown
           MedicationRequest.requester:
-            target: Reference
+            target: Practitioner
             cardinality: unknown
           MedicationRequest.status:
             target: code
@@ -12256,7 +12256,7 @@ ontology:
             target: CodeableConcept
             cardinality: unknown
           MedicationRequest.subject:
-            target: Reference
+            target: Patient
             cardinality: unknown
           MedicationRequest.supportingInformation:
             target: Reference
@@ -12511,7 +12511,7 @@ ontology:
             target: Dosage
             cardinality: unknown
           MedicationStatement.basedOn:
-            target: Reference
+            target: ServiceRequest
             cardinality: unknown
           MedicationStatement.category:
             target: CodeableConcept
@@ -12523,7 +12523,7 @@ ontology:
             target: dateTime
             cardinality: unknown
           MedicationStatement.derivedFrom:
-            target: Reference
+            target: Observation
             cardinality: unknown
           MedicationStatement.effectiveDateTime:
             target: dateTime
@@ -12553,7 +12553,7 @@ ontology:
             target: CodeableConcept
             cardinality: unknown
           MedicationStatement.reasonReference:
-            target: Reference
+            target: Condition
             cardinality: unknown
           MedicationStatement.status:
             target: code
@@ -12562,7 +12562,7 @@ ontology:
             target: CodeableConcept
             cardinality: unknown
           MedicationStatement.subject:
-            target: Reference
+            target: Patient
             cardinality: unknown
         properties:
           basedOn:
@@ -12963,7 +12963,7 @@ ontology:
             target: dateTime
             cardinality: unknown
           MedicinalProductAuthorization.subject:
-            target: Reference
+            target: Patient
             cardinality: unknown
           MedicinalProductAuthorization.validityPeriod:
             target: Period
@@ -13092,7 +13092,7 @@ ontology:
             target: CodeableConcept
             cardinality: unknown
           MedicinalProductContraindication.subject:
-            target: Reference
+            target: Patient
             cardinality: unknown
           MedicinalProductContraindication.therapeuticIndication:
             target: Reference
@@ -13169,7 +13169,7 @@ ontology:
             target: CodeableConcept
             cardinality: unknown
           MedicinalProductIndication.subject:
-            target: Reference
+            target: Patient
             cardinality: unknown
           MedicinalProductIndication.undesirableEffect:
             target: Reference
@@ -13249,7 +13249,7 @@ ontology:
             target: Identifier
             cardinality: unknown
           MedicinalProductIngredient.manufacturer:
-            target: Reference
+            target: Organization
             cardinality: unknown
           MedicinalProductIngredient.role:
             target: CodeableConcept
@@ -13315,7 +13315,7 @@ ontology:
             target: CodeableConcept
             cardinality: unknown
           MedicinalProductInteraction.subject:
-            target: Reference
+            target: Patient
             cardinality: unknown
           MedicinalProductInteraction.type:
             target: CodeableConcept
@@ -13384,7 +13384,7 @@ ontology:
             target: CodeableConcept
             cardinality: unknown
           MedicinalProductManufactured.manufacturer:
-            target: Reference
+            target: Organization
             cardinality: unknown
           MedicinalProductManufactured.otherCharacteristics:
             target: CodeableConcept
@@ -13471,13 +13471,13 @@ ontology:
             target: CodeableConcept
             cardinality: unknown
           MedicinalProductPackaged.manufacturer:
-            target: Reference
+            target: Organization
             cardinality: unknown
           MedicinalProductPackaged.marketingAuthorization:
             target: Reference
             cardinality: unknown
           MedicinalProductPackaged.subject:
-            target: Reference
+            target: Patient
             cardinality: unknown
         properties:
           description:
@@ -13553,7 +13553,7 @@ ontology:
             target: CodeableConcept
             cardinality: unknown
           MedicinalProductPharmaceutical.device:
-            target: Reference
+            target: Device
             cardinality: unknown
           MedicinalProductPharmaceutical.identifier:
             target: Identifier
@@ -13625,7 +13625,7 @@ ontology:
             target: CodeableConcept
             cardinality: unknown
           MedicinalProductUndesirableEffect.subject:
-            target: Reference
+            target: Patient
             cardinality: unknown
           MedicinalProductUndesirableEffect.symptomConditionEffect:
             target: CodeableConcept
@@ -13689,13 +13689,13 @@ ontology:
             target: MessageHeader.MessageSourceComponent
             cardinality: one-to-one
           MessageHeader.author:
-            target: Reference
+            target: Practitioner
             cardinality: unknown
           MessageHeader.definition:
             target: canonical
             cardinality: unknown
           MessageHeader.enterer:
-            target: Reference
+            target: Practitioner
             cardinality: unknown
           MessageHeader.eventCoding:
             target: Coding
@@ -13713,7 +13713,7 @@ ontology:
             target: Reference
             cardinality: unknown
           MessageHeader.sender:
-            target: Reference
+            target: Organization
             cardinality: unknown
         properties:
           author:
@@ -13820,7 +13820,7 @@ ontology:
             target: integer
             cardinality: unknown
           MolecularSequence.device:
-            target: Reference
+            target: Device
             cardinality: unknown
           MolecularSequence.identifier:
             target: Identifier
@@ -13829,10 +13829,10 @@ ontology:
             target: string
             cardinality: unknown
           MolecularSequence.patient:
-            target: Reference
+            target: Patient
             cardinality: unknown
           MolecularSequence.performer:
-            target: Reference
+            target: Practitioner
             cardinality: unknown
           MolecularSequence.pointer:
             target: Reference
@@ -13844,7 +13844,7 @@ ontology:
             target: integer
             cardinality: unknown
           MolecularSequence.specimen:
-            target: Reference
+            target: Specimen
             cardinality: unknown
           MolecularSequence.type:
             target: code
@@ -13971,7 +13971,7 @@ ontology:
             target: dateTime
             cardinality: unknown
           NutritionOrder.encounter:
-            target: Reference
+            target: Encounter
             cardinality: unknown
           NutritionOrder.excludeFoodModifier:
             target: CodeableConcept
@@ -14001,7 +14001,7 @@ ontology:
             target: Reference
             cardinality: unknown
           NutritionOrder.patient:
-            target: Reference
+            target: Patient
             cardinality: unknown
           NutritionOrder.status:
             target: code
@@ -14154,7 +14154,7 @@ ontology:
             target: SampledData
             cardinality: unknown
           Observation.basedOn:
-            target: Reference
+            target: ServiceRequest
             cardinality: unknown
           Observation.bodySite:
             target: CodeableConcept
@@ -14169,10 +14169,10 @@ ontology:
             target: CodeableConcept
             cardinality: unknown
           Observation.derivedFrom:
-            target: Reference
+            target: Observation
             cardinality: unknown
           Observation.device:
-            target: Reference
+            target: Device
             cardinality: unknown
           Observation.effectiveDateTime:
             target: dateTime
@@ -14187,13 +14187,13 @@ ontology:
             target: Timing
             cardinality: unknown
           Observation.encounter:
-            target: Reference
+            target: Encounter
             cardinality: unknown
           Observation.focus:
             target: Reference
             cardinality: unknown
           Observation.hasMember:
-            target: Reference
+            target: Observation
             cardinality: unknown
           Observation.identifier:
             target: Identifier
@@ -14214,16 +14214,16 @@ ontology:
             target: Reference
             cardinality: unknown
           Observation.performer:
-            target: Reference
+            target: Practitioner
             cardinality: unknown
           Observation.specimen:
-            target: Reference
+            target: Specimen
             cardinality: unknown
           Observation.status:
             target: code
             cardinality: unknown
           Observation.subject:
-            target: Reference
+            target: Patient
             cardinality: unknown
           Observation.valueBoolean:
             target: boolean
@@ -14628,13 +14628,13 @@ ontology:
             target: Identifier
             cardinality: unknown
           OrganizationAffiliation.location:
-            target: Reference
+            target: Location
             cardinality: unknown
           OrganizationAffiliation.network:
             target: Reference
             cardinality: unknown
           OrganizationAffiliation.organization:
-            target: Reference
+            target: Organization
             cardinality: unknown
           OrganizationAffiliation.participatingOrganization:
             target: Reference
@@ -14793,13 +14793,13 @@ ontology:
             target: code
             cardinality: unknown
           Patient.generalPractitioner:
-            target: Reference
+            target: Practitioner
             cardinality: unknown
           Patient.identifier:
             target: Identifier
             cardinality: unknown
           Patient.managingOrganization:
-            target: Reference
+            target: Organization
             cardinality: unknown
           Patient.maritalStatus:
             target: CodeableConcept
@@ -14973,7 +14973,7 @@ ontology:
             target: CodeableConcept
             cardinality: unknown
           PaymentNotice.provider:
-            target: Reference
+            target: Practitioner
             cardinality: unknown
           PaymentNotice.recipient:
             target: Reference
@@ -15256,7 +15256,7 @@ ontology:
             target: Identifier
             cardinality: unknown
           Person.managingOrganization:
-            target: Reference
+            target: Organization
             cardinality: unknown
           Person.name:
             target: HumanName
@@ -15510,16 +15510,16 @@ ontology:
             target: Identifier
             cardinality: unknown
           PractitionerRole.location:
-            target: Reference
+            target: Location
             cardinality: unknown
           PractitionerRole.organization:
-            target: Reference
+            target: Organization
             cardinality: unknown
           PractitionerRole.period:
             target: Period
             cardinality: unknown
           PractitionerRole.practitioner:
-            target: Reference
+            target: Practitioner
             cardinality: unknown
           PractitionerRole.specialty:
             target: CodeableConcept
@@ -15663,10 +15663,10 @@ ontology:
             target: ProcedurePerformerComponent
             cardinality: unknown
           Procedure.asserter:
-            target: Reference
+            target: Practitioner
             cardinality: unknown
           Procedure.basedOn:
-            target: Reference
+            target: ServiceRequest
             cardinality: unknown
           Procedure.bodySite:
             target: CodeableConcept
@@ -15684,7 +15684,7 @@ ontology:
             target: Reference
             cardinality: unknown
           Procedure.encounter:
-            target: Reference
+            target: Encounter
             cardinality: unknown
           Procedure.followUp:
             target: CodeableConcept
@@ -15699,7 +15699,7 @@ ontology:
             target: uri
             cardinality: unknown
           Procedure.location:
-            target: Reference
+            target: Location
             cardinality: unknown
           Procedure.note:
             target: Annotation
@@ -15729,10 +15729,10 @@ ontology:
             target: CodeableConcept
             cardinality: unknown
           Procedure.reasonReference:
-            target: Reference
+            target: Condition
             cardinality: unknown
           Procedure.recorder:
-            target: Reference
+            target: Practitioner
             cardinality: unknown
           Procedure.report:
             target: Reference
@@ -15744,7 +15744,7 @@ ontology:
             target: CodeableConcept
             cardinality: unknown
           Procedure.subject:
-            target: Reference
+            target: Patient
             cardinality: unknown
           Procedure.usedCode:
             target: CodeableConcept
@@ -15991,7 +15991,7 @@ ontology:
             target: CodeableConcept
             cardinality: unknown
           Provenance.location:
-            target: Reference
+            target: Location
             cardinality: unknown
           Provenance.occurredDateTime:
             target: dateTime
@@ -16299,16 +16299,16 @@ ontology:
             target: QuestionnaireResponseItemComponent
             cardinality: unknown
           QuestionnaireResponse.author:
-            target: Reference
+            target: Practitioner
             cardinality: unknown
           QuestionnaireResponse.authored:
             target: dateTime
             cardinality: unknown
           QuestionnaireResponse.basedOn:
-            target: Reference
+            target: ServiceRequest
             cardinality: unknown
           QuestionnaireResponse.encounter:
-            target: Reference
+            target: Encounter
             cardinality: unknown
           QuestionnaireResponse.identifier:
             target: Identifier
@@ -16320,13 +16320,13 @@ ontology:
             target: canonical
             cardinality: unknown
           QuestionnaireResponse.source:
-            target: Reference
+            target: Patient
             cardinality: unknown
           QuestionnaireResponse.status:
             target: code
             cardinality: unknown
           QuestionnaireResponse.subject:
-            target: Reference
+            target: Patient
             cardinality: unknown
         properties:
           author:
@@ -16448,7 +16448,7 @@ ontology:
             target: HumanName
             cardinality: unknown
           RelatedPerson.patient:
-            target: Reference
+            target: Patient
             cardinality: unknown
           RelatedPerson.period:
             target: Period
@@ -16580,19 +16580,19 @@ ontology:
             target: RequestGroupActionComponent
             cardinality: unknown
           RequestGroup.author:
-            target: Reference
+            target: Practitioner
             cardinality: unknown
           RequestGroup.authoredOn:
             target: dateTime
             cardinality: unknown
           RequestGroup.basedOn:
-            target: Reference
+            target: ServiceRequest
             cardinality: unknown
           RequestGroup.code:
             target: CodeableConcept
             cardinality: unknown
           RequestGroup.encounter:
-            target: Reference
+            target: Encounter
             cardinality: unknown
           RequestGroup.groupIdentifier:
             target: Identifier
@@ -16619,7 +16619,7 @@ ontology:
             target: CodeableConcept
             cardinality: unknown
           RequestGroup.reasonReference:
-            target: Reference
+            target: Condition
             cardinality: unknown
           RequestGroup.replaces:
             target: Reference
@@ -16628,7 +16628,7 @@ ontology:
             target: code
             cardinality: unknown
           RequestGroup.subject:
-            target: Reference
+            target: Patient
             cardinality: unknown
         properties:
           author:
@@ -17727,7 +17727,7 @@ ontology:
             target: RiskAssessmentPredictionComponent
             cardinality: unknown
           RiskAssessment.basedOn:
-            target: Reference
+            target: ServiceRequest
             cardinality: unknown
           RiskAssessment.basis:
             target: Reference
@@ -17739,7 +17739,7 @@ ontology:
             target: Reference
             cardinality: unknown
           RiskAssessment.encounter:
-            target: Reference
+            target: Encounter
             cardinality: unknown
           RiskAssessment.identifier:
             target: Identifier
@@ -17763,19 +17763,19 @@ ontology:
             target: Reference
             cardinality: unknown
           RiskAssessment.performer:
-            target: Reference
+            target: Practitioner
             cardinality: unknown
           RiskAssessment.reasonCode:
             target: CodeableConcept
             cardinality: unknown
           RiskAssessment.reasonReference:
-            target: Reference
+            target: Condition
             cardinality: unknown
           RiskAssessment.status:
             target: code
             cardinality: unknown
           RiskAssessment.subject:
-            target: Reference
+            target: Patient
             cardinality: unknown
         properties:
           basedOn:
@@ -18301,7 +18301,7 @@ ontology:
             target: dateTime
             cardinality: unknown
           ServiceRequest.basedOn:
-            target: Reference
+            target: ServiceRequest
             cardinality: unknown
           ServiceRequest.bodySite:
             target: CodeableConcept
@@ -18316,7 +18316,7 @@ ontology:
             target: boolean
             cardinality: unknown
           ServiceRequest.encounter:
-            target: Reference
+            target: Encounter
             cardinality: unknown
           ServiceRequest.identifier:
             target: Identifier
@@ -18358,7 +18358,7 @@ ontology:
             target: string
             cardinality: unknown
           ServiceRequest.performer:
-            target: Reference
+            target: Practitioner
             cardinality: unknown
           ServiceRequest.performerType:
             target: CodeableConcept
@@ -18379,7 +18379,7 @@ ontology:
             target: CodeableConcept
             cardinality: unknown
           ServiceRequest.reasonReference:
-            target: Reference
+            target: Condition
             cardinality: unknown
           ServiceRequest.relevantHistory:
             target: Reference
@@ -18388,19 +18388,19 @@ ontology:
             target: Reference
             cardinality: unknown
           ServiceRequest.requester:
-            target: Reference
+            target: Practitioner
             cardinality: unknown
           ServiceRequest.requisition:
             target: Identifier
             cardinality: unknown
           ServiceRequest.specimen:
-            target: Reference
+            target: Specimen
             cardinality: unknown
           ServiceRequest.status:
             target: code
             cardinality: unknown
           ServiceRequest.subject:
-            target: Reference
+            target: Patient
             cardinality: unknown
           ServiceRequest.supportingInfo:
             target: Reference
@@ -18775,7 +18775,7 @@ ontology:
             target: code
             cardinality: unknown
           Specimen.subject:
-            target: Reference
+            target: Patient
             cardinality: unknown
           Specimen.type:
             target: CodeableConcept
@@ -19392,7 +19392,7 @@ ontology:
             target: Reference
             cardinality: unknown
           SubstanceSpecification.source:
-            target: Reference
+            target: Patient
             cardinality: unknown
           SubstanceSpecification.sourceMaterial:
             target: Reference
@@ -19511,7 +19511,7 @@ ontology:
             target: SupplyDeliverySuppliedItemComponent
             cardinality: one-to-one
           SupplyDelivery.basedOn:
-            target: Reference
+            target: ServiceRequest
             cardinality: unknown
           SupplyDelivery.destination:
             target: Reference
@@ -19532,10 +19532,10 @@ ontology:
             target: Reference
             cardinality: unknown
           SupplyDelivery.patient:
-            target: Reference
+            target: Patient
             cardinality: unknown
           SupplyDelivery.receiver:
-            target: Reference
+            target: Organization
             cardinality: unknown
           SupplyDelivery.status:
             target: code
@@ -19705,10 +19705,10 @@ ontology:
             target: CodeableConcept
             cardinality: unknown
           SupplyRequest.reasonReference:
-            target: Reference
+            target: Condition
             cardinality: unknown
           SupplyRequest.requester:
-            target: Reference
+            target: Practitioner
             cardinality: unknown
           SupplyRequest.status:
             target: code
@@ -19879,7 +19879,7 @@ ontology:
             target: dateTime
             cardinality: unknown
           Task.basedOn:
-            target: Reference
+            target: ServiceRequest
             cardinality: unknown
           Task.businessStatus:
             target: CodeableConcept
@@ -19891,7 +19891,7 @@ ontology:
             target: string
             cardinality: unknown
           Task.encounter:
-            target: Reference
+            target: Encounter
             cardinality: unknown
           Task.executionPeriod:
             target: Period
@@ -19924,7 +19924,7 @@ ontology:
             target: dateTime
             cardinality: unknown
           Task.location:
-            target: Reference
+            target: Location
             cardinality: unknown
           Task.note:
             target: Annotation
@@ -19945,13 +19945,13 @@ ontology:
             target: CodeableConcept
             cardinality: unknown
           Task.reasonReference:
-            target: Reference
+            target: Condition
             cardinality: unknown
           Task.relevantHistory:
             target: Reference
             cardinality: unknown
           Task.requester:
-            target: Reference
+            target: Practitioner
             cardinality: unknown
           Task.status:
             target: code
@@ -20317,13 +20317,13 @@ ontology:
             target: dateTime
             cardinality: unknown
           VisionPrescription.encounter:
-            target: Reference
+            target: Encounter
             cardinality: unknown
           VisionPrescription.identifier:
             target: Identifier
             cardinality: unknown
           VisionPrescription.patient:
-            target: Reference
+            target: Patient
             cardinality: unknown
           VisionPrescription.prescriber:
             target: Reference
@@ -20420,7 +20420,7 @@ ontology:
       uri: http://hl7.org/fhir/Account.status
     Account.subject:
       source: Account
-      target: Reference
+      target: Patient
       uri: http://hl7.org/fhir/Account.subject
     Account.type:
       source: Account
@@ -20452,7 +20452,7 @@ ontology:
       uri: http://hl7.org/fhir/AdverseEvent.detected
     AdverseEvent.encounter:
       source: AdverseEvent
-      target: Reference
+      target: Encounter
       uri: http://hl7.org/fhir/AdverseEvent.encounter
     AdverseEvent.event:
       source: AdverseEvent
@@ -20464,7 +20464,7 @@ ontology:
       uri: http://hl7.org/fhir/AdverseEvent.identifier
     AdverseEvent.location:
       source: AdverseEvent
-      target: Reference
+      target: Location
       uri: http://hl7.org/fhir/AdverseEvent.location
     AdverseEvent.outcome:
       source: AdverseEvent
@@ -20476,7 +20476,7 @@ ontology:
       uri: http://hl7.org/fhir/AdverseEvent.recordedDate
     AdverseEvent.recorder:
       source: AdverseEvent
-      target: Reference
+      target: Practitioner
       uri: http://hl7.org/fhir/AdverseEvent.recorder
     AdverseEvent.referenceDocument:
       source: AdverseEvent
@@ -20500,7 +20500,7 @@ ontology:
       uri: http://hl7.org/fhir/AdverseEvent.study
     AdverseEvent.subject:
       source: AdverseEvent
-      target: Reference
+      target: Patient
       uri: http://hl7.org/fhir/AdverseEvent.subject
     AdverseEvent.subjectMedicalHistory:
       source: AdverseEvent
@@ -20512,7 +20512,7 @@ ontology:
       uri: http://hl7.org/fhir/AllergyIntolerance.reaction
     AllergyIntolerance.asserter:
       source: AllergyIntolerance
-      target: Reference
+      target: Practitioner
       uri: http://hl7.org/fhir/AllergyIntolerance.asserter
     AllergyIntolerance.category:
       source: AllergyIntolerance
@@ -20532,7 +20532,7 @@ ontology:
       uri: http://hl7.org/fhir/AllergyIntolerance.criticality
     AllergyIntolerance.encounter:
       source: AllergyIntolerance
-      target: Reference
+      target: Encounter
       uri: http://hl7.org/fhir/AllergyIntolerance.encounter
     AllergyIntolerance.identifier:
       source: AllergyIntolerance
@@ -20568,7 +20568,7 @@ ontology:
       uri: http://hl7.org/fhir/AllergyIntolerance.onsetString
     AllergyIntolerance.patient:
       source: AllergyIntolerance
-      target: Reference
+      target: Patient
       uri: http://hl7.org/fhir/AllergyIntolerance.patient
     AllergyIntolerance.recordedDate:
       source: AllergyIntolerance
@@ -20576,7 +20576,7 @@ ontology:
       uri: http://hl7.org/fhir/AllergyIntolerance.recordedDate
     AllergyIntolerance.recorder:
       source: AllergyIntolerance
-      target: Reference
+      target: Practitioner
       uri: http://hl7.org/fhir/AllergyIntolerance.recorder
     AllergyIntolerance.type:
       source: AllergyIntolerance
@@ -20596,7 +20596,7 @@ ontology:
       uri: http://hl7.org/fhir/Appointment.appointmentType
     Appointment.basedOn:
       source: Appointment
-      target: Reference
+      target: ServiceRequest
       uri: http://hl7.org/fhir/Appointment.basedOn
     Appointment.cancelationReason:
       source: Appointment
@@ -20640,7 +20640,7 @@ ontology:
       uri: http://hl7.org/fhir/Appointment.reasonCode
     Appointment.reasonReference:
       source: Appointment
-      target: Reference
+      target: Condition
       uri: http://hl7.org/fhir/Appointment.reasonReference
     Appointment.requestedPeriod:
       source: Appointment
@@ -20680,7 +20680,7 @@ ontology:
       uri: http://hl7.org/fhir/AppointmentResponse.actor
     AppointmentResponse.appointment:
       source: AppointmentResponse
-      target: Reference
+      target: Appointment
       uri: http://hl7.org/fhir/AppointmentResponse.appointment
     AppointmentResponse.comment:
       source: AppointmentResponse
@@ -20824,7 +20824,7 @@ ontology:
       uri: http://hl7.org/fhir/BodyStructure.morphology
     BodyStructure.patient:
       source: BodyStructure
-      target: Reference
+      target: Patient
       uri: http://hl7.org/fhir/BodyStructure.patient
     CarePlan.activity:
       source: CarePlan
@@ -20836,11 +20836,11 @@ ontology:
       uri: http://hl7.org/fhir/CarePlan.addresses
     CarePlan.author:
       source: CarePlan
-      target: Reference
+      target: Practitioner
       uri: http://hl7.org/fhir/CarePlan.author
     CarePlan.basedOn:
       source: CarePlan
-      target: Reference
+      target: ServiceRequest
       uri: http://hl7.org/fhir/CarePlan.basedOn
     CarePlan.careTeam:
       source: CarePlan
@@ -20864,7 +20864,7 @@ ontology:
       uri: http://hl7.org/fhir/CarePlan.description
     CarePlan.encounter:
       source: CarePlan
-      target: Reference
+      target: Encounter
       uri: http://hl7.org/fhir/CarePlan.encounter
     CarePlan.goal:
       source: CarePlan
@@ -20908,7 +20908,7 @@ ontology:
       uri: http://hl7.org/fhir/CarePlan.status
     CarePlan.subject:
       source: CarePlan
-      target: Reference
+      target: Patient
       uri: http://hl7.org/fhir/CarePlan.subject
     CarePlan.supportingInfo:
       source: CarePlan
@@ -20928,7 +20928,7 @@ ontology:
       uri: http://hl7.org/fhir/CareTeam.category
     CareTeam.encounter:
       source: CareTeam
-      target: Reference
+      target: Encounter
       uri: http://hl7.org/fhir/CareTeam.encounter
     CareTeam.identifier:
       source: CareTeam
@@ -20936,7 +20936,7 @@ ontology:
       uri: http://hl7.org/fhir/CareTeam.identifier
     CareTeam.managingOrganization:
       source: CareTeam
-      target: Reference
+      target: Organization
       uri: http://hl7.org/fhir/CareTeam.managingOrganization
     CareTeam.name:
       source: CareTeam
@@ -20956,7 +20956,7 @@ ontology:
       uri: http://hl7.org/fhir/CareTeam.reasonCode
     CareTeam.reasonReference:
       source: CareTeam
-      target: Reference
+      target: Condition
       uri: http://hl7.org/fhir/CareTeam.reasonReference
     CareTeam.status:
       source: CareTeam
@@ -20964,7 +20964,7 @@ ontology:
       uri: http://hl7.org/fhir/CareTeam.status
     CareTeam.subject:
       source: CareTeam
-      target: Reference
+      target: Patient
       uri: http://hl7.org/fhir/CareTeam.subject
     CareTeam.telecom:
       source: CareTeam
@@ -21032,7 +21032,7 @@ ontology:
       uri: http://hl7.org/fhir/ChargeItem.priceOverride
     ChargeItem.account:
       source: ChargeItem
-      target: Reference
+      target: Account
       uri: http://hl7.org/fhir/ChargeItem.account
     ChargeItem.bodysite:
       source: ChargeItem
@@ -21064,7 +21064,7 @@ ontology:
       uri: http://hl7.org/fhir/ChargeItem.enteredDate
     ChargeItem.enterer:
       source: ChargeItem
-      target: Reference
+      target: Practitioner
       uri: http://hl7.org/fhir/ChargeItem.enterer
     ChargeItem.factorOverride:
       source: ChargeItem
@@ -21132,7 +21132,7 @@ ontology:
       uri: http://hl7.org/fhir/ChargeItem.status
     ChargeItem.subject:
       source: ChargeItem
-      target: Reference
+      target: Patient
       uri: http://hl7.org/fhir/ChargeItem.subject
     ChargeItem.supportingInformation:
       source: ChargeItem
@@ -21188,11 +21188,11 @@ ontology:
       uri: http://hl7.org/fhir/Claim.created
     Claim.enterer:
       source: Claim
-      target: Reference
+      target: Practitioner
       uri: http://hl7.org/fhir/Claim.enterer
     Claim.facility:
       source: Claim
-      target: Reference
+      target: Location
       uri: http://hl7.org/fhir/Claim.facility
     Claim.fundsReserve:
       source: Claim
@@ -21204,19 +21204,19 @@ ontology:
       uri: http://hl7.org/fhir/Claim.identifier
     Claim.insurer:
       source: Claim
-      target: Reference
+      target: Organization
       uri: http://hl7.org/fhir/Claim.insurer
     Claim.originalPrescription:
       source: Claim
-      target: Reference
+      target: MedicationRequest
       uri: http://hl7.org/fhir/Claim.originalPrescription
     Claim.patient:
       source: Claim
-      target: Reference
+      target: Patient
       uri: http://hl7.org/fhir/Claim.patient
     Claim.prescription:
       source: Claim
-      target: Reference
+      target: MedicationRequest
       uri: http://hl7.org/fhir/Claim.prescription
     Claim.priority:
       source: Claim
@@ -21224,11 +21224,11 @@ ontology:
       uri: http://hl7.org/fhir/Claim.priority
     Claim.provider:
       source: Claim
-      target: Reference
+      target: Practitioner
       uri: http://hl7.org/fhir/Claim.provider
     Claim.referral:
       source: Claim
-      target: Reference
+      target: ServiceRequest
       uri: http://hl7.org/fhir/Claim.referral
     Claim.status:
       source: Claim
@@ -21308,7 +21308,7 @@ ontology:
       uri: http://hl7.org/fhir/ClaimResponse.identifier
     ClaimResponse.insurer:
       source: ClaimResponse
-      target: Reference
+      target: Organization
       uri: http://hl7.org/fhir/ClaimResponse.insurer
     ClaimResponse.outcome:
       source: ClaimResponse
@@ -21316,7 +21316,7 @@ ontology:
       uri: http://hl7.org/fhir/ClaimResponse.outcome
     ClaimResponse.patient:
       source: ClaimResponse
-      target: Reference
+      target: Patient
       uri: http://hl7.org/fhir/ClaimResponse.patient
     ClaimResponse.payeeType:
       source: ClaimResponse
@@ -21388,7 +21388,7 @@ ontology:
       uri: http://hl7.org/fhir/ClinicalImpression.effectivePeriod
     ClinicalImpression.encounter:
       source: ClinicalImpression
-      target: Reference
+      target: Encounter
       uri: http://hl7.org/fhir/ClinicalImpression.encounter
     ClinicalImpression.identifier:
       source: ClinicalImpression
@@ -21428,7 +21428,7 @@ ontology:
       uri: http://hl7.org/fhir/ClinicalImpression.statusReason
     ClinicalImpression.subject:
       source: ClinicalImpression
-      target: Reference
+      target: Patient
       uri: http://hl7.org/fhir/ClinicalImpression.subject
     ClinicalImpression.summary:
       source: ClinicalImpression
@@ -21448,7 +21448,7 @@ ontology:
       uri: http://hl7.org/fhir/Communication.about
     Communication.basedOn:
       source: Communication
-      target: Reference
+      target: ServiceRequest
       uri: http://hl7.org/fhir/Communication.basedOn
     Communication.category:
       source: Communication
@@ -21456,7 +21456,7 @@ ontology:
       uri: http://hl7.org/fhir/Communication.category
     Communication.encounter:
       source: Communication
-      target: Reference
+      target: Encounter
       uri: http://hl7.org/fhir/Communication.encounter
     Communication.identifier:
       source: Communication
@@ -21496,7 +21496,7 @@ ontology:
       uri: http://hl7.org/fhir/Communication.reasonCode
     Communication.reasonReference:
       source: Communication
-      target: Reference
+      target: Condition
       uri: http://hl7.org/fhir/Communication.reasonReference
     Communication.received:
       source: Communication
@@ -21508,7 +21508,7 @@ ontology:
       uri: http://hl7.org/fhir/Communication.recipient
     Communication.sender:
       source: Communication
-      target: Reference
+      target: Organization
       uri: http://hl7.org/fhir/Communication.sender
     Communication.sent:
       source: Communication
@@ -21524,7 +21524,7 @@ ontology:
       uri: http://hl7.org/fhir/Communication.statusReason
     Communication.subject:
       source: Communication
-      target: Reference
+      target: Patient
       uri: http://hl7.org/fhir/Communication.subject
     Communication.topic:
       source: Communication
@@ -21544,7 +21544,7 @@ ontology:
       uri: http://hl7.org/fhir/CommunicationRequest.authoredOn
     CommunicationRequest.basedOn:
       source: CommunicationRequest
-      target: Reference
+      target: ServiceRequest
       uri: http://hl7.org/fhir/CommunicationRequest.basedOn
     CommunicationRequest.category:
       source: CommunicationRequest
@@ -21556,7 +21556,7 @@ ontology:
       uri: http://hl7.org/fhir/CommunicationRequest.doNotPerform
     CommunicationRequest.encounter:
       source: CommunicationRequest
-      target: Reference
+      target: Encounter
       uri: http://hl7.org/fhir/CommunicationRequest.encounter
     CommunicationRequest.groupIdentifier:
       source: CommunicationRequest
@@ -21592,7 +21592,7 @@ ontology:
       uri: http://hl7.org/fhir/CommunicationRequest.reasonCode
     CommunicationRequest.reasonReference:
       source: CommunicationRequest
-      target: Reference
+      target: Condition
       uri: http://hl7.org/fhir/CommunicationRequest.reasonReference
     CommunicationRequest.recipient:
       source: CommunicationRequest
@@ -21604,11 +21604,11 @@ ontology:
       uri: http://hl7.org/fhir/CommunicationRequest.replaces
     CommunicationRequest.requester:
       source: CommunicationRequest
-      target: Reference
+      target: Practitioner
       uri: http://hl7.org/fhir/CommunicationRequest.requester
     CommunicationRequest.sender:
       source: CommunicationRequest
-      target: Reference
+      target: Organization
       uri: http://hl7.org/fhir/CommunicationRequest.sender
     CommunicationRequest.status:
       source: CommunicationRequest
@@ -21620,7 +21620,7 @@ ontology:
       uri: http://hl7.org/fhir/CommunicationRequest.statusReason
     CommunicationRequest.subject:
       source: CommunicationRequest
-      target: Reference
+      target: Patient
       uri: http://hl7.org/fhir/CommunicationRequest.subject
     Composition.attester:
       source: Composition
@@ -21640,7 +21640,7 @@ ontology:
       uri: http://hl7.org/fhir/Composition.section
     Composition.author:
       source: Composition
-      target: Reference
+      target: Practitioner
       uri: http://hl7.org/fhir/Composition.author
     Composition.category:
       source: Composition
@@ -21660,7 +21660,7 @@ ontology:
       uri: http://hl7.org/fhir/Composition.date
     Composition.encounter:
       source: Composition
-      target: Reference
+      target: Encounter
       uri: http://hl7.org/fhir/Composition.encounter
     Composition.identifier:
       source: Composition
@@ -21672,7 +21672,7 @@ ontology:
       uri: http://hl7.org/fhir/Composition.status
     Composition.subject:
       source: Composition
-      target: Reference
+      target: Patient
       uri: http://hl7.org/fhir/Composition.subject
     Composition.title:
       source: Composition
@@ -21712,7 +21712,7 @@ ontology:
       uri: http://hl7.org/fhir/Condition.abatementString
     Condition.asserter:
       source: Condition
-      target: Reference
+      target: Practitioner
       uri: http://hl7.org/fhir/Condition.asserter
     Condition.bodySite:
       source: Condition
@@ -21732,7 +21732,7 @@ ontology:
       uri: http://hl7.org/fhir/Condition.code
     Condition.encounter:
       source: Condition
-      target: Reference
+      target: Encounter
       uri: http://hl7.org/fhir/Condition.encounter
     Condition.identifier:
       source: Condition
@@ -21768,7 +21768,7 @@ ontology:
       uri: http://hl7.org/fhir/Condition.recordedDate
     Condition.recorder:
       source: Condition
-      target: Reference
+      target: Practitioner
       uri: http://hl7.org/fhir/Condition.recorder
     Condition.severity:
       source: Condition
@@ -21776,7 +21776,7 @@ ontology:
       uri: http://hl7.org/fhir/Condition.severity
     Condition.subject:
       source: Condition
-      target: Reference
+      target: Patient
       uri: http://hl7.org/fhir/Condition.subject
     Condition.verificationStatus:
       source: Condition
@@ -21808,15 +21808,15 @@ ontology:
       uri: http://hl7.org/fhir/Consent.identifier
     Consent.organization:
       source: Consent
-      target: Reference
+      target: Organization
       uri: http://hl7.org/fhir/Consent.organization
     Consent.patient:
       source: Consent
-      target: Reference
+      target: Patient
       uri: http://hl7.org/fhir/Consent.patient
     Consent.performer:
       source: Consent
-      target: Reference
+      target: Practitioner
       uri: http://hl7.org/fhir/Consent.performer
     Consent.policyRule:
       source: Consent
@@ -21872,7 +21872,7 @@ ontology:
       uri: http://hl7.org/fhir/Contract.applies
     Contract.author:
       source: Contract
-      target: Reference
+      target: Practitioner
       uri: http://hl7.org/fhir/Contract.author
     Contract.authority:
       source: Contract
@@ -21944,7 +21944,7 @@ ontology:
       uri: http://hl7.org/fhir/Contract.subType
     Contract.subject:
       source: Contract
-      target: Reference
+      target: Patient
       uri: http://hl7.org/fhir/Contract.subject
     Contract.subtitle:
       source: Contract
@@ -22064,11 +22064,11 @@ ontology:
       uri: http://hl7.org/fhir/CoverageEligibilityRequest.created
     CoverageEligibilityRequest.enterer:
       source: CoverageEligibilityRequest
-      target: Reference
+      target: Practitioner
       uri: http://hl7.org/fhir/CoverageEligibilityRequest.enterer
     CoverageEligibilityRequest.facility:
       source: CoverageEligibilityRequest
-      target: Reference
+      target: Location
       uri: http://hl7.org/fhir/CoverageEligibilityRequest.facility
     CoverageEligibilityRequest.identifier:
       source: CoverageEligibilityRequest
@@ -22076,11 +22076,11 @@ ontology:
       uri: http://hl7.org/fhir/CoverageEligibilityRequest.identifier
     CoverageEligibilityRequest.insurer:
       source: CoverageEligibilityRequest
-      target: Reference
+      target: Organization
       uri: http://hl7.org/fhir/CoverageEligibilityRequest.insurer
     CoverageEligibilityRequest.patient:
       source: CoverageEligibilityRequest
-      target: Reference
+      target: Patient
       uri: http://hl7.org/fhir/CoverageEligibilityRequest.patient
     CoverageEligibilityRequest.priority:
       source: CoverageEligibilityRequest
@@ -22088,7 +22088,7 @@ ontology:
       uri: http://hl7.org/fhir/CoverageEligibilityRequest.priority
     CoverageEligibilityRequest.provider:
       source: CoverageEligibilityRequest
-      target: Reference
+      target: Practitioner
       uri: http://hl7.org/fhir/CoverageEligibilityRequest.provider
     CoverageEligibilityRequest.purpose:
       source: CoverageEligibilityRequest
@@ -22132,7 +22132,7 @@ ontology:
       uri: http://hl7.org/fhir/CoverageEligibilityResponse.identifier
     CoverageEligibilityResponse.insurer:
       source: CoverageEligibilityResponse
-      target: Reference
+      target: Organization
       uri: http://hl7.org/fhir/CoverageEligibilityResponse.insurer
     CoverageEligibilityResponse.outcome:
       source: CoverageEligibilityResponse
@@ -22140,7 +22140,7 @@ ontology:
       uri: http://hl7.org/fhir/CoverageEligibilityResponse.outcome
     CoverageEligibilityResponse.patient:
       source: CoverageEligibilityResponse
-      target: Reference
+      target: Patient
       uri: http://hl7.org/fhir/CoverageEligibilityResponse.patient
     CoverageEligibilityResponse.preAuthRef:
       source: CoverageEligibilityResponse
@@ -22180,7 +22180,7 @@ ontology:
       uri: http://hl7.org/fhir/DetectedIssue.mitigation
     DetectedIssue.author:
       source: DetectedIssue
-      target: Reference
+      target: Practitioner
       uri: http://hl7.org/fhir/DetectedIssue.author
     DetectedIssue.code:
       source: DetectedIssue
@@ -22208,7 +22208,7 @@ ontology:
       uri: http://hl7.org/fhir/DetectedIssue.implicated
     DetectedIssue.patient:
       source: DetectedIssue
-      target: Reference
+      target: Patient
       uri: http://hl7.org/fhir/DetectedIssue.patient
     DetectedIssue.reference:
       source: DetectedIssue
@@ -22264,7 +22264,7 @@ ontology:
       uri: http://hl7.org/fhir/Device.identifier
     Device.location:
       source: Device
-      target: Reference
+      target: Location
       uri: http://hl7.org/fhir/Device.location
     Device.lotNumber:
       source: Device
@@ -22300,7 +22300,7 @@ ontology:
       uri: http://hl7.org/fhir/Device.partNumber
     Device.patient:
       source: Device
-      target: Reference
+      target: Patient
       uri: http://hl7.org/fhir/Device.patient
     Device.safety:
       source: Device
@@ -22448,7 +22448,7 @@ ontology:
       uri: http://hl7.org/fhir/DeviceMetric.parent
     DeviceMetric.source:
       source: DeviceMetric
-      target: Reference
+      target: Patient
       uri: http://hl7.org/fhir/DeviceMetric.source
     DeviceMetric.type:
       source: DeviceMetric
@@ -22468,7 +22468,7 @@ ontology:
       uri: http://hl7.org/fhir/DeviceRequest.authoredOn
     DeviceRequest.basedOn:
       source: DeviceRequest
-      target: Reference
+      target: ServiceRequest
       uri: http://hl7.org/fhir/DeviceRequest.basedOn
     DeviceRequest.codeCodeableConcept:
       source: DeviceRequest
@@ -22480,7 +22480,7 @@ ontology:
       uri: http://hl7.org/fhir/DeviceRequest.codeReference
     DeviceRequest.encounter:
       source: DeviceRequest
-      target: Reference
+      target: Encounter
       uri: http://hl7.org/fhir/DeviceRequest.encounter
     DeviceRequest.groupIdentifier:
       source: DeviceRequest
@@ -22524,7 +22524,7 @@ ontology:
       uri: http://hl7.org/fhir/DeviceRequest.occurrenceTiming
     DeviceRequest.performer:
       source: DeviceRequest
-      target: Reference
+      target: Practitioner
       uri: http://hl7.org/fhir/DeviceRequest.performer
     DeviceRequest.performerType:
       source: DeviceRequest
@@ -22544,7 +22544,7 @@ ontology:
       uri: http://hl7.org/fhir/DeviceRequest.reasonCode
     DeviceRequest.reasonReference:
       source: DeviceRequest
-      target: Reference
+      target: Condition
       uri: http://hl7.org/fhir/DeviceRequest.reasonReference
     DeviceRequest.relevantHistory:
       source: DeviceRequest
@@ -22552,7 +22552,7 @@ ontology:
       uri: http://hl7.org/fhir/DeviceRequest.relevantHistory
     DeviceRequest.requester:
       source: DeviceRequest
-      target: Reference
+      target: Practitioner
       uri: http://hl7.org/fhir/DeviceRequest.requester
     DeviceRequest.status:
       source: DeviceRequest
@@ -22560,7 +22560,7 @@ ontology:
       uri: http://hl7.org/fhir/DeviceRequest.status
     DeviceRequest.subject:
       source: DeviceRequest
-      target: Reference
+      target: Patient
       uri: http://hl7.org/fhir/DeviceRequest.subject
     DeviceRequest.supportingInfo:
       source: DeviceRequest
@@ -22568,7 +22568,7 @@ ontology:
       uri: http://hl7.org/fhir/DeviceRequest.supportingInfo
     DeviceUseStatement.basedOn:
       source: DeviceUseStatement
-      target: Reference
+      target: ServiceRequest
       uri: http://hl7.org/fhir/DeviceUseStatement.basedOn
     DeviceUseStatement.bodySite:
       source: DeviceUseStatement
@@ -22576,11 +22576,11 @@ ontology:
       uri: http://hl7.org/fhir/DeviceUseStatement.bodySite
     DeviceUseStatement.derivedFrom:
       source: DeviceUseStatement
-      target: Reference
+      target: Observation
       uri: http://hl7.org/fhir/DeviceUseStatement.derivedFrom
     DeviceUseStatement.device:
       source: DeviceUseStatement
-      target: Reference
+      target: Device
       uri: http://hl7.org/fhir/DeviceUseStatement.device
     DeviceUseStatement.identifier:
       source: DeviceUseStatement
@@ -22596,7 +22596,7 @@ ontology:
       uri: http://hl7.org/fhir/DeviceUseStatement.reasonCode
     DeviceUseStatement.reasonReference:
       source: DeviceUseStatement
-      target: Reference
+      target: Condition
       uri: http://hl7.org/fhir/DeviceUseStatement.reasonReference
     DeviceUseStatement.recordedOn:
       source: DeviceUseStatement
@@ -22604,7 +22604,7 @@ ontology:
       uri: http://hl7.org/fhir/DeviceUseStatement.recordedOn
     DeviceUseStatement.source:
       source: DeviceUseStatement
-      target: Reference
+      target: Patient
       uri: http://hl7.org/fhir/DeviceUseStatement.source
     DeviceUseStatement.status:
       source: DeviceUseStatement
@@ -22612,7 +22612,7 @@ ontology:
       uri: http://hl7.org/fhir/DeviceUseStatement.status
     DeviceUseStatement.subject:
       source: DeviceUseStatement
-      target: Reference
+      target: Patient
       uri: http://hl7.org/fhir/DeviceUseStatement.subject
     DeviceUseStatement.timingDateTime:
       source: DeviceUseStatement
@@ -22632,7 +22632,7 @@ ontology:
       uri: http://hl7.org/fhir/DiagnosticReport.media
     DiagnosticReport.basedOn:
       source: DiagnosticReport
-      target: Reference
+      target: ServiceRequest
       uri: http://hl7.org/fhir/DiagnosticReport.basedOn
     DiagnosticReport.category:
       source: DiagnosticReport
@@ -22660,7 +22660,7 @@ ontology:
       uri: http://hl7.org/fhir/DiagnosticReport.effectivePeriod
     DiagnosticReport.encounter:
       source: DiagnosticReport
-      target: Reference
+      target: Encounter
       uri: http://hl7.org/fhir/DiagnosticReport.encounter
     DiagnosticReport.identifier:
       source: DiagnosticReport
@@ -22676,7 +22676,7 @@ ontology:
       uri: http://hl7.org/fhir/DiagnosticReport.issued
     DiagnosticReport.performer:
       source: DiagnosticReport
-      target: Reference
+      target: Practitioner
       uri: http://hl7.org/fhir/DiagnosticReport.performer
     DiagnosticReport.presentedForm:
       source: DiagnosticReport
@@ -22692,7 +22692,7 @@ ontology:
       uri: http://hl7.org/fhir/DiagnosticReport.resultsInterpreter
     DiagnosticReport.specimen:
       source: DiagnosticReport
-      target: Reference
+      target: Specimen
       uri: http://hl7.org/fhir/DiagnosticReport.specimen
     DiagnosticReport.status:
       source: DiagnosticReport
@@ -22700,7 +22700,7 @@ ontology:
       uri: http://hl7.org/fhir/DiagnosticReport.status
     DiagnosticReport.subject:
       source: DiagnosticReport
-      target: Reference
+      target: Patient
       uri: http://hl7.org/fhir/DiagnosticReport.subject
     DocumentManifest.related:
       source: DocumentManifest
@@ -22708,7 +22708,7 @@ ontology:
       uri: http://hl7.org/fhir/DocumentManifest.related
     DocumentManifest.author:
       source: DocumentManifest
-      target: Reference
+      target: Practitioner
       uri: http://hl7.org/fhir/DocumentManifest.author
     DocumentManifest.content:
       source: DocumentManifest
@@ -22744,7 +22744,7 @@ ontology:
       uri: http://hl7.org/fhir/DocumentManifest.status
     DocumentManifest.subject:
       source: DocumentManifest
-      target: Reference
+      target: Patient
       uri: http://hl7.org/fhir/DocumentManifest.subject
     DocumentManifest.type:
       source: DocumentManifest
@@ -22768,7 +22768,7 @@ ontology:
       uri: http://hl7.org/fhir/DocumentReference.authenticator
     DocumentReference.author:
       source: DocumentReference
-      target: Reference
+      target: Practitioner
       uri: http://hl7.org/fhir/DocumentReference.author
     DocumentReference.category:
       source: DocumentReference
@@ -22808,7 +22808,7 @@ ontology:
       uri: http://hl7.org/fhir/DocumentReference.status
     DocumentReference.subject:
       source: DocumentReference
-      target: Reference
+      target: Patient
       uri: http://hl7.org/fhir/DocumentReference.subject
     DocumentReference.type:
       source: DocumentReference
@@ -22972,15 +22972,15 @@ ontology:
       uri: http://hl7.org/fhir/Encounter.statusHistory
     Encounter.account:
       source: Encounter
-      target: Reference
+      target: Account
       uri: http://hl7.org/fhir/Encounter.account
     Encounter.appointment:
       source: Encounter
-      target: Reference
+      target: Appointment
       uri: http://hl7.org/fhir/Encounter.appointment
     Encounter.basedOn:
       source: Encounter
-      target: Reference
+      target: ServiceRequest
       uri: http://hl7.org/fhir/Encounter.basedOn
     Encounter.class:
       source: Encounter
@@ -22988,7 +22988,7 @@ ontology:
       uri: http://hl7.org/fhir/Encounter.class
     Encounter.episodeOfCare:
       source: Encounter
-      target: Reference
+      target: EpisodeOfCare
       uri: http://hl7.org/fhir/Encounter.episodeOfCare
     Encounter.identifier:
       source: Encounter
@@ -23016,11 +23016,11 @@ ontology:
       uri: http://hl7.org/fhir/Encounter.reasonCode
     Encounter.reasonReference:
       source: Encounter
-      target: Reference
+      target: Condition
       uri: http://hl7.org/fhir/Encounter.reasonReference
     Encounter.serviceProvider:
       source: Encounter
-      target: Reference
+      target: Organization
       uri: http://hl7.org/fhir/Encounter.serviceProvider
     Encounter.serviceType:
       source: Encounter
@@ -23032,7 +23032,7 @@ ontology:
       uri: http://hl7.org/fhir/Encounter.status
     Encounter.subject:
       source: Encounter
-      target: Reference
+      target: Patient
       uri: http://hl7.org/fhir/Encounter.subject
     Encounter.type:
       source: Encounter
@@ -23060,7 +23060,7 @@ ontology:
       uri: http://hl7.org/fhir/Endpoint.identifier
     Endpoint.managingOrganization:
       source: Endpoint
-      target: Reference
+      target: Organization
       uri: http://hl7.org/fhir/Endpoint.managingOrganization
     Endpoint.name:
       source: Endpoint
@@ -23100,11 +23100,11 @@ ontology:
       uri: http://hl7.org/fhir/EnrollmentRequest.identifier
     EnrollmentRequest.insurer:
       source: EnrollmentRequest
-      target: Reference
+      target: Organization
       uri: http://hl7.org/fhir/EnrollmentRequest.insurer
     EnrollmentRequest.provider:
       source: EnrollmentRequest
-      target: Reference
+      target: Practitioner
       uri: http://hl7.org/fhir/EnrollmentRequest.provider
     EnrollmentRequest.status:
       source: EnrollmentRequest
@@ -23124,7 +23124,7 @@ ontology:
       uri: http://hl7.org/fhir/EnrollmentResponse.identifier
     EnrollmentResponse.organization:
       source: EnrollmentResponse
-      target: Reference
+      target: Organization
       uri: http://hl7.org/fhir/EnrollmentResponse.organization
     EnrollmentResponse.outcome:
       source: EnrollmentResponse
@@ -23152,7 +23152,7 @@ ontology:
       uri: http://hl7.org/fhir/EpisodeOfCare.statusHistory
     EpisodeOfCare.account:
       source: EpisodeOfCare
-      target: Reference
+      target: Account
       uri: http://hl7.org/fhir/EpisodeOfCare.account
     EpisodeOfCare.careManager:
       source: EpisodeOfCare
@@ -23164,11 +23164,11 @@ ontology:
       uri: http://hl7.org/fhir/EpisodeOfCare.identifier
     EpisodeOfCare.managingOrganization:
       source: EpisodeOfCare
-      target: Reference
+      target: Organization
       uri: http://hl7.org/fhir/EpisodeOfCare.managingOrganization
     EpisodeOfCare.patient:
       source: EpisodeOfCare
-      target: Reference
+      target: Patient
       uri: http://hl7.org/fhir/EpisodeOfCare.patient
     EpisodeOfCare.period:
       source: EpisodeOfCare
@@ -23496,11 +23496,11 @@ ontology:
       uri: http://hl7.org/fhir/ExplanationOfBenefit.disposition
     ExplanationOfBenefit.enterer:
       source: ExplanationOfBenefit
-      target: Reference
+      target: Practitioner
       uri: http://hl7.org/fhir/ExplanationOfBenefit.enterer
     ExplanationOfBenefit.facility:
       source: ExplanationOfBenefit
-      target: Reference
+      target: Location
       uri: http://hl7.org/fhir/ExplanationOfBenefit.facility
     ExplanationOfBenefit.form:
       source: ExplanationOfBenefit
@@ -23524,11 +23524,11 @@ ontology:
       uri: http://hl7.org/fhir/ExplanationOfBenefit.identifier
     ExplanationOfBenefit.insurer:
       source: ExplanationOfBenefit
-      target: Reference
+      target: Organization
       uri: http://hl7.org/fhir/ExplanationOfBenefit.insurer
     ExplanationOfBenefit.originalPrescription:
       source: ExplanationOfBenefit
-      target: Reference
+      target: MedicationRequest
       uri: http://hl7.org/fhir/ExplanationOfBenefit.originalPrescription
     ExplanationOfBenefit.outcome:
       source: ExplanationOfBenefit
@@ -23536,7 +23536,7 @@ ontology:
       uri: http://hl7.org/fhir/ExplanationOfBenefit.outcome
     ExplanationOfBenefit.patient:
       source: ExplanationOfBenefit
-      target: Reference
+      target: Patient
       uri: http://hl7.org/fhir/ExplanationOfBenefit.patient
     ExplanationOfBenefit.preAuthRef:
       source: ExplanationOfBenefit
@@ -23552,7 +23552,7 @@ ontology:
       uri: http://hl7.org/fhir/ExplanationOfBenefit.precedence
     ExplanationOfBenefit.prescription:
       source: ExplanationOfBenefit
-      target: Reference
+      target: MedicationRequest
       uri: http://hl7.org/fhir/ExplanationOfBenefit.prescription
     ExplanationOfBenefit.priority:
       source: ExplanationOfBenefit
@@ -23560,11 +23560,11 @@ ontology:
       uri: http://hl7.org/fhir/ExplanationOfBenefit.priority
     ExplanationOfBenefit.provider:
       source: ExplanationOfBenefit
-      target: Reference
+      target: Practitioner
       uri: http://hl7.org/fhir/ExplanationOfBenefit.provider
     ExplanationOfBenefit.referral:
       source: ExplanationOfBenefit
-      target: Reference
+      target: ServiceRequest
       uri: http://hl7.org/fhir/ExplanationOfBenefit.referral
     ExplanationOfBenefit.status:
       source: ExplanationOfBenefit
@@ -23664,7 +23664,7 @@ ontology:
       uri: http://hl7.org/fhir/FamilyMemberHistory.note
     FamilyMemberHistory.patient:
       source: FamilyMemberHistory
-      target: Reference
+      target: Patient
       uri: http://hl7.org/fhir/FamilyMemberHistory.patient
     FamilyMemberHistory.reasonCode:
       source: FamilyMemberHistory
@@ -23672,7 +23672,7 @@ ontology:
       uri: http://hl7.org/fhir/FamilyMemberHistory.reasonCode
     FamilyMemberHistory.reasonReference:
       source: FamilyMemberHistory
-      target: Reference
+      target: Condition
       uri: http://hl7.org/fhir/FamilyMemberHistory.reasonReference
     FamilyMemberHistory.relationship:
       source: FamilyMemberHistory
@@ -23688,7 +23688,7 @@ ontology:
       uri: http://hl7.org/fhir/FamilyMemberHistory.status
     Flag.author:
       source: Flag
-      target: Reference
+      target: Practitioner
       uri: http://hl7.org/fhir/Flag.author
     Flag.category:
       source: Flag
@@ -23700,7 +23700,7 @@ ontology:
       uri: http://hl7.org/fhir/Flag.code
     Flag.encounter:
       source: Flag
-      target: Reference
+      target: Encounter
       uri: http://hl7.org/fhir/Flag.encounter
     Flag.identifier:
       source: Flag
@@ -23716,7 +23716,7 @@ ontology:
       uri: http://hl7.org/fhir/Flag.status
     Flag.subject:
       source: Flag
-      target: Reference
+      target: Patient
       uri: http://hl7.org/fhir/Flag.subject
     Goal.target:
       source: Goal
@@ -23784,7 +23784,7 @@ ontology:
       uri: http://hl7.org/fhir/Goal.statusReason
     Goal.subject:
       source: Goal
-      target: Reference
+      target: Patient
       uri: http://hl7.org/fhir/Goal.subject
     Group.characteristic:
       source: Group
@@ -23832,7 +23832,7 @@ ontology:
       uri: http://hl7.org/fhir/GuidanceResponse.dataRequirement
     GuidanceResponse.encounter:
       source: GuidanceResponse
-      target: Reference
+      target: Encounter
       uri: http://hl7.org/fhir/GuidanceResponse.encounter
     GuidanceResponse.evaluationMessage:
       source: GuidanceResponse
@@ -23868,7 +23868,7 @@ ontology:
       uri: http://hl7.org/fhir/GuidanceResponse.outputParameters
     GuidanceResponse.performer:
       source: GuidanceResponse
-      target: Reference
+      target: Practitioner
       uri: http://hl7.org/fhir/GuidanceResponse.performer
     GuidanceResponse.reasonCode:
       source: GuidanceResponse
@@ -23876,7 +23876,7 @@ ontology:
       uri: http://hl7.org/fhir/GuidanceResponse.reasonCode
     GuidanceResponse.reasonReference:
       source: GuidanceResponse
-      target: Reference
+      target: Condition
       uri: http://hl7.org/fhir/GuidanceResponse.reasonReference
     GuidanceResponse.requestIdentifier:
       source: GuidanceResponse
@@ -23892,7 +23892,7 @@ ontology:
       uri: http://hl7.org/fhir/GuidanceResponse.status
     GuidanceResponse.subject:
       source: GuidanceResponse
-      target: Reference
+      target: Patient
       uri: http://hl7.org/fhir/GuidanceResponse.subject
     HealthcareService.availableTime:
       source: HealthcareService
@@ -23952,7 +23952,7 @@ ontology:
       uri: http://hl7.org/fhir/HealthcareService.identifier
     HealthcareService.location:
       source: HealthcareService
-      target: Reference
+      target: Location
       uri: http://hl7.org/fhir/HealthcareService.location
     HealthcareService.name:
       source: HealthcareService
@@ -23996,7 +23996,7 @@ ontology:
       uri: http://hl7.org/fhir/ImagingStudy.series
     ImagingStudy.basedOn:
       source: ImagingStudy
-      target: Reference
+      target: ServiceRequest
       uri: http://hl7.org/fhir/ImagingStudy.basedOn
     ImagingStudy.description:
       source: ImagingStudy
@@ -24004,7 +24004,7 @@ ontology:
       uri: http://hl7.org/fhir/ImagingStudy.description
     ImagingStudy.encounter:
       source: ImagingStudy
-      target: Reference
+      target: Encounter
       uri: http://hl7.org/fhir/ImagingStudy.encounter
     ImagingStudy.endpoint:
       source: ImagingStudy
@@ -24020,7 +24020,7 @@ ontology:
       uri: http://hl7.org/fhir/ImagingStudy.interpreter
     ImagingStudy.location:
       source: ImagingStudy
-      target: Reference
+      target: Location
       uri: http://hl7.org/fhir/ImagingStudy.location
     ImagingStudy.modality:
       source: ImagingStudy
@@ -24052,7 +24052,7 @@ ontology:
       uri: http://hl7.org/fhir/ImagingStudy.reasonCode
     ImagingStudy.reasonReference:
       source: ImagingStudy
-      target: Reference
+      target: Condition
       uri: http://hl7.org/fhir/ImagingStudy.reasonReference
     ImagingStudy.referrer:
       source: ImagingStudy
@@ -24068,7 +24068,7 @@ ontology:
       uri: http://hl7.org/fhir/ImagingStudy.status
     ImagingStudy.subject:
       source: ImagingStudy
-      target: Reference
+      target: Patient
       uri: http://hl7.org/fhir/ImagingStudy.subject
     Immunization.education:
       source: Immunization
@@ -24092,7 +24092,7 @@ ontology:
       uri: http://hl7.org/fhir/Immunization.doseQuantity
     Immunization.encounter:
       source: Immunization
-      target: Reference
+      target: Encounter
       uri: http://hl7.org/fhir/Immunization.encounter
     Immunization.expirationDate:
       source: Immunization
@@ -24112,7 +24112,7 @@ ontology:
       uri: http://hl7.org/fhir/Immunization.isSubpotent
     Immunization.location:
       source: Immunization
-      target: Reference
+      target: Location
       uri: http://hl7.org/fhir/Immunization.location
     Immunization.lotNumber:
       source: Immunization
@@ -24120,7 +24120,7 @@ ontology:
       uri: http://hl7.org/fhir/Immunization.lotNumber
     Immunization.manufacturer:
       source: Immunization
-      target: Reference
+      target: Organization
       uri: http://hl7.org/fhir/Immunization.manufacturer
     Immunization.note:
       source: Immunization
@@ -24136,7 +24136,7 @@ ontology:
       uri: http://hl7.org/fhir/Immunization.occurrenceString
     Immunization.patient:
       source: Immunization
-      target: Reference
+      target: Patient
       uri: http://hl7.org/fhir/Immunization.patient
     Immunization.primarySource:
       source: Immunization
@@ -24152,7 +24152,7 @@ ontology:
       uri: http://hl7.org/fhir/Immunization.reasonCode
     Immunization.reasonReference:
       source: Immunization
-      target: Reference
+      target: Condition
       uri: http://hl7.org/fhir/Immunization.reasonReference
     Immunization.recorded:
       source: Immunization
@@ -24224,7 +24224,7 @@ ontology:
       uri: http://hl7.org/fhir/ImmunizationEvaluation.immunizationEvent
     ImmunizationEvaluation.patient:
       source: ImmunizationEvaluation
-      target: Reference
+      target: Patient
       uri: http://hl7.org/fhir/ImmunizationEvaluation.patient
     ImmunizationEvaluation.series:
       source: ImmunizationEvaluation
@@ -24264,7 +24264,7 @@ ontology:
       uri: http://hl7.org/fhir/ImmunizationRecommendation.identifier
     ImmunizationRecommendation.patient:
       source: ImmunizationRecommendation
-      target: Reference
+      target: Patient
       uri: http://hl7.org/fhir/ImmunizationRecommendation.patient
     InsurancePlan.contact:
       source: InsurancePlan
@@ -24344,7 +24344,7 @@ ontology:
       uri: http://hl7.org/fhir/Invoice.totalPriceComponent
     Invoice.account:
       source: Invoice
-      target: Reference
+      target: Account
       uri: http://hl7.org/fhir/Invoice.account
     Invoice.cancelledReason:
       source: Invoice
@@ -24380,7 +24380,7 @@ ontology:
       uri: http://hl7.org/fhir/Invoice.status
     Invoice.subject:
       source: Invoice
-      target: Reference
+      target: Patient
       uri: http://hl7.org/fhir/Invoice.subject
     Invoice.type:
       source: Invoice
@@ -24396,7 +24396,7 @@ ontology:
       uri: http://hl7.org/fhir/Linkage.active
     Linkage.author:
       source: Linkage
-      target: Reference
+      target: Practitioner
       uri: http://hl7.org/fhir/Linkage.author
     List.entry:
       source: List
@@ -24416,7 +24416,7 @@ ontology:
       uri: http://hl7.org/fhir/List.emptyReason
     List.encounter:
       source: List
-      target: Reference
+      target: Encounter
       uri: http://hl7.org/fhir/List.encounter
     List.identifier:
       source: List
@@ -24436,7 +24436,7 @@ ontology:
       uri: http://hl7.org/fhir/List.orderedBy
     List.source:
       source: List
-      target: Reference
+      target: Patient
       uri: http://hl7.org/fhir/List.source
     List.status:
       source: List
@@ -24444,7 +24444,7 @@ ontology:
       uri: http://hl7.org/fhir/List.status
     List.subject:
       source: List
-      target: Reference
+      target: Patient
       uri: http://hl7.org/fhir/List.subject
     List.title:
       source: List
@@ -24484,7 +24484,7 @@ ontology:
       uri: http://hl7.org/fhir/Location.identifier
     Location.managingOrganization:
       source: Location
-      target: Reference
+      target: Organization
       uri: http://hl7.org/fhir/Location.managingOrganization
     Location.mode:
       source: Location
@@ -24724,7 +24724,7 @@ ontology:
       uri: http://hl7.org/fhir/MeasureReport.status
     MeasureReport.subject:
       source: MeasureReport
-      target: Reference
+      target: Patient
       uri: http://hl7.org/fhir/MeasureReport.subject
     MeasureReport.type:
       source: MeasureReport
@@ -24732,7 +24732,7 @@ ontology:
       uri: http://hl7.org/fhir/MeasureReport.type
     Media.basedOn:
       source: Media
-      target: Reference
+      target: ServiceRequest
       uri: http://hl7.org/fhir/Media.basedOn
     Media.bodySite:
       source: Media
@@ -24752,7 +24752,7 @@ ontology:
       uri: http://hl7.org/fhir/Media.createdPeriod
     Media.device:
       source: Media
-      target: Reference
+      target: Device
       uri: http://hl7.org/fhir/Media.device
     Media.deviceName:
       source: Media
@@ -24764,7 +24764,7 @@ ontology:
       uri: http://hl7.org/fhir/Media.duration
     Media.encounter:
       source: Media
-      target: Reference
+      target: Encounter
       uri: http://hl7.org/fhir/Media.encounter
     Media.frames:
       source: Media
@@ -24808,7 +24808,7 @@ ontology:
       uri: http://hl7.org/fhir/Media.status
     Media.subject:
       source: Media
-      target: Reference
+      target: Patient
       uri: http://hl7.org/fhir/Media.subject
     Media.type:
       source: Media
@@ -24848,7 +24848,7 @@ ontology:
       uri: http://hl7.org/fhir/Medication.identifier
     Medication.manufacturer:
       source: Medication
-      target: Reference
+      target: Organization
       uri: http://hl7.org/fhir/Medication.manufacturer
     Medication.status:
       source: Medication
@@ -24872,7 +24872,7 @@ ontology:
       uri: http://hl7.org/fhir/MedicationAdministration.context
     MedicationAdministration.device:
       source: MedicationAdministration
-      target: Reference
+      target: Device
       uri: http://hl7.org/fhir/MedicationAdministration.device
     MedicationAdministration.effectiveDateTime:
       source: MedicationAdministration
@@ -24916,7 +24916,7 @@ ontology:
       uri: http://hl7.org/fhir/MedicationAdministration.reasonCode
     MedicationAdministration.reasonReference:
       source: MedicationAdministration
-      target: Reference
+      target: Condition
       uri: http://hl7.org/fhir/MedicationAdministration.reasonReference
     MedicationAdministration.request:
       source: MedicationAdministration
@@ -24932,7 +24932,7 @@ ontology:
       uri: http://hl7.org/fhir/MedicationAdministration.statusReason
     MedicationAdministration.subject:
       source: MedicationAdministration
-      target: Reference
+      target: Patient
       uri: http://hl7.org/fhir/MedicationAdministration.subject
     MedicationAdministration.supportingInformation:
       source: MedicationAdministration
@@ -24984,7 +24984,7 @@ ontology:
       uri: http://hl7.org/fhir/MedicationDispense.identifier
     MedicationDispense.location:
       source: MedicationDispense
-      target: Reference
+      target: Location
       uri: http://hl7.org/fhir/MedicationDispense.location
     MedicationDispense.medicationCodeableConcept:
       source: MedicationDispense
@@ -25008,7 +25008,7 @@ ontology:
       uri: http://hl7.org/fhir/MedicationDispense.quantity
     MedicationDispense.receiver:
       source: MedicationDispense
-      target: Reference
+      target: Organization
       uri: http://hl7.org/fhir/MedicationDispense.receiver
     MedicationDispense.status:
       source: MedicationDispense
@@ -25024,7 +25024,7 @@ ontology:
       uri: http://hl7.org/fhir/MedicationDispense.statusReasonReference
     MedicationDispense.subject:
       source: MedicationDispense
-      target: Reference
+      target: Patient
       uri: http://hl7.org/fhir/MedicationDispense.subject
     MedicationDispense.supportingInformation:
       source: MedicationDispense
@@ -25112,7 +25112,7 @@ ontology:
       uri: http://hl7.org/fhir/MedicationKnowledge.intendedRoute
     MedicationKnowledge.manufacturer:
       source: MedicationKnowledge
-      target: Reference
+      target: Organization
       uri: http://hl7.org/fhir/MedicationKnowledge.manufacturer
     MedicationKnowledge.preparationInstruction:
       source: MedicationKnowledge
@@ -25148,7 +25148,7 @@ ontology:
       uri: http://hl7.org/fhir/MedicationRequest.authoredOn
     MedicationRequest.basedOn:
       source: MedicationRequest
-      target: Reference
+      target: ServiceRequest
       uri: http://hl7.org/fhir/MedicationRequest.basedOn
     MedicationRequest.category:
       source: MedicationRequest
@@ -25168,7 +25168,7 @@ ontology:
       uri: http://hl7.org/fhir/MedicationRequest.doNotPerform
     MedicationRequest.encounter:
       source: MedicationRequest
-      target: Reference
+      target: Encounter
       uri: http://hl7.org/fhir/MedicationRequest.encounter
     MedicationRequest.eventHistory:
       source: MedicationRequest
@@ -25212,7 +25212,7 @@ ontology:
       uri: http://hl7.org/fhir/MedicationRequest.note
     MedicationRequest.performer:
       source: MedicationRequest
-      target: Reference
+      target: Practitioner
       uri: http://hl7.org/fhir/MedicationRequest.performer
     MedicationRequest.performerType:
       source: MedicationRequest
@@ -25232,11 +25232,11 @@ ontology:
       uri: http://hl7.org/fhir/MedicationRequest.reasonCode
     MedicationRequest.reasonReference:
       source: MedicationRequest
-      target: Reference
+      target: Condition
       uri: http://hl7.org/fhir/MedicationRequest.reasonReference
     MedicationRequest.recorder:
       source: MedicationRequest
-      target: Reference
+      target: Practitioner
       uri: http://hl7.org/fhir/MedicationRequest.recorder
     MedicationRequest.reportedBoolean:
       source: MedicationRequest
@@ -25248,7 +25248,7 @@ ontology:
       uri: http://hl7.org/fhir/MedicationRequest.reportedReference
     MedicationRequest.requester:
       source: MedicationRequest
-      target: Reference
+      target: Practitioner
       uri: http://hl7.org/fhir/MedicationRequest.requester
     MedicationRequest.status:
       source: MedicationRequest
@@ -25260,7 +25260,7 @@ ontology:
       uri: http://hl7.org/fhir/MedicationRequest.statusReason
     MedicationRequest.subject:
       source: MedicationRequest
-      target: Reference
+      target: Patient
       uri: http://hl7.org/fhir/MedicationRequest.subject
     MedicationRequest.supportingInformation:
       source: MedicationRequest
@@ -25272,7 +25272,7 @@ ontology:
       uri: http://hl7.org/fhir/MedicationStatement.dosage
     MedicationStatement.basedOn:
       source: MedicationStatement
-      target: Reference
+      target: ServiceRequest
       uri: http://hl7.org/fhir/MedicationStatement.basedOn
     MedicationStatement.category:
       source: MedicationStatement
@@ -25288,7 +25288,7 @@ ontology:
       uri: http://hl7.org/fhir/MedicationStatement.dateAsserted
     MedicationStatement.derivedFrom:
       source: MedicationStatement
-      target: Reference
+      target: Observation
       uri: http://hl7.org/fhir/MedicationStatement.derivedFrom
     MedicationStatement.effectiveDateTime:
       source: MedicationStatement
@@ -25328,7 +25328,7 @@ ontology:
       uri: http://hl7.org/fhir/MedicationStatement.reasonCode
     MedicationStatement.reasonReference:
       source: MedicationStatement
-      target: Reference
+      target: Condition
       uri: http://hl7.org/fhir/MedicationStatement.reasonReference
     MedicationStatement.status:
       source: MedicationStatement
@@ -25340,7 +25340,7 @@ ontology:
       uri: http://hl7.org/fhir/MedicationStatement.statusReason
     MedicationStatement.subject:
       source: MedicationStatement
-      target: Reference
+      target: Patient
       uri: http://hl7.org/fhir/MedicationStatement.subject
     MedicinalProduct.manufacturingBusinessOperation:
       source: MedicinalProduct
@@ -25480,7 +25480,7 @@ ontology:
       uri: http://hl7.org/fhir/MedicinalProductAuthorization.statusDate
     MedicinalProductAuthorization.subject:
       source: MedicinalProductAuthorization
-      target: Reference
+      target: Patient
       uri: http://hl7.org/fhir/MedicinalProductAuthorization.subject
     MedicinalProductAuthorization.validityPeriod:
       source: MedicinalProductAuthorization
@@ -25508,7 +25508,7 @@ ontology:
       uri: http://hl7.org/fhir/MedicinalProductContraindication.diseaseStatus
     MedicinalProductContraindication.subject:
       source: MedicinalProductContraindication
-      target: Reference
+      target: Patient
       uri: http://hl7.org/fhir/MedicinalProductContraindication.subject
     MedicinalProductContraindication.therapeuticIndication:
       source: MedicinalProductContraindication
@@ -25544,7 +25544,7 @@ ontology:
       uri: http://hl7.org/fhir/MedicinalProductIndication.intendedEffect
     MedicinalProductIndication.subject:
       source: MedicinalProductIndication
-      target: Reference
+      target: Patient
       uri: http://hl7.org/fhir/MedicinalProductIndication.subject
     MedicinalProductIndication.undesirableEffect:
       source: MedicinalProductIndication
@@ -25568,7 +25568,7 @@ ontology:
       uri: http://hl7.org/fhir/MedicinalProductIngredient.identifier
     MedicinalProductIngredient.manufacturer:
       source: MedicinalProductIngredient
-      target: Reference
+      target: Organization
       uri: http://hl7.org/fhir/MedicinalProductIngredient.manufacturer
     MedicinalProductIngredient.role:
       source: MedicinalProductIngredient
@@ -25596,7 +25596,7 @@ ontology:
       uri: http://hl7.org/fhir/MedicinalProductInteraction.management
     MedicinalProductInteraction.subject:
       source: MedicinalProductInteraction
-      target: Reference
+      target: Patient
       uri: http://hl7.org/fhir/MedicinalProductInteraction.subject
     MedicinalProductInteraction.type:
       source: MedicinalProductInteraction
@@ -25616,7 +25616,7 @@ ontology:
       uri: http://hl7.org/fhir/MedicinalProductManufactured.manufacturedDoseForm
     MedicinalProductManufactured.manufacturer:
       source: MedicinalProductManufactured
-      target: Reference
+      target: Organization
       uri: http://hl7.org/fhir/MedicinalProductManufactured.manufacturer
     MedicinalProductManufactured.otherCharacteristics:
       source: MedicinalProductManufactured
@@ -25656,7 +25656,7 @@ ontology:
       uri: http://hl7.org/fhir/MedicinalProductPackaged.legalStatusOfSupply
     MedicinalProductPackaged.manufacturer:
       source: MedicinalProductPackaged
-      target: Reference
+      target: Organization
       uri: http://hl7.org/fhir/MedicinalProductPackaged.manufacturer
     MedicinalProductPackaged.marketingAuthorization:
       source: MedicinalProductPackaged
@@ -25664,7 +25664,7 @@ ontology:
       uri: http://hl7.org/fhir/MedicinalProductPackaged.marketingAuthorization
     MedicinalProductPackaged.subject:
       source: MedicinalProductPackaged
-      target: Reference
+      target: Patient
       uri: http://hl7.org/fhir/MedicinalProductPackaged.subject
     MedicinalProductPharmaceutical.characteristics:
       source: MedicinalProductPharmaceutical
@@ -25680,7 +25680,7 @@ ontology:
       uri: http://hl7.org/fhir/MedicinalProductPharmaceutical.administrableDoseForm
     MedicinalProductPharmaceutical.device:
       source: MedicinalProductPharmaceutical
-      target: Reference
+      target: Device
       uri: http://hl7.org/fhir/MedicinalProductPharmaceutical.device
     MedicinalProductPharmaceutical.identifier:
       source: MedicinalProductPharmaceutical
@@ -25708,7 +25708,7 @@ ontology:
       uri: http://hl7.org/fhir/MedicinalProductUndesirableEffect.frequencyOfOccurrence
     MedicinalProductUndesirableEffect.subject:
       source: MedicinalProductUndesirableEffect
-      target: Reference
+      target: Patient
       uri: http://hl7.org/fhir/MedicinalProductUndesirableEffect.subject
     MedicinalProductUndesirableEffect.symptomConditionEffect:
       source: MedicinalProductUndesirableEffect
@@ -25728,7 +25728,7 @@ ontology:
       uri: http://hl7.org/fhir/MessageHeader.source
     MessageHeader.author:
       source: MessageHeader
-      target: Reference
+      target: Practitioner
       uri: http://hl7.org/fhir/MessageHeader.author
     MessageHeader.definition:
       source: MessageHeader
@@ -25736,7 +25736,7 @@ ontology:
       uri: http://hl7.org/fhir/MessageHeader.definition
     MessageHeader.enterer:
       source: MessageHeader
-      target: Reference
+      target: Practitioner
       uri: http://hl7.org/fhir/MessageHeader.enterer
     MessageHeader.eventCoding:
       source: MessageHeader
@@ -25760,7 +25760,7 @@ ontology:
       uri: http://hl7.org/fhir/MessageHeader.responsible
     MessageHeader.sender:
       source: MessageHeader
-      target: Reference
+      target: Organization
       uri: http://hl7.org/fhir/MessageHeader.sender
     MolecularSequence.quality:
       source: MolecularSequence
@@ -25788,7 +25788,7 @@ ontology:
       uri: http://hl7.org/fhir/MolecularSequence.coordinateSystem
     MolecularSequence.device:
       source: MolecularSequence
-      target: Reference
+      target: Device
       uri: http://hl7.org/fhir/MolecularSequence.device
     MolecularSequence.identifier:
       source: MolecularSequence
@@ -25800,11 +25800,11 @@ ontology:
       uri: http://hl7.org/fhir/MolecularSequence.observedSeq
     MolecularSequence.patient:
       source: MolecularSequence
-      target: Reference
+      target: Patient
       uri: http://hl7.org/fhir/MolecularSequence.patient
     MolecularSequence.performer:
       source: MolecularSequence
-      target: Reference
+      target: Practitioner
       uri: http://hl7.org/fhir/MolecularSequence.performer
     MolecularSequence.pointer:
       source: MolecularSequence
@@ -25820,7 +25820,7 @@ ontology:
       uri: http://hl7.org/fhir/MolecularSequence.readCoverage
     MolecularSequence.specimen:
       source: MolecularSequence
-      target: Reference
+      target: Specimen
       uri: http://hl7.org/fhir/MolecularSequence.specimen
     MolecularSequence.type:
       source: MolecularSequence
@@ -25848,7 +25848,7 @@ ontology:
       uri: http://hl7.org/fhir/NutritionOrder.dateTime
     NutritionOrder.encounter:
       source: NutritionOrder
-      target: Reference
+      target: Encounter
       uri: http://hl7.org/fhir/NutritionOrder.encounter
     NutritionOrder.excludeFoodModifier:
       source: NutritionOrder
@@ -25888,7 +25888,7 @@ ontology:
       uri: http://hl7.org/fhir/NutritionOrder.orderer
     NutritionOrder.patient:
       source: NutritionOrder
-      target: Reference
+      target: Patient
       uri: http://hl7.org/fhir/NutritionOrder.patient
     NutritionOrder.status:
       source: NutritionOrder
@@ -25908,7 +25908,7 @@ ontology:
       uri: http://hl7.org/fhir/Observation.valueSampledData
     Observation.basedOn:
       source: Observation
-      target: Reference
+      target: ServiceRequest
       uri: http://hl7.org/fhir/Observation.basedOn
     Observation.bodySite:
       source: Observation
@@ -25928,11 +25928,11 @@ ontology:
       uri: http://hl7.org/fhir/Observation.dataAbsentReason
     Observation.derivedFrom:
       source: Observation
-      target: Reference
+      target: Observation
       uri: http://hl7.org/fhir/Observation.derivedFrom
     Observation.device:
       source: Observation
-      target: Reference
+      target: Device
       uri: http://hl7.org/fhir/Observation.device
     Observation.effectiveDateTime:
       source: Observation
@@ -25952,7 +25952,7 @@ ontology:
       uri: http://hl7.org/fhir/Observation.effectiveTiming
     Observation.encounter:
       source: Observation
-      target: Reference
+      target: Encounter
       uri: http://hl7.org/fhir/Observation.encounter
     Observation.focus:
       source: Observation
@@ -25960,7 +25960,7 @@ ontology:
       uri: http://hl7.org/fhir/Observation.focus
     Observation.hasMember:
       source: Observation
-      target: Reference
+      target: Observation
       uri: http://hl7.org/fhir/Observation.hasMember
     Observation.identifier:
       source: Observation
@@ -25988,11 +25988,11 @@ ontology:
       uri: http://hl7.org/fhir/Observation.partOf
     Observation.performer:
       source: Observation
-      target: Reference
+      target: Practitioner
       uri: http://hl7.org/fhir/Observation.performer
     Observation.specimen:
       source: Observation
-      target: Reference
+      target: Specimen
       uri: http://hl7.org/fhir/Observation.specimen
     Observation.status:
       source: Observation
@@ -26000,7 +26000,7 @@ ontology:
       uri: http://hl7.org/fhir/Observation.status
     Observation.subject:
       source: Observation
-      target: Reference
+      target: Patient
       uri: http://hl7.org/fhir/Observation.subject
     Observation.valueBoolean:
       source: Observation
@@ -26104,7 +26104,7 @@ ontology:
       uri: http://hl7.org/fhir/OrganizationAffiliation.identifier
     OrganizationAffiliation.location:
       source: OrganizationAffiliation
-      target: Reference
+      target: Location
       uri: http://hl7.org/fhir/OrganizationAffiliation.location
     OrganizationAffiliation.network:
       source: OrganizationAffiliation
@@ -26112,7 +26112,7 @@ ontology:
       uri: http://hl7.org/fhir/OrganizationAffiliation.network
     OrganizationAffiliation.organization:
       source: OrganizationAffiliation
-      target: Reference
+      target: Organization
       uri: http://hl7.org/fhir/OrganizationAffiliation.organization
     OrganizationAffiliation.participatingOrganization:
       source: OrganizationAffiliation
@@ -26168,7 +26168,7 @@ ontology:
       uri: http://hl7.org/fhir/Patient.gender
     Patient.generalPractitioner:
       source: Patient
-      target: Reference
+      target: Practitioner
       uri: http://hl7.org/fhir/Patient.generalPractitioner
     Patient.identifier:
       source: Patient
@@ -26176,7 +26176,7 @@ ontology:
       uri: http://hl7.org/fhir/Patient.identifier
     Patient.managingOrganization:
       source: Patient
-      target: Reference
+      target: Organization
       uri: http://hl7.org/fhir/Patient.managingOrganization
     Patient.maritalStatus:
       source: Patient
@@ -26232,7 +26232,7 @@ ontology:
       uri: http://hl7.org/fhir/PaymentNotice.paymentStatus
     PaymentNotice.provider:
       source: PaymentNotice
-      target: Reference
+      target: Practitioner
       uri: http://hl7.org/fhir/PaymentNotice.provider
     PaymentNotice.recipient:
       source: PaymentNotice
@@ -26336,7 +26336,7 @@ ontology:
       uri: http://hl7.org/fhir/Person.identifier
     Person.managingOrganization:
       source: Person
-      target: Reference
+      target: Organization
       uri: http://hl7.org/fhir/Person.managingOrganization
     Person.name:
       source: Person
@@ -26424,11 +26424,11 @@ ontology:
       uri: http://hl7.org/fhir/PractitionerRole.identifier
     PractitionerRole.location:
       source: PractitionerRole
-      target: Reference
+      target: Location
       uri: http://hl7.org/fhir/PractitionerRole.location
     PractitionerRole.organization:
       source: PractitionerRole
-      target: Reference
+      target: Organization
       uri: http://hl7.org/fhir/PractitionerRole.organization
     PractitionerRole.period:
       source: PractitionerRole
@@ -26436,7 +26436,7 @@ ontology:
       uri: http://hl7.org/fhir/PractitionerRole.period
     PractitionerRole.practitioner:
       source: PractitionerRole
-      target: Reference
+      target: Practitioner
       uri: http://hl7.org/fhir/PractitionerRole.practitioner
     PractitionerRole.specialty:
       source: PractitionerRole
@@ -26456,11 +26456,11 @@ ontology:
       uri: http://hl7.org/fhir/Procedure.performer
     Procedure.asserter:
       source: Procedure
-      target: Reference
+      target: Practitioner
       uri: http://hl7.org/fhir/Procedure.asserter
     Procedure.basedOn:
       source: Procedure
-      target: Reference
+      target: ServiceRequest
       uri: http://hl7.org/fhir/Procedure.basedOn
     Procedure.bodySite:
       source: Procedure
@@ -26484,7 +26484,7 @@ ontology:
       uri: http://hl7.org/fhir/Procedure.complicationDetail
     Procedure.encounter:
       source: Procedure
-      target: Reference
+      target: Encounter
       uri: http://hl7.org/fhir/Procedure.encounter
     Procedure.followUp:
       source: Procedure
@@ -26504,7 +26504,7 @@ ontology:
       uri: http://hl7.org/fhir/Procedure.instantiatesUri
     Procedure.location:
       source: Procedure
-      target: Reference
+      target: Location
       uri: http://hl7.org/fhir/Procedure.location
     Procedure.note:
       source: Procedure
@@ -26544,11 +26544,11 @@ ontology:
       uri: http://hl7.org/fhir/Procedure.reasonCode
     Procedure.reasonReference:
       source: Procedure
-      target: Reference
+      target: Condition
       uri: http://hl7.org/fhir/Procedure.reasonReference
     Procedure.recorder:
       source: Procedure
-      target: Reference
+      target: Practitioner
       uri: http://hl7.org/fhir/Procedure.recorder
     Procedure.report:
       source: Procedure
@@ -26564,7 +26564,7 @@ ontology:
       uri: http://hl7.org/fhir/Procedure.statusReason
     Procedure.subject:
       source: Procedure
-      target: Reference
+      target: Patient
       uri: http://hl7.org/fhir/Procedure.subject
     Procedure.usedCode:
       source: Procedure
@@ -26592,7 +26592,7 @@ ontology:
       uri: http://hl7.org/fhir/Provenance.activity
     Provenance.location:
       source: Provenance
-      target: Reference
+      target: Location
       uri: http://hl7.org/fhir/Provenance.location
     Provenance.occurredDateTime:
       source: Provenance
@@ -26712,7 +26712,7 @@ ontology:
       uri: http://hl7.org/fhir/QuestionnaireResponse.item
     QuestionnaireResponse.author:
       source: QuestionnaireResponse
-      target: Reference
+      target: Practitioner
       uri: http://hl7.org/fhir/QuestionnaireResponse.author
     QuestionnaireResponse.authored:
       source: QuestionnaireResponse
@@ -26720,11 +26720,11 @@ ontology:
       uri: http://hl7.org/fhir/QuestionnaireResponse.authored
     QuestionnaireResponse.basedOn:
       source: QuestionnaireResponse
-      target: Reference
+      target: ServiceRequest
       uri: http://hl7.org/fhir/QuestionnaireResponse.basedOn
     QuestionnaireResponse.encounter:
       source: QuestionnaireResponse
-      target: Reference
+      target: Encounter
       uri: http://hl7.org/fhir/QuestionnaireResponse.encounter
     QuestionnaireResponse.identifier:
       source: QuestionnaireResponse
@@ -26740,7 +26740,7 @@ ontology:
       uri: http://hl7.org/fhir/QuestionnaireResponse.questionnaire
     QuestionnaireResponse.source:
       source: QuestionnaireResponse
-      target: Reference
+      target: Patient
       uri: http://hl7.org/fhir/QuestionnaireResponse.source
     QuestionnaireResponse.status:
       source: QuestionnaireResponse
@@ -26748,7 +26748,7 @@ ontology:
       uri: http://hl7.org/fhir/QuestionnaireResponse.status
     QuestionnaireResponse.subject:
       source: QuestionnaireResponse
-      target: Reference
+      target: Patient
       uri: http://hl7.org/fhir/QuestionnaireResponse.subject
     RelatedPerson.communication:
       source: RelatedPerson
@@ -26780,7 +26780,7 @@ ontology:
       uri: http://hl7.org/fhir/RelatedPerson.name
     RelatedPerson.patient:
       source: RelatedPerson
-      target: Reference
+      target: Patient
       uri: http://hl7.org/fhir/RelatedPerson.patient
     RelatedPerson.period:
       source: RelatedPerson
@@ -26804,7 +26804,7 @@ ontology:
       uri: http://hl7.org/fhir/RequestGroup.action
     RequestGroup.author:
       source: RequestGroup
-      target: Reference
+      target: Practitioner
       uri: http://hl7.org/fhir/RequestGroup.author
     RequestGroup.authoredOn:
       source: RequestGroup
@@ -26812,7 +26812,7 @@ ontology:
       uri: http://hl7.org/fhir/RequestGroup.authoredOn
     RequestGroup.basedOn:
       source: RequestGroup
-      target: Reference
+      target: ServiceRequest
       uri: http://hl7.org/fhir/RequestGroup.basedOn
     RequestGroup.code:
       source: RequestGroup
@@ -26820,7 +26820,7 @@ ontology:
       uri: http://hl7.org/fhir/RequestGroup.code
     RequestGroup.encounter:
       source: RequestGroup
-      target: Reference
+      target: Encounter
       uri: http://hl7.org/fhir/RequestGroup.encounter
     RequestGroup.groupIdentifier:
       source: RequestGroup
@@ -26856,7 +26856,7 @@ ontology:
       uri: http://hl7.org/fhir/RequestGroup.reasonCode
     RequestGroup.reasonReference:
       source: RequestGroup
-      target: Reference
+      target: Condition
       uri: http://hl7.org/fhir/RequestGroup.reasonReference
     RequestGroup.replaces:
       source: RequestGroup
@@ -26868,7 +26868,7 @@ ontology:
       uri: http://hl7.org/fhir/RequestGroup.status
     RequestGroup.subject:
       source: RequestGroup
-      target: Reference
+      target: Patient
       uri: http://hl7.org/fhir/RequestGroup.subject
     ResearchDefinition.author:
       source: ResearchDefinition
@@ -27280,7 +27280,7 @@ ontology:
       uri: http://hl7.org/fhir/RiskAssessment.prediction
     RiskAssessment.basedOn:
       source: RiskAssessment
-      target: Reference
+      target: ServiceRequest
       uri: http://hl7.org/fhir/RiskAssessment.basedOn
     RiskAssessment.basis:
       source: RiskAssessment
@@ -27296,7 +27296,7 @@ ontology:
       uri: http://hl7.org/fhir/RiskAssessment.condition
     RiskAssessment.encounter:
       source: RiskAssessment
-      target: Reference
+      target: Encounter
       uri: http://hl7.org/fhir/RiskAssessment.encounter
     RiskAssessment.identifier:
       source: RiskAssessment
@@ -27328,7 +27328,7 @@ ontology:
       uri: http://hl7.org/fhir/RiskAssessment.parent
     RiskAssessment.performer:
       source: RiskAssessment
-      target: Reference
+      target: Practitioner
       uri: http://hl7.org/fhir/RiskAssessment.performer
     RiskAssessment.reasonCode:
       source: RiskAssessment
@@ -27336,7 +27336,7 @@ ontology:
       uri: http://hl7.org/fhir/RiskAssessment.reasonCode
     RiskAssessment.reasonReference:
       source: RiskAssessment
-      target: Reference
+      target: Condition
       uri: http://hl7.org/fhir/RiskAssessment.reasonReference
     RiskAssessment.status:
       source: RiskAssessment
@@ -27344,7 +27344,7 @@ ontology:
       uri: http://hl7.org/fhir/RiskAssessment.status
     RiskAssessment.subject:
       source: RiskAssessment
-      target: Reference
+      target: Patient
       uri: http://hl7.org/fhir/RiskAssessment.subject
     RiskEvidenceSynthesis.author:
       source: RiskEvidenceSynthesis
@@ -27516,7 +27516,7 @@ ontology:
       uri: http://hl7.org/fhir/ServiceRequest.authoredOn
     ServiceRequest.basedOn:
       source: ServiceRequest
-      target: Reference
+      target: ServiceRequest
       uri: http://hl7.org/fhir/ServiceRequest.basedOn
     ServiceRequest.bodySite:
       source: ServiceRequest
@@ -27536,7 +27536,7 @@ ontology:
       uri: http://hl7.org/fhir/ServiceRequest.doNotPerform
     ServiceRequest.encounter:
       source: ServiceRequest
-      target: Reference
+      target: Encounter
       uri: http://hl7.org/fhir/ServiceRequest.encounter
     ServiceRequest.identifier:
       source: ServiceRequest
@@ -27592,7 +27592,7 @@ ontology:
       uri: http://hl7.org/fhir/ServiceRequest.patientInstruction
     ServiceRequest.performer:
       source: ServiceRequest
-      target: Reference
+      target: Practitioner
       uri: http://hl7.org/fhir/ServiceRequest.performer
     ServiceRequest.performerType:
       source: ServiceRequest
@@ -27620,7 +27620,7 @@ ontology:
       uri: http://hl7.org/fhir/ServiceRequest.reasonCode
     ServiceRequest.reasonReference:
       source: ServiceRequest
-      target: Reference
+      target: Condition
       uri: http://hl7.org/fhir/ServiceRequest.reasonReference
     ServiceRequest.relevantHistory:
       source: ServiceRequest
@@ -27632,7 +27632,7 @@ ontology:
       uri: http://hl7.org/fhir/ServiceRequest.replaces
     ServiceRequest.requester:
       source: ServiceRequest
-      target: Reference
+      target: Practitioner
       uri: http://hl7.org/fhir/ServiceRequest.requester
     ServiceRequest.requisition:
       source: ServiceRequest
@@ -27640,7 +27640,7 @@ ontology:
       uri: http://hl7.org/fhir/ServiceRequest.requisition
     ServiceRequest.specimen:
       source: ServiceRequest
-      target: Reference
+      target: Specimen
       uri: http://hl7.org/fhir/ServiceRequest.specimen
     ServiceRequest.status:
       source: ServiceRequest
@@ -27648,7 +27648,7 @@ ontology:
       uri: http://hl7.org/fhir/ServiceRequest.status
     ServiceRequest.subject:
       source: ServiceRequest
-      target: Reference
+      target: Patient
       uri: http://hl7.org/fhir/ServiceRequest.subject
     ServiceRequest.supportingInfo:
       source: ServiceRequest
@@ -27744,7 +27744,7 @@ ontology:
       uri: http://hl7.org/fhir/Specimen.status
     Specimen.subject:
       source: Specimen
-      target: Reference
+      target: Patient
       uri: http://hl7.org/fhir/Specimen.subject
     Specimen.type:
       source: Specimen
@@ -28000,7 +28000,7 @@ ontology:
       uri: http://hl7.org/fhir/SubstanceSpecification.referenceInformation
     SubstanceSpecification.source:
       source: SubstanceSpecification
-      target: Reference
+      target: Patient
       uri: http://hl7.org/fhir/SubstanceSpecification.source
     SubstanceSpecification.sourceMaterial:
       source: SubstanceSpecification
@@ -28020,7 +28020,7 @@ ontology:
       uri: http://hl7.org/fhir/SupplyDelivery.suppliedItem
     SupplyDelivery.basedOn:
       source: SupplyDelivery
-      target: Reference
+      target: ServiceRequest
       uri: http://hl7.org/fhir/SupplyDelivery.basedOn
     SupplyDelivery.destination:
       source: SupplyDelivery
@@ -28048,11 +28048,11 @@ ontology:
       uri: http://hl7.org/fhir/SupplyDelivery.partOf
     SupplyDelivery.patient:
       source: SupplyDelivery
-      target: Reference
+      target: Patient
       uri: http://hl7.org/fhir/SupplyDelivery.patient
     SupplyDelivery.receiver:
       source: SupplyDelivery
-      target: Reference
+      target: Organization
       uri: http://hl7.org/fhir/SupplyDelivery.receiver
     SupplyDelivery.status:
       source: SupplyDelivery
@@ -28124,11 +28124,11 @@ ontology:
       uri: http://hl7.org/fhir/SupplyRequest.reasonCode
     SupplyRequest.reasonReference:
       source: SupplyRequest
-      target: Reference
+      target: Condition
       uri: http://hl7.org/fhir/SupplyRequest.reasonReference
     SupplyRequest.requester:
       source: SupplyRequest
-      target: Reference
+      target: Practitioner
       uri: http://hl7.org/fhir/SupplyRequest.requester
     SupplyRequest.status:
       source: SupplyRequest
@@ -28156,7 +28156,7 @@ ontology:
       uri: http://hl7.org/fhir/Task.authoredOn
     Task.basedOn:
       source: Task
-      target: Reference
+      target: ServiceRequest
       uri: http://hl7.org/fhir/Task.basedOn
     Task.businessStatus:
       source: Task
@@ -28172,7 +28172,7 @@ ontology:
       uri: http://hl7.org/fhir/Task.description
     Task.encounter:
       source: Task
-      target: Reference
+      target: Encounter
       uri: http://hl7.org/fhir/Task.encounter
     Task.executionPeriod:
       source: Task
@@ -28216,7 +28216,7 @@ ontology:
       uri: http://hl7.org/fhir/Task.lastModified
     Task.location:
       source: Task
-      target: Reference
+      target: Location
       uri: http://hl7.org/fhir/Task.location
     Task.note:
       source: Task
@@ -28244,7 +28244,7 @@ ontology:
       uri: http://hl7.org/fhir/Task.reasonCode
     Task.reasonReference:
       source: Task
-      target: Reference
+      target: Condition
       uri: http://hl7.org/fhir/Task.reasonReference
     Task.relevantHistory:
       source: Task
@@ -28252,7 +28252,7 @@ ontology:
       uri: http://hl7.org/fhir/Task.relevantHistory
     Task.requester:
       source: Task
-      target: Reference
+      target: Practitioner
       uri: http://hl7.org/fhir/Task.requester
     Task.status:
       source: Task
@@ -28332,7 +28332,7 @@ ontology:
       uri: http://hl7.org/fhir/VisionPrescription.dateWritten
     VisionPrescription.encounter:
       source: VisionPrescription
-      target: Reference
+      target: Encounter
       uri: http://hl7.org/fhir/VisionPrescription.encounter
     VisionPrescription.identifier:
       source: VisionPrescription
@@ -28340,7 +28340,7 @@ ontology:
       uri: http://hl7.org/fhir/VisionPrescription.identifier
     VisionPrescription.patient:
       source: VisionPrescription
-      target: Reference
+      target: Patient
       uri: http://hl7.org/fhir/VisionPrescription.patient
     VisionPrescription.prescriber:
       source: VisionPrescription
