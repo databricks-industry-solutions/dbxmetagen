@@ -24,6 +24,7 @@ from fastapi.staticfiles import StaticFiles
 from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel, Field
 from databricks.sdk import WorkspaceClient
+from databricks.sdk.service.sql import StatementParameterListItem
 from db import pg_execute, get_engine, pg_configured
 from dbxmetagen.ddl_bundle_utils import rewrite_ddl_catalog_schema as _rewrite_ddl_catalog_schema, dq_grade as _dq_grade
 
@@ -177,7 +178,7 @@ _PERMISSION_DENIED_RE = re.compile(
 )
 
 
-def execute_sql(query: str, warehouse_id: Optional[str] = None, timeout: int = 30):
+def execute_sql(query: str, warehouse_id: Optional[str] = None, timeout: int = 30, parameters: Optional[list] = None):
     """Execute SQL via Statement Execution API and return rows as list[dict].
 
     Returns [] for missing-table/schema/catalog errors (expected before
@@ -192,7 +193,8 @@ def execute_sql(query: str, warehouse_id: Optional[str] = None, timeout: int = 3
         ws = _get_effective_client()
         wait_s = min(timeout, 50)
         resp = ws.statement_execution.execute_statement(
-            statement=query, warehouse_id=wh, wait_timeout=f"{wait_s}s"
+            statement=query, warehouse_id=wh, wait_timeout=f"{wait_s}s",
+            parameters=parameters,
         )
     except HTTPException:
         raise
@@ -8087,9 +8089,9 @@ Always single-quote string literals. Only reference columns that exist.
 Return ONLY the fixed JSON definition (single object, not array)."""
 
     try:
-        escaped = prompt.replace("'", "''")
         rows = execute_sql(
-            f"SELECT AI_QUERY('{model}', '{escaped}') as response", timeout=120
+            f"SELECT AI_QUERY('{model}', :prompt) as response", timeout=120,
+            parameters=[StatementParameterListItem(name="prompt", value=prompt)],
         )
         response = rows[0]["response"] if rows else ""
         fixed = _parse_single_json(response)
@@ -8368,6 +8370,8 @@ For each metric view in "views", include:
   Include joins supported by high-confidence FK relationships to maximize dimension reach. Use nested joins for dimension hierarchies (e.g. orders -> customers -> regions):
   {{ "name": "customer", ..., "joins": [{{ "name": "nation", ..., "on": "customer.nation_id = nation.id" }}] }}
   Do NOT join the same physical table via multiple paths unless each join serves a genuinely different FK role (e.g. ship_to_address vs bill_to_address). If the source table already has a direct FK to a dimension, do NOT also reach that dimension through a nested join chain.
+  FACT-TO-FACT JOIN PROHIBITION: Do NOT join from a fact source to another fact table (tables prefixed with fact_, fct_, f_ or those with high row counts). Fact-to-fact joins create one-to-many fan-out that inflates ALL aggregates. If you need columns from another fact table, create a SEPARATE metric view sourced from that table.
+  JOIN USAGE REQUIREMENT: Only include joins whose columns you intend to use in dimensions or measures. Do NOT include joins "for completeness."
 - "dimensions": array of {{ "name": "Display Name", "comment": "what it is" }} (no expr)
 - "measures": array of {{ "name": "Display Name", "comment": "what it measures" }} (no expr)
 - "question_indices": array of 0-based question indices this view answers
@@ -8396,11 +8400,14 @@ PLANNED VIEW (names only; you must add "expr" for each dimension and measure):
 {plan_str}
 
 RULES:
-- STRING QUOTING IN EXPR (critical -- the most common generation error):
-  ALL string literals inside "expr" values MUST be single-quoted in the JSON you output.
-  CORRECT: "expr": "SUM(CASE WHEN source.status IN ('No Show', 'Cancelled') THEN 1 ELSE 0 END)"
-  WRONG:   "expr": "SUM(CASE WHEN source.status IN (No Show, Cancelled) THEN 1 ELSE 0 END)"
+- QUOTING (critical):
+  Single-quote string LITERALS (names, labels, codes) but NEVER quote SQL expressions, arithmetic, or function calls.
+  CORRECT: "expr": "AVG(CASE WHEN source.priority = 'Stat' THEN (UNIX_TIMESTAMP(source.result_date) - UNIX_TIMESTAMP(source.order_date)) / 3600.0 ELSE NULL END)"
+  WRONG:   "expr": "AVG(CASE WHEN source.priority = Stat THEN '(UNIX_TIMESTAMP(source.result_date) - UNIX_TIMESTAMP(source.order_date)) / 3600.0' ELSE NULL END)"
+  The WRONG form has TWO errors: 'Stat' is unquoted (syntax error), and the arithmetic is quoted (becomes a string literal, causing CAST error at runtime).
+  Rule: if a THEN/ELSE value contains function calls, arithmetic (+,-,*,/), or column references, it is SQL -- do NOT quote it.
   Applies to: IN lists, = comparisons, CASE THEN/ELSE string results, LIKE patterns, FILTER conditions.
+- NULL CHECKS: Use IS NULL / IS NOT NULL only. NEVER compare to the string 'NULL' (e.g. = 'NULL' or != 'NULL'). NEVER generate "col IS NULL OR col = 'NULL'" -- just use IS NULL.
 - Output a single object with keys: name, source, comment, filter (optional), dimensions, measures, joins.
 - dimensions: array of {{ "name", "expr", "comment", "display_name", "synonyms" }}. "display_name" and "synonyms" (array of 2-5 alternative names) are REQUIRED. expr must be valid Databricks SQL using ONLY columns from the metadata below.
 - measures: array of {{ "name", "expr", "comment", "display_name", "synonyms", "format" }}. "display_name", "synonyms", and "format" are REQUIRED. format is {{"type": "currency"}}, {{"type": "percentage"}}, or {{"type": "number"}}. Use SUM, COUNT, AVG, FILTER, etc.
@@ -8415,7 +8422,10 @@ RULES:
 - NEVER substitute a placeholder column from an unrelated table or alias. If a dimension is called "Region", its expr MUST reference the actual region column from the correct alias (e.g. "territory.region"), NOT an unrelated column like "source.channel". If a column is unreachable through the join path, DROP the dimension entirely rather than using a fake placeholder.
 - Share/mix measures (X as % of total) CANNOT be computed in metric views because window functions are banned. Do NOT create measures like SUM(x)/NULLIF(SUM(x),0) -- this always equals 1.0. Instead, provide the raw numerator; the consumer computes shares at query time.
 - Ratios must use NULLIF in denominator. AVG of pre-aggregated values is usually wrong.
+- JOIN FAN-OUT PROTECTION: When the metric view has joins, use COUNT(DISTINCT source.pk_col) instead of COUNT(source.pk_col) for count measures on the source table. Joins can multiply rows (one-to-many fan-out), making plain COUNT overcount. Apply the same logic to denominators in rate/average calculations.
 - STAR SCHEMA SOURCE RULE: When joins are present, the source MUST be the fact table (the table at the grain of the analysis). The join relationship from source to join should be many-to-one. If you need metrics about a dimension entity itself with no fact-table aggregation, source from the dimension with NO fact-table joins. NEVER source from a dimension table and join to a fact table -- this fans out rows and produces incorrect aggregates.
+- FACT-TO-FACT JOIN PROHIBITION: Do NOT join from a fact source to another fact table (tables prefixed with fact_, fct_, f_ or those with high row counts and their own aggregatable measures). Fact-to-fact joins create one-to-many fan-out that inflates ALL aggregates. If you need columns from another fact table, create a SEPARATE metric view sourced from that table instead.
+- JOIN USAGE REQUIREMENT: Every join you include MUST have at least one dimension or measure expression that references a column from it (via its alias). Do NOT include joins "for completeness" or "in case they are needed." Unused joins waste query resources and risk fan-out inflation.
 - Do NOT create duplicate measures with identical expressions but different names. Each measure expr must be semantically distinct.
 - Only use column names that appear in the metadata. If a column name contains spaces, wrap it in backticks: source.`assay name`, NOT source."assay name". Double quotes are NOT valid for identifiers in Databricks SQL.
 - comment fields: describe the user-facing intent of the view or column -- what it measures, from what source, and for whom. Reference source tables if helpful. NEVER reference KPI numbers, question numbers, the generation process, or which business questions are addressed (e.g. "Implements KPIs 1, 10" is WRONG; "Answers question about revenue" is WRONG). Write as if documenting a catalog object for a data consumer who has no knowledge of the generation pipeline.
@@ -8457,11 +8467,14 @@ def _build_simple_generate_prompt(plan_view: dict, questions: list[str], context
     return f"""You are a data modeler. Output exactly ONE JSON object for a simple metric view (not an array).
 
 RULES:
-- STRING QUOTING IN EXPR (critical -- the most common generation error):
-  ALL string literals inside "expr" values MUST be single-quoted in the JSON you output.
-  CORRECT: "expr": "SUM(CASE WHEN source.status IN ('No Show', 'Cancelled') THEN 1 ELSE 0 END)"
-  WRONG:   "expr": "SUM(CASE WHEN source.status IN (No Show, Cancelled) THEN 1 ELSE 0 END)"
+- QUOTING (critical):
+  Single-quote string LITERALS (names, labels, codes) but NEVER quote SQL expressions, arithmetic, or function calls.
+  CORRECT: "expr": "AVG(CASE WHEN source.priority = 'Stat' THEN (UNIX_TIMESTAMP(source.result_date) - UNIX_TIMESTAMP(source.order_date)) / 3600.0 ELSE NULL END)"
+  WRONG:   "expr": "AVG(CASE WHEN source.priority = Stat THEN '(UNIX_TIMESTAMP(source.result_date) - UNIX_TIMESTAMP(source.order_date)) / 3600.0' ELSE NULL END)"
+  The WRONG form has TWO errors: 'Stat' is unquoted (syntax error), and the arithmetic is quoted (becomes a string literal, causing CAST error at runtime).
+  Rule: if a THEN/ELSE value contains function calls, arithmetic (+,-,*,/), or column references, it is SQL -- do NOT quote it.
   Applies to: IN lists, = comparisons, CASE THEN/ELSE string results, LIKE patterns, FILTER conditions.
+- NULL CHECKS: Use IS NULL / IS NOT NULL only. NEVER compare to the string 'NULL' (e.g. = 'NULL' or != 'NULL'). NEVER generate "col IS NULL OR col = 'NULL'" -- just use IS NULL.
 - Output a single object with keys: name, source, comment, dimensions, measures.
 - name: "{view_name}"
 - source: "{source}"
@@ -8493,10 +8506,13 @@ def _batch_generate_views(
 
     prompt_builder = _build_simple_generate_prompt if simple else _build_generate_prompt_for_plan
     rows_sql = []
-    for pv in plan_views:
-        vname = (pv.get("name") or "metric_view").replace("'", "''")
-        prompt = prompt_builder(pv, questions, context).replace("'", "''")
-        rows_sql.append(f"('{vname}', '{prompt}')")
+    params = []
+    for i, pv in enumerate(plan_views):
+        vname = pv.get("name") or "metric_view"
+        prompt = prompt_builder(pv, questions, context)
+        rows_sql.append(f"(:name_{i}, :prompt_{i})")
+        params.append(StatementParameterListItem(name=f"name_{i}", value=vname))
+        params.append(StatementParameterListItem(name=f"prompt_{i}", value=prompt))
 
     values_block = ",\n".join(rows_sql)
     batch_sql = (
@@ -8506,7 +8522,7 @@ def _batch_generate_views(
     timeout = 60 + 120 * min(len(plan_views), 6)
 
     try:
-        result_rows = execute_sql(batch_sql, timeout=timeout)
+        result_rows = execute_sql(batch_sql, timeout=timeout, parameters=params)
     except Exception as exc:
         logger.warning("Batch AI_QUERY failed (%d views, simple=%s): %s", len(plan_views), simple, str(exc)[:300])
         return [], [{"name": pv.get("name", "?"), "error": str(exc)[:200]} for pv in plan_views]
@@ -8725,8 +8741,8 @@ def _run_sl_generation(
         task["stage"] = "planning"
         plan_prompt = _build_plan_prompt(questions, context, generation_style=generation_style,
                                          max_views=effective_max, num_eligible=num_eligible)
-        escaped = plan_prompt.replace("'", "''")
-        rows = execute_sql(f"SELECT AI_QUERY('{model}', '{escaped}') as response", timeout=180)
+        rows = execute_sql(f"SELECT AI_QUERY('{model}', :prompt) as response", timeout=180,
+                           parameters=[StatementParameterListItem(name="prompt", value=plan_prompt)])
         plan_response = rows[0]["response"] if rows else ""
         plan_views = []
         if plan_response:
@@ -8815,7 +8831,7 @@ def _run_sl_generation(
                     _resolve_join_cols(defn.get("joins", []))
                     defn = _autofix_dimension_columns(defn, _tbl_cols)
 
-            json_str = json.dumps(defn).replace("'", "''")
+            json_str = json.dumps(defn)
 
             # Name collision check against existing definitions
             mv_esc = mv_name.replace("'", "''")
@@ -8863,7 +8879,7 @@ def _run_sl_generation(
                 logger.info("Renaming new view '%s' -> '%s' to avoid collision with existing definition", mv_name, candidate)
                 mv_name = candidate
                 defn["name"] = mv_name
-                json_str = json.dumps(defn).replace("'", "''")
+                json_str = json.dumps(defn)
 
             # Supersede only failed siblings with the same name
             if collision_rows:
@@ -8988,16 +9004,17 @@ def _run_sl_generation(
             _drop_placeholder_dimensions(defn)
             cx = _score_definition_complexity(defn)
 
-            json_str = json.dumps(defn).replace("'", "''")
+            json_str = json.dumps(defn)
             status = "validated" if not errors else "failed"
             error_str = "; ".join(errors).replace("'", "''") if errors else ""
             proj_val = f"'{project_id}'" if project_id else "NULL"
             execute_sql(
                 f"INSERT INTO {fq('metric_view_definitions')} VALUES "
-                f"('{defn_id}', '{mv_name}', '{source}', '{json_str}', '', "
+                f"('{defn_id}', '{mv_name}', '{source}', :json_def, '', "
                 f"'{status}', '{error_str}', NULL, '{now}', NULL, 1, NULL, {proj_val}, "
                 f"{cx['complexity_score']}, '{cx['complexity_level']}', NULL, NULL, "
-                f"{cx['quality_score']}, '{cx['quality_level']}')"
+                f"{cx['quality_score']}, '{cx['quality_level']}')",
+                parameters=[StatementParameterListItem(name="json_def", value=json_str)],
             )
             stats[status] += 1
             stats["generated"] += 1
@@ -9044,8 +9061,8 @@ BUSINESS QUESTIONS:
 {q_block}
 
 Return ONLY a JSON object: {{"covered": [<1-based question indices>], "not_covered": [<1-based question indices>]}}"""
-                cov_escaped = cov_prompt.replace("'", "''")
-                cov_rows = execute_sql(f"SELECT AI_QUERY('{model}', '{cov_escaped}') as response", timeout=60)
+                cov_rows = execute_sql(f"SELECT AI_QUERY('{model}', :prompt) as response", timeout=60,
+                                       parameters=[StatementParameterListItem(name="prompt", value=cov_prompt)])
                 cov_resp = cov_rows[0]["response"] if cov_rows else ""
                 coverage = _parse_single_json_safe(cov_resp)
                 if coverage:
@@ -9228,13 +9245,14 @@ def _update_definition_row(definition_id: str, defn: dict, status: str, errors: 
     _drop_broken_measures(defn)
     _drop_placeholder_dimensions(defn)
     cx = _score_definition_complexity(defn)
-    json_str = json.dumps(defn).replace("'", "''")
+    json_str = json.dumps(defn)
     execute_sql(
         f"INSERT INTO {fq('metric_view_definitions')} VALUES ("
-        f"'{new_id}', '{mv_name}', '{source_table}', '{json_str}', '{source_qs}', "
+        f"'{new_id}', '{mv_name}', '{source_table}', :json_def, '{source_qs}', "
         f"'{status}', '{error_esc}', NULL, '{now}', NULL, {new_version}, '{definition_id}', {proj_val}, "
         f"{cx['complexity_score']}, '{cx['complexity_level']}', NULL, NULL, "
-        f"{cx['quality_score']}, '{cx['quality_level']}')"
+        f"{cx['quality_score']}, '{cx['quality_level']}')",
+        parameters=[StatementParameterListItem(name="json_def", value=json_str)],
     )
     return new_id
 
@@ -9570,9 +9588,9 @@ Fix the SQL expressions. Rules:
 
 OUTPUT: Return ONLY the corrected JSON definition (single object, not array)."""
 
-    escaped = prompt.replace("'", "''")
     rows = execute_sql(
-        f"SELECT AI_QUERY('{_DEFAULT_MODEL}', '{escaped}') as response", timeout=180
+        f"SELECT AI_QUERY('{_DEFAULT_MODEL}', :prompt) as response", timeout=180,
+        parameters=[StatementParameterListItem(name="prompt", value=prompt)],
     )
     response = rows[0]["response"] if rows else ""
     logger.info(
@@ -9622,13 +9640,14 @@ def update_definition(definition_id: str, req: PutDefinitionRequest):
         raise HTTPException(400, detail=f"Invalid JSON: {e}")
     source = defn.get("source", "")
     status, errs = _validate_definition(defn, source) if source else ("pending", "")
-    json_esc = json.dumps(defn).replace("'", "''")
+    json_str = json.dumps(defn)
     err_esc = errs.replace("'", "''")
     execute_sql(
         f"UPDATE {fq('metric_view_definitions')} "
-        f"SET json_definition = '{json_esc}', status = '{status}', "
+        f"SET json_definition = :json_def, status = '{status}', "
         f"validation_errors = '{err_esc}' "
-        f"WHERE definition_id = '{definition_id}'"
+        f"WHERE definition_id = '{definition_id}'",
+        parameters=[StatementParameterListItem(name="json_def", value=json_str)],
     )
     return {"definition_id": definition_id, "status": status, "validation_errors": errs}
 
@@ -9789,6 +9808,8 @@ def improve_definition(definition_id: str, req: ImproveRequest | None = None):
     """Ask AI to improve an existing validated/applied metric view definition."""
     _ensure_semantic_layer_tables()
     row = _fetch_definition(definition_id)
+    if row.get("status") == "applied":
+        raise HTTPException(400, detail="Cannot improve an applied metric view. Drop it first or improve a validated (unapplied) version.")
     defn = json.loads(row["json_definition"]) if isinstance(row["json_definition"], str) else row["json_definition"]
     source = defn.get("source", row.get("source_table", ""))
     src_cat, src_sch = _cat_sch_from_source(source) if source else (CATALOG, SCHEMA)
@@ -9830,12 +9851,15 @@ Improvements to make:
 
 OUTPUT: Return ONLY the improved JSON definition (single object, not array)."""
 
-    escaped = prompt.replace("'", "''")
     rows = execute_sql(
-        f"SELECT AI_QUERY('{_DEFAULT_MODEL}', '{escaped}') as response", timeout=180
+        f"SELECT AI_QUERY('{_DEFAULT_MODEL}', :prompt) as response", timeout=180,
+        parameters=[StatementParameterListItem(name="prompt", value=prompt)],
     )
     response = rows[0]["response"] if rows else ""
-    new_defn = _parse_single_json(response)
+    try:
+        new_defn = _parse_single_json(response)
+    except (ValueError, json.JSONDecodeError) as e:
+        raise HTTPException(502, detail=f"AI returned invalid response: {str(e)[:200]}")
     new_defn.setdefault("source", source)
     new_defn.setdefault("name", defn.get("name", ""))
     status, errs = _validate_definition(new_defn, new_defn.get("source", source))
@@ -9887,9 +9911,9 @@ Fix the definition so it deploys successfully. Rules:
 - All string literals must be single-quoted
 - Output ONLY the corrected JSON definition (single object, not array)."""
 
-    escaped = prompt.replace("'", "''")
     rows = execute_sql(
-        f"SELECT AI_QUERY('{_DEFAULT_MODEL}', '{escaped}') as response", timeout=180
+        f"SELECT AI_QUERY('{_DEFAULT_MODEL}', :prompt) as response", timeout=180,
+        parameters=[StatementParameterListItem(name="prompt", value=prompt)],
     )
     response = rows[0]["response"] if rows else ""
     try:
@@ -10067,6 +10091,43 @@ def _compute_mv_health(defn: dict) -> dict:
     dimensions_map["richness"] = {"score": richness_score, "max": 2, "detail": ", ".join(detail_parts) if detail_parts else "Basic definitions only"}
     score_total += richness_score
 
+    # Unused join detection (issues only, does not affect score)
+    if joins:
+        all_exprs_text = " ".join(
+            [d.get("expr", "") for d in dims]
+            + [m.get("expr", "") for m in measures]
+            + [filt or ""]
+        )
+
+        def _check_unused_joins(jlist, prefix=""):
+            for idx, j in enumerate(jlist):
+                alias = j.get("name", "")
+                if alias and f"{alias}." not in all_exprs_text:
+                    issues.append({
+                        "field": f"joins[{prefix}{idx}]",
+                        "severity": "high",
+                        "message": f"Join '{alias}' to {j.get('source', '?')} is never referenced by any dimension, measure, or filter expression. Unused joins risk fan-out inflation without providing analytical value.",
+                        "suggestion": f"Remove the join to '{alias}' -- no expression uses columns from it.",
+                    })
+                nested = j.get("joins", [])
+                if nested:
+                    _check_unused_joins(nested, prefix=f"{prefix}{idx}.")
+
+        _check_unused_joins(joins)
+
+    # Fact-to-fact join detection (issues only, does not affect score)
+    _FACT_PREFIXES_HEALTH = ("fct_", "fact_", "f_")
+    if joins:
+        for idx, j in enumerate(joins):
+            join_short = j.get("source", "").split(".")[-1].lower()
+            if any(join_short.startswith(p) for p in _FACT_PREFIXES_HEALTH):
+                issues.append({
+                    "field": f"joins[{idx}]",
+                    "severity": "high",
+                    "message": f"Fact-to-fact join detected: source joins to '{join_short}' which appears to be a fact table. This creates a one-to-many fan-out that inflates all aggregates.",
+                    "suggestion": f"Remove the join to '{join_short}' or create a separate metric view sourced from it.",
+                })
+
     return {"score": score_total, "max": 10, "dimensions": dimensions_map, "issues": issues}
 
 
@@ -10129,7 +10190,14 @@ def mv_analyze(definition_id: str):
     except Exception as e:
         logger.debug("MV analyze profiling lookup skipped: %s", e)
 
-    prompt = f"""Analyze this metric view definition and identify specific issues and improvements.
+    # --- Validation context from stored results ---
+    val_errors = row.get("validation_errors", "") or ""
+    if val_errors:
+        validation_block = f"VALIDATION FAILURES (from generation):\n{val_errors}"
+    else:
+        validation_block = "All expressions passed SQL validation at generation time (no syntax errors detected)."
+
+    prompt = f"""Analyze this metric view definition for correctness issues.
 
 DEFINITION:
 {json.dumps(defn, indent=2)}
@@ -10137,27 +10205,43 @@ DEFINITION:
 Health score: {health['score']}/{health['max']}
 Known issues: {json.dumps(health['issues'])}
 
-Also check for FAN-OUT RISKS:
-- Measures that lack an aggregate function (SUM, COUNT, AVG, etc.)
-- Joins that multiply rows: if source is a dimension joined to a fact, all aggregates inflate
-- SUM/AVG of non-additive dimension attributes (e.g. SUM(hospital.bed_count) on a prescriptions source)
-- Self-dividing measures: SUM(x)/NULLIF(SUM(x),0) always equals 1.0
-- Missing DISTINCT: COUNT(col) after a one-to-many join inflates vs COUNT(DISTINCT col)
+{validation_block}
 {profiling_context}
 
+SEVERITY DEFINITIONS (follow exactly):
+- high: Will cause a SQL RUNTIME ERROR or produces PROVABLY WRONG numeric results (e.g., computation wrapped in quotes becomes a string literal, self-dividing measure always = 1.0, missing aggregate function on a measure)
+- medium: Likely produces incorrect results for data that EXISTS (confirmed by profiling context above showing non-unique join keys, or known column values contradicting the logic)
+- low: Future-proofing suggestion, cosmetic issue, documentation improvement, or hypothetical data concern
+
+FALSE POSITIVE RULES (do NOT flag these):
+- If all expressions passed validation, do NOT flag syntax or quoting issues as high. Only flag logical/semantic problems.
+- Nested dot-path join references (e.g., "pat_enc.dim_department.col") are VALID Databricks metric view syntax. Do NOT flag them.
+- DATE_FORMAT(col, 'pattern') producing string dimensions is standard practice. Do NOT flag it.
+- Incomplete filter value lists (e.g., "you only check HH but not LL") are LOW unless profiling context CONFIRMS excluded values exist with non-zero distinct_count.
+- Fan-out risk on dimension joins is LOW unless profiling shows the join key has fewer distinct values than rows in that table (non-unique key).
+- COUNT(DISTINCT ...) is a valid fan-out protection pattern. Do NOT flag it as unnecessary.
+
+CHECK FOR THESE REAL ISSUES:
+- Computations wrapped in quotes: THEN '(FUNC(...))' makes the expression a string literal (high)
+- Self-dividing measures: SUM(x)/NULLIF(SUM(x),0) always = 1.0 (high)
+- Missing aggregate on a measure expr (high)
+- Joins that source from a dimension and join to a fact table, inflating all aggregates (high)
+- COUNT(col) without DISTINCT after a one-to-many join when it should deduplicate (medium)
+
 For each issue found, provide:
-- field: the specific JSON path (e.g. "measures[0].expr", "measures[0].comment", "dimensions", "filter")
+- field: the specific JSON path (e.g. "measures[4].expr")
 - severity: high, medium, or low
 - message: what's wrong
-- suggestion: human-readable explanation of the recommended fix
-- fix_value: (optional) the exact replacement value for the field -- a raw SQL expression, string, or JSON fragment that can be directly substituted into the definition. Omit this key if the fix requires structural changes (adding/removing array items) or if the correct value depends on columns that may not exist.
+- suggestion: how to fix it
+- fix_value: (optional) the exact replacement value for the field
 
 Output JSON in ```json``` fences: {{"issues": [...]}}"""
 
     try:
-        escaped = prompt.replace("'", "''")
         rows = execute_sql(
-            f"SELECT AI_QUERY('{_DEFAULT_MODEL}', '{escaped}') as response", timeout=180
+            f"SELECT AI_QUERY('{_DEFAULT_MODEL}', :prompt) as response",
+            timeout=180,
+            parameters=[StatementParameterListItem(name="prompt", value=prompt)],
         )
         response = rows[0]["response"] if rows else ""
         m = re.search(r"```json\s*(.*?)```", response, re.DOTALL)

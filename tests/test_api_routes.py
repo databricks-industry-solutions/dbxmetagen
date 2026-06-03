@@ -220,6 +220,58 @@ class TestComputeMvHealth:
         result = api_server._compute_mv_health(defn)
         assert 0 <= result["score"] <= result["max"]
 
+    def test_unused_join_detected(self):
+        defn = self._minimal_defn()
+        defn["joins"] = [
+            {"name": "dim_patient", "source": "cat.sch.dim_patient", "on": "source.pk = dim_patient.pk"},
+        ]
+        result = api_server._compute_mv_health(defn)
+        unused_issues = [i for i in result["issues"] if "never referenced" in i.get("message", "")]
+        assert len(unused_issues) == 1
+        assert "dim_patient" in unused_issues[0]["message"]
+
+    def test_used_join_not_flagged(self):
+        defn = self._minimal_defn()
+        defn["joins"] = [
+            {"name": "dim_patient", "source": "cat.sch.dim_patient", "on": "source.pk = dim_patient.pk"},
+        ]
+        defn["dimensions"].append({"name": "race", "expr": "dim_patient.race", "comment": "race"})
+        result = api_server._compute_mv_health(defn)
+        unused_issues = [i for i in result["issues"] if "never referenced" in i.get("message", "")]
+        assert len(unused_issues) == 0
+
+    def test_fact_to_fact_join_detected(self):
+        defn = self._minimal_defn()
+        defn["joins"] = [
+            {"name": "fact_clinical_event", "source": "cat.sch.fact_clinical_event", "on": "source.ek = fact_clinical_event.ek"},
+        ]
+        defn["dimensions"].append({"name": "evt", "expr": "fact_clinical_event.type", "comment": "type"})
+        result = api_server._compute_mv_health(defn)
+        fact_issues = [i for i in result["issues"] if "Fact-to-fact" in i.get("message", "")]
+        assert len(fact_issues) == 1
+        assert "fact_clinical_event" in fact_issues[0]["message"]
+
+    def test_dim_join_not_flagged_as_fact(self):
+        defn = self._minimal_defn()
+        defn["joins"] = [
+            {"name": "dim_patient", "source": "cat.sch.dim_patient", "on": "source.pk = dim_patient.pk"},
+        ]
+        defn["dimensions"].append({"name": "race", "expr": "dim_patient.race", "comment": "race"})
+        result = api_server._compute_mv_health(defn)
+        fact_issues = [i for i in result["issues"] if "Fact-to-fact" in i.get("message", "")]
+        assert len(fact_issues) == 0
+
+    def test_unused_join_does_not_affect_score(self):
+        defn = self._minimal_defn()
+        defn["measures"][0]["synonyms"] = ["total x"]
+        defn["measures"][0]["expr"] = "SUM(x) FILTER(WHERE active)"
+        score_without = api_server._compute_mv_health(defn)["score"]
+        defn["joins"] = [
+            {"name": "unused_tbl", "source": "cat.sch.unused_tbl", "on": "source.id = unused_tbl.id"},
+        ]
+        score_with = api_server._compute_mv_health(defn)["score"]
+        assert score_without == score_with
+
 
 # ---------------------------------------------------------------------------
 # HITL review endpoints exist
