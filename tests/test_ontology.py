@@ -647,6 +647,27 @@ class TestDeduplicateEntities:
         assert result[0]["confidence"] == 0.9
         assert set(result[0]["source_columns"]) == {"col_a", "col_b"}
 
+    def test_merges_across_granularity(self):
+        """ai_batch (no granularity) and column_keyword (granularity=column) should merge."""
+        entities = [
+            {
+                "entity_id": "1", "entity_type": "Patient", "entity_name": "Patient",
+                "source_tables": ["t1"], "source_columns": ["col_a", "col_b"],
+                "attributes": {"discovery_method": "ai_batch"},
+                "confidence": 0.95, "validation_notes": None,
+            },
+            {
+                "entity_id": "2", "entity_type": "Patient", "entity_name": "Patient",
+                "source_tables": ["t1"], "source_columns": ["col_a", "col_c"],
+                "attributes": {"granularity": "column", "discovery_method": "column_keyword"},
+                "confidence": 0.9, "validation_notes": None,
+            },
+        ]
+        result = EntityDiscoverer.deduplicate_entities(entities)
+        assert len(result) == 1
+        assert result[0]["confidence"] == 0.95
+        assert set(result[0]["source_columns"]) == {"col_a", "col_b", "col_c"}
+
     def test_keeps_different_entity_types(self):
         entities = [
             {
@@ -1057,53 +1078,25 @@ class TestPostMergeConfidenceClamp:
         assert "logger.error" in src
 
 
-class TestPurgeStaleBundleEntities:
-    """Tests for _purge_stale_bundle_entities."""
+class TestMultiBundleCoexistence:
+    """Verify that different bundles can coexist in the same output schema."""
 
     @pytest.fixture
     def builder(self):
         mock_spark = MagicMock()
-        config = OntologyConfig(catalog_name="cat", schema_name="sch", ontology_bundle="general")
+        config = OntologyConfig(catalog_name="cat", schema_name="sch", ontology_bundle="fhir_r4")
         with patch.object(OntologyLoader, 'load_config') as mock_load:
             mock_load.return_value = OntologyLoader._default_config()
             b = OntologyBuilder(mock_spark, config)
         return b
 
-    def test_purge_emits_delete_sql(self, builder):
-        mock_result = MagicMock()
-        mock_result.first.return_value = [3]
-        builder.spark.sql.return_value = mock_result
-
-        builder._purge_stale_bundle_entities("general")
-        sql_calls = [c[0][0] for c in builder.spark.sql.call_args_list]
-        delete_sqls = [s for s in sql_calls if "DELETE FROM" in s]
-        assert len(delete_sqls) == 1
-        assert "ontology_bundle != 'general'" in delete_sqls[0]
-        assert "auto_discovered = TRUE" in delete_sqls[0]
-        assert "validated = FALSE" not in delete_sqls[0]
-
-    def test_purge_skips_when_no_bundle(self, builder):
-        count = builder._purge_stale_bundle_entities("")
-        assert count == 0
-        builder.spark.sql.assert_not_called()
-
-    def test_purge_preserves_human_owned_entities(self, builder):
-        """Purge only targets auto_discovered=true; human-owned (auto_discovered=false) survive."""
-        mock_result = MagicMock()
-        mock_result.first.return_value = [0]
-        builder.spark.sql.return_value = mock_result
-
-        builder._purge_stale_bundle_entities("general")
-        sql = builder.spark.sql.call_args[0][0]
-        assert "auto_discovered = TRUE" in sql
-        assert "validated = FALSE" not in sql
-
-    def test_discover_and_store_calls_purge_when_bundle_set(self, builder):
+    def test_discover_does_not_purge_other_bundles(self, builder):
+        """Incremental discover_and_store_entities must not DELETE entities from other bundles."""
         builder.discoverer.discover_entities_from_tables = MagicMock(return_value=[])
         builder.discover_and_store_entities()
         sql_calls = [c[0][0] for c in builder.spark.sql.call_args_list]
         delete_sqls = [s for s in sql_calls if "DELETE FROM" in s]
-        assert len(delete_sqls) == 1
+        assert len(delete_sqls) == 0
 
     def test_discover_and_store_skips_purge_when_no_bundle(self):
         mock_spark = MagicMock()
@@ -1118,11 +1111,10 @@ class TestPurgeStaleBundleEntities:
         assert len(delete_sqls) == 0
 
 
-class TestPurgeCurrentBundleStale:
-    """Tests for _purge_current_bundle_stale (non-incremental full rebuild cleanup)."""
+class TestNoPurgeOnDiscover:
+    """Verify that discover_and_store never issues DELETE, regardless of incremental flag."""
 
-    @pytest.fixture
-    def builder_non_incremental(self):
+    def test_no_delete_when_non_incremental(self):
         mock_spark = MagicMock()
         config = OntologyConfig(
             catalog_name="cat", schema_name="sch",
@@ -1131,40 +1123,13 @@ class TestPurgeCurrentBundleStale:
         with patch.object(OntologyLoader, 'load_config') as mock_load:
             mock_load.return_value = OntologyLoader._default_config()
             b = OntologyBuilder(mock_spark, config)
-        return b
-
-    def test_emits_delete_for_table_granularity(self, builder_non_incremental):
-        b = builder_non_incremental
-        mock_result = MagicMock()
-        mock_result.first.return_value = [5]
-        b.spark.sql.return_value = mock_result
-        b._purge_current_bundle_stale("table")
-        sql = b.spark.sql.call_args[0][0]
-        assert "DELETE FROM" in sql
-        assert "auto_discovered = TRUE" in sql
-        assert "validated = FALSE" not in sql
-        assert "ontology_bundle = 'schema_org'" in sql
-        assert "'table'" in sql
-
-    def test_emits_delete_for_column_granularity(self, builder_non_incremental):
-        b = builder_non_incremental
-        mock_result = MagicMock()
-        mock_result.first.return_value = [3]
-        b.spark.sql.return_value = mock_result
-        b._purge_current_bundle_stale("column")
-        sql = b.spark.sql.call_args[0][0]
-        assert "'column'" in sql
-
-    def test_discover_and_store_calls_purge_when_non_incremental(self, builder_non_incremental):
-        b = builder_non_incremental
         b.discoverer.discover_entities_from_tables = MagicMock(return_value=[])
         b.discover_and_store_entities()
-        sql_calls = [c[0][0] for c in b.spark.sql.call_args_list]
+        sql_calls = [c[0][0] for c in mock_spark.sql.call_args_list]
         delete_sqls = [s for s in sql_calls if "DELETE FROM" in s]
-        current_bundle_deletes = [s for s in delete_sqls if "ontology_bundle = 'schema_org'" in s]
-        assert len(current_bundle_deletes) >= 1
+        assert len(delete_sqls) == 0
 
-    def test_discover_and_store_skips_purge_when_incremental(self):
+    def test_no_delete_when_incremental(self):
         mock_spark = MagicMock()
         config = OntologyConfig(
             catalog_name="cat", schema_name="sch",
@@ -1176,17 +1141,8 @@ class TestPurgeCurrentBundleStale:
         b.discoverer.discover_entities_from_tables = MagicMock(return_value=[])
         b.discover_and_store_entities()
         sql_calls = [c[0][0] for c in mock_spark.sql.call_args_list]
-        current_bundle_deletes = [
-            s for s in sql_calls
-            if "DELETE FROM" in s and "ontology_bundle = 'schema_org'" in s
-        ]
-        assert len(current_bundle_deletes) == 0
-
-    def test_skips_when_no_bundle(self, builder_non_incremental):
-        b = builder_non_incremental
-        b.config.ontology_bundle = None
-        count = b._purge_current_bundle_stale("table")
-        assert count == 0
+        delete_sqls = [s for s in sql_calls if "DELETE FROM" in s]
+        assert len(delete_sqls) == 0
 
 
 # ======================================================================

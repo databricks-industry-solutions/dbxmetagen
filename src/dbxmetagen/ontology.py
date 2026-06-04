@@ -2648,14 +2648,13 @@ class EntityDiscoverer:
     def deduplicate_entities(entities: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
         """Merge duplicate entities from different discovery methods.
 
-        Groups by (source_table, entity_type, granularity) and merges
-        source_columns, takes max confidence, and combines attributes.
+        Groups by (source_table, entity_type) and merges source_columns,
+        takes max confidence, and combines attributes.
         """
         groups: Dict[tuple, Dict[str, Any]] = {}
         for ent in entities:
-            granularity = ent.get("attributes", {}).get("granularity", "table")
             for tbl in ent.get("source_tables", ["unknown"]):
-                key = (tbl, ent["entity_type"], granularity)
+                key = (tbl, ent["entity_type"])
                 if key not in groups:
                     groups[key] = {
                         **ent,
@@ -2965,54 +2964,6 @@ class OntologyBuilder:
                     logger.warning("Could not add column %s to relationships: %s", col_name, e)
         logger.info("Relationships table %s ready", self.config.fully_qualified_relationships)
 
-    def _purge_stale_bundle_entities(self, current_bundle: str) -> int:
-        """Remove all system-owned entities from a different bundle."""
-        if not current_bundle:
-            return 0
-        esc = current_bundle.replace("'", "''")
-        # DELETE: Remove auto-discovered entities that belong to a DIFFERENT ontology
-        # bundle than the one currently being run.
-        # WHY: When switching bundles (e.g., healthcare -> schema_org), the old
-        # bundle's entity types are no longer relevant. Human-owned entities
-        # (auto_discovered=false) are preserved -- only system-owned are purged.
-        result = self.spark.sql(
-            f"""
-            DELETE FROM {self.config.fully_qualified_entities}
-            WHERE ontology_bundle IS NOT NULL
-              AND ontology_bundle != '{esc}'
-              AND auto_discovered = TRUE
-            """
-        )
-        count = result.first()[0] if result.first() else 0
-        if count:
-            logger.info(f"Purged {count} stale entities from previous bundle")
-        return count
-
-    def _purge_current_bundle_stale(self, granularity: str) -> int:
-        """Delete system-owned entities from the current bundle before a full rebuild.
-
-        Only called in non-incremental mode. Human-owned entities (auto_discovered=false)
-        are preserved. The subsequent MERGE will re-insert freshly discovered entities.
-        """
-        bundle = self.config.ontology_bundle
-        if not bundle:
-            return 0
-        esc = bundle.replace("'", "''")
-        try:
-            result = self.spark.sql(f"""
-                DELETE FROM {self.config.fully_qualified_entities}
-                WHERE auto_discovered = TRUE
-                  AND ontology_bundle = '{esc}'
-                  AND COALESCE(attributes['granularity'], 'table') = '{granularity}'
-            """)
-            count = result.first()[0] if result.first() else 0
-            if count:
-                logger.info("Cleared %d stale %s-granularity entities for full rebuild", count, granularity)
-            return count
-        except Exception as e:
-            logger.debug("Stale entity cleanup skipped: %s", e)
-            return 0
-
     _MIN_STORE_CONFIDENCE = 0.2
 
     def _store_entities(
@@ -3098,7 +3049,6 @@ class OntologyBuilder:
         USING {view_name} AS source
         ON target.entity_name = source.entity_name
            AND array_join(array_sort(target.source_tables), ',') = array_join(array_sort(source.source_tables), ',')
-           AND COALESCE(target.attributes['granularity'], 'table') = COALESCE(source.attributes['granularity'], 'table')
         {match_condition}
             target.confidence = source.confidence,
             target.source_columns = source.source_columns,
@@ -3133,12 +3083,6 @@ class OntologyBuilder:
 
     def discover_and_store_entities(self) -> int:
         """Discover table-level entities, deduplicate, and store."""
-        bundle_name = self.config.ontology_bundle or None
-        if bundle_name:
-            self._purge_stale_bundle_entities(bundle_name)
-            if not self.config.incremental:
-                self._purge_current_bundle_stale("table")
-
         entities = self.discoverer.discover_entities_from_tables()
         if not entities:
             logger.warning(
@@ -3160,8 +3104,6 @@ class OntologyBuilder:
 
     def discover_and_store_column_entities(self) -> int:
         """Discover column-level entities, deduplicate, and store."""
-        if not self.config.incremental and self.config.ontology_bundle:
-            self._purge_current_bundle_stale("column")
         entities = self.discoverer.discover_entities_from_columns()
         if not entities:
             logger.info("No column-level entities discovered")
