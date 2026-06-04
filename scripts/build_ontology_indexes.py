@@ -177,6 +177,26 @@ _PRIMITIVE_RANGE_NAMES = frozenset({
     "Narrative", "Extension", "Meta", "Reference",
 })
 
+# FHIR property name → concrete entity type for Reference indirection.
+# Canonical source: generate_bundle_properties.py._FHIR_REFERENCE_TARGETS
+_FHIR_REFERENCE_TARGETS: Dict[str, str] = {
+    "subject": "Patient", "patient": "Patient", "encounter": "Encounter",
+    "performer": "Practitioner", "provider": "Practitioner",
+    "practitioner": "Practitioner", "organization": "Organization",
+    "managingOrganization": "Organization", "serviceProvider": "Organization",
+    "location": "Location", "insurer": "Organization", "facility": "Location",
+    "device": "Device", "specimen": "Specimen", "recorder": "Practitioner",
+    "asserter": "Practitioner", "requester": "Practitioner",
+    "sender": "Organization", "receiver": "Organization",
+    "author": "Practitioner", "source": "Patient",
+    "reasonReference": "Condition", "hasMember": "Observation",
+    "derivedFrom": "Observation", "generalPractitioner": "Practitioner",
+    "referral": "ServiceRequest", "prescription": "MedicationRequest",
+    "originalPrescription": "MedicationRequest", "enterer": "Practitioner",
+    "appointment": "Appointment", "episodeOfCare": "EpisodeOfCare",
+    "account": "Account", "manufacturer": "Organization",
+}
+
 
 def _local_name(uri) -> Optional[str]:
     s = str(uri)
@@ -438,9 +458,10 @@ def _extract_schema_domain_edges(g, entities, classes_of_interest, rdflib_mod):
                     "ranges": obj_ranges, "inverse": None,
                     "label": prop_label, "sub_property_of": None, "facet": None,
                 })
-                entities[domain_name]["relationships"][prop_name] = {
-                    "target": rng, "cardinality": "unknown",
-                }
+            entities[domain_name]["relationships"][prop_name] = {
+                "target": obj_ranges[0], "cardinality": "unknown",
+                "ranges": obj_ranges,
+            }
         elif data_ranges:
             attrs = entities[domain_name]["typical_attributes"]
             if prop_name not in attrs:
@@ -450,6 +471,14 @@ def _extract_schema_domain_edges(g, entities, classes_of_interest, rdflib_mod):
 def _extract_union_domain_edges(g, entities, classes_of_interest, OWL, RDF, RDFS):
     """Extract edges from owl:ObjectProperty with owl:unionOf domains (used by OMOP CDM)."""
     from rdflib.collection import Collection
+
+    # Build name→URI map for cardinality resolution
+    _name_to_cls: Dict[str, Any] = {}
+    for class_type in (OWL.Class, RDFS.Class):
+        for cls in g.subjects(RDF.type, class_type):
+            ln = _local_name(cls)
+            if ln and ln in classes_of_interest:
+                _name_to_cls.setdefault(ln, cls)
 
     for prop in g.subjects(RDF.type, OWL.ObjectProperty):
         prop_name = _local_name(prop)
@@ -496,13 +525,18 @@ def _extract_union_domain_edges(g, entities, classes_of_interest, OWL, RDF, RDFS
             existing_names = {e["name"] for e in entities[tgt]["outgoing_edges"]}
             if prop_name in existing_names:
                 continue
+            card = "unknown"
+            tgt_cls = _name_to_cls.get(tgt)
+            if tgt_cls is not None:
+                card = _resolve_cardinality(g, tgt_cls, OWL, RDFS).get(prop_name, "unknown")
             entities[tgt]["outgoing_edges"].append({
                 "name": prop_name, "uri": str(prop), "range": range_val,
                 "ranges": ranges, "inverse": inverse_val,
                 "label": prop_label, "sub_property_of": sub_props or None, "facet": facet,
+                "cardinality": card,
             })
             entities[tgt]["relationships"][prop_name] = {
-                "target": range_val or "Thing", "cardinality": "unknown",
+                "target": range_val or "Thing", "cardinality": card,
             }
 
 
@@ -572,6 +606,13 @@ def _extract_single_class(g, cls, classes_of_interest, source_label, entities, O
             data_props.append(prop_name)
         elif is_obj_prop:
             primary_range = ranges[0] if ranges else None
+            # Resolve FHIR Reference → concrete entity before the primitive filter
+            if primary_range == "Reference" and primary_range not in classes_of_interest:
+                local = prop_name.rsplit(".", 1)[-1]
+                resolved = _FHIR_REFERENCE_TARGETS.get(local)
+                if resolved and resolved in classes_of_interest:
+                    primary_range = resolved
+                    ranges = [primary_range] + [r for r in ranges if r != "Reference"]
             if primary_range and primary_range in _PRIMITIVE_RANGE_NAMES and primary_range not in classes_of_interest:
                 data_props.append(prop_name)
             else:

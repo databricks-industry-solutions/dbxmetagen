@@ -627,6 +627,7 @@ class EdgeCatalogEntry:
     category: str = "business"
     uri: Optional[str] = None
     owl_type: Optional[str] = None
+    bundle_name: Optional[str] = None
 
     def _matches(self, constraint: Any, entity_type: str) -> bool:
         if constraint is None or constraint == "Any":
@@ -658,12 +659,25 @@ class EdgeCatalog:
         entry = self._entries.get(name)
         return entry.inverse if entry else None
 
-    def find_edge(self, src_entity: str, dst_entity: str) -> Optional[EdgeCatalogEntry]:
-        """Find the best matching edge for a (src, dst) entity pair."""
+    def find_edge(self, src_entity: str, dst_entity: str,
+                  bundle_name: Optional[str] = None) -> Optional[EdgeCatalogEntry]:
+        """Find the best matching edge for a (src, dst) entity pair.
+
+        When *bundle_name* is supplied, entries from that bundle are preferred
+        over cross-bundle matches, avoiding false positives when multiple
+        bundles define entities with the same name.
+        """
+        scoped = []
+        unscoped = []
         for entry in self._entries.values():
             if entry.validate_edge(src_entity, dst_entity):
-                return entry
-        return None
+                if bundle_name and entry.bundle_name == bundle_name:
+                    scoped.append(entry)
+                else:
+                    unscoped.append(entry)
+        if scoped:
+            return scoped[0]
+        return unscoped[0] if unscoped else None
 
     def validate(self, edge_name: str, src_entity: str, dst_entity: str) -> Tuple[bool, str]:
         """Validate an edge. Returns (valid, message)."""
@@ -1085,12 +1099,15 @@ class OntologyLoader:
     })
 
     @staticmethod
-    def get_edge_catalog(config: Dict[str, Any]) -> Dict[str, EdgeCatalogEntry]:
+    def get_edge_catalog(config: Dict[str, Any], bundle_name: Optional[str] = None) -> Dict[str, EdgeCatalogEntry]:
         """Extract the global edge catalog from config.
 
         Structural edges (instance_of, subclass_of, has_part, contains,
         member_of) are auto-merged when not explicitly defined so that
         hierarchy and structural edge operations work for all bundles.
+
+        When *bundle_name* is provided it is stamped on every entry so
+        that ``EdgeCatalog.find_edge`` can prefer same-bundle matches.
         """
         raw = config.get("edge_catalog", {})
         catalog: Dict[str, EdgeCatalogEntry] = {}
@@ -1106,6 +1123,7 @@ class OntologyLoader:
                 category=info.get("category", "business"),
                 uri=info.get("uri"),
                 owl_type=info.get("owl_type"),
+                bundle_name=bundle_name,
             )
         for sname, sinfo in OntologyLoader._STRUCTURAL_EDGES.items():
             if sname not in catalog:
@@ -1156,7 +1174,9 @@ class EntityDiscoverer:
             e.name for e in self.entity_definitions if e.name != "DataTable"
         ]
         self._property_roles = OntologyLoader.get_property_roles(ontology_config)
-        self._edge_catalog_entries = OntologyLoader.get_edge_catalog(ontology_config)
+        self._edge_catalog_entries = OntologyLoader.get_edge_catalog(
+            ontology_config, bundle_name=getattr(config, "ontology_bundle", None)
+        )
         self._bundle_geo_patterns = self._build_bundle_geo_patterns()
         self._edge_catalog = EdgeCatalog(self._edge_catalog_entries)
         self._entity_def_map: Dict[str, EntityDefinition] = {
@@ -4827,8 +4847,9 @@ class OntologyBuilder:
                     if rn not in OntologyLoader._INFER_BLOCKLIST:
                         return rn
 
-        # Search edge catalog by domain/range match
-        match = catalog.find_edge(src_type, dst_type)
+        # Search edge catalog by domain/range match (prefer same-bundle entries)
+        _bundle = getattr(getattr(self, "config", None), "ontology_bundle", None)
+        match = catalog.find_edge(src_type, dst_type, bundle_name=_bundle)
         if match and match.name not in OntologyLoader._INFER_BLOCKLIST:
             return match.name
 

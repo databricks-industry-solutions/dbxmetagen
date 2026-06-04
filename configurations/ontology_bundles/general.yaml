@@ -170,6 +170,19 @@ ontology:
     related_to:
       symmetric: true
       category: semantic
+    owns:
+      domain: Person
+      range: Transaction
+      category: business
+    part_of:
+      domain: Person
+      range: Organization
+      category: structural
+      inverse: has_part
+    contains_location:
+      domain: Organization
+      range: Location
+      category: business
   entities:
     auto_discover: true
     discovery_confidence_threshold: 0.4
