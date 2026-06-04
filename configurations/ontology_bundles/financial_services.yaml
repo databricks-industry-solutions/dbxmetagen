@@ -148,6 +148,107 @@ ontology:
     similar_to:
       symmetric: true
       category: semantic
+    part_of:
+      domain: Person
+      range: Organization
+      category: structural
+      inverse: has_part
+    on_account:
+      domain: Transaction
+      range: Account
+      category: business
+    by_person:
+      domain: Transaction
+      range: Person
+      category: business
+    has_transaction:
+      domain: Account
+      range: Transaction
+      category: business
+      inverse: transaction_of
+    transaction_of:
+      domain: Transaction
+      range: Account
+      inverse: has_transaction
+      category: business
+    managed_by:
+      domain: Portfolio
+      range: Person
+      category: business
+      inverse: manages
+    manages:
+      domain: Person
+      range: Portfolio
+      inverse: managed_by
+      category: business
+    of_instrument:
+      domain: Trade
+      range: Instrument
+      category: business
+    with_counterparty:
+      domain: Trade
+      range: Counterparty
+      category: business
+    hedges:
+      domain: Instrument
+      range: Risk
+      category: business
+    has_trade:
+      domain: Counterparty
+      range: Trade
+      category: business
+      inverse: trade_of
+    trade_of:
+      domain: Trade
+      range: Counterparty
+      inverse: has_trade
+      category: business
+    for_account:
+      domain: Risk
+      range: Account
+      category: business
+    for_instrument:
+      domain: Risk
+      range: Instrument
+      category: business
+    for_person:
+      domain: Compliance
+      range: Person
+      category: business
+    for_organization:
+      domain: Compliance
+      range: Organization
+      category: business
+    on_policy:
+      domain: Claim
+      range: Policy
+      category: business
+    filed_by:
+      domain: Claim
+      range: Person
+      category: business
+    held_by:
+      domain: Policy
+      range: Person
+      category: business
+    borrowed_by:
+      domain: Loan
+      range: Person
+      category: business
+    secures:
+      domain: Loan
+      range: Account
+      category: business
+    has_risk:
+      domain: Loan
+      range: Risk
+      category: business
+      inverse: risk_of
+    risk_of:
+      domain: Risk
+      range: Loan
+      inverse: has_risk
+      category: business
   entities:
     auto_discover: true
     discovery_confidence_threshold: 0.4

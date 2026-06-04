@@ -195,9 +195,18 @@ print(f"Found {total_nodes} nodes with embeddings")
 # using classic compute with MLlib (distributed) instead.
 _SERVERLESS_NODE_LIMIT = 200_000
 
+total_table_nodes = spark.sql(
+    f"SELECT COUNT(*) AS cnt FROM {nodes_table} WHERE ({node_type_filter})"
+).collect()[0].cnt
+
+if total_table_nodes < min_k:
+    print(f"Only {total_table_nodes} node(s) of type {node_types} in graph -- clustering requires >= {min_k}. Skipping.")
+    dbutils.notebook.exit("skipped_insufficient_nodes")
+
 if total_nodes < min_k:
     raise ValueError(
-        f"Not enough nodes ({total_nodes}) for clustering. Need at least {min_k}."
+        f"Found {total_table_nodes} node(s) of type {node_types} but only {total_nodes} have embeddings. "
+        f"Embedding generation may have failed -- check the generate_embeddings task output."
     )
 
 if _SERVERLESS and total_nodes > _SERVERLESS_NODE_LIMIT:

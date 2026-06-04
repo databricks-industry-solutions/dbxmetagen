@@ -236,6 +236,57 @@ ontology:
     similar_to:
       symmetric: true
       category: semantic
+    owns:
+      domain: Person
+      range: Transaction
+      category: business
+    part_of:
+      domain: Person
+      range: Organization
+      category: structural
+      inverse: has_part
+    contains_location:
+      domain: Organization
+      range: Location
+      category: business
+    has_order:
+      domain: Encounter
+      range: Procedure
+      category: business
+      inverse: order_of
+    order_of:
+      domain: Procedure
+      range: Encounter
+      inverse: has_order
+      category: business
+    provided_by:
+      domain: Coverage
+      range: Organization
+      category: business
+    enrolls:
+      domain: ClinicalTrial
+      range: Patient
+      category: business
+    used_in:
+      domain: Device
+      range: Procedure
+      category: business
+    pays_for:
+      domain: Payer
+      range: Claim
+      category: business
+    covers:
+      domain: Payer
+      range: Patient
+      category: business
+    performs:
+      domain: Practitioner
+      range: Procedure
+      category: business
+    hosts:
+      domain: Facility
+      range: Encounter
+      category: business
   entities:
     auto_discover: true
     discovery_confidence_threshold: 0.4

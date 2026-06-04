@@ -1664,7 +1664,21 @@ export default function SemanticLayer({ onNavigate, pipelineStats }) {
             )}
           </div>
           {taskStatus.status === 'error' && taskStatus.error && (
-            <p className="text-sm text-red-600 dark:text-red-400 mt-2">{taskStatus.error}</p>
+            <div className="mt-2 space-y-2">
+              <p className="text-sm text-red-600 dark:text-red-400">{taskStatus.error}</p>
+              {taskStatus.phase2_failures?.length > 0 && (
+                <details className="text-xs text-red-500 dark:text-red-400">
+                  <summary className="cursor-pointer hover:underline">
+                    {taskStatus.phase2_failures.length} view(s) failed -- details
+                  </summary>
+                  <ul className="mt-1 ml-3 list-disc space-y-0.5 text-gray-600 dark:text-gray-400">
+                    {taskStatus.phase2_failures.map((f, i) => (
+                      <li key={i}><strong>{f.name}</strong>: {f.error?.slice(0, 200)}</li>
+                    ))}
+                  </ul>
+                </details>
+              )}
+            </div>
           )}
           {taskStatus.status === 'done' && taskStatus.result && (
             <div className="text-sm mt-2 space-y-2 text-gray-700 dark:text-gray-300">

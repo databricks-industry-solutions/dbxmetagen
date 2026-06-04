@@ -243,7 +243,7 @@ class TestGenerateMetricViewsInsert:
         })
 
         call_count = [0]
-        def sql_router(query):
+        def sql_router(query, **kwargs):
             call_count[0] += 1
             mock_result = MagicMock()
             if "SELECT" in query and "pending" in query:

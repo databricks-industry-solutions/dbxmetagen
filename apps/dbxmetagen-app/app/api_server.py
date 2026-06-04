@@ -8786,7 +8786,8 @@ def _run_sl_generation(
         if not definitions:
             task.update({
                 "status": "error",
-                "error": "AI returned no valid metric view definitions from batch generation.",
+                "error": "AI returned no valid metric view definitions. Try reducing the number of views or tables selected (4-5 at a time recommended).",
+                "phase2_failures": task.get("phase2_failures") or [],
             })
             return
 

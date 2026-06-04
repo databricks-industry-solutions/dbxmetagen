@@ -50,6 +50,13 @@ print(f"Embedding generation complete")
 print(f"  Nodes embedded: {result['nodes_embedded']}")
 print(f"  Total candidates: {result['total_candidates']}")
 
+missing = spark.sql(f"""
+    SELECT COUNT(*) as cnt FROM {catalog_name}.{schema_name}.graph_nodes
+    WHERE embedding IS NULL AND comment IS NOT NULL AND LENGTH(comment) > 10
+""").collect()[0].cnt
+if missing > 0:
+    print(f"WARNING: {missing} nodes still missing embeddings after generation")
+
 # COMMAND ----------
 
 # Show nodes with embeddings
