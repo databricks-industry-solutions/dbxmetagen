@@ -1,7 +1,7 @@
 {
   "name": "dbxmetagen-app",
   "private": true,
-  "version": "0.10.1",
+  "version": "0.10.2",
   "type": "module",
   "scripts": {
     "dev": "vite",
@@ -12,6 +12,7 @@
     "react": "^19.0.0",
     "react-dom": "^19.0.0",
     "react-force-graph-2d": "^1.26.0",
+    "react-joyride": "^3.1.0",
     "recharts": "^2.15.0"
   },
   "devDependencies": {
