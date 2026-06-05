@@ -138,6 +138,7 @@ import json
 
 SILHOUETTE_SAMPLE_THRESHOLD = 10000
 CHECKPOINT_THRESHOLD = 50000
+SMALL_DATASET_THRESHOLD = 50
 
 # Serverless (Spark Connect) doesn't support MLlib or .cache()/.persist().
 # Detect once and route to sklearn (serverless) or MLlib (classic).
@@ -278,7 +279,8 @@ def _compute_silhouette(data, labels, sample_threshold=SILHOUETTE_SAMPLE_THRESHO
     """Compute silhouette score, sampling for large datasets."""
     if _SERVERLESS:
         n = len(labels)
-        if n <= 1 or len(set(labels)) <= 1:
+        n_labels = len(set(labels))
+        if n <= 1 or n_labels <= 1 or n_labels >= n:
             return 0.0
         if n > sample_threshold:
             idx = np.random.RandomState(42).choice(n, sample_threshold, replace=False)
@@ -409,22 +411,25 @@ print("=" * 60)
 print("PHASE 1: Broad Search (WSSSE only for speed)")
 print("=" * 60)
 
-# Sample for broad search (25% or at least 500 nodes)
-sample_fraction_broad = min(0.25, max(500 / vector_count, 0.1))
-broad_sample = _sample_data(_full_data, sample_fraction_broad, seed=42)
-broad_sample_count = _data_count(broad_sample)
-if not _SERVERLESS:
-    broad_sample = broad_sample.cache()
-print(
-    f"Broad search sample: {broad_sample_count} nodes ({sample_fraction_broad*100:.1f}%)"
-)
-
-if broad_sample_count < min_k:
-    print(f"Sample too small ({broad_sample_count} < {min_k}), using full dataset")
-    if not _SERVERLESS:
-        broad_sample.unpersist()
+if vector_count <= SMALL_DATASET_THRESHOLD:
     broad_sample = _full_data
     broad_sample_count = vector_count
+    print(f"Small dataset ({vector_count} nodes), skipping broad sampling")
+else:
+    sample_fraction_broad = min(0.25, max(500 / vector_count, 0.1))
+    broad_sample = _sample_data(_full_data, sample_fraction_broad, seed=42)
+    broad_sample_count = _data_count(broad_sample)
+    if not _SERVERLESS:
+        broad_sample = broad_sample.cache()
+    print(
+        f"Broad search sample: {broad_sample_count} nodes ({sample_fraction_broad*100:.1f}%)"
+    )
+    if broad_sample_count < min_k:
+        print(f"Sample too small ({broad_sample_count} < {min_k}), using full dataset")
+        if not _SERVERLESS:
+            broad_sample.unpersist()
+        broad_sample = _full_data
+        broad_sample_count = vector_count
 
 # Test K values in steps
 k_step = max(1, (effective_max_k - min_k) // 10)
@@ -462,7 +467,7 @@ else:
 
 print(f"\nBest K from broad search (elbow): {best_broad_k}")
 
-if not _SERVERLESS:
+if not _SERVERLESS and vector_count > SMALL_DATASET_THRESHOLD:
     broad_sample.unpersist()
 
 # COMMAND ----------
@@ -494,22 +499,25 @@ narrow_k_range = list(range(narrow_min_k, narrow_max_k + 1))
 
 print(f"Narrow search range: {narrow_k_range}")
 
-# Larger sample for narrow search (60% or at least 1000 nodes)
-sample_fraction_narrow = min(0.6, max(1000 / vector_count, 0.3))
-narrow_sample = _sample_data(_full_data, sample_fraction_narrow, seed=123)
-narrow_sample_count = _data_count(narrow_sample)
-if not _SERVERLESS:
-    narrow_sample = narrow_sample.cache()
-print(
-    f"Narrow search sample: {narrow_sample_count} nodes ({sample_fraction_narrow*100:.1f}%)"
-)
-
-if narrow_sample_count < min_k:
-    print(f"Narrow sample too small ({narrow_sample_count} < {min_k}), using full dataset")
-    if not _SERVERLESS:
-        narrow_sample.unpersist()
+if vector_count <= SMALL_DATASET_THRESHOLD:
     narrow_sample = _full_data
     narrow_sample_count = vector_count
+    print(f"Small dataset ({vector_count} nodes), skipping narrow sampling")
+else:
+    sample_fraction_narrow = min(0.6, max(1000 / vector_count, 0.3))
+    narrow_sample = _sample_data(_full_data, sample_fraction_narrow, seed=123)
+    narrow_sample_count = _data_count(narrow_sample)
+    if not _SERVERLESS:
+        narrow_sample = narrow_sample.cache()
+    print(
+        f"Narrow search sample: {narrow_sample_count} nodes ({sample_fraction_narrow*100:.1f}%)"
+    )
+    if narrow_sample_count < min_k:
+        print(f"Narrow sample too small ({narrow_sample_count} < {min_k}), using full dataset")
+        if not _SERVERLESS:
+            narrow_sample.unpersist()
+        narrow_sample = _full_data
+        narrow_sample_count = vector_count
 
 narrow_k_range = [k for k in narrow_k_range if k < narrow_sample_count]
 if not narrow_k_range:
@@ -531,7 +539,7 @@ print(
 )
 print(f"  Stability score: {best_narrow['stability_score']:.4f}")
 
-if not _SERVERLESS:
+if not _SERVERLESS and vector_count > SMALL_DATASET_THRESHOLD:
     narrow_sample.unpersist()
 
 # COMMAND ----------
