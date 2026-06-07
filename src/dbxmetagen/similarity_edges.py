@@ -124,11 +124,11 @@ class SimilarityEdgeBuilder:
         return "_cosine_sim(emb_a, emb_b)"
 
     def get_nodes_with_embeddings(self) -> DataFrame:
-        """Get all nodes that have embeddings."""
+        """Get all non-entity nodes that have embeddings."""
         return self.spark.sql(f"""
             SELECT id, node_type, domain, parent_id, embedding
             FROM {self.config.fully_qualified_nodes}
-            WHERE embedding IS NOT NULL
+            WHERE embedding IS NOT NULL AND node_type != 'entity'
         """)
 
     def _get_scoped_nodes(self) -> DataFrame:
@@ -169,8 +169,6 @@ class SimilarityEdgeBuilder:
             "(LOWER(ELEMENT_AT(SPLIT(a.id, '\\\\.'), -1)) RLIKE '(_id|_key|_code)$'"
             " OR LOWER(ELEMENT_AT(SPLIT(b.id, '\\\\.'), -1)) RLIKE '(_id|_key|_code)$')"
         )
-        _NO_ENTITY_PAIR = "NOT (a.node_type = 'entity' AND b.node_type = 'entity')"
-
         if self.config.table_names:
             tbl_a, dedup = "scoped_nodes", "a.id != b.id"
         else:
@@ -182,7 +180,7 @@ class SimilarityEdgeBuilder:
                    b.id as dst, b.node_type as dst_type, b.domain as dst_domain,
                    a.embedding as emb_a, b.embedding as emb_b
             FROM {tbl_a} a CROSS JOIN nodes_emb b
-            WHERE {dedup} AND {_NO_ENTITY_PAIR}
+            WHERE {dedup}
             """
 
         if not self._has_large_domains():
@@ -195,7 +193,7 @@ class SimilarityEdgeBuilder:
                    b.id as dst, b.node_type as dst_type, b.domain as dst_domain,
                    a.embedding as emb_a, b.embedding as emb_b
             FROM {tbl_a} a CROSS JOIN nodes_emb b
-            WHERE {dedup} AND a.domain = b.domain AND {_NO_ENTITY_PAIR}
+            WHERE {dedup} AND a.domain = b.domain
 
             UNION ALL
 
@@ -220,7 +218,6 @@ class SimilarityEdgeBuilder:
         FROM {tbl_a} a CROSS JOIN nodes_emb b
         WHERE {dedup}
           AND a.parent_id IS NOT NULL AND a.parent_id = b.parent_id
-          AND {_NO_ENTITY_PAIR}
 
         UNION ALL
 
@@ -326,7 +323,7 @@ class SimilarityEdgeBuilder:
             current_timestamp() as updated_at
         FROM ranked
         WHERE rn_src <= {self.config.max_edges_per_node}
-           OR rn_dst <= {self.config.max_edges_per_node}
+          AND rn_dst <= {self.config.max_edges_per_node}
         """
 
         try:
@@ -338,7 +335,6 @@ class SimilarityEdgeBuilder:
     def _compute_similarity_fallback(self, nodes_df: DataFrame) -> DataFrame:
         """Fallback Python-based similarity computation."""
         nodes = nodes_df.collect()
-        edges = []
 
         def cosine_sim(v1, v2):
             if not v1 or not v2:
@@ -348,6 +344,8 @@ class SimilarityEdgeBuilder:
             norm2 = sum(b * b for b in v2) ** 0.5
             return dot / (norm1 * norm2) if norm1 and norm2 else 0.0
 
+        # Phase 1: per-source cap (top-K per src)
+        src_capped: list[tuple[str, str, float]] = []
         for i, node_a in enumerate(nodes):
             similarities = []
             for j, node_b in enumerate(nodes):
@@ -355,15 +353,21 @@ class SimilarityEdgeBuilder:
                     sim = cosine_sim(list(node_a.embedding), list(node_b.embedding))
                     if sim >= self.config.similarity_threshold:
                         similarities.append((node_b.id, sim))
-
             similarities.sort(key=lambda x: x[1], reverse=True)
             for dst, sim in similarities[:self.config.max_edges_per_node]:
-                edges.append({
-                    "src": node_a.id,
-                    "dst": dst,
-                    "relationship": self.RELATIONSHIP_TYPE,
-                    "weight": sim
-                })
+                src_capped.append((node_a.id, dst, sim))
+
+        # Phase 2: per-destination cap (AND semantics -- edge must be top-K for BOTH endpoints)
+        from collections import defaultdict
+        dst_groups: dict[str, list[tuple[str, str, float]]] = defaultdict(list)
+        for src, dst, sim in src_capped:
+            dst_groups[dst].append((src, dst, sim))
+        edges = []
+        max_k = self.config.max_edges_per_node
+        for dst, group in dst_groups.items():
+            group.sort(key=lambda x: x[2], reverse=True)
+            for src, dst, sim in group[:max_k]:
+                edges.append({"src": src, "dst": dst, "relationship": self.RELATIONSHIP_TYPE, "weight": sim})
 
         if edges:
             df = self.spark.createDataFrame(edges)
@@ -564,9 +568,10 @@ class SimilarityEdgeBuilder:
         )
         df = self.spark.createDataFrame(raw_edges, schema)
 
-        # Entity-entity exclusion (matches _NO_ENTITY_PAIR in cross-join path)
+        # Entity nodes are excluded at query time via get_nodes_with_embeddings(),
+        # but VS index results may still return entity neighbors. Filter them out.
         df = df.filter(
-            ~((F.col("src_type") == "entity") & (F.col("dst_type") == "entity"))
+            (F.col("src_type") != "entity") & (F.col("dst_type") != "entity")
         )
 
         # Symmetric dedup: keep one direction per pair, max similarity
@@ -589,7 +594,7 @@ class SimilarityEdgeBuilder:
             df
             .withColumn("rn_src", F.row_number().over(w_src))
             .withColumn("rn_dst", F.row_number().over(w_dst))
-            .filter((F.col("rn_src") <= max_e) | (F.col("rn_dst") <= max_e))
+            .filter((F.col("rn_src") <= max_e) & (F.col("rn_dst") <= max_e))
             .drop("rn_src", "rn_dst")
         )
 

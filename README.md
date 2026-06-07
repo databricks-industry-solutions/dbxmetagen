@@ -321,6 +321,8 @@ The app is in `apps/dbxmetagen-app/` and provides a FastAPI backend with a React
 | `fk_prediction_job` | Foreign key prediction with column similarity and AI judgment |
 | `semantic_layer_job` | Generate metric views and apply to Genie spaces |
 | `sync_graph_lakebase_job` | Sync graph data to Lakebase for the dashboard |
+| `build_vector_index_job` | Rebuild the metadata vector search index (serverless). Deployed with a weekly schedule (Sun 02:00 UTC) but **paused by default** -- unpause in the Workflows UI to keep the index fresh automatically. Without it the index only updates on full pipeline runs or manual "Sync Vector Index" clicks in the app |
+| `build_knowledge_graph_job` | Rebuild knowledge graph nodes and edges (serverless). Use after reviewing foreign keys to propagate approve/reject decisions without re-running the full pipeline |
 | `sync_ddl_job` | Sync reviewed/edited DDL back to Unity Catalog |
 
 ## MCP Servers (Coming Soon)

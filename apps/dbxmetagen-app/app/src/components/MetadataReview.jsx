@@ -269,6 +269,12 @@ function ReviewEditor() {
     })
   }, [reviewData, statusFilter, resultSchemaFilter, resultFilter])
 
+  const [page, setPage] = useState(0)
+  const [pageSize, setPageSize] = useState(25)
+  const totalPages = pageSize === 0 ? 1 : Math.ceil(visibleReview.length / pageSize)
+  const paginatedReview = useMemo(() => pageSize === 0 ? visibleReview : visibleReview.slice(page * pageSize, (page + 1) * pageSize), [visibleReview, page, pageSize])
+  useEffect(() => { setPage(0) }, [visibleReview.length, pageSize])
+
   const [ddlCategory, setDdlCategory] = useState('comments')
   const [customDomainKey, setCustomDomainKey] = useState('')
   const [customSubdomainKey, setCustomSubdomainKey] = useState('')
@@ -717,6 +723,13 @@ function ReviewEditor() {
               ? `${reviewData.length} tables`
               : `${visibleReview.length} of ${reviewData.length} tables`}
           </span>
+          <button onClick={() => {
+            const allExpanded = visibleReview.every(t => expanded[t.table_name])
+            if (allExpanded) { setExpanded({}) }
+            else { const exp = { ...expanded }; visibleReview.forEach(t => { exp[t.table_name] = true }); setExpanded(exp) }
+          }} className="text-xs text-blue-600 dark:text-blue-400 hover:underline">
+            {visibleReview.every(t => expanded[t.table_name]) ? 'Collapse All' : 'Expand All'}
+          </button>
           {(resultFilter || resultSchemaFilter) && (
             <button onClick={() => { setResultFilter(''); setResultSchemaFilter('') }}
               className="text-xs text-blue-600 dark:text-blue-400 hover:underline">Clear filters</button>
@@ -727,7 +740,24 @@ function ReviewEditor() {
       {/* Combined Data View */}
       {reviewData.length > 0 && (
         <div className="space-y-3">
-          {visibleReview.map((tbl, _fi) => {
+          {visibleReview.length > pageSize && pageSize > 0 && (
+            <div className="flex items-center justify-between gap-3 text-xs text-slate-500 dark:text-slate-400">
+              <div className="flex items-center gap-2">
+                <span>Show</span>
+                <select value={pageSize} onChange={e => setPageSize(Number(e.target.value))} className="border border-slate-300 dark:border-dbx-navy-400/40 rounded px-1.5 py-0.5 text-xs bg-white dark:bg-dbx-navy/60 dark:text-slate-200">
+                  {[10, 25, 50].map(n => <option key={n} value={n}>{n}</option>)}
+                  <option value={0}>All</option>
+                </select>
+                <span>per page</span>
+              </div>
+              <div className="flex items-center gap-2">
+                <button disabled={page === 0} onClick={() => setPage(p => p - 1)} className="px-2 py-0.5 rounded border border-slate-300 dark:border-dbx-navy-400/40 disabled:opacity-40 hover:bg-slate-100 dark:hover:bg-dbx-navy-500/50">&lsaquo; Prev</button>
+                <span>Page {page + 1} of {totalPages}</span>
+                <button disabled={page >= totalPages - 1} onClick={() => setPage(p => p + 1)} className="px-2 py-0.5 rounded border border-slate-300 dark:border-dbx-navy-400/40 disabled:opacity-40 hover:bg-slate-100 dark:hover:bg-dbx-navy-500/50">Next &rsaquo;</button>
+              </div>
+            </div>
+          )}
+          {paginatedReview.map((tbl, _fi) => {
             const tblIdx = reviewData.indexOf(tbl)
             return (
             <div key={tbl.table_name} className="bg-dbx-oat-light dark:bg-dbx-navy-650 rounded-xl border border-slate-200 dark:border-dbx-navy-400/25 shadow-sm overflow-hidden">
@@ -1439,6 +1469,16 @@ function ReviewEditor() {
               )}
             </div>
           )})}
+          {visibleReview.length > pageSize && pageSize > 0 && (
+            <div className="flex items-center justify-between gap-3 text-xs text-slate-500 dark:text-slate-400">
+              <span>{visibleReview.length} tables total</span>
+              <div className="flex items-center gap-2">
+                <button disabled={page === 0} onClick={() => { setPage(p => p - 1); window.scrollTo({ top: 0, behavior: 'smooth' }) }} className="px-2 py-0.5 rounded border border-slate-300 dark:border-dbx-navy-400/40 disabled:opacity-40 hover:bg-slate-100 dark:hover:bg-dbx-navy-500/50">&lsaquo; Prev</button>
+                <span>Page {page + 1} of {totalPages}</span>
+                <button disabled={page >= totalPages - 1} onClick={() => { setPage(p => p + 1); window.scrollTo({ top: 0, behavior: 'smooth' }) }} className="px-2 py-0.5 rounded border border-slate-300 dark:border-dbx-navy-400/40 disabled:opacity-40 hover:bg-slate-100 dark:hover:bg-dbx-navy-500/50">Next &rsaquo;</button>
+              </div>
+            </div>
+          )}
         </div>
       )}
 

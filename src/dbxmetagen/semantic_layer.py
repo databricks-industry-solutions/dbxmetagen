@@ -728,6 +728,7 @@ class SemanticLayerGenerator:
             f"SELECT src_table, dst_table, src_column, dst_column, final_confidence "
             f"FROM {fq('fk_predictions')} "
             f"WHERE final_confidence >= {self.config.fk_confidence_threshold}"
+            f" AND (is_fk IS NULL OR is_fk = TRUE)"
         )
         self._fk_rows = fk_rows
 
@@ -1474,6 +1475,7 @@ OUTPUT (one JSON object only, no array, no explanation):"""
             f"SELECT src_table, dst_table, src_column, dst_column, final_confidence "
             f"FROM {fq('fk_predictions')} "
             f"WHERE final_confidence >= {self.config.fk_confidence_threshold}"
+            f" AND (is_fk IS NULL OR is_fk = TRUE)"
         )
         if not fk_rows:
             return []
@@ -2545,6 +2547,7 @@ OUTPUT (one JSON object only, no array, no explanation):"""
         fk_rows = self._safe_collect(
             f"SELECT src_table, dst_table, src_column, dst_column, final_confidence "
             f"FROM {fq('fk_predictions')} WHERE final_confidence >= {self.config.fk_confidence_threshold}"
+            f" AND (is_fk IS NULL OR is_fk = TRUE)"
         )
         ont_rows = self._safe_collect(
             f"SELECT entity_type, source_tables FROM {fq('ontology_entities')} WHERE confidence >= 0.4"

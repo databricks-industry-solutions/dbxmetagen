@@ -92,6 +92,7 @@ class TestSimilarityEdgeBuilder:
         mock_spark.sql.assert_called_once()
         query = mock_spark.sql.call_args[0][0]
         assert "embedding IS NOT NULL" in query
+        assert "node_type != 'entity'" in query
     
     def test_run_calls_merge_edges(self, builder, mock_spark):
         with patch.object(builder, "compute_similarity_edges") as mock_compute, \
@@ -348,11 +349,13 @@ class TestPostprocessANNEdges:
         args = mock_spark.createDataFrame.call_args[0]
         assert args[0] == []
 
-    def test_entity_entity_filter_in_source(self):
+    def test_entity_exclusion_filter_in_source(self):
+        """Any entity node (src or dst) is excluded, not just entity-entity pairs."""
         src = inspect.getsource(SimilarityEdgeBuilder._postprocess_ann_edges)
         assert "entity" in src
-        assert "src_type" in src
-        assert "dst_type" in src
+        assert "src_type" in src and "dst_type" in src
+        # Must use != (exclude any entity), not just ~(entity & entity)
+        assert '!= "entity"' in src or "!= 'entity'" in src
 
     def test_dedup_uses_least_greatest(self):
         src = inspect.getsource(SimilarityEdgeBuilder._postprocess_ann_edges)
@@ -417,6 +420,35 @@ class TestMaxEdgesCapANN:
         assert "partitionBy" in src
         assert "src" in src
 
+    def test_cap_uses_and_semantics(self):
+        """Edge must be within cap for BOTH src and dst (AND, not OR)."""
+        src = inspect.getsource(SimilarityEdgeBuilder._postprocess_ann_edges)
+        assert "rn_src" in src and "rn_dst" in src
+        # Must use & (AND), not | (OR)
+        assert '& (F.col("rn_dst")' in src or "&" in src
+
+
+class TestCrossjoinCapAndEntityExclusion:
+    """Tests for AND semantics in cross-join SQL and entity exclusion at query level."""
+
+    def test_crossjoin_cap_uses_and_not_or(self):
+        """The ranked CTE must use AND (not OR) for rn_src/rn_dst cap."""
+        src = inspect.getsource(SimilarityEdgeBuilder._compute_similarity_crossjoin)
+        assert "AND rn_dst" in src
+        assert "OR rn_dst" not in src
+
+    def test_entity_nodes_excluded_at_query_level(self):
+        """Entity nodes are excluded in get_nodes_with_embeddings, not just pair SQL."""
+        src = inspect.getsource(SimilarityEdgeBuilder.get_nodes_with_embeddings)
+        assert "node_type != 'entity'" in src
+
+    def test_no_entity_pair_filter_removed_from_pairs_sql(self):
+        """_build_pairs_sql no longer needs _NO_ENTITY_PAIR since entities are
+        excluded at the data source level."""
+        src = inspect.getsource(SimilarityEdgeBuilder._build_pairs_sql)
+        assert "_NO_ENTITY_PAIR" not in src
+        assert "NOT (a.node_type = 'entity' AND b.node_type = 'entity')" not in src
+
 
 class TestEmptyEmbeddingHandling:
     """Test C: _query_batch behaviour with empty embedding vectors."""
@@ -426,10 +458,11 @@ class TestEmptyEmbeddingHandling:
         src = inspect.getsource(SimilarityEdgeBuilder.compute_similarity_edges_ann)
         assert "list(node.embedding)" in src
 
-    def test_ann_filters_null_embeddings_in_sql(self):
-        """SQL query must filter WHERE embedding IS NOT NULL before collect."""
+    def test_ann_filters_null_embeddings_and_entities_in_sql(self):
+        """SQL query must exclude null embeddings and entity nodes before collect."""
         src = inspect.getsource(SimilarityEdgeBuilder.get_nodes_with_embeddings)
         assert "IS NOT NULL" in src
+        assert "node_type != 'entity'" in src
 
 
 class TestSymmetricDedupCorrectness:
@@ -519,11 +552,12 @@ class TestPostprocessANNEdgesWithLocalSpark:
         args = ann_builder_cap3.spark.createDataFrame.call_args[0]
         assert args[0] == []
 
-    def test_entity_entity_filter_applied(self):
-        """Verify that entity-entity exclusion filter is in the chain."""
+    def test_entity_exclusion_filter_applied(self):
+        """Any entity node is excluded from similarity edges entirely."""
         src = inspect.getsource(SimilarityEdgeBuilder._postprocess_ann_edges)
         assert 'src_type' in src and 'entity' in src
         assert 'dst_type' in src
+        assert '!= "entity"' in src or "!= 'entity'" in src
 
     def test_symmetric_dedup_aggregation(self):
         """Dedup must group by (LEAST, GREATEST) and take MAX similarity."""

@@ -951,6 +951,7 @@ _JOB_ENV_MAP = {
     "import_comments": "IMPORT_COMMENTS_JOB_ID",
     "setup_mcp_servers": "SETUP_MCP_SERVERS_JOB_ID",
     "build_vector_index": "BUILD_VECTOR_INDEX_JOB_ID",
+    "build_knowledge_graph": "BUILD_KNOWLEDGE_GRAPH_JOB_ID",
 }
 
 _KNOWN_JOB_IDS: dict[str, int] = {}
@@ -13203,7 +13204,7 @@ def vector_sync():
     job_id = _KNOWN_JOB_IDS.get("build_vector_index")
     if job_id:
         try:
-            ws = _get_effective_client()
+            ws = get_workspace_client()
             run = ws.jobs.run_now(
                 job_id=job_id,
                 job_parameters={"incremental": "true"},
@@ -13217,7 +13218,7 @@ def vector_sync():
 
     vs_index_name = f"{CATALOG}.{SCHEMA}.{VS_INDEX_SUFFIX}"
     try:
-        ws = _get_effective_client()
+        ws = get_workspace_client()
         ws.vector_search_indexes.sync_index(index_name=vs_index_name)
         return {"status": "sync_triggered", "index": vs_index_name}
     except Exception as e:

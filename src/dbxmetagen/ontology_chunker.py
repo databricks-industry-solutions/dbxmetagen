@@ -423,8 +423,19 @@ def build_ontology_chunks_table(
             tier            STRING,
             updated_at      TIMESTAMP
         ) USING DELTA
-        TBLPROPERTIES ('delta.enableChangeDataFeed' = 'true')
+        TBLPROPERTIES (
+            'delta.enableChangeDataFeed' = 'true',
+            'delta.deletedFileRetentionDuration' = 'interval 30 days'
+        )
     """)
+    # Backfill retention property for existing tables
+    try:
+        spark.sql(f"""
+            ALTER TABLE {fq_table}
+            SET TBLPROPERTIES ('delta.deletedFileRetentionDuration' = 'interval 30 days')
+        """)
+    except Exception:
+        logger.debug("Could not set deletedFileRetentionDuration on %s", fq_table)
 
     ext = Path(source).suffix.lower()
     if ext in (".owl", ".ttl", ".rdf"):

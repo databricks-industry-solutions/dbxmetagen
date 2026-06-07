@@ -72,5 +72,9 @@ resources:
           job:
             id: ${resources.jobs.build_vector_index_job.id}
             permission: CAN_MANAGE_RUN
+        - name: build_knowledge_graph_job
+          job:
+            id: ${resources.jobs.build_knowledge_graph_job.id}
+            permission: CAN_MANAGE_RUN
 __USER_API_SCOPES__
 __APP_PERMISSIONS__

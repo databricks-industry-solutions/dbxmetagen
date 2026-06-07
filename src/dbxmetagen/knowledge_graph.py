@@ -1198,6 +1198,7 @@ class ExtendedKnowledgeGraphBuilder(KnowledgeGraphBuilder):
                     final_confidence AS conf
                 FROM {fk_table}
                 WHERE final_confidence >= {threshold}
+                  AND (is_fk IS NULL OR is_fk = TRUE)
             """)
             if raw.count() == 0:
                 return self.spark.createDataFrame([], self._EMPTY_EDGE_SCHEMA)

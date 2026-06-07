@@ -131,8 +131,19 @@ class VectorIndexBuilder:
                 confidence_score FLOAT,
                 updated_at TIMESTAMP
             ) USING DELTA
-            TBLPROPERTIES ('delta.enableChangeDataFeed' = 'true')
+            TBLPROPERTIES (
+                'delta.enableChangeDataFeed' = 'true',
+                'delta.deletedFileRetentionDuration' = 'interval 30 days'
+            )
         """)
+        # Backfill retention property for existing tables
+        try:
+            self.spark.sql(f"""
+                ALTER TABLE {cfg.fq_documents}
+                SET TBLPROPERTIES ('delta.deletedFileRetentionDuration' = 'interval 30 days')
+            """)
+        except Exception:
+            logger.debug("Could not set deletedFileRetentionDuration on %s", cfg.fq_documents)
         # Migration for existing tables
         try:
             self.spark.sql(f"ALTER TABLE {cfg.fq_documents} ADD COLUMN node_id STRING")
@@ -207,7 +218,8 @@ class VectorIndexBuilder:
                             ))
                              FROM {cfg.fq('fk_predictions')} f
                              WHERE (f.src_table = t.table_name OR f.dst_table = t.table_name)
-                               AND f.final_confidence >= 0.5)),
+                               AND f.final_confidence >= 0.5
+                               AND (f.is_fk IS NULL OR f.is_fk = TRUE))),
                         ''
                     ), '\\n',
                     'Row count: ', COALESCE(CAST(
@@ -249,8 +261,9 @@ class VectorIndexBuilder:
                          ELSE '' END,
                     CASE WHEN EXISTS (
                         SELECT 1 FROM {cfg.fq('fk_predictions')} fk
-                        WHERE (fk.src_table = c.table_name AND fk.src_column = c.column_name)
-                           OR (fk.dst_table = c.table_name AND fk.dst_column = c.column_name)
+                        WHERE ((fk.src_table = c.table_name AND fk.src_column = c.column_name)
+                           OR (fk.dst_table = c.table_name AND fk.dst_column = c.column_name))
+                          AND (fk.is_fk IS NULL OR fk.is_fk = TRUE)
                     ) THEN 'Role: FK column' ELSE '' END
                 ) AS content,
                 c.catalog AS catalog_name,
@@ -400,6 +413,7 @@ class VectorIndexBuilder:
                 current_timestamp() AS updated_at
             FROM {cfg.fq('fk_predictions')} f
             WHERE f.final_confidence >= 0.5
+              AND (f.is_fk IS NULL OR f.is_fk = TRUE)
         """
 
         community_docs = f"""
@@ -522,13 +536,15 @@ class VectorIndexBuilder:
              f" WHERE status IN ('validated', 'applied'))"),
             ("fk_relationship", "fk_predictions",
              f"SELECT 1 FROM {cfg.fq('fk_predictions')}"
-             f" WHERE final_confidence >= 0.5 LIMIT 1",
+             f" WHERE final_confidence >= 0.5"
+             f" AND (is_fk IS NULL OR is_fk = TRUE) LIMIT 1",
              f"DELETE FROM {docs} WHERE doc_type = 'fk_relationship'"
              f" AND doc_id NOT IN"
              f" (SELECT CONCAT('fk::', src_table, '.', src_column,"
              f" '->', dst_table, '.', dst_column)"
              f" FROM {cfg.fq('fk_predictions')}"
-             f" WHERE final_confidence >= 0.5)"),
+             f" WHERE final_confidence >= 0.5"
+             f" AND (is_fk IS NULL OR is_fk = TRUE))"),
             ("community_summary", "community_summaries",
              f"SELECT 1 FROM {cfg.fq('community_summaries')}"
              f" WHERE summary IS NOT NULL LIMIT 1",

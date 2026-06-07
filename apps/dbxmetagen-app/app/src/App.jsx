@@ -21,6 +21,7 @@ window.fetch = async (...args) => {
 }
 
 import { cachedFetchObj, TTL } from './apiCache'
+import { Joyride, STATUS } from 'react-joyride'
 import AgentChat from './components/AgentChat'
 import BatchJobs from './components/BatchJobs'
 import MetadataReview from './components/MetadataReview'
@@ -31,7 +32,9 @@ import GenieBuilder from './components/GenieBuilder'
 import AnalystChat from './components/AnalystChat'
 import CustomerContext from './components/CustomerContext'
 import OntologyBuilder from './components/OntologyBuilder'
+import GettingStarted from './components/GettingStarted'
 const COMPONENTS = {
+  guide: GettingStarted,
   agent: AgentChat, coverage: Coverage, jobs: BatchJobs, metadata: MetadataReview,
   entities: EntityBrowser, semantic: SemanticLayer, genie: GenieBuilder,
   analyst: AnalystChat, context: CustomerContext, ontologyBuilder: OntologyBuilder,
@@ -44,6 +47,7 @@ const NAV_CAT_COLORS = {
 }
 
 const TAB_ACCENT = {
+  guide: 'border-t-dbx-lava',
   jobs: 'border-t-dbx-lava', semantic: 'border-t-dbx-lava', genie: 'border-t-dbx-lava', context: 'border-t-dbx-lava', ontologyBuilder: 'border-t-dbx-lava',
   metadata: 'border-t-dbx-sky', coverage: 'border-t-dbx-sky', entities: 'border-t-dbx-sky',
   agent: 'border-t-dbx-teal',
@@ -131,95 +135,29 @@ export function ErrorBanner({ error, onDismiss }) {
   )
 }
 
-const SLIDES = [
+const TOUR_STEPS = [
   {
-    title: 'What Is a Semantic Layer?',
-    body: [
-      'A shared vocabulary that sits between raw data and the people who use it -- business-friendly names, descriptions, relationships, and pre-defined metrics.',
-      'Anyone can find, trust, and use data without writing complex SQL.',
-    ],
+    target: '[data-tour="stepper"]',
+    content: 'This workflow bar tracks your progress. Green checks appear as each step gets data. Click any step to jump there.',
+    disableBeacon: true,
   },
   {
-    title: 'The Databricks Semantic Layer',
-    body: [
-      'Unity Catalog provides the building blocks:',
-      'Comments -- descriptions on every table and column\nTags -- classify columns (PII, domain, sensitivity)\nForeign keys -- declared relationships for auto-joins\nMetric views -- reusable KPI definitions\nVector Search index -- semantic retrieval for agents and RAG\nLakebase -- graph store for GraphRAG and entity traversal\nUC tables -- persisted semantic layer (ontology, profiling, FK predictions)',
-    ],
+    target: '[data-tour="nav-design"]',
+    content: 'Start here. Generate core metadata first (descriptions, sensitivity, domains), then run the advanced analytics pipeline to build your knowledge graph.',
   },
   {
-    title: 'What dbxmetagen Does',
-    body: [
-      'Point it at a catalog and schema. It will:',
-      '1. Generate descriptions for tables and columns\n2. Classify sensitive data (PII, PHI, domains)\n3. Predict foreign key relationships\n4. Map tables to business entity types\n5. Define metric views from questions\n6. Build a hierarchical vector index\n7. Build a graph implementation for GraphRAG and entity traversal\n8. Build Genie Spaces and agents on top',
-    ],
+    target: '[data-tour="nav-review"]',
+    content: 'Review AI-generated results and apply them to Unity Catalog. Nothing touches your catalog without your approval.',
   },
   {
-    title: 'Workflow — 5 Steps',
-    body: [
-      'Follow the numbered steps in the workflow bar at the top of every page:',
-      '1. Generate Metadata — Run core jobs (descriptions, sensitivity, domain) then advanced (ontology, FK, graph). Start with a small set of tables.\n2. Review & Apply — Inspect AI-generated results, edit where needed, then apply metadata to Unity Catalog.\n3. Define Metrics — Create reusable KPI metric views from business questions.\n4. Build Genie Space — Assemble a natural-language SQL space for end users.\n5. Explore — Chat with the agent, browse the knowledge graph, and run semantic search.',
-    ],
+    target: '[data-tour="nav-explore"]',
+    content: 'Chat with the metadata agent, browse the knowledge graph, or explore entities.',
   },
   {
-    title: 'Getting Started',
-    body: [
-      'Tip: start with 5-10 tables to see results quickly, then expand scope.',
-      'The workflow bar shows your progress. Green checkmarks mean that step has data. Click any step to jump there.',
-      'On the Generate Metadata page, run "Generate Core Metadata" first — advanced analytics build on top of core results. The "All Three" button is the fastest way to generate descriptions, sensitivity labels, and domain classification in one pass.',
-    ],
+    target: '[data-tour="header-guide"]',
+    content: 'Come back to the Getting Started page any time from here.',
   },
 ]
-
-function InfoSlides({ open, onClose }) {
-  const [slide, setSlide] = useState(0)
-  const ref = useRef(null)
-  useEffect(() => { if (open) setSlide(0) }, [open])
-  useEffect(() => {
-    if (!open) return
-    const handler = (e) => { if (ref.current && !ref.current.contains(e.target)) onClose() }
-    document.addEventListener('mousedown', handler)
-    return () => document.removeEventListener('mousedown', handler)
-  }, [open, onClose])
-  if (!open) return null
-  const s = SLIDES[slide]
-  return (
-    <div className="fixed inset-0 bg-black/50 backdrop-blur-sm z-[100] flex items-center justify-center p-6 animate-fade-in">
-      <div ref={ref} className="bg-white dark:bg-dbx-navy-600 rounded-2xl shadow-elevated max-w-xl w-full overflow-hidden animate-slide-up">
-        <div className="flex items-center justify-between px-8 pt-6 pb-3">
-          <span className="section-title">{slide + 1} / {SLIDES.length}</span>
-          <button onClick={onClose} className="text-slate-400 hover:text-slate-600 dark:hover:text-slate-300 transition-colors p-1 rounded-lg hover:bg-slate-100 dark:hover:bg-dbx-navy-500" aria-label="Close">
-            <svg className="w-5 h-5" fill="none" viewBox="0 0 24 24" stroke="currentColor"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M6 18L18 6M6 6l12 12" /></svg>
-          </button>
-        </div>
-        <div className="px-8 pb-3">
-          <h2 className="text-xl font-bold text-slate-800 dark:text-slate-100">{s.title}</h2>
-        </div>
-        <div className="px-8 pb-8 space-y-4 max-h-[55vh] overflow-y-auto scrollbar-thin">
-          {s.body.map((p, i) => (
-            <p key={i} className="text-sm text-slate-600 dark:text-slate-300 leading-relaxed whitespace-pre-line">{p}</p>
-          ))}
-        </div>
-        <div className="flex items-center justify-between px-8 pb-6">
-          <button onClick={() => setSlide(Math.max(0, slide - 1))} disabled={slide === 0}
-            className="btn-ghost btn-sm disabled:opacity-30">
-            Previous
-          </button>
-          <div className="flex gap-2">
-            {SLIDES.map((_, i) => (
-              <button key={i} onClick={() => setSlide(i)}
-                className={`w-2 h-2 rounded-full transition-all duration-200 ${i === slide ? 'bg-dbx-lava scale-125' : 'bg-slate-300 dark:bg-dbx-navy-400 hover:bg-slate-400'}`} />
-            ))}
-          </div>
-          {slide < SLIDES.length - 1 ? (
-            <button onClick={() => setSlide(slide + 1)} className="btn-primary btn-sm">Next</button>
-          ) : (
-            <button onClick={onClose} className="btn-primary btn-sm">Done</button>
-          )}
-        </div>
-      </div>
-    </div>
-  )
-}
 
 const PIPELINE_STEPS = [
   { id: 'jobs', label: 'Generate Metadata', short: 'Generate',
@@ -265,7 +203,7 @@ function PipelineStepper({ activeTab, onSelect, stats }) {
   const activeIdx = PIPELINE_STEPS.findIndex(s => s.id === activeTab)
 
   return (
-    <div className="mb-4 animate-slide-up">
+    <div className="mb-4 animate-slide-up" data-tour="stepper">
       <div className="flex items-center justify-between mb-2">
         <span className="text-xs font-semibold uppercase tracking-wider text-slate-500 dark:text-slate-400">Workflow</span>
         <button onClick={dismiss} className="text-xs text-slate-400 hover:text-slate-600 dark:hover:text-slate-300 transition-colors">Hide</button>
@@ -333,7 +271,7 @@ function PipelineStepper({ activeTab, onSelect, stats }) {
   )
 }
 
-function NavDropdown({ cat, activeTab, onSelect }) {
+function NavDropdown({ cat, activeTab, onSelect, dataTour }) {
   const [open, setOpen] = useState(false)
   const ref = useRef(null)
   const activeItem = cat.items.find(i => i.id === activeTab)
@@ -347,7 +285,7 @@ function NavDropdown({ cat, activeTab, onSelect }) {
   }, [open])
 
   return (
-    <div ref={ref} className="relative">
+    <div ref={ref} className="relative" data-tour={dataTour}>
       <button onClick={() => setOpen(!open)}
         className={`flex items-center gap-1.5 px-3.5 py-1.5 rounded-lg text-sm font-medium transition-all duration-200 whitespace-nowrap ${
           activeItem
@@ -453,9 +391,15 @@ function AuthStatusBadge() {
 }
 
 export default function App() {
-  const [activeTab, setActiveTab] = useState(readHash)
-  const [visitedTabs, setVisitedTabs] = useState(new Set([readHash()]))
-  const [showInfo, setShowInfo] = useState(false)
+  const [activeTab, setActiveTab] = useState(() => {
+    const h = readHash()
+    if (h === 'jobs') {
+      try { if (!localStorage.getItem('dbxmetagen_tourSeen')) return 'guide' } catch {}
+    }
+    return h
+  })
+  const [visitedTabs, setVisitedTabs] = useState(new Set([activeTab]))
+  const [runTour, setRunTour] = useState(false)
   const [sessionExpired, setSessionExpired] = useState(false)
   const [pipelineStats, setPipelineStats] = useState(null)
   const [appMeta, setAppMeta] = useState({ displayName: '', version: '' })
@@ -482,6 +426,12 @@ export default function App() {
     const onHash = () => { const t = readHash(); if (t !== activeTab) setActiveTab(t) }
     window.addEventListener('hashchange', onHash)
     return () => window.removeEventListener('hashchange', onHash)
+  }, [activeTab])
+
+  useEffect(() => {
+    if (activeTab !== 'guide') {
+      try { localStorage.setItem('dbxmetagen_tourSeen', 'true') } catch {}
+    }
   }, [activeTab])
 
   useEffect(() => {
@@ -526,9 +476,9 @@ export default function App() {
           </div>
           <div className="flex items-center gap-1.5">
             <AuthStatusBadge />
-            <button onClick={() => setShowInfo(true)}
+            <button onClick={() => setActiveTab('guide')} data-tour="header-guide"
               className="w-8 h-8 flex items-center justify-center rounded-lg bg-white/10 backdrop-blur-sm border border-white/10 text-dbx-oat/80 hover:text-white hover:bg-white/20 transition-all text-sm font-bold"
-              title="What is dbxmetagen?" aria-label="Show help">?</button>
+              title="Getting Started" aria-label="Getting Started">?</button>
             <button onClick={() => setDark(d => !d)}
               className="w-8 h-8 flex items-center justify-center rounded-lg bg-white/10 backdrop-blur-sm border border-white/10 text-dbx-oat/80 hover:text-white hover:bg-white/20 transition-all"
               title={dark ? 'Switch to light mode' : 'Switch to dark mode'}
@@ -549,15 +499,38 @@ export default function App() {
         </div>
       </header>
 
-      <InfoSlides open={showInfo} onClose={() => setShowInfo(false)} />
+      <Joyride
+        steps={TOUR_STEPS}
+        run={runTour}
+        continuous
+        showSkipButton
+        showProgress
+        callback={({ status }) => {
+          if ([STATUS.FINISHED, STATUS.SKIPPED].includes(status)) setRunTour(false)
+        }}
+        styles={{
+          options: { primaryColor: '#FF3621', zIndex: 10000 },
+          tooltip: { borderRadius: 12, fontSize: 14 },
+        }}
+      />
 
       {/* Navigation */}
       <nav className="bg-white/80 dark:bg-dbx-navy-700/90 backdrop-blur-sm border-b border-dbx-oat-dark/50 dark:border-dbx-navy-400/20 shadow-nav sticky top-0 z-40">
         <div className="flex items-center gap-2 px-6 py-2 max-w-[90rem] mx-auto">
+          <button
+            onClick={() => setActiveTab('guide')}
+            className={`px-3.5 py-1.5 rounded-lg text-sm font-medium transition-all duration-200 whitespace-nowrap ${
+              activeTab === 'guide'
+                ? 'bg-white dark:bg-dbx-navy-500 text-dbx-lava shadow-sm'
+                : 'text-slate-600 dark:text-slate-400 hover:text-dbx-navy dark:hover:text-slate-200 hover:bg-white/60 dark:hover:bg-dbx-navy-500/50'
+            }`}>
+            Guide
+          </button>
+          <div className="w-px h-6 bg-slate-200 dark:bg-dbx-navy-400/40 mx-0.5 flex-shrink-0" />
           {NAV_STRUCTURE.map((cat, ci) => (
             <React.Fragment key={cat.category}>
               {ci > 0 && <div className="w-px h-6 bg-slate-200 dark:bg-dbx-navy-400/40 mx-0.5 flex-shrink-0" />}
-              <NavDropdown cat={cat} activeTab={activeTab} onSelect={setActiveTab} />
+              <NavDropdown cat={cat} activeTab={activeTab} onSelect={setActiveTab} dataTour={`nav-${cat.category.toLowerCase()}`} />
             </React.Fragment>
           ))}
         </div>
@@ -573,7 +546,8 @@ export default function App() {
               className={`border-t-2 ${TAB_ACCENT[tabId] || 'border-t-transparent'} pt-4 ${isActive ? 'animate-slide-up' : ''}`}
               style={{ display: isActive ? 'block' : 'none' }}>
               <TabErrorBoundary>
-                <Comp onNavigate={setActiveTab} pipelineStats={pipelineStats} />
+                <Comp onNavigate={setActiveTab} pipelineStats={pipelineStats}
+                  {...(tabId === 'guide' ? { onStartTour: () => setRunTour(true) } : {})} />
               </TabErrorBoundary>
             </div>
           )

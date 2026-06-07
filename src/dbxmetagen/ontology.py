@@ -1145,6 +1145,10 @@ class EntityDiscoverer:
     """
 
     CONFIDENCE_PENALTY_SNAP = 0.1
+    PRIMITIVE_TYPE_NAMES = frozenset({
+        "boolean", "integer", "float", "number", "text", "date",
+        "datetime", "time", "url", "datatypeclass",
+    })
 
     def __init__(
         self,
@@ -1553,7 +1557,10 @@ class EntityDiscoverer:
                 score += 0.3
         if max_score == 0:
             return 0.0
-        return min(1.0, score / max_score)
+        raw = min(1.0, score / max_score)
+        if entity_def.name.lower() in self.PRIMITIVE_TYPE_NAMES:
+            raw *= 0.3
+        return raw
 
     # ------------------------------------------------------------------
     # AI classification for tables (structured output + enforce + multi-entity)
@@ -1597,6 +1604,9 @@ class EntityDiscoverer:
         system_prompt = (
             "You are an entity classifier for database tables. "
             "For each table, classify it into an entity type. "
+            "Prefer domain-relevant business entities (e.g. Patient, Order, Product) over "
+            "data-type primitives (e.g. Boolean, Integer, Text) -- primitive types describe "
+            "column data types, not what a table represents. "
             "If a table clearly represents a relationship between two entities, "
             "also populate secondary_entity_type. "
             "If your confidence is below 0.5, populate recommended_entity. "
@@ -1904,6 +1914,9 @@ class EntityDiscoverer:
         system_prompt = (
             "You are an entity classifier for database tables. "
             "Classify each table into an entity type. "
+            "Prefer domain-relevant business entities (e.g. Patient, Order, Product) over "
+            "data-type primitives (e.g. Boolean, Integer, Text) -- primitive types describe "
+            "column data types, not what a table represents. "
             "If the table clearly represents a relationship between two entities "
             "(e.g. patient_encounters links Patient and Encounter), also populate secondary_entity_type. "
             "If your confidence is below 0.5, populate recommended_entity with what you think "
@@ -2308,7 +2321,10 @@ class EntityDiscoverer:
             max_score += 0.5
         if max_score == 0:
             return 0.0
-        return min(1.0, score / max_score)
+        raw = min(1.0, score / max_score)
+        if entity_lower in self.PRIMITIVE_TYPE_NAMES:
+            raw *= 0.3
+        return raw
 
     @staticmethod
     def _best_attribute_for_column(col_name: str, entity_def: EntityDefinition) -> str:
@@ -2419,6 +2435,9 @@ class EntityDiscoverer:
         system_prompt = (
             "You are an entity classifier for database columns. "
             "For each column, classify it into the entity type it most likely belongs to. "
+            "Prefer domain-relevant business entities over data-type primitives "
+            "(e.g. Boolean, Integer, Text) -- primitive types describe data formats, "
+            "not what a column semantically represents. "
             "Classify based on what the column itself represents, not the table's domain. "
             "Tables in specialized domains (e.g. healthcare) often contain commercial, "
             "supply-chain, or financial columns (product_name, supplier_id, unit_price) "
@@ -3749,7 +3768,8 @@ class OntologyBuilder:
 
         try:
             fk_df = self.spark.sql(
-                f"SELECT DISTINCT src_table, dst_table FROM {fk_table} WHERE final_confidence >= 0.5"
+                f"SELECT DISTINCT src_table, dst_table FROM {fk_table}"
+                f" WHERE final_confidence >= 0.5 AND (is_fk IS NULL OR is_fk = TRUE)"
             )
         except Exception:
             logger.debug("No FK predictions available for relationship discovery")
@@ -5045,6 +5065,7 @@ class OntologyBuilder:
                 SELECT src_table, dst_table, src_column, dst_column, final_confidence
                 FROM {fk_table}
                 WHERE final_confidence >= 0.5
+                  AND (is_fk IS NULL OR is_fk = TRUE)
             """).collect()
         except Exception:
             fk_rows = []

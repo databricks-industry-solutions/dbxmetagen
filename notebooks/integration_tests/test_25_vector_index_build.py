@@ -91,7 +91,7 @@ mv_defn = json_mod.dumps({
 spark.createDataFrame([
     Row(definition_id="test-mv-1", metric_view_name="revenue_metrics",
         source_table=fq("orders"), json_definition=mv_defn,
-        source_questions="What is total revenue?", status="validated",
+        source_questions="What is total revenue?", status="applied",
         validation_errors=None, genie_space_id=None,
         created_at=now, applied_at=None,
         deployed_catalog=catalog_name, deployed_schema=vi_test_schema),
@@ -113,7 +113,8 @@ for ddl in [
         table_name STRING, owning_entity_id STRING)""",
     f"""CREATE TABLE IF NOT EXISTS {fq("fk_predictions")} (
         src_table STRING, src_column STRING, dst_table STRING, dst_column STRING,
-        final_confidence DOUBLE, pk_uniqueness DOUBLE, ai_reasoning STRING)""",
+        final_confidence DOUBLE, pk_uniqueness DOUBLE, ai_reasoning STRING,
+        is_fk BOOLEAN)""",
     f"""CREATE TABLE IF NOT EXISTS {fq("profiling_snapshots")} (
         table_name STRING, row_count BIGINT, snapshot_time TIMESTAMP)""",
 ]:

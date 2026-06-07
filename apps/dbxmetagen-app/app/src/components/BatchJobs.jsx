@@ -976,6 +976,44 @@ export default function BatchJobs({ onNavigate, pipelineStats }) {
             </button>
             <p className="text-xs text-slate-400 mt-1">Runs the full 15-task analytics pipeline: knowledge bases, knowledge graph, embeddings, ontology, profiling, FK prediction, clustering, and vector index. Run after core metadata has been generated.</p>
 
+            {/* Post-review sync card */}
+            <div className="mt-2 card p-4 border border-dbx-oat-dark/30 dark:border-dbx-navy-400/20 bg-dbx-oat-light/50 dark:bg-dbx-navy/30 space-y-3">
+              <div className="flex items-center gap-2">
+                <h3 className="text-sm font-semibold text-slate-700 dark:text-slate-200">Post-Review Sync</h3>
+                <span className="relative group/tip">
+                  <svg className="w-4 h-4 text-slate-400 cursor-help" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+                    <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M13 16h-1v-4h-1m1-4h.01M21 12a9 9 0 11-18 0 9 9 0 0118 0z" />
+                  </svg>
+                  <span className="absolute bottom-full left-1/2 -translate-x-1/2 mb-2 w-72 p-2 text-xs text-slate-200 bg-slate-800 rounded-lg shadow-lg opacity-0 group-hover/tip:opacity-100 pointer-events-none transition-opacity z-10">
+                    After reviewing foreign keys or editing metadata in the Review tab, use these buttons to propagate your changes to the knowledge graph and vector index without re-running the full pipeline.
+                  </span>
+                </span>
+              </div>
+              <div className="flex flex-wrap gap-3">
+                <div className="flex-1 min-w-[200px]">
+                  <button onClick={() => runJob('build_knowledge_graph', {
+                    catalog_name: catalogName, schema_name: schemaName,
+                    table_names: tableNames,
+                    sweep_stale_edges: 'true', incremental: 'false',
+                  }, 'sync_kg')} disabled={!!runningAction || !catalogName.trim() || !schemaName.trim()}
+                    className="btn-secondary btn-md w-full">
+                    {runningAction === 'sync_kg' ? 'Starting...' : 'Sync Knowledge Graph'}
+                  </button>
+                  <p className="text-[11px] text-slate-400 mt-1">Rebuilds graph nodes and reference edges from approved FK predictions.</p>
+                </div>
+                <div className="flex-1 min-w-[200px]">
+                  <button onClick={() => runJob('build_vector_index', {
+                    catalog_name: catalogName, schema_name: schemaName,
+                    sweep_stale_docs: 'true', incremental: 'false',
+                  }, 'sync_vi')} disabled={!!runningAction || !catalogName.trim() || !schemaName.trim()}
+                    className="btn-secondary btn-md w-full">
+                    {runningAction === 'sync_vi' ? 'Starting...' : 'Sync Vector Index'}
+                  </button>
+                  <p className="text-[11px] text-slate-400 mt-1">Refreshes search documents with current metadata and approved FKs.</p>
+                </div>
+              </div>
+            </div>
+
             {/* Lakebase sync card */}
             <div className="mt-2 card p-4 border border-dbx-oat-dark/30 dark:border-dbx-navy-400/20 bg-dbx-oat-light/50 dark:bg-dbx-navy/30 space-y-3">
               <div className="flex items-center gap-2">

@@ -66,6 +66,8 @@ env:
     valueFrom: setup_mcp_servers_job
   - name: BUILD_VECTOR_INDEX_JOB_ID
     valueFrom: build_vector_index_job
+  - name: BUILD_KNOWLEDGE_GRAPH_JOB_ID
+    valueFrom: build_knowledge_graph_job
   - name: VECTOR_SEARCH_ENDPOINT
     value: "__VS_ENDPOINT_NAME__"
   - name: VECTOR_SEARCH_INDEX
