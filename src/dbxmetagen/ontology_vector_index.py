@@ -99,8 +99,8 @@ class OntologyVectorIndexBuilder:
         try:
             w.vector_search_indexes.get_index(idx_name)
             logger.info("VS index '%s' already exists", idx_name)
-        except Exception:
-            logger.info("Creating Delta Sync index '%s'", idx_name)
+        except Exception as get_err:
+            logger.info("get_index('%s') failed (%s), attempting create", idx_name, get_err)
             max_attempts, delay = 5, 30
             for attempt in range(1, max_attempts + 1):
                 try:
@@ -123,7 +123,18 @@ class OntologyVectorIndexBuilder:
                     )
                     break
                 except Exception as e:
-                    if _transient_error(e) and attempt < max_attempts:
+                    if "already exists" in str(e).lower():
+                        raise RuntimeError(
+                            f"VS index '{idx_name}' cannot be created because a UC "
+                            f"entity with that name already exists, but the index is "
+                            f"not reachable (get_index failed: {get_err}). This "
+                            f"typically happens when a VS endpoint is deleted without "
+                            f"first removing its indexes. To fix, delete the orphaned "
+                            f"index via the Vector Search API or UI:\n"
+                            f"  w.vector_search_indexes.delete_index('{idx_name}')\n"
+                            f"Then re-run this task."
+                        ) from e
+                    elif _transient_error(e) and attempt < max_attempts:
                         logger.warning("create_index attempt %d/%d: %s", attempt, max_attempts, e)
                         time.sleep(delay)
                         delay = min(delay * 2, 120)

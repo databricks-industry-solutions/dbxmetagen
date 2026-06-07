@@ -15,7 +15,7 @@ resources:
       schedule:
         quartz_cron_expression: "0 0 2 ? * SUN"
         timezone_id: "UTC"
-        pause_status: UNPAUSED
+        pause_status: PAUSED
 
       parameters:
         - name: catalog_name

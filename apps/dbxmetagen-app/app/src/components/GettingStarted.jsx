@@ -167,6 +167,17 @@ export default function GettingStarted({ onNavigate, onStartTour }) {
         <p className="text-xs text-slate-500 dark:text-slate-400 mt-4 pt-3 border-t border-slate-100 dark:border-dbx-navy-400/20">
           Nothing touches your production catalog until you explicitly apply it. dbxmetagen generates into its own tables first.
         </p>
+        <div className="mt-4 pt-3 border-t border-slate-100 dark:border-dbx-navy-400/20 space-y-2">
+          <p className="text-xs text-slate-500 dark:text-slate-400">
+            <span className="font-semibold">Keeping things fresh:</span> A weekly vector index sync job is deployed but <span className="font-semibold">paused by default</span>.
+            Unpause it in your Databricks Workflows UI to keep the search index fresh automatically as metadata changes.
+            Without it, the index only updates when you run the full analytics pipeline or click "Sync Vector Index" in the Advanced Metadata tab.
+          </p>
+          <p className="text-xs text-slate-500 dark:text-slate-400">
+            <span className="font-semibold">After reviewing foreign keys:</span> Use the "Sync Knowledge Graph" and "Sync Vector Index" buttons
+            in the Advanced Metadata tab to propagate your approve/reject decisions without re-running the full pipeline.
+          </p>
+        </div>
       </div>
 
       <ArrowDown />
