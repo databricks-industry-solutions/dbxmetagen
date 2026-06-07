@@ -1723,6 +1723,7 @@ class FKPredictor:
             pairs.append((row.table_b, row.col_b.split(".")[-1]))
         self._batch_ensure_table_samples(pairs)
 
+        join_cap = self.config.cardinality_sample_rows + 1
         fragments = []
         for row in rows:
             va = self._table_samples.get((row.table_a, row.col_a.split(".")[-1]))
@@ -1734,7 +1735,8 @@ class FKPredictor:
                 f"SELECT '{ca}' AS ca, '{cb}' AS cb, "
                 f"(SELECT COUNT(*) FROM {va}) AS a_count, "
                 f"(SELECT COUNT(*) FROM {vb}) AS b_count, "
-                f"(SELECT COUNT(*) FROM {va} a INNER JOIN {vb} b ON a.val = b.val) AS joined"
+                f"(SELECT COUNT(*) FROM (SELECT 1 FROM {va} a INNER JOIN {vb} b "
+                f"ON a.val = b.val LIMIT {join_cap}) _lim) AS joined"
             )
 
         if not fragments:
@@ -1750,9 +1752,14 @@ class FKPredictor:
 
         join_stats = []
         for r in all_join_rows:
+            max_count = max(r.a_count, r.b_count) or 1
             min_count = min(r.a_count, r.b_count) or 1
+            if r.joined > max_count:
+                rate = 0.0
+            else:
+                rate = r.joined / min_count
             join_stats.append(
-                (r.ca, r.cb, r.joined / min_count, r.a_count, r.b_count, r.joined)
+                (r.ca, r.cb, rate, r.a_count, r.b_count, r.joined)
             )
 
         stats_df = self.spark.createDataFrame(
@@ -1905,7 +1912,7 @@ class FKPredictor:
             F.greatest(F.lit(0.0), F.least(F.lit(1.0), F.col("ai_confidence"))).alias("ai_confidence"),
             "ai_reasoning",
             F.least(F.lit(1.0), F.greatest(F.lit(0.0), F.col("join_rate"))).alias("join_rate"),
-            F.col("join_matched").cast("int").alias("join_matched"),
+            F.col("join_matched").cast("long").alias("join_matched"),
             pk_uniq.alias("pk_uniqueness"),
             ri.alias("ri_score"),
             F.greatest(F.lit(0.0), F.least(F.lit(1.0),
@@ -2114,7 +2121,7 @@ class FKPredictor:
                 src_table STRING, dst_table STRING,
                 col_similarity DOUBLE, table_similarity DOUBLE,
                 rule_score DOUBLE, ai_confidence DOUBLE, ai_reasoning STRING,
-                join_rate DOUBLE, join_matched INT,
+                join_rate DOUBLE, join_matched BIGINT,
                 pk_uniqueness DOUBLE, ri_score DOUBLE,
                 final_confidence DOUBLE, created_at TIMESTAMP,
                 updated_at TIMESTAMP, is_fk BOOLEAN
@@ -2127,6 +2134,10 @@ class FKPredictor:
             except Exception as e:
                 if "FIELDS_ALREADY_EXISTS" not in str(e) and "already exists" not in str(e).lower():
                     raise
+        try:
+            self.spark.sql(f"ALTER TABLE {preds} ALTER COLUMN join_matched TYPE BIGINT")
+        except Exception:
+            pass
 
         # Idempotent cleanup: remove bad rows every run.
         cleanup_rules = [

@@ -1,7 +1,7 @@
 resources:
   jobs:
-    build_vector_index_job:
-      name: "${var.app_name}_build_vector_index"
+    build_knowledge_graph_job:
+      name: "${var.app_name}_build_knowledge_graph"
       budget_policy_id: ${var.budget_policy_id}
 
       permissions:
@@ -12,40 +12,32 @@ resources:
         on_failure:
           - ${var.current_user}
 
-      schedule:
-        quartz_cron_expression: "0 0 2 ? * SUN"
-        timezone_id: "UTC"
-        pause_status: UNPAUSED
-
       parameters:
         - name: catalog_name
           default: ${var.catalog_name}
         - name: schema_name
           default: ${var.schema_name}
-        - name: endpoint_name
-          default: ${var.vs_endpoint_name}
-        - name: sweep_stale_docs
+        - name: table_names
+          default: ""
+        - name: sweep_stale_edges
           default: "false"
         - name: incremental
           default: "true"
-        - name: table_names
-          default: ""
 
       tasks:
-        - task_key: build_vector_index
+        - task_key: build_knowledge_graph
           max_retries: 1
           min_retry_interval_millis: 600000
           timeout_seconds: 14400
           environment_key: default
           notebook_task:
-            notebook_path: ../../notebooks/build_vector_index.py
+            notebook_path: ../../notebooks/build_knowledge_graph.py
             base_parameters:
               catalog_name: "{{job.parameters.catalog_name}}"
               schema_name: "{{job.parameters.schema_name}}"
-              endpoint_name: "{{job.parameters.endpoint_name}}"
-              sweep_stale_docs: "{{job.parameters.sweep_stale_docs}}"
-              incremental: "{{job.parameters.incremental}}"
               table_names: "{{job.parameters.table_names}}"
+              sweep_stale_edges: "{{job.parameters.sweep_stale_edges}}"
+              incremental: "{{job.parameters.incremental}}"
 
       environments:
         - environment_key: default

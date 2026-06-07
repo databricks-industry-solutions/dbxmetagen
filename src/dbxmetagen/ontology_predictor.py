@@ -113,6 +113,9 @@ Use only entity names and URIs from the profiles above."""
 SYSTEM_PROMPT = (
     "You are an ontology classification expert. "
     "Match database tables to entities from the active ontology bundle index shown in the prompt. "
+    "Prefer domain-relevant business entities over data-type primitives "
+    "(e.g. Boolean, Integer, Text) -- primitive types describe column data formats, "
+    "not what a table represents. "
     "Do not invent classes from other standards. Return ONLY valid JSON."
 )
 

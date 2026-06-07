@@ -395,6 +395,7 @@ class GenieContextAssembler:
             SELECT src_table, dst_table, src_column, dst_column, final_confidence
             FROM {self._fq('fk_predictions')}
             WHERE final_confidence >= 0.7
+              AND (is_fk IS NULL OR is_fk = TRUE)
               AND src_table IN ({table_list}) AND dst_table IN ({table_list})
         """,
         )

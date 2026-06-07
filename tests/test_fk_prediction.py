@@ -634,6 +634,100 @@ class TestJoinRateCapping:
         assert ai * (0.6 + 0.4 * jr) > ai * 0.6
 
 
+# --- TestManyToManyPenalty ---
+
+
+class TestManyToManyPenalty:
+    """Tests for many-to-many detection in join validation.
+
+    Mathematical invariant: for a true FK, at least one side has unique values,
+    so joined <= max(a_count, b_count). If joined > max(a_count, b_count),
+    neither side is unique -> many-to-many -> not a valid FK.
+    """
+
+    @staticmethod
+    def _rate(a_count, b_count, joined):
+        """Mirror the join_rate logic from FKPredictor.join_validate."""
+        max_count = max(a_count, b_count) or 1
+        min_count = min(a_count, b_count) or 1
+        if joined > max_count:
+            return 0.0
+        return joined / min_count
+
+    @staticmethod
+    def _confidence(ai_conf, join_rate):
+        """Mirror the ai_confidence adjustment from join_validate."""
+        clamped = max(0.0, min(1.0, join_rate))
+        return round(ai_conf * (0.6 + 0.4 * clamped), 4)
+
+    def test_one_to_one_perfect_match(self):
+        """Perfect 1:1 FK -- every row matches exactly once."""
+        rate = self._rate(a_count=100, b_count=100, joined=100)
+        assert rate == 1.0
+        assert self._confidence(0.8, rate) == 0.8
+
+    def test_one_to_many_fk_valid(self):
+        """FK (child) has more rows than PK (parent), matches within bound."""
+        rate = self._rate(a_count=200, b_count=100, joined=150)
+        assert rate == 1.5
+        assert self._confidence(0.8, rate) == 0.8  # clamped to 1.0
+
+    def test_one_to_many_at_boundary(self):
+        """joined == max(a, b) -- boundary, still valid FK."""
+        rate = self._rate(a_count=100, b_count=50, joined=100)
+        assert rate == 2.0  # 100/50, will clamp to 1.0
+        assert self._confidence(0.8, rate) == 0.8
+
+    def test_many_to_many_penalized(self):
+        """Classic many-to-many: low cardinality, joined >> max(a, b)."""
+        rate = self._rate(a_count=100, b_count=100, joined=5000)
+        assert rate == 0.0
+        assert self._confidence(0.8, rate) == 0.48  # 0.8 * 0.6
+
+    def test_many_to_many_just_over_threshold(self):
+        """joined = max(a, b) + 1 -- just crossed the threshold."""
+        rate = self._rate(a_count=100, b_count=50, joined=101)
+        assert rate == 0.0
+
+    def test_no_match(self):
+        """No rows match at all."""
+        rate = self._rate(a_count=100, b_count=100, joined=0)
+        assert rate == 0.0
+        assert self._confidence(0.8, rate) == 0.48
+
+    def test_partial_match(self):
+        """Half the rows match -- moderate FK signal."""
+        rate = self._rate(a_count=100, b_count=100, joined=50)
+        assert rate == 0.5
+        assert self._confidence(0.8, rate) == 0.64  # 0.8 * 0.8
+
+    def test_zero_counts_no_crash(self):
+        """Both counts zero -- should not divide by zero."""
+        rate = self._rate(a_count=0, b_count=0, joined=0)
+        assert rate == 0.0
+
+    def test_asymmetric_counts(self):
+        """Unequal sample sizes, joined within FK range."""
+        rate = self._rate(a_count=500, b_count=50, joined=45)
+        assert rate == 45 / 50  # 0.9
+        assert rate > 0.0
+
+    def test_many_to_many_large_scale(self):
+        """Simulates the real bug: 100K samples, low cardinality -> billions."""
+        rate = self._rate(a_count=100_000, b_count=100_000, joined=5_000_000_000)
+        assert rate == 0.0
+
+    def test_join_validate_source_has_many_to_many_guard(self):
+        """The join_validate method must contain the many-to-many check."""
+        src = inspect.getsource(FKPredictor.join_validate)
+        assert "max_count" in src or "max(r.a_count" in src
+
+    def test_join_validate_sql_has_limit_cap(self):
+        """The join SQL fragment must have a LIMIT cap to prevent runaway compute."""
+        src = inspect.getsource(FKPredictor.join_validate)
+        assert "LIMIT" in src
+
+
 # --- TestSafetyFilters ---
 
 

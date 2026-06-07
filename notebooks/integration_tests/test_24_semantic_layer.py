@@ -80,7 +80,7 @@ spark.createDataFrame(
 spark.createDataFrame([
     Row(src_column="customer_id", dst_column="customer_id",
         src_table=fq("orders"), dst_table=fq("customers"),
-        final_confidence=0.95, updated_at=now),
+        final_confidence=0.95, is_fk=True, updated_at=now),
 ]).write.mode("overwrite").saveAsTable(fq("fk_predictions"))
 
 print("Seeded source tables and metadata")
@@ -152,7 +152,7 @@ spark.createDataFrame([
 spark.sql(f"""
     INSERT INTO {fq('fk_predictions')} VALUES
     ('country', 'region_name', '{fq("customers")}', '{fq("regions")}',
-     0.90, CURRENT_TIMESTAMP())
+     0.90, TRUE, CURRENT_TIMESTAMP())
 """)
 
 from dbxmetagen.semantic_layer import SemanticLayerConfig, SemanticLayerGenerator
