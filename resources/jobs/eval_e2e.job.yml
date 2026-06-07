@@ -29,11 +29,11 @@ resources:
         - name: fred_secret_scope
           default: ""
         - name: skip_generation
-          default: "false"
+          default: "true"
         - name: skip_pipeline
           default: "false"
         - name: skip_idempotency
-          default: "false"
+          default: "true"
         - name: exclude_tables
           default: ""
         - name: federation_mode
