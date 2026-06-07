@@ -1754,7 +1754,7 @@ class FKPredictor:
         for r in all_join_rows:
             max_count = max(r.a_count, r.b_count) or 1
             min_count = min(r.a_count, r.b_count) or 1
-            if r.joined > max_count:
+            if r.joined > max_count * 2:
                 rate = 0.0
             else:
                 rate = r.joined / min_count

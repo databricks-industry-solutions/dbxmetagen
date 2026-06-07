@@ -640,9 +640,11 @@ class TestJoinRateCapping:
 class TestManyToManyPenalty:
     """Tests for many-to-many detection in join validation.
 
-    Mathematical invariant: for a true FK, at least one side has unique values,
-    so joined <= max(a_count, b_count). If joined > max(a_count, b_count),
-    neither side is unique -> many-to-many -> not a valid FK.
+    The penalty uses a 2x threshold: joined > max(a_count, b_count) * 2
+    triggers rate = 0.0. Combined with the SQL LIMIT cap at
+    cardinality_sample_rows + 1, this makes the penalty effectively
+    dormant for typical samples while still guarding against extreme
+    many-to-many if the LIMIT is raised in the future.
     """
 
     @staticmethod
@@ -650,7 +652,7 @@ class TestManyToManyPenalty:
         """Mirror the join_rate logic from FKPredictor.join_validate."""
         max_count = max(a_count, b_count) or 1
         min_count = min(a_count, b_count) or 1
-        if joined > max_count:
+        if joined > max_count * 2:
             return 0.0
         return joined / min_count
 
@@ -684,9 +686,14 @@ class TestManyToManyPenalty:
         assert rate == 0.0
         assert self._confidence(0.8, rate) == 0.48  # 0.8 * 0.6
 
-    def test_many_to_many_just_over_threshold(self):
-        """joined = max(a, b) + 1 -- just crossed the threshold."""
+    def test_mild_inflation_not_penalized(self):
+        """joined slightly above max -- within 2x tolerance, not penalized."""
         rate = self._rate(a_count=100, b_count=50, joined=101)
+        assert rate == 101 / 50  # ~2.02, clamped to 1.0 downstream
+
+    def test_many_to_many_just_over_2x_threshold(self):
+        """joined = max(a, b) * 2 + 1 -- just crossed the 2x threshold."""
+        rate = self._rate(a_count=100, b_count=50, joined=201)
         assert rate == 0.0
 
     def test_no_match(self):
@@ -718,9 +725,9 @@ class TestManyToManyPenalty:
         assert rate == 0.0
 
     def test_join_validate_source_has_many_to_many_guard(self):
-        """The join_validate method must contain the many-to-many check."""
+        """The join_validate method must contain the 2x many-to-many check."""
         src = inspect.getsource(FKPredictor.join_validate)
-        assert "max_count" in src or "max(r.a_count" in src
+        assert "max_count * 2" in src
 
     def test_join_validate_sql_has_limit_cap(self):
         """The join SQL fragment must have a LIMIT cap to prevent runaway compute."""
