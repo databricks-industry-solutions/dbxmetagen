@@ -137,21 +137,25 @@ export function ErrorBanner({ error, onDismiss }) {
 
 const TOUR_STEPS = [
   {
-    target: '[data-tour="stepper"]',
-    content: 'This workflow bar tracks your progress. Green checks appear as each step gets data. Click any step to jump there.',
+    target: '[data-tour="auth-badge"]',
+    content: 'Check your connection status here. Green = catalog and schema access confirmed. Amber = OBO token issue. Red = missing permissions. Click to see details.',
     disableBeacon: true,
   },
   {
+    target: '[data-tour="stepper"]',
+    content: 'This workflow bar tracks your progress. Green checks appear as each step gets data. Click any step to jump there.',
+  },
+  {
     target: '[data-tour="nav-design"]',
-    content: 'Start here. Generate core metadata first (descriptions, sensitivity, domains), then run the advanced analytics pipeline to build your knowledge graph.',
+    content: 'Start here. Run Core Metadata first (descriptions + sensitivity + domains), then Advanced Metadata to build the knowledge graph. Start with a few tables to verify results before scaling up.',
   },
   {
     target: '[data-tour="nav-review"]',
-    content: 'Review AI-generated results and apply them to Unity Catalog. Nothing touches your catalog without your approval.',
+    content: 'Review every AI-generated result before applying. Pay special attention to PI/PHI classifications (compliance risk) and FK predictions (structural impact).',
   },
   {
     target: '[data-tour="nav-explore"]',
-    content: 'Chat with the metadata agent, browse the knowledge graph, or explore entities.',
+    content: 'Once metadata is generated and reviewed, explore it here. The agent, entity browser, and graph are powered by the same Delta tables you can also query directly.',
   },
   {
     target: '[data-tour="header-guide"]',
@@ -366,7 +370,7 @@ function AuthStatusBadge() {
     ? auth.user_identity.split('@')[0]
     : (auth.obo_enabled ? 'SP fallback' : 'Service principal')
   return (
-    <div className="relative">
+    <div className="relative" data-tour="auth-badge">
       <button onClick={() => setExpanded(e => !e)}
         className={`flex items-center gap-1.5 px-2.5 py-1 rounded-lg text-[11px] font-medium border ${color} transition-all hover:brightness-125`}
         title={`Running as: ${auth.running_as}`}>

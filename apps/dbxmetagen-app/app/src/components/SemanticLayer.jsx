@@ -1823,10 +1823,12 @@ export default function SemanticLayer({ onNavigate, pipelineStats }) {
                 </button>
               )}
               <button onClick={syncToVectorStore} disabled={vectorSyncing}
+                title="Indexes metric view definitions into the Vector Search index so the Metric View Agent can find them via semantic search. Run after creating or updating metric views."
                 className="px-2.5 py-1 text-xs text-blue-600 dark:text-blue-400 border border-blue-300 dark:border-blue-700 rounded hover:bg-blue-50 dark:hover:bg-blue-900/20 disabled:opacity-50 whitespace-nowrap">
                 {vectorSyncing ? 'Syncing...' : 'Sync to Vector Store'}
               </button>
               <button onClick={syncToSemanticGraph} disabled={sgSyncing}
+                title="Builds a relationship graph of metric views, their source tables, dimensions, and measures. Powers the Metric View Agent's ability to find related metrics and trace lineage between KPIs."
                 className="px-2.5 py-1 text-xs text-purple-600 dark:text-purple-400 border border-purple-300 dark:border-purple-700 rounded hover:bg-purple-50 dark:hover:bg-purple-900/20 disabled:opacity-50 whitespace-nowrap">
                 {sgSyncing ? 'Syncing...' : 'Sync to Semantic Graph'}
               </button>

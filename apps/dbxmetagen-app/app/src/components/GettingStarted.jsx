@@ -103,6 +103,18 @@ export default function GettingStarted({ onNavigate, onStartTour }) {
 
       <ArrowDown />
 
+      {/* Review callout */}
+      <div className="card p-5 border-l-4 border-l-amber-400 bg-amber-50/50 dark:bg-amber-900/10">
+        <h3 className="text-sm font-bold text-amber-800 dark:text-amber-300 mb-2">Review matters at every step</h3>
+        <p className="text-sm text-slate-600 dark:text-slate-300 leading-relaxed">
+          AI-generated metadata is a starting point, not a final answer. Sensitivity classifications need verification for compliance.
+          Ontology mappings below 0.6 confidence should be checked. FK predictions need approval before they become constraints.
+          The value of dbxmetagen comes from the combination of AI speed and human judgment.
+        </p>
+      </div>
+
+      <ArrowDown />
+
       {/* Section 3: What Gets Built */}
       <div className="card p-6">
         <h2 className="heading-section mb-4">What Gets Built</h2>
@@ -140,26 +152,45 @@ export default function GettingStarted({ onNavigate, onStartTour }) {
               Stored in dbxmetagen Tables
             </h3>
             <p className="text-xs text-slate-500 dark:text-slate-400 mb-3 italic">Powers downstream features</p>
-            <ul className="space-y-1.5 text-sm text-slate-600 dark:text-slate-300">
-              <li className="flex items-start gap-2">
-                <span className="text-dbx-sky mt-0.5 shrink-0">&#9679;</span>
-                Knowledge graph (entities, relationships, similarity)
+            <ul className="space-y-2.5 text-sm text-slate-600 dark:text-slate-300">
+              <li>
+                <div className="flex items-start gap-2">
+                  <span className="text-dbx-sky mt-0.5 shrink-0">&#9679;</span>
+                  <span className="font-medium text-slate-700 dark:text-slate-200">Knowledge graph</span>
+                </div>
+                <p className="text-xs text-slate-500 dark:text-slate-400 ml-5 mt-0.5">
+                  <code className="text-xs bg-slate-100 dark:bg-dbx-navy-500 px-1 py-0.5 rounded">graph_nodes</code> — one row per table, column, or entity with metadata properties.
+                  {' '}<code className="text-xs bg-slate-100 dark:bg-dbx-navy-500 px-1 py-0.5 rounded">graph_edges</code> — relationships between nodes (FK references, ontology links, similarity, schema containment). Each edge has a <code className="text-xs bg-slate-100 dark:bg-dbx-navy-500 px-1 py-0.5 rounded">source_system</code> indicating which module created it.
+                  Optionally synced to Lakebase for low-latency graph traversal by agents.
+                </p>
               </li>
-              <li className="flex items-start gap-2">
-                <span className="text-dbx-sky mt-0.5 shrink-0">&#9679;</span>
-                Entity-to-table mappings (ontology)
+              <li>
+                <div className="flex items-start gap-2">
+                  <span className="text-dbx-sky mt-0.5 shrink-0">&#9679;</span>
+                  <span className="font-medium text-slate-700 dark:text-slate-200">Vector index</span>
+                </div>
+                <p className="text-xs text-slate-500 dark:text-slate-400 ml-5 mt-0.5">
+                  A Databricks Vector Search index over metadata documents (table/column descriptions, ontology chunks, metric view definitions).
+                  Powers semantic search in the agent and the Search tab. Updated by the full pipeline, the "Sync Vector Index" button, or the weekly scheduled job (paused by default).
+                </p>
               </li>
-              <li className="flex items-start gap-2">
-                <span className="text-dbx-sky mt-0.5 shrink-0">&#9679;</span>
-                Column profiles and data quality scores
+              <li>
+                <div className="flex items-start gap-2">
+                  <span className="text-dbx-sky mt-0.5 shrink-0">&#9679;</span>
+                  Entity-to-table mappings (ontology)
+                </div>
               </li>
-              <li className="flex items-start gap-2">
-                <span className="text-dbx-sky mt-0.5 shrink-0">&#9679;</span>
-                Searchable vector index
+              <li>
+                <div className="flex items-start gap-2">
+                  <span className="text-dbx-sky mt-0.5 shrink-0">&#9679;</span>
+                  Column profiles and data quality scores
+                </div>
               </li>
-              <li className="flex items-start gap-2">
-                <span className="text-dbx-sky mt-0.5 shrink-0">&#9679;</span>
-                Community summaries
+              <li>
+                <div className="flex items-start gap-2">
+                  <span className="text-dbx-sky mt-0.5 shrink-0">&#9679;</span>
+                  Community summaries
+                </div>
               </li>
             </ul>
           </div>
@@ -177,6 +208,15 @@ export default function GettingStarted({ onNavigate, onStartTour }) {
             <span className="font-semibold">After reviewing foreign keys:</span> Use the "Sync Knowledge Graph" and "Sync Vector Index" buttons
             in the Advanced Metadata tab to propagate your approve/reject decisions without re-running the full pipeline.
           </p>
+        </div>
+        <div className="mt-4 pt-3 border-t border-slate-100 dark:border-dbx-navy-400/20">
+          <h3 className="text-xs font-semibold uppercase tracking-wider text-slate-500 dark:text-slate-400 mb-2">What to look for when reviewing</h3>
+          <ul className="space-y-1 text-xs text-slate-500 dark:text-slate-400">
+            <li><span className="font-medium text-slate-600 dark:text-slate-300">Ontology entities</span> — check confidence scores; below 0.6 means the mapping is uncertain</li>
+            <li><span className="font-medium text-slate-600 dark:text-slate-300">PI / PHI / PCI</span> — verify all classifications; false negatives have compliance implications</li>
+            <li><span className="font-medium text-slate-600 dark:text-slate-300">FK predictions</span> — approve high-confidence ones, review medium, reject false positives</li>
+            <li><span className="font-medium text-slate-600 dark:text-slate-300">Comments</span> — spot-check 10-20% for accuracy, especially domain-specific tables</li>
+          </ul>
         </div>
       </div>
 
@@ -205,11 +245,12 @@ export default function GettingStarted({ onNavigate, onStartTour }) {
 
       <ArrowDown />
 
-      {/* Section 5: Use the Semantic Layer */}
+      {/* Section 5: Use Your Metadata */}
       <div>
-        <h2 className="heading-section mb-1">Use the Semantic Layer</h2>
+        <h2 className="heading-section mb-1">Use Your Metadata</h2>
         <p className="text-sm text-slate-500 dark:text-slate-400 mb-4">
-          With a reviewed semantic layer in place, you can use it in several ways. All of these are optional — pick what fits your needs.
+          The outputs are standard Delta tables and Vector Search indexes — consumable from any tool, not just this app.
+          Genie spaces and the agent are built-in use cases, but you can also query the knowledge graph directly from notebooks, dashboards, or your own applications.
         </p>
         <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
           <OutcomeCard
@@ -220,7 +261,7 @@ export default function GettingStarted({ onNavigate, onStartTour }) {
           />
           <OutcomeCard
             title="Ask Questions"
-            description="Chat with a metadata-aware agent. Ask 'what tables contain patient demographics?' or 'how does the claims schema connect to encounters?' The agent uses the knowledge graph and vector index to find answers."
+            description="Chat with a metadata-aware agent. Ask 'what tables contain patient demographics?' or 'how does the claims schema connect to encounters?' The agent uses the knowledge graph and vector index to find answers. See the agent breakdown below for details."
             onClick={() => onNavigate('agent')}
             linkLabel="Open Agent"
           />
@@ -236,7 +277,74 @@ export default function GettingStarted({ onNavigate, onStartTour }) {
             onClick={() => onNavigate('genie')}
             linkLabel="Build Genie Space"
           />
+          <OutcomeCard
+            title="Query Directly"
+            description="All outputs live in your metadata schema as Delta tables. Run SQL against graph_nodes, graph_edges, ontology_entities, or column_knowledge_base from any notebook, dashboard, or downstream pipeline."
+            onClick={() => onNavigate('coverage')}
+            linkLabel="View Coverage"
+          />
         </div>
+      </div>
+
+      {/* Agent breakdown */}
+      <div className="card p-6">
+        <h2 className="heading-section mb-3">Agents</h2>
+        <p className="text-sm text-slate-500 dark:text-slate-400 mb-4">
+          The Explore tab has multiple agents, each with different data access and purpose.
+        </p>
+        <div className="space-y-3">
+          <div className="p-4 rounded-lg border border-violet-200 dark:border-violet-800/40 bg-violet-50/50 dark:bg-violet-900/10">
+            <h3 className="text-sm font-bold text-violet-700 dark:text-violet-300 mb-1">Metadata Agent (GraphRAG)</h3>
+            <p className="text-xs text-slate-600 dark:text-slate-300 leading-relaxed mb-2">
+              The primary agent. Combines vector search, multi-hop graph traversal (via Lakebase or Delta), and SQL queries across all knowledge base and graph tables.
+              Intent-classifies your question first (discovery, query, relationship, governance), then selects the right tools.
+            </p>
+            <p className="text-[11px] text-slate-500 dark:text-slate-400">
+              <span className="font-semibold">Tools:</span> search_metadata, execute_metadata_sql, query_graph_nodes, get_node_details, find_similar_nodes, traverse_graph, expand_vs_hits, get_table_summary, get_data_quality, profile_key_columns, execute_data_sql, execute_graph_sql
+            </p>
+          </div>
+
+          <div className="p-4 rounded-lg border border-amber-200 dark:border-amber-800/40 bg-amber-50/50 dark:bg-amber-900/10">
+            <h3 className="text-sm font-bold text-amber-700 dark:text-amber-300 mb-1">Metric View Agent</h3>
+            <span className="text-[10px] font-medium text-amber-600 dark:text-amber-400 bg-amber-100 dark:bg-amber-900/40 px-1.5 py-0.5 rounded mb-2 inline-block">Under Development</span>
+            <p className="text-xs text-slate-600 dark:text-slate-300 leading-relaxed mb-2">
+              Answers business questions by querying deployed Unity Catalog metric views. Searches for relevant metrics, executes measure and dimension queries, and interprets KPI data. Only sees metric views -- not the full knowledge graph.
+            </p>
+            <p className="text-[11px] text-slate-500 dark:text-slate-400">
+              <span className="font-semibold">Tools:</span> search_metric_views, list_metric_views, describe_metric_view, metric_view_query, metric_view_dimension_query, get_related_views, get_view_lineage, explore_table_metrics, get_semantic_graph_context
+            </p>
+          </div>
+
+          <div className="grid grid-cols-1 md:grid-cols-2 gap-3">
+            <div className="p-3 rounded-lg border border-orange-200 dark:border-orange-800/40 bg-orange-50/30 dark:bg-orange-900/10">
+              <h4 className="text-xs font-bold text-orange-700 dark:text-orange-300 mb-1">Governance Agent</h4>
+              <p className="text-[11px] text-slate-600 dark:text-slate-300 leading-relaxed">
+                Audits PII/PHI/PCI classification coverage, finds gaps in masking, traces sensitive data lineage, and identifies re-identification risk paths through entity relationships.
+              </p>
+            </div>
+            <div className="p-3 rounded-lg border border-rose-200 dark:border-rose-800/40 bg-rose-50/30 dark:bg-rose-900/10">
+              <h4 className="text-xs font-bold text-rose-700 dark:text-rose-300 mb-1">Impact Analysis Agent</h4>
+              <p className="text-[11px] text-slate-600 dark:text-slate-300 leading-relaxed">
+                What-if analysis for schema changes. Shows downstream dependencies, affected metric views, entity impact, and column importance before you drop, rename, or retype a column or table.
+              </p>
+            </div>
+          </div>
+
+          <p className="text-[11px] text-slate-500 dark:text-slate-400 italic">
+            The Graph Explorer and Search tabs provide direct access to the knowledge graph and vector index without going through an agent.
+          </p>
+        </div>
+      </div>
+
+      {/* Cleanup tips */}
+      <div className="card p-5 bg-slate-50/50 dark:bg-dbx-navy-700/30">
+        <h3 className="text-sm font-bold text-slate-700 dark:text-slate-200 mb-2">Re-running and cleanup</h3>
+        <p className="text-xs text-slate-500 dark:text-slate-400 leading-relaxed">
+          Re-running the pipeline is safe — results merge via deterministic IDs. If you see too many similarity edges
+          or stale data from a previous ontology bundle, use <code className="text-xs bg-slate-100 dark:bg-dbx-navy-500 px-1 py-0.5 rounded">sweep_stale_edges=true</code> and <code className="text-xs bg-slate-100 dark:bg-dbx-navy-500 px-1 py-0.5 rounded">sweep_stale_docs=true</code> on
+          the next pipeline run. For targeted cleanup, query <code className="text-xs bg-slate-100 dark:bg-dbx-navy-500 px-1 py-0.5 rounded">graph_edges</code> grouped
+          by <code className="text-xs bg-slate-100 dark:bg-dbx-navy-500 px-1 py-0.5 rounded">source_system</code> to diagnose which module is producing excess edges.
+        </p>
       </div>
     </div>
   )

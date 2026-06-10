@@ -999,7 +999,7 @@ export default function BatchJobs({ onNavigate, pipelineStats }) {
                     className="btn-secondary btn-md w-full">
                     {runningAction === 'sync_kg' ? 'Starting...' : 'Sync Knowledge Graph'}
                   </button>
-                  <p className="text-[11px] text-slate-400 mt-1">Rebuilds graph nodes and reference edges from approved FK predictions.</p>
+                  <p className="text-[11px] text-slate-400 mt-1">Rebuilds graph_nodes and graph_edges from knowledge base tables, incorporating approved/rejected FK predictions. Runs with sweep_stale_edges=true to remove orphaned edges. Use after reviewing FKs or editing metadata in the Review tab.</p>
                 </div>
                 <div className="flex-1 min-w-[200px]">
                   <button onClick={() => runJob('build_vector_index', {
@@ -1009,7 +1009,7 @@ export default function BatchJobs({ onNavigate, pipelineStats }) {
                     className="btn-secondary btn-md w-full">
                     {runningAction === 'sync_vi' ? 'Starting...' : 'Sync Vector Index'}
                   </button>
-                  <p className="text-[11px] text-slate-400 mt-1">Refreshes search documents with current metadata and approved FKs.</p>
+                  <p className="text-[11px] text-slate-400 mt-1">Regenerates metadata_documents from knowledge base tables and re-indexes them in Vector Search (metadata_vs_index). Runs with sweep_stale_docs=true to purge orphaned documents. Powers the agent's semantic search and the Search tab.</p>
                 </div>
               </div>
             </div>

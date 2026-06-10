@@ -136,6 +136,7 @@ export default function VectorSearch() {
           <h2 className="text-base font-semibold text-slate-800 dark:text-slate-100">Index Status</h2>
           <div className="flex gap-2">
             <button onClick={doSync} disabled={syncing || endpointMissing || endpointError}
+              title="Triggers the Build Vector Index job to regenerate metadata documents and re-index them in Vector Search. Same as the 'Sync Vector Index' button on the Advanced Metadata tab."
               className="btn-secondary btn-sm">
               {syncing ? (syncRunId ? 'Building...' : 'Syncing...') : 'Sync Now'}
             </button>
