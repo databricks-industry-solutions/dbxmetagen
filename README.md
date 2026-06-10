@@ -21,7 +21,7 @@
 - **Web dashboard**: FastAPI + React app covering the full metadata lifecycle
 
 
-Although there are many possible modes in which you can run dbxmetagen, the intention is that the app is the full-fledged experience.
+The core value of dbxmetagen is **metadata generation and a governed knowledge graph**. The web dashboard manages the full lifecycle -- generate, review, and apply -- but the outputs are standard Delta tables and Vector Search indexes that you can consume from any tool: notebooks, dashboards, Genie spaces, agents, or your own applications.
 
 
 ## Quickstart
@@ -211,14 +211,17 @@ dbxmetagen has two phases:
 
 **Phase 1 -- Core metadata generation** (`generate_metadata.py` / `main()`):
 - Runs one mode at a time: `comment`, `pi`, or `domain`
+- Run comment mode first (or in parallel with PI + domain via `metadata_parallel_modes_job`) -- the analytics pipeline depends on all three modes having completed
 - Writes results to `metadata_generation_log`
 - Can apply DDL directly or output to files for review
+- Each run re-processes all tables in scope (no incremental mode for generation)
 
 **Phase 2 -- Analytics pipeline** (run after Phase 1):
 - Aggregates log data into knowledge bases (table, column, schema)
 - Builds a knowledge graph with nodes and edges
 - Generates embeddings, discovers ontology entities, computes similarity
 - Runs profiling, quality scoring, clustering, and FK prediction
+- Supports incremental mode (`incremental=true`): each task checks upstream watermarks and skips if nothing changed
 
 ### Layers
 
@@ -230,7 +233,84 @@ dbxmetagen has two phases:
 | **Ontology** | `ontology_entities`, `ontology_column_properties`, `ontology_relationships`, `ontology_chunks`, `ontology_metrics` | Business entity discovery, column classification, relationship detection, and vector retrieval |
 | **Vector Index** | `metadata_vs_index`, `ontology_vs_index` | Hybrid semantic search over metadata documents and ontology entities. See [docs/CONFIGURATION.md](docs/CONFIGURATION.md#vector-search) |
 
+All output tables are standard Delta tables in your output schema (`{catalog}.{schema_name}`), queryable via SQL, notebooks, or any tool that reads from Unity Catalog.
+
 The ontology and graph system is inspired by semantic web standards (RDF, OWL, SHACL) but stores everything in Delta tables queryable via SQL. Industry bundles align with domain standards (FHIR, OMOP, Schema.org). See [docs/formal_semantics.md](docs/formal_semantics.md) for a detailed comparison.
+
+## Human Review
+
+Every pipeline step produces AI-generated output that should be reviewed before applying to Unity Catalog. By default, `apply_ddl=false` -- nothing touches your catalog until you explicitly review and apply.
+
+Review guidance by step:
+
+- **Comments**: spot-check 10-20% of descriptions, especially tables with domain-specific terminology
+- **PI / PHI / PCI**: review ALL sensitivity classifications -- false negatives have compliance implications
+- **Domain**: verify domain assignments match your business context
+- **Ontology**: check entity mappings, especially those with confidence below 0.6
+- **FK predictions**: approve correct predictions, reject false positives; use "Sync Knowledge Graph" after to propagate decisions
+- **Metric views**: verify SQL expressions are valid and semantically correct before applying
+
+The app's **Review & Apply** page is the primary review interface. The **Coverage** page tracks completeness across your schema.
+
+## Interpreting Ontology Results
+
+The ontology pipeline maps your tables and columns to business concepts defined in industry-standard bundles (FHIR, OMOP, Schema.org) or custom ontologies. Key output tables:
+
+- **`ontology_entities`**: each row maps a table to a business concept (e.g., `dim_patient` -> `Patient`). The `confidence` column (0-1) reflects match certainty and `discovery_method` indicates whether it was keyword-based or LLM-classified. Review entities with confidence below 0.6.
+- **`ontology_column_properties`**: assigns a `property_role` to each column in entity-mapped tables -- `primary_key`, `business_key`, `measure`, `dimension`, `temporal`, `geographic`, `label`, `audit`, or `object_property` (foreign reference).
+- **`ontology_relationships`**: entity-to-entity relationships (e.g., `Encounter` references `Patient`) derived from FK predictions and column analysis.
+
+See [docs/DOMAIN_ONTOLOGY_ARCHITECTURE.md](docs/DOMAIN_ONTOLOGY_ARCHITECTURE.md) for the full architecture and bundle comparison.
+
+## Data Privacy
+
+dbxmetagen sends the following to the configured LLM endpoint during metadata generation:
+
+- Table and column names, data types, and schema structure (always)
+- Sample row data (when `allow_data=true`, the default)
+
+Set `allow_data=false` to prevent sample data from being sent; schema metadata is still sent. PII/PHI data values are never logged by the pipeline -- only metadata about detections (classification, type, confidence).
+
+## Ontology Bundles and Deployment
+
+Use **one ontology bundle per output schema**. This keeps entities, edges, column properties, and the vector index internally consistent.
+
+If your data spans multiple domains (e.g., clinical + financial), deploy to **separate output schemas** per bundle:
+
+- `catalog.metadata_clinical` with `ontology_bundle=fhir_r4`
+- `catalog.metadata_financial` with `ontology_bundle=schema_org`
+
+Switching `ontology_bundle` on the same schema between runs works but creates orphaned downstream data (stale docs, edges, embeddings). Clean up by enabling `sweep_stale_docs=true` and `sweep_stale_edges=true` on the next pipeline run, or see "Cleaning Up Previous Runs" below.
+
+## Cleaning Up Previous Runs
+
+Check edge counts by source system to diagnose graph issues:
+
+```sql
+SELECT source_system, COUNT(*) FROM {catalog}.{schema}.graph_edges GROUP BY 1;
+```
+
+Common cleanup scenarios:
+
+- **Too many similarity edges**: delete and let the pipeline regenerate with ANN (the default):
+  ```sql
+  DELETE FROM {catalog}.{schema}.graph_edges WHERE source_system = 'embedding_similarity';
+  ```
+  Or re-run the analytics pipeline with `sweep_stale_edges=true`.
+- **Orphaned ontology data after bundle switch**: enable "Sweep stale docs" in the Advanced Metadata tab (passes `sweep_stale_docs=true`) and run with `sweep_stale_edges=true`.
+- **Full reset**: drop the output schema and re-deploy. The pipeline will recreate all tables.
+
+## Scaling
+
+Processing time depends on table count, column width, cluster size, and parallelism. Order-of-magnitude estimates for comment mode:
+
+| Tables | Estimate | Recommended parallelism |
+|--------|----------|------------------------|
+| 10-100 | Minutes | 1 task (default) |
+| 1,000-5,000 | Hours | 5-10 parallel tasks |
+| 10,000-50,000 | Many hours to a day | 50+ parallel tasks |
+
+Key tuning knobs: `columns_per_call` (default 20 -- higher reduces LLM calls for wide tables), `sample_size` (rows per prompt), and multi-task parallelism via the control table. Similarity edges use ANN by default (`use_ann=True`) to avoid quadratic scaling. See [docs/CONFIGURATION.md](docs/CONFIGURATION.md) for all parameters.
 
 ## API Reference
 
@@ -284,7 +364,7 @@ Settings are in `variables.yml`. Key options:
 
 For full reference, see [docs/CONFIGURATION.md](docs/CONFIGURATION.md).
 
-Domain classification and federation mode are covered in [docs/CONFIGURATION.md](docs/CONFIGURATION.md).
+**Customer Context**: inject domain-specific knowledge (glossaries, naming conventions, business rules) scoped by catalog/schema/table/pattern to improve generation quality. Manage context entries via the app's Generate Metadata page or YAML files in `configurations/customer_context/`.
 
 ## Dashboard App
 
