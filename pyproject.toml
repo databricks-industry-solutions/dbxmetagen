@@ -19,6 +19,7 @@ dependencies = [
     "pyyaml==6.0.1",
     "requests==2.32.5",
     "nest-asyncio>=1.6.0,<2",
+    "databricks-vectorsearch==0.66",
 ]
 
 [project.optional-dependencies]

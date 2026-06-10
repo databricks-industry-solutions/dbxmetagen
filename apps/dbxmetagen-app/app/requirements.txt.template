@@ -12,7 +12,7 @@ cachetools>=5.3.0
 sqlalchemy>=2.0.0
 psycopg2-binary>=2.9.0
 openpyxl>=3.1.0
-databricks-vectorsearch>=0.40
+databricks-vectorsearch>=0.40,<0.74
 sqlparse>=0.5.0
 rdflib>=6.3.0
 ./__WHL_NAME__

@@ -87,6 +87,7 @@ databricks-vectorsearch==0.66
     # via
     #   databricks-ai-bridge
     #   databricks-langchain
+    #   dbxmetagen
 dataclasses-json==0.6.7
     # via langchain-community
 deprecated==1.2.13
