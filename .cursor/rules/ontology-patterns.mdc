@@ -40,9 +40,16 @@ WHERE oe.last_classified IS NULL
    OR COALESCE(oe.last_bundle_version, '') != '{current_bv}'
 ```
 
-## Bundle Switch Safety
+## Multi-Bundle Coexistence
 
-`run()` checks `DISTINCT ontology_bundle` in `ontology_entities` at startup and emits a `logger.warning` if entities from a different bundle exist. `_purge_stale_bundle_entities` then deletes unvalidated auto-discovered entities from previous bundles; validated entities are preserved. Use `incremental=false` for a clean rebuild when intentionally switching bundles.
+Entities from multiple ontology bundles coexist in `ontology_entities` within the same schema. `run()` emits a `logger.warning` if entities from a different bundle exist -- this is informational only, no purge occurs.
+
+Key behaviors:
+- Running bundle B on tables D,E,F leaves bundle A entities on tables X,Y,Z untouched.
+- `_store_entities` MERGE matches on `(entity_name, source_tables)`. Re-processing the same tables with a different bundle inserts new entity rows (different entity_name = no MERGE match).
+- Graph node IDs are namespaced `entity::{bundle}::{entity_name}` so bundles don't collide.
+- Each run's edge catalog only produces named relationships for the current bundle; cross-bundle FK edges get the generic "references" relationship.
+- Structural components (FK predictions, similarity edges, embeddings) connect tables across bundles regardless of ontology bundle.
 
 ## Column Properties Table
 
