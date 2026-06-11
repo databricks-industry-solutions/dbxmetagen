@@ -221,6 +221,36 @@ class TestExtractSingleClass:
 
         assert entities["Encounter"]["parents"] == ["Patient"]
 
+    def test_retains_parent_outside_classes_of_interest(self):
+        # Abstract ancestors skipped from extraction must still be kept as parents
+        # so the hierarchy can be backfilled (Fix 2b builder durability).
+        g = Graph()
+        g.add((NS.Patient, RDF.type, OWL.Class))
+        g.add((NS.Patient, RDFS.subClassOf, NS.DomainResource))
+        entities: Dict[str, Any] = {}
+        _extract_single_class(g, NS.Patient, {"Patient"}, "Test", entities, OWL, RDF, RDFS)
+        assert entities["Patient"]["parents"] == ["DomainResource"]
+
+
+class TestMaterializeSkippedAncestors:
+    """Fix 2b builder durability: backfill skipped abstract ancestors as stubs."""
+
+    def test_extract_classes_backfills_ancestor_chain(self):
+        g = Graph()
+        g.add((NS.Patient, RDF.type, OWL.Class))
+        g.add((NS.Patient, RDFS.subClassOf, NS.DomainResource))
+        g.add((NS.DomainResource, RDF.type, OWL.Class))
+        g.add((NS.DomainResource, RDFS.subClassOf, NS.Resource))
+        g.add((NS.Resource, RDF.type, OWL.Class))
+
+        entities = _extract_classes(g, {"Patient"}, "Test", "http://test.org/")
+
+        assert entities["Patient"]["parents"] == ["DomainResource"]
+        assert "DomainResource" in entities
+        assert entities["DomainResource"]["parents"] == ["Resource"]
+        assert "Resource" in entities
+        assert entities["Resource"]["parents"] == []
+
     def test_stores_ranges_list_on_edges(self):
         g = _make_basic_graph()
         coi = {"Patient", "Encounter"}

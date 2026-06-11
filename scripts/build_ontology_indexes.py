@@ -420,8 +420,52 @@ def _extract_classes(
 
     _extract_schema_domain_edges(g, entities, classes_of_interest, _rdflib)
     _extract_union_domain_edges(g, entities, classes_of_interest, OWL, RDF, RDFS)
+    _materialize_skipped_ancestors(g, entities, source_label, prefix, _rdflib, RDFS)
 
     return entities
+
+
+def _materialize_skipped_ancestors(g, entities, source_label, prefix, rdflib_mod, RDFS):
+    """Backfill abstract ancestor classes referenced as parents but skipped from
+    extraction (e.g. FHIR DomainResource/Resource) as minimal stub entities.
+
+    Walks the parent closure of already-extracted entities; for each referenced
+    parent not yet present, reads its label/comment/subClassOf from the graph and
+    adds a stub so the emitted bundle carries a faithful multi-level is_a chain.
+    """
+    seen: Set[str] = set(entities.keys())
+    queue: List[str] = []
+    for data in entities.values():
+        queue.extend(data.get("parents", []))
+
+    while queue:
+        name = queue.pop()
+        if name in seen:
+            continue
+        seen.add(name)
+        uri = rdflib_mod.URIRef(prefix + name) if prefix else None
+        comment = _get_comment(g, uri, RDFS) if uri is not None else ""
+        label = _get_label(g, uri, RDFS) if uri is not None else name
+        parents = (
+            [_local_name(p) for p in g.objects(uri, RDFS.subClassOf) if _local_name(p)]
+            if uri is not None else []
+        )
+        desc = comment or f"{name} (abstract base class)"
+        entities[name] = {
+            "description": desc,
+            "label": label,
+            "source": source_label,
+            "uri": str(uri) if uri is not None else "",
+            "parents": parents,
+            "outgoing_edges": [],
+            "keywords": _derive_keywords(name, desc),
+            "synonyms": [],
+            "typical_attributes": [],
+            "business_questions": [],
+            "relationships": {},
+            "properties": {},
+        }
+        queue.extend(parents)
 
 
 _SCHEMA_DATATYPE_NAMES = frozenset({
@@ -586,8 +630,12 @@ def _extract_single_class(g, cls, classes_of_interest, source_label, entities, O
 
     comment = _get_comment(g, cls, RDFS)
     label = _get_label(g, cls, RDFS)
+    # Keep ALL named superclasses (blank-node restrictions return no local name
+    # and are dropped). Abstract ancestors that are skipped from extraction
+    # (e.g. FHIR DomainResource/Resource, OMOP Event/Occurrence) are retained so
+    # _materialize_skipped_ancestors can backfill them as stub entities, giving
+    # formal bundles a real subclass hierarchy instead of a flat list.
     parents = [_local_name(p) for p in g.objects(cls, RDFS.subClassOf) if _local_name(p)]
-    parents = [p for p in parents if p in classes_of_interest]
 
     outgoing_edges = []
     data_props: List[str] = []

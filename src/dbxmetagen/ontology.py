@@ -645,9 +645,38 @@ class EdgeCatalogEntry:
     def validate_edge(self, src_entity: str, dst_entity: str) -> bool:
         return self.matches_domain(src_entity) and self.matches_range(dst_entity)
 
+    def is_unconstrained(self) -> bool:
+        """True when the entry constrains neither side (domain and range both
+        absent or 'Any'). Such an entry carries no (src,dst) signal and would
+        wildcard-match every pair, so it must never be selected by find_edge."""
+        dom_any = self.domain is None or self.domain == "Any"
+        rng_any = self.range is None or self.range == "Any"
+        return dom_any and rng_any
+
 
 class EdgeCatalog:
     """Utility wrapper around a dict of EdgeCatalogEntry objects."""
+
+    # Built-in inverses for common structural/business relationships. Used as a
+    # fallback when a bundle does not declare an explicit ``inverse`` (formal
+    # bundles like FHIR/OMOP define none at the top level), so the auto-inverse
+    # edge generation still produces a denser, navigable graph. Bidirectional.
+    _DEFAULT_INVERSES: Dict[str, str] = {
+        "references": "referenced_by",
+        "referenced_by": "references",
+        "has_part": "part_of",
+        "part_of": "has_part",
+        "contains": "contained_in",
+        "contained_in": "contains",
+        "depends_on": "required_by",
+        "required_by": "depends_on",
+        "derived_from": "derives",
+        "derives": "derived_from",
+        "precedes": "follows",
+        "follows": "precedes",
+        "causes": "caused_by",
+        "caused_by": "causes",
+    }
 
     def __init__(self, entries: Dict[str, "EdgeCatalogEntry"]):
         self._entries = entries
@@ -657,7 +686,9 @@ class EdgeCatalog:
 
     def get_inverse(self, name: str) -> Optional[str]:
         entry = self._entries.get(name)
-        return entry.inverse if entry else None
+        if entry and entry.inverse:
+            return entry.inverse
+        return self._DEFAULT_INVERSES.get(name)
 
     def find_edge(self, src_entity: str, dst_entity: str,
                   bundle_name: Optional[str] = None) -> Optional[EdgeCatalogEntry]:
@@ -665,16 +696,28 @@ class EdgeCatalog:
 
         When *bundle_name* is supplied, entries from that bundle are preferred
         over cross-bundle matches, avoiding false positives when multiple
-        bundles define entities with the same name.
+        bundles define entities with the same name. Fully-unconstrained entries
+        (no domain and no range) are skipped: they carry no (src,dst) signal and
+        would wildcard-match every pair, which is how a custom-bundle catalog
+        entry could pollute FK/discovered edge naming. Among matches, entries
+        that constrain both sides outrank those that constrain only one side.
         """
         scoped = []
         unscoped = []
         for entry in self._entries.values():
+            if entry.is_unconstrained():
+                continue
             if entry.validate_edge(src_entity, dst_entity):
                 if bundle_name and entry.bundle_name == bundle_name:
                     scoped.append(entry)
                 else:
                     unscoped.append(entry)
+
+        def specificity(e: "EdgeCatalogEntry") -> int:
+            return int(e.domain not in (None, "Any")) + int(e.range not in (None, "Any"))
+
+        scoped.sort(key=specificity, reverse=True)
+        unscoped.sort(key=specificity, reverse=True)
         if scoped:
             return scoped[0]
         return unscoped[0] if unscoped else None
@@ -684,6 +727,11 @@ class EdgeCatalog:
         entry = self._entries.get(edge_name)
         if not entry:
             return False, f"Edge '{edge_name}' not in catalog"
+        if entry.is_unconstrained() and entry.category != "structural":
+            return False, (
+                f"Edge '{edge_name}' is unconstrained (no domain/range) and "
+                f"not structural; refusing to wildcard-match {src_entity}->{dst_entity}"
+            )
         if not entry.validate_edge(src_entity, dst_entity):
             return False, (
                 f"Edge '{edge_name}' domain/range violation: "
@@ -1090,12 +1138,18 @@ class OntologyLoader:
         "has_part": {"inverse": "part_of", "symmetric": False, "category": "structural"},
         "contains": {"inverse": "contained_in", "symmetric": False, "category": "structural"},
         "member_of": {"inverse": "has_member", "symmetric": False, "category": "structural"},
+        # categorized_as is emitted deterministically by _build_category_edges
+        # (entity -> W5 category node). Auto-merged here (not persisted to bundle
+        # edge_catalog/tiers) so it is never offered to the LLM edge predictor and
+        # never wildcard-matched by find_edge for FK/discovered relationships.
+        "categorized_as": {"inverse": "category_of", "symmetric": False, "category": "structural"},
     }
 
     _INFER_BLOCKLIST: frozenset = frozenset({
         "about", "subjectOf", "type_of", "instance_of", "is_a",
         "subclass_of", "superclass_of", "has_part", "part_of",
         "contains", "contained_in", "member_of", "has_member",
+        "categorized_as", "category_of",
     })
 
     @staticmethod
@@ -2984,6 +3038,10 @@ class OntologyBuilder:
         logger.info("Relationships table %s ready", self.config.fully_qualified_relationships)
 
     _MIN_STORE_CONFIDENCE = 0.2
+    # Primary entities below this confidence are treated as abstentions: they are
+    # flagged needs_human_review and their authoritative instance_of (table->entity)
+    # edge is suppressed so the knowledge graph never asserts a low-confidence type.
+    _PRIMARY_CONFIDENCE_FLOOR = 0.3
 
     def _store_entities(
         self,
@@ -3071,7 +3129,15 @@ class OntologyBuilder:
         {match_condition}
             target.confidence = source.confidence,
             target.source_columns = source.source_columns,
-            target.attributes = source.attributes,
+            target.attributes = CASE
+                WHEN COALESCE(target.attributes['granularity'], 'table') = 'table'
+                     AND source.attributes['granularity'] = 'column'
+                THEN map_concat(
+                       map_filter(source.attributes, (k, v) -> k NOT IN ('granularity', 'discovery_method')),
+                       map('granularity', 'table',
+                           'discovery_method', COALESCE(target.attributes['discovery_method'], source.attributes['discovery_method'])))
+                ELSE source.attributes
+            END,
             target.column_bindings = source.column_bindings,
             target.bundle_version = source.bundle_version,
             target.entity_uri = source.entity_uri,
@@ -3863,6 +3929,137 @@ class OntologyBuilder:
         result["edges_df"] = write_df
         return result
 
+    def _seed_concept_parent_entities(self) -> int:
+        """Seed abstract concept rows for parent entity types referenced by
+        discovered entities but never discovered themselves (FHIR
+        DomainResource/Resource, OMOP OmopCDMThing, schema_org intermediates).
+
+        Without these rows, _build_hierarchy_edges skips is_a edges to
+        undiscovered parents (it requires both endpoints in discovered_types)
+        and the roots have no graph node. Seeded rows carry empty source_tables
+        so they stay 'referenced', never get instance_of edges, and are ignored
+        by primary/FK logic.
+
+        INSERT-only MERGE: never overwrites an existing (possibly human-edited)
+        row and never bumps updated_at on re-runs, preserving incremental
+        watermarks. Seeding is bounded to the ancestor closure of discovered
+        types, keeping the set tiny.
+        """
+        entity_defs = self.ontology_config.get("entities", {}).get("definitions", {})
+        parent_map: Dict[str, List[str]] = {}
+        category_map: Dict[str, List[str]] = {}
+        for name, defn in entity_defs.items():
+            if not isinstance(defn, dict):
+                continue
+            single = defn.get("parent") or defn.get("subclass_of")
+            if single:
+                parent_map[name] = [single]
+            else:
+                plist = defn.get("parents", [])
+                if isinstance(plist, list) and plist:
+                    parent_map[name] = [p for p in plist if isinstance(p, str)]
+            cats = defn.get("categories", [])
+            if isinstance(cats, list) and cats:
+                category_map[name] = [c for c in cats if isinstance(c, str)]
+        if not parent_map and not category_map:
+            return 0
+
+        ent_table = self.config.fully_qualified_entities
+        try:
+            discovered = {
+                r.entity_type
+                for r in self.spark.sql(
+                    f"SELECT DISTINCT entity_type FROM {ent_table}"
+                ).collect()
+            }
+        except Exception:
+            return 0
+        if not discovered:
+            return 0
+
+        # Ancestor closure of discovered types only.
+        ancestors: set = set()
+        seen: set = set()
+        stack = list(discovered)
+        while stack:
+            node = stack.pop()
+            for p in parent_map.get(node, []):
+                if p not in discovered:
+                    ancestors.add(p)
+                if p not in seen:
+                    seen.add(p)
+                    stack.append(p)
+
+        # Category nodes referenced by discovered types but not discovered (flat,
+        # no closure). Seeded so categorized_as edges have an existing target node.
+        categories: set = set()
+        for node in discovered:
+            for c in category_map.get(node, []):
+                if c not in discovered:
+                    categories.add(c)
+
+        if not ancestors and not categories:
+            return 0
+
+        bundle = self.config.ontology_bundle or "default"
+        now = datetime.now()
+        rows = []
+
+        def _row(name, granularity):
+            d = entity_defs.get(name)
+            desc = (d.get("description") if isinstance(d, dict) else "") or ""
+            return (
+                f"seeded::{bundle}::{name}", name, name, desc,
+                [], [], {"discovery_method": "seeded_hierarchy", "granularity": granularity},
+                1.0, True, False, bundle, "referenced", now, now,
+            )
+
+        for name in sorted(ancestors):
+            rows.append(_row(name, "abstract"))
+        for name in sorted(categories - ancestors):
+            rows.append(_row(name, "category"))
+
+        seed_schema = StructType([
+            StructField("entity_id", StringType()),
+            StructField("entity_name", StringType()),
+            StructField("entity_type", StringType()),
+            StructField("description", StringType()),
+            StructField("source_tables", ArrayType(StringType())),
+            StructField("source_columns", ArrayType(StringType())),
+            StructField("attributes", MapType(StringType(), StringType())),
+            StructField("confidence", DoubleType()),
+            StructField("auto_discovered", BooleanType()),
+            StructField("validated", BooleanType()),
+            StructField("ontology_bundle", StringType()),
+            StructField("entity_role", StringType()),
+            StructField("created_at", TimestampType()),
+            StructField("updated_at", TimestampType()),
+        ])
+        seed_df = self.spark.createDataFrame(rows, schema=seed_schema)
+        seed_df.createOrReplaceTempView("_seed_concept_entities")
+        self.spark.sql(f"""
+            MERGE INTO {ent_table} AS target
+            USING _seed_concept_entities AS source
+            ON target.entity_id = source.entity_id
+            WHEN NOT MATCHED THEN INSERT (
+                entity_id, entity_name, entity_type, description,
+                source_tables, source_columns, attributes, confidence,
+                auto_discovered, validated, ontology_bundle, entity_role,
+                created_at, updated_at
+            ) VALUES (
+                source.entity_id, source.entity_name, source.entity_type, source.description,
+                source.source_tables, source.source_columns, source.attributes, source.confidence,
+                source.auto_discovered, source.validated, source.ontology_bundle, source.entity_role,
+                source.created_at, source.updated_at
+            )
+        """)
+        self.spark.sql("DROP VIEW IF EXISTS _seed_concept_entities")
+        logger.info(
+            "Seeded %d concept nodes (%d abstract ancestors, %d categories)",
+            len(rows), len(ancestors), len(categories - ancestors),
+        )
+        return len(rows)
+
     def _build_hierarchy_edges(self) -> Optional[DataFrame]:
         """Build is_a edges from child entity types to their parent types.
 
@@ -3874,7 +4071,7 @@ class OntologyBuilder:
         parent_map: Dict[str, List[str]] = {}
         for name, defn in entity_defs.items():
             parents: List[str] = []
-            single = defn.get("parent")
+            single = defn.get("parent") or defn.get("subclass_of")
             if single:
                 parents.append(single)
             else:
@@ -3939,6 +4136,78 @@ class OntologyBuilder:
             schema=_hierarchy_schema,
         )
         logger.info("Built %d hierarchy (is_a) edges", len(new_edges))
+        return edge_df
+
+    def _build_category_edges(self) -> Optional[DataFrame]:
+        """Build categorized_as edges from entities to their category nodes.
+
+        Mirrors _build_hierarchy_edges but reads the `categories` field (e.g. FHIR
+        W5 groupings like clinical.general). Keeps categorization on a separate axis
+        from is_a so the class hierarchy stays clean. Category target nodes are
+        seeded by _seed_concept_parent_entities.
+        """
+        entity_defs = self.ontology_config.get("entities", {}).get("definitions", {})
+        category_map: Dict[str, List[str]] = {}
+        for name, defn in entity_defs.items():
+            cats = defn.get("categories", []) if isinstance(defn, dict) else []
+            if isinstance(cats, list):
+                vals = [c for c in cats if isinstance(c, str)]
+                if vals:
+                    category_map[name] = vals
+        if not category_map:
+            return None
+
+        ent_table = self.config.fully_qualified_entities
+        try:
+            discovered_types = {
+                r.entity_type
+                for r in self.spark.sql(
+                    f"SELECT DISTINCT entity_type FROM {ent_table}"
+                ).collect()
+            }
+        except Exception:
+            return None
+
+        bundle = self.config.ontology_bundle or None
+        new_edges = []
+        for child_type, cats in category_map.items():
+            if child_type not in discovered_types:
+                continue
+            for cat in cats:
+                if cat not in discovered_types:
+                    continue
+                child_id = self.canonical_entity_id(child_type, bundle)
+                cat_id = self.canonical_entity_id(cat, bundle)
+                new_edges.append((child_id, cat_id))
+
+        if not new_edges:
+            return None
+
+        now = datetime.now()
+        _category_schema = StructType([
+            StructField("src", StringType()),
+            StructField("dst", StringType()),
+            StructField("relationship", StringType()),
+            StructField("weight", DoubleType()),
+            StructField("edge_id", StringType()),
+            StructField("edge_type", StringType()),
+            StructField("direction", StringType()),
+            StructField("ontology_rel", StringType()),
+            StructField("source_system", StringType()),
+            StructField("status", StringType()),
+            StructField("created_at", TimestampType()),
+            StructField("updated_at", TimestampType()),
+        ])
+        edge_df = self.spark.createDataFrame(
+            [
+                (s, d, "categorized_as", 1.0,
+                 f"{s}::{d}::categorized_as", "categorized_as", "out",
+                 "categorized_as", "ontology", "candidate", now, now)
+                for s, d in new_edges
+            ],
+            schema=_category_schema,
+        )
+        logger.info("Built %d categorized_as edges", len(new_edges))
         return edge_df
 
     @staticmethod
@@ -4176,6 +4445,15 @@ class OntologyBuilder:
                 LATERAL VIEW EXPLODE(source_tables) AS tbl
                 WHERE source_tables IS NOT NULL AND SIZE(source_tables) > 0
                   AND COALESCE(entity_role, 'primary') = 'primary'
+                  -- Abstain floor applies only to auto-discovered, unvalidated
+                  -- primaries. Human-locked (auto_discovered=FALSE) and validated
+                  -- entities always keep their instance_of edge regardless of score.
+                  AND (
+                        COALESCE(validated, FALSE) = TRUE
+                        OR COALESCE(auto_discovered, TRUE) = FALSE
+                        OR (COALESCE(confidence, 1.0) >= {self._PRIMARY_CONFIDENCE_FLOOR}
+                            AND COALESCE(attributes['needs_human_review'], 'false') <> 'true')
+                      )
             """)
             if table_entities.count() > 0:
                 raw = table_entities.select(
@@ -4350,10 +4628,11 @@ class OntologyBuilder:
         self.spark.sql(f"""
             MERGE INTO {ent_table} AS target
             USING (
-                WITH exploded AS (
+                WITH                 exploded AS (
                     SELECT entity_id,
                            COALESCE(attributes['granularity'], 'table') AS granularity,
-                           confidence, tbl
+                           confidence, tbl,
+                           COALESCE(auto_discovered, TRUE) AS auto_discovered
                     FROM {ent_table}
                     LATERAL VIEW EXPLODE(source_tables) AS tbl
                 ),
@@ -4361,6 +4640,12 @@ class OntologyBuilder:
                     SELECT tbl,
                            BOOL_OR(granularity = 'table') AS has_table_level
                     FROM exploded GROUP BY tbl
+                ),
+                ent_agg AS (
+                    SELECT entity_id,
+                           BOOL_OR(granularity = 'table') AS owned,
+                           COUNT(DISTINCT CASE WHEN granularity = 'column' THEN tbl END) AS column_table_count
+                    FROM exploded GROUP BY entity_id
                 ),
                 ranked AS (
                     SELECT e.entity_id,
@@ -4370,10 +4655,18 @@ class OntologyBuilder:
                                    CASE WHEN h.has_table_level AND e.granularity = 'table' THEN 0
                                         WHEN NOT h.has_table_level AND e.granularity = 'column' THEN 0
                                         ELSE 1 END,
+                                   -- Ownership penalty: a column-level entity for this table
+                                   -- that is owned (table-level) elsewhere AND appears as a
+                                   -- column across many tables (ubiquitous FK like patient_id)
+                                   -- is deprioritized so a table-specific subject wins primary.
+                                   CASE WHEN e.granularity = 'column' AND a.owned
+                                             AND a.column_table_count >= 4
+                                             AND e.auto_discovered THEN 1 ELSE 0 END,
                                    e.confidence DESC
                            ) AS rn
                     FROM exploded e
                     JOIN per_table h ON e.tbl = h.tbl
+                    JOIN ent_agg a ON e.entity_id = a.entity_id
                 )
                 SELECT entity_id,
                        CASE WHEN MAX(CASE WHEN rn = 1 THEN 1 ELSE 0 END) = 1
@@ -4470,6 +4763,39 @@ class OntologyBuilder:
         n_primary = counts[0].cnt if counts else 0
         logger.info("_deduplicate_primary_entities: %d primary entities remain", n_primary)
         return n_primary
+
+    def _flag_low_confidence_primaries(self) -> int:
+        """Flag below-floor primary entities as needing human review.
+
+        Sets attributes['needs_human_review']='true' on primary entities whose
+        confidence is below _PRIMARY_CONFIDENCE_FLOOR. _build_structural_edges
+        then suppresses their instance_of edge. The map_filter drops any existing
+        key before re-adding it to avoid map_concat duplicate-key errors, and the
+        WHERE guard makes the UPDATE a no-op once flags are set (idempotent).
+        """
+        ent_table = self.config.fully_qualified_entities
+        result = self.spark.sql(f"""
+            UPDATE {ent_table}
+            SET attributes = map_concat(
+                    map_filter(attributes, (k, v) -> k != 'needs_human_review'),
+                    map('needs_human_review', 'true')),
+                updated_at = CURRENT_TIMESTAMP()
+            WHERE COALESCE(entity_role, 'primary') = 'primary'
+              AND COALESCE(confidence, 1.0) < {self._PRIMARY_CONFIDENCE_FLOOR}
+              AND attributes IS NOT NULL
+              AND COALESCE(attributes['needs_human_review'], 'false') <> 'true'
+              -- Never touch human-locked (steward override) or already-validated
+              -- entities: their review state is authoritative.
+              AND COALESCE(auto_discovered, TRUE) = TRUE
+              AND COALESCE(validated, FALSE) = FALSE
+        """)
+        try:
+            n = result.first()[0] if result is not None and result.first() else 0
+        except Exception:
+            n = 0
+        logger.info("_flag_low_confidence_primaries: flagged %s primaries below floor %.2f",
+                    n, self._PRIMARY_CONFIDENCE_FLOOR)
+        return 0
 
     def _build_bundle_property_index(self, entity_type: str) -> Dict[str, Tuple[str, str, Optional[str], Optional[Any]]]:
         """Build column_name_lower -> (role, property_name, edge, target_entity) from bundle properties."""
@@ -5629,6 +5955,7 @@ class OntologyBuilder:
         logger.info(f"Classified {roles_classified} entity roles (primary/referenced)")
 
         _step("deduplicate_primary_entities", self._deduplicate_primary_entities)
+        _step("flag_low_confidence_primaries", self._flag_low_confidence_primaries)
 
         col_props = _step("classify_column_properties", self.classify_column_properties)
         logger.info(f"Classified {col_props} column properties")
@@ -5641,6 +5968,7 @@ class OntologyBuilder:
         bundle_rels = _step("emit_bundle_edges", self.emit_bundle_edges)
         logger.info(f"Emitted {bundle_rels} bundle-defined edges")
 
+        _step("seed_concept_parent_entities", self._seed_concept_parent_entities)
         _step("sync_entity_nodes_to_graph", self._sync_entity_nodes_to_graph)
         _step("enrich_table_nodes_with_ontology", self._enrich_table_nodes_with_ontology)
 
@@ -5677,6 +6005,10 @@ class OntologyBuilder:
         hierarchy_df = _step("build_hierarchy_edges", self._build_hierarchy_edges)
         if hierarchy_df is not None:
             edge_dfs.append(align_edge_schema(hierarchy_df))
+
+        category_df = _step("build_category_edges", self._build_category_edges)
+        if category_df is not None:
+            edge_dfs.append(align_edge_schema(category_df))
 
         rel_result = _step("discover_inter_entity_relationships", self.discover_inter_entity_relationships)
         if rel_result.get("edges_df") is not None:
@@ -5782,6 +6114,7 @@ class OntologyBuilder:
 
         named = self.discover_named_relationships()
         bundle = self.emit_bundle_edges()
+        self._seed_concept_parent_entities()
         self._sync_entity_nodes_to_graph()
 
         # UPDATE: Same legacy source_system backfill as in run() -- see comment there.
@@ -5805,6 +6138,10 @@ class OntologyBuilder:
         hierarchy_df = self._build_hierarchy_edges()
         if hierarchy_df is not None:
             edge_dfs.append(align_edge_schema(hierarchy_df))
+
+        category_df = self._build_category_edges()
+        if category_df is not None:
+            edge_dfs.append(align_edge_schema(category_df))
 
         inter = self.discover_inter_entity_relationships()
         if inter.get("edges_df") is not None:

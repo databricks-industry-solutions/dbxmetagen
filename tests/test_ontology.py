@@ -1044,8 +1044,10 @@ class TestStoreEntitiesMergeUpdate:
         entities = [{"entity_id": "e1", "entity_type": "T", "source_tables": ["t1"], "confidence": 0.5}]
         builder._store_entities(entities)
         merge_sql = [c[0][0] for c in builder.spark.sql.call_args_list if "MERGE" in c[0][0]][0]
-        for col in ("confidence", "source_columns", "attributes", "column_bindings", "bundle_version", "updated_at"):
+        for col in ("confidence", "source_columns", "column_bindings", "bundle_version", "updated_at"):
             assert f"target.{col} = source.{col}" in merge_sql
+        # attributes uses a granularity-preserving CASE (Fix 1a), not a plain copy.
+        assert "target.attributes = CASE" in merge_sql
 
 
 class TestPostMergeConfidenceClamp:
@@ -1418,11 +1420,17 @@ class TestEdgeCatalogInverse:
         assert catalog.get_inverse("placed_by") == "placed"
 
     def test_get_inverse_returns_none_when_missing(self):
+        # An edge with no declared inverse and no built-in default returns None.
         entries = {
-            "references": EdgeCatalogEntry(name="references"),
+            "custom_edge": EdgeCatalogEntry(name="custom_edge"),
         }
         catalog = EdgeCatalog(entries)
-        assert catalog.get_inverse("references") is None
+        assert catalog.get_inverse("custom_edge") is None
+
+    def test_get_inverse_falls_back_to_builtin_default(self):
+        # 'references' has no declared inverse but a built-in default (Fix 2a).
+        catalog = EdgeCatalog({"references": EdgeCatalogEntry(name="references")})
+        assert catalog.get_inverse("references") == "referenced_by"
 
     def test_get_inverse_unknown_edge(self):
         catalog = EdgeCatalog({})
@@ -3332,4 +3340,225 @@ class TestOntologyConfigPathDerivation:
         assert len(defs) > 50
         validation = config.get("validation", {})
         assert validation.get("ai_validation_enabled") is True
+
+
+def _make_builder():
+    """Build an OntologyBuilder with mocked Spark and default config."""
+    mock_spark = MagicMock()
+    config = OntologyConfig(catalog_name="cat", schema_name="sch")
+    with patch.object(OntologyLoader, "load_config") as mock_load:
+        mock_load.return_value = OntologyLoader._default_config()
+        return OntologyBuilder(mock_spark, config)
+
+
+class TestGranularityDowngradeFix:
+    """Fix 1a: the column-store MERGE must preserve table-level granularity."""
+
+    def test_merge_preserves_table_granularity(self):
+        builder = _make_builder()
+        entities = [{
+            "entity_id": "e1", "entity_name": "Patient", "entity_type": "Patient",
+            "source_tables": ["t1"], "confidence": 0.9,
+            "attributes": {"granularity": "column", "discovery_method": "column_keyword"},
+        }]
+        builder._store_entities(entities)
+        merge_sql = [c[0][0] for c in builder.spark.sql.call_args_list if "MERGE INTO" in c[0][0]][0]
+        # Dedup-safe attribute merge that keeps granularity='table' on collision.
+        assert "map_filter(source.attributes" in merge_sql
+        assert "'granularity', 'table'" in merge_sql
+        assert "source.attributes['granularity'] = 'column'" in merge_sql
+
+
+class TestOwnershipPenaltyFix:
+    """Fix 1b: classify_entity_roles deprioritizes ubiquitous owned column entities."""
+
+    def test_classify_roles_sql_has_ownership_penalty(self):
+        builder = _make_builder()
+        builder.spark.sql.return_value.collect.return_value = []
+        builder.classify_entity_roles()
+        merge_sql = [c[0][0] for c in builder.spark.sql.call_args_list if "ent_agg" in c[0][0]]
+        assert merge_sql, "expected ownership-penalty MERGE with ent_agg CTE"
+        sql = merge_sql[0]
+        assert "column_table_count" in sql
+        assert ">= 4" in sql
+        assert "BOOL_OR(granularity = 'table') AS owned" in sql
+        # Penalty must not demote human-created (auto_discovered=FALSE) entities.
+        assert "e.auto_discovered" in sql
+
+
+class TestAbstainFloorFix:
+    """Fix 3: low-confidence primaries are flagged and lose their instance_of edge."""
+
+    def test_flag_low_confidence_primaries_sql(self):
+        builder = _make_builder()
+        builder._flag_low_confidence_primaries()
+        upd = [c[0][0] for c in builder.spark.sql.call_args_list
+               if "needs_human_review" in c[0][0] and "UPDATE" in c[0][0]][0]
+        assert "0.3" in upd
+        assert "map_filter(attributes" in upd
+        assert "entity_role" in upd
+        # Human-locked / validated entities must never be auto-flagged.
+        assert "COALESCE(auto_discovered, TRUE) = TRUE" in upd
+        assert "COALESCE(validated, FALSE) = FALSE" in upd
+
+    def test_instance_of_edge_respects_floor(self):
+        builder = _make_builder()
+        try:
+            builder._build_structural_edges()
+        except Exception:
+            pass
+        inst = [c[0][0] for c in builder.spark.sql.call_args_list if "canonical_dst" in c[0][0]]
+        assert inst, "expected instance_of edge query"
+        sql = inst[0]
+        assert "COALESCE(confidence, 1.0) >=" in sql
+        assert "needs_human_review" in sql
+        # Validated / human-locked primaries keep their edge regardless of score.
+        assert "COALESCE(validated, FALSE) = TRUE" in sql
+        assert "COALESCE(auto_discovered, TRUE) = FALSE" in sql
+
+
+def _make_builder_with_config(definitions, bundle=""):
+    """Build an OntologyBuilder whose loaded config carries the given entity
+    definitions and ontology_bundle (for concept-seeding/hierarchy-edge tests)."""
+    mock_spark = MagicMock()
+    config = OntologyConfig(catalog_name="cat", schema_name="sch", ontology_bundle=bundle)
+    base = OntologyLoader._default_config()
+    base.setdefault("entities", {})["definitions"] = definitions
+    with patch.object(OntologyLoader, "load_config", return_value=base):
+        return OntologyBuilder(mock_spark, config)
+
+
+class TestSeedConceptParentEntities:
+    """Fix 2b: seed undiscovered ancestor types as abstract concept rows.
+
+    Parents come from the bundle YAML (data-driven); seeding only inserts
+    ancestors referenced by discovered entities but never discovered themselves.
+    """
+
+    def test_seeds_ancestor_closure_insert_only(self):
+        from types import SimpleNamespace
+        builder = _make_builder_with_config(
+            {
+                "Patient": {"parents": ["DomainResource"]},
+                "Encounter": {"parents": ["DomainResource"]},
+                "DomainResource": {"parents": ["Resource"]},
+            },
+            bundle="fhir_r4",
+        )
+        builder.spark.sql.return_value.collect.return_value = [
+            SimpleNamespace(entity_type="Patient"),
+            SimpleNamespace(entity_type="Encounter"),
+        ]
+        n = builder._seed_concept_parent_entities()
+        assert n == 2
+        rows = builder.spark.createDataFrame.call_args[0][0]
+        assert {r[1] for r in rows} == {"DomainResource", "Resource"}
+        for r in rows:
+            assert r[4] == []          # source_tables empty
+            assert r[8] is True        # auto_discovered
+            assert r[9] is False       # validated
+            assert r[11] == "referenced"
+        merge = [c[0][0] for c in builder.spark.sql.call_args_list if "MERGE INTO" in c[0][0]][0]
+        assert "WHEN NOT MATCHED THEN INSERT" in merge
+        assert "WHEN MATCHED" not in merge
+
+    def test_no_seed_when_all_ancestors_discovered(self):
+        from types import SimpleNamespace
+        builder = _make_builder_with_config(
+            {"A": {"parents": ["B"]}, "B": {"description": "b"}}, bundle="",
+        )
+        builder.spark.sql.return_value.collect.return_value = [
+            SimpleNamespace(entity_type="A"), SimpleNamespace(entity_type="B"),
+        ]
+        assert builder._seed_concept_parent_entities() == 0
+        builder.spark.createDataFrame.assert_not_called()
+
+    def test_hierarchy_edges_form_to_seeded_roots(self):
+        from types import SimpleNamespace
+        builder = _make_builder_with_config(
+            {
+                "Patient": {"parents": ["DomainResource"]},
+                "DomainResource": {"parents": ["Resource"]},
+                "Resource": {"description": "r"},
+            },
+            bundle="fhir_r4",
+        )
+        builder.spark.sql.return_value.collect.return_value = [
+            SimpleNamespace(entity_type=t) for t in ("Patient", "DomainResource", "Resource")
+        ]
+        builder._build_hierarchy_edges()
+        rows = builder.spark.createDataFrame.call_args[0][0]
+        pairs = {(r[0], r[1]) for r in rows}
+        assert ("entity::fhir_r4::Patient", "entity::fhir_r4::DomainResource") in pairs
+        assert ("entity::fhir_r4::DomainResource", "entity::fhir_r4::Resource") in pairs
+
+    def test_subclass_of_field_builds_is_a_edge(self):
+        # _build_hierarchy_edges must honour `subclass_of` (alignment fix), not
+        # just `parent`/`parents`.
+        from types import SimpleNamespace
+        builder = _make_builder_with_config(
+            {"Order": {"subclass_of": "Transaction"}, "Transaction": {"description": "t"}},
+            bundle="",
+        )
+        builder.spark.sql.return_value.collect.return_value = [
+            SimpleNamespace(entity_type="Order"), SimpleNamespace(entity_type="Transaction"),
+        ]
+        builder._build_hierarchy_edges()
+        rows = builder.spark.createDataFrame.call_args[0][0]
+        pairs = {(r[0], r[1]) for r in rows}
+        assert ("entity::_default::Order", "entity::_default::Transaction") in pairs
+
+    def test_seeds_category_nodes_with_category_granularity(self):
+        # W5 categories live in a separate `categories` field and are seeded as
+        # concept nodes (granularity='category'), distinct from is_a ancestors.
+        from types import SimpleNamespace
+        builder = _make_builder_with_config(
+            {
+                "Patient": {"parents": ["DomainResource"], "categories": ["administrative.individual"]},
+                "DomainResource": {"description": "abstract"},
+            },
+            bundle="fhir_r4",
+        )
+        builder.spark.sql.return_value.collect.return_value = [
+            SimpleNamespace(entity_type="Patient"),
+            SimpleNamespace(entity_type="DomainResource"),
+        ]
+        n = builder._seed_concept_parent_entities()
+        assert n == 1
+        rows = builder.spark.createDataFrame.call_args[0][0]
+        assert {r[1] for r in rows} == {"administrative.individual"}
+        # granularity marker is in attributes (index 6)
+        assert rows[0][6]["granularity"] == "category"
+
+
+class TestCategoryEdges:
+    """Fix 2b: W5 categories become categorized_as edges, separate from is_a."""
+
+    def test_build_category_edges_from_categories_field(self):
+        from types import SimpleNamespace
+        builder = _make_builder_with_config(
+            {
+                "Patient": {"categories": ["administrative.individual"]},
+                "administrative.individual": {"description": "w5 group"},
+            },
+            bundle="fhir_r4",
+        )
+        builder.spark.sql.return_value.collect.return_value = [
+            SimpleNamespace(entity_type="Patient"),
+            SimpleNamespace(entity_type="administrative.individual"),
+        ]
+        builder._build_category_edges()
+        rows = builder.spark.createDataFrame.call_args[0][0]
+        assert len(rows) == 1
+        s, d, rel = rows[0][0], rows[0][1], rows[0][2]
+        assert s == "entity::fhir_r4::Patient"
+        assert d == "entity::fhir_r4::administrative.individual"
+        assert rel == "categorized_as"
+
+    def test_no_category_edges_when_no_categories(self):
+        builder = _make_builder_with_config({"Patient": {"parents": ["DomainResource"]}}, bundle="fhir_r4")
+        assert builder._build_category_edges() is None
+        builder.spark.createDataFrame.assert_not_called()
+
+
 
