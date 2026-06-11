@@ -404,6 +404,61 @@ class TestStoreEntitiesConfidenceClamping:
         assert rows[0][8] == 0.0  # discovery_confidence field
 
 
+class TestStoreEntitiesPrimitiveSuppression:
+    """Tests that _store_entities drops primitive datatype types as entities."""
+
+    @pytest.fixture
+    def builder(self):
+        mock_spark = MagicMock()
+        config = OntologyConfig(catalog_name="cat", schema_name="sch")
+        with patch.object(OntologyLoader, 'load_config') as mock_load:
+            mock_load.return_value = OntologyLoader._default_config()
+            b = OntologyBuilder(mock_spark, config)
+        return b
+
+    def test_primitive_datatype_entity_dropped(self, builder):
+        entities = [{
+            "entity_id": "e1", "entity_type": "Date",
+            "source_tables": ["t1"], "confidence": 0.95,
+        }]
+        result = builder._store_entities(entities)
+        assert result == 0
+        builder.spark.createDataFrame.assert_not_called()
+
+    def test_real_entity_retained(self, builder):
+        entities = [{
+            "entity_id": "e2", "entity_type": "Drug",
+            "source_tables": ["t2"], "confidence": 0.9,
+        }]
+        result = builder._store_entities(entities)
+        assert result == 1
+        rows = builder.spark.createDataFrame.call_args[0][0]
+        assert rows[0][2] == "Drug"
+
+    def test_mixed_batch_drops_only_primitives(self, builder):
+        entities = [
+            {"entity_id": "e1", "entity_type": "Boolean",
+             "source_tables": ["t1"], "confidence": 0.99},
+            {"entity_id": "e2", "entity_type": "MedicalCondition",
+             "source_tables": ["t2"], "confidence": 0.8},
+            {"entity_id": "e3", "entity_type": "Integer",
+             "source_tables": ["t3"], "confidence": 0.95},
+        ]
+        result = builder._store_entities(entities)
+        assert result == 1
+        rows = builder.spark.createDataFrame.call_args[0][0]
+        assert [r[2] for r in rows] == ["MedicalCondition"]
+
+    def test_primitive_matched_by_entity_name_fallback(self, builder):
+        entities = [{
+            "entity_id": "e1", "entity_name": "datetime",
+            "source_tables": ["t1"], "confidence": 0.9,
+        }]
+        result = builder._store_entities(entities)
+        assert result == 0
+        builder.spark.createDataFrame.assert_not_called()
+
+
 class TestBuildOntology:
     """Tests for build_ontology function."""
     
@@ -3559,6 +3614,67 @@ class TestCategoryEdges:
         builder = _make_builder_with_config({"Patient": {"parents": ["DomainResource"]}}, bundle="fhir_r4")
         assert builder._build_category_edges() is None
         builder.spark.createDataFrame.assert_not_called()
+
+
+class TestPurgeForeignBundleEntities:
+    """Cleanup of prior-bundle entities/nodes when switching ontology bundles."""
+
+    def test_noop_when_no_old_bundles(self):
+        builder = _make_builder_with_config({}, bundle="omop_cdm")
+        assert builder._purge_foreign_bundle_entities(set()) == 0
+        builder.spark.sql.assert_not_called()
+
+    def test_deletes_foreign_entities_preserving_steward_locks(self):
+        builder = _make_builder_with_config({}, bundle="omop_cdm")
+        builder._purge_foreign_bundle_entities({"fhir_r4"})
+        sql_calls = [c[0][0] for c in builder.spark.sql.call_args_list]
+        entity_deletes = [
+            s for s in sql_calls
+            if s.lstrip().startswith("DELETE FROM") and "ontology_entities" in s
+            and "node_type" not in s
+        ]
+        assert len(entity_deletes) == 1
+        ed = entity_deletes[0]
+        assert "ontology_bundle IN ('fhir_r4')" in ed
+        # auto_discovered=FALSE rows (steward overrides) must be preserved
+        assert "COALESCE(auto_discovered, TRUE) = TRUE" in ed
+
+    def test_deletes_orphan_entity_nodes_via_canonical_id_antijoin(self):
+        builder = _make_builder_with_config({}, bundle="omop_cdm")
+        builder._purge_foreign_bundle_entities({"fhir_r4"})
+        sql_calls = [c[0][0] for c in builder.spark.sql.call_args_list]
+        node_deletes = [
+            s for s in sql_calls
+            if s.lstrip().startswith("DELETE FROM") and "node_type = 'entity'" in s
+        ]
+        assert len(node_deletes) == 1
+        nd = node_deletes[0]
+        assert "source_system = 'ontology'" in nd
+        assert OntologyBuilder.CANONICAL_ID_SQL in nd
+        assert "NOT IN" in nd
+
+    def test_escapes_bundle_names(self):
+        builder = _make_builder_with_config({}, bundle="omop_cdm")
+        builder._purge_foreign_bundle_entities({"o'brien"})
+        sql_calls = [c[0][0] for c in builder.spark.sql.call_args_list]
+        assert any("'o''brien'" in s for s in sql_calls)
+
+
+class TestRefreshRelationshipsSweepThreading:
+    """sweep_stale_entities must thread through and imply the edge sweep."""
+
+    def test_convenience_fn_forwards_sweep_stale_entities(self):
+        with patch("dbxmetagen.ontology.OntologyBuilder") as MockBuilder:
+            instance = MockBuilder.return_value
+            instance.refresh_relationships.return_value = {}
+            from dbxmetagen.ontology import refresh_ontology_relationships
+            refresh_ontology_relationships(
+                MagicMock(), "cat", "sch",
+                sweep_stale=False, sweep_stale_entities=True, incremental=False,
+            )
+            instance.refresh_relationships.assert_called_once_with(
+                sweep_stale=False, sweep_stale_entities=True, incremental=False,
+            )
 
 
 

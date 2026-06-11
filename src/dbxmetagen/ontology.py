@@ -3062,6 +3062,20 @@ class OntologyBuilder:
         if len(entities) < before:
             logger.info("Filtered %d low-confidence entities (< %.2f)",
                         before - len(entities), self._MIN_STORE_CONFIDENCE)
+
+        # Drop primitive datatype types (Date, Integer, Boolean, etc.): these are
+        # schema.org DataTypes, not semantic entities, and add no value while
+        # crowding out meaningful mappings. Inert for bundles that never produce
+        # such types (FHIR/OMOP define none of these names as entities).
+        before = len(entities)
+        entities = [
+            e for e in entities
+            if (e.get("entity_type") or e.get("entity_name") or "").lower()
+            not in EntityDiscoverer.PRIMITIVE_TYPE_NAMES
+        ]
+        if len(entities) < before:
+            logger.info("Filtered %d primitive datatype entities", before - len(entities))
+
         if not entities:
             return 0
 
@@ -4220,6 +4234,52 @@ class OntologyBuilder:
         return f"entity::{bundle}::{entity_name}"
 
     CANONICAL_ID_SQL = "CONCAT('entity::', COALESCE(ontology_bundle, '_default'), '::', entity_name)"
+
+    def _purge_foreign_bundle_entities(self, old_bundles: set) -> int:
+        """Delete entities (and their orphaned graph nodes) left over from prior ontology bundles.
+
+        Used when switching ontology bundles on the same output schema (e.g. fhir_r4 -> omop_cdm).
+        Scoped by ontology_bundle, so it is schema-wide by design: a bundle switch is inherently
+        schema-wide, not table-scoped.
+
+        Preservation rules:
+        - auto_discovered=FALSE rows are steward overrides / human locks and are ALWAYS preserved.
+          (This is the real protection flag. The `validated` column is only a reviewer UI status
+          that the pipeline resets on content changes; it is NOT deletion protection and is not
+          consulted here.)
+        - NULL ontology_bundle rows are left untouched.
+
+        After deleting foreign entities, orphan entity concept nodes (those whose deterministic id
+        no longer maps to any surviving entity) are removed from graph_nodes via an exact anti-join
+        on CANONICAL_ID_SQL. Returns the number of foreign entity rows deleted.
+        """
+        if not old_bundles:
+            return 0
+        ent_table = self.config.fully_qualified_entities
+        nodes_table = f"{self.config.catalog_name}.{self.config.schema_name}.{self.config.nodes_table}"
+        bundle_list = ", ".join("'" + b.replace("'", "''") + "'" for b in old_bundles)
+        try:
+            deleted = self.spark.sql(
+                f"SELECT COUNT(*) AS c FROM {ent_table} "
+                f"WHERE ontology_bundle IN ({bundle_list}) AND COALESCE(auto_discovered, TRUE) = TRUE"
+            ).collect()[0].c
+            self.spark.sql(
+                f"DELETE FROM {ent_table} "
+                f"WHERE ontology_bundle IN ({bundle_list}) AND COALESCE(auto_discovered, TRUE) = TRUE"
+            )
+            self.spark.sql(
+                f"DELETE FROM {nodes_table} "
+                f"WHERE node_type = 'entity' AND source_system = 'ontology' "
+                f"AND id NOT IN (SELECT {self.CANONICAL_ID_SQL} FROM {ent_table} WHERE entity_name IS NOT NULL)"
+            )
+            logger.warning(
+                "Purged %d foreign-bundle entities (bundles=%s) and their orphaned graph nodes",
+                deleted, sorted(old_bundles),
+            )
+            return deleted
+        except Exception as e:
+            logger.warning("Could not purge foreign-bundle entities: %s", e)
+            return 0
 
     def _sync_entity_nodes_to_graph(self) -> int:
         """Merge one canonical entity concept node per (entity_name, bundle) into graph_nodes.
@@ -6076,7 +6136,7 @@ class OntologyBuilder:
             "turtle_path": turtle_path,
         }
 
-    def refresh_relationships(self, sweep_stale: bool = False, incremental: bool = True) -> Dict[str, Any]:
+    def refresh_relationships(self, sweep_stale: bool = False, sweep_stale_entities: bool = False, incremental: bool = True) -> Dict[str, Any]:
         """Re-run only edge-building steps after FK predictions are available.
 
         Intended to be called as a post-FK-prediction task so that FK-evidence-
@@ -6084,7 +6144,12 @@ class OntologyBuilder:
         without repeating entity discovery or column property classification.
 
         When incremental=True, returns early unless fk_predictions.updated_at exceeds
-        the latest ontology_relationships.updated_at for source='fk_inferred'.
+        the latest ontology_relationships.updated_at for source='fk_inferred'. Sweeping
+        (sweep_stale or sweep_stale_entities) suppresses the early exit so cleanup runs.
+
+        sweep_stale_entities purges entities (and orphaned graph nodes) from prior ontology
+        bundles before edges are rebuilt, and implies the edge sweep so purged entities never
+        leave orphan edges behind.
         """
         import time as _time
         from dbxmetagen.knowledge_graph import merge_edges, align_edge_schema
@@ -6092,7 +6157,7 @@ class OntologyBuilder:
 
         start = _time.time()
 
-        if incremental:
+        if incremental and not sweep_stale and not sweep_stale_entities:
             fk_table = f"{self.config.catalog_name}.{self.config.schema_name}.fk_predictions"
             rels_table = self.config.fully_qualified_relationships
             try:
@@ -6111,6 +6176,19 @@ class OntologyBuilder:
                     return {"named_relationships": 0, "bundle_edges": 0, "graph_edges": 0}
             except Exception as e:
                 logger.debug("Incremental watermark check failed (%s), running full", e)
+
+        if sweep_stale_entities:
+            current_bundle = self.config.ontology_bundle or ""
+            if current_bundle:
+                try:
+                    stored = self.spark.sql(
+                        f"SELECT DISTINCT ontology_bundle FROM {self.config.fully_qualified_entities} "
+                        "WHERE ontology_bundle IS NOT NULL"
+                    ).collect()
+                    old_bundles = {r.ontology_bundle for r in stored} - {current_bundle}
+                    self._purge_foreign_bundle_entities(old_bundles)
+                except Exception as e:
+                    logger.warning("Foreign-bundle entity purge skipped: %s", e)
 
         named = self.discover_named_relationships()
         bundle = self.emit_bundle_edges()
@@ -6153,7 +6231,7 @@ class OntologyBuilder:
 
         if edge_dfs:
             combined = reduce(lambda a, b: a.unionByName(b), edge_dfs).dropDuplicates(["edge_id"])
-            total_edges = merge_edges(self.spark, edges_table, combined, source_system="ontology", sweep_stale=sweep_stale)
+            total_edges = merge_edges(self.spark, edges_table, combined, source_system="ontology", sweep_stale=(sweep_stale or sweep_stale_entities))
         else:
             total_edges = 0
 
@@ -6176,6 +6254,7 @@ def refresh_ontology_relationships(
     model_endpoint: Optional[str] = None,
     table_names: Optional[List[str]] = None,
     sweep_stale: bool = False,
+    sweep_stale_entities: bool = False,
     incremental: bool = True,
 ) -> Dict[str, Any]:
     """Convenience function to refresh ontology edges after FK prediction."""
@@ -6188,7 +6267,9 @@ def refresh_ontology_relationships(
         table_names=table_names,
     )
     builder = OntologyBuilder(spark, config, model_endpoint=model_endpoint)
-    return builder.refresh_relationships(sweep_stale=sweep_stale, incremental=incremental)
+    return builder.refresh_relationships(
+        sweep_stale=sweep_stale, sweep_stale_entities=sweep_stale_entities, incremental=incremental
+    )
 
 
 def build_ontology(

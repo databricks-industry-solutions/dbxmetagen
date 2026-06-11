@@ -53,6 +53,8 @@ resources:
           default: "false"
         - name: sweep_stale_edges
           default: "false"
+        - name: sweep_stale_entities
+          default: "false"
         - name: sweep_stale_docs
           default: "false"
         - name: endpoint_name
@@ -313,6 +315,7 @@ resources:
               model: "{{job.parameters.model}}"
               table_names: "{{job.parameters.table_names}}"
               sweep_stale_edges: "{{job.parameters.sweep_stale_edges}}"
+              sweep_stale_entities: "{{job.parameters.sweep_stale_entities}}"
               incremental: "{{job.parameters.incremental}}"
 
         - task_key: final_analysis

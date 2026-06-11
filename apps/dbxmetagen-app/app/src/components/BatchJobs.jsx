@@ -164,6 +164,8 @@ export default function BatchJobs({ onNavigate, pipelineStats }) {
   const [similarityThreshold, setSimilarityThreshold] = useState(0.8)
   const [incremental, setIncremental] = useState(true)
   const [sweepStaleDocs, setSweepStaleDocs] = useState(false)
+  const [sweepStaleEdges, setSweepStaleEdges] = useState(false)
+  const [sweepStaleEntities, setSweepStaleEntities] = useState(false)
   const [serverless, setServerless] = useState(true)
   const [clusterMinK, setClusterMinK] = useState(2)
   const [clusterMaxK, setClusterMaxK] = useState(15)
@@ -936,6 +938,20 @@ export default function BatchJobs({ onNavigate, pipelineStats }) {
               </div>
               <div className="pb-1">
                 <label className="flex items-center gap-2 text-xs text-slate-600 dark:text-slate-300 cursor-pointer"
+                  title="Remove orphaned graph_edges that no longer correspond to current ontology relationships. Recommended after switching ontology bundles. Use with a non-incremental run.">
+                  <input type="checkbox" checked={sweepStaleEdges} onChange={e => setSweepStaleEdges(e.target.checked)} />
+                  Sweep stale edges (clean up orphaned graph edges)
+                </label>
+              </div>
+              <div className="pb-1">
+                <label className="flex items-center gap-2 text-xs text-slate-600 dark:text-slate-300 cursor-pointer"
+                  title="Purge entities and graph nodes left over from a previous ontology bundle (e.g. switching FHIR to OMOP). Preserves steward-overridden entities. Implies edge sweep. Use with a non-incremental run.">
+                  <input type="checkbox" checked={sweepStaleEntities} onChange={e => setSweepStaleEntities(e.target.checked)} />
+                  Sweep stale entities (purge prior-bundle entities)
+                </label>
+              </div>
+              <div className="pb-1">
+                <label className="flex items-center gap-2 text-xs text-slate-600 dark:text-slate-300 cursor-pointer"
                   title="Run the pipeline on serverless compute instead of classic ML clusters. Faster cold-start, no cluster management.">
                   <input type="checkbox" checked={serverless} onChange={e => setServerless(e.target.checked)} />
                   Serverless compute
@@ -957,6 +973,8 @@ export default function BatchJobs({ onNavigate, pipelineStats }) {
               apply_ddl: applyDdl,
               federation_mode: federationMode,
               sweep_stale_docs: sweepStaleDocs,
+              sweep_stale_edges: sweepStaleEdges,
+              sweep_stale_entities: sweepStaleEntities,
               use_kb_comments: settings.use_kb_comments,
               use_customer_context: settings.use_customer_context,
               include_lineage: settings.include_lineage,
