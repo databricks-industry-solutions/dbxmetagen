@@ -4235,50 +4235,74 @@ class OntologyBuilder:
 
     CANONICAL_ID_SQL = "CONCAT('entity::', COALESCE(ontology_bundle, '_default'), '::', entity_name)"
 
-    def _purge_foreign_bundle_entities(self, old_bundles: set) -> int:
-        """Delete entities (and their orphaned graph nodes) left over from prior ontology bundles.
+    @staticmethod
+    def _source_tables_scope_sql(table_names: Optional[list]) -> str:
+        """Return an ``AND (...)`` clause keeping only entities whose source_tables
+        intersect *table_names*. Returns "" (no scoping) when table_names is empty.
 
-        Used when switching ontology bundles on the same output schema (e.g. fhir_r4 -> omop_cdm).
-        Scoped by ontology_bundle, so it is schema-wide by design: a bundle switch is inherently
-        schema-wide, not table-scoped.
+        source_tables is an array, so this uses the higher-order ``exists`` predicate.
+        Supports ``catalog.schema.*`` wildcards (LIKE) and literal names (=)."""
+        if not table_names:
+            return ""
+        literals: list[str] = []
+        wild_prefixes: list[str] = []
+        for t in table_names:
+            esc = t.replace("\\", "\\\\").replace("'", "''")
+            if esc.endswith(".*"):
+                wild_prefixes.append(esc[:-2])
+            else:
+                literals.append(f"'{esc}'")
+        parts: list[str] = []
+        if literals:
+            parts.append(f"exists(source_tables, x -> x IN ({', '.join(literals)}))")
+        for pfx in wild_prefixes:
+            parts.append(f"exists(source_tables, x -> x LIKE '{pfx}.%')")
+        if not parts:
+            return ""
+        return f"AND ({' OR '.join(parts)})"
 
-        Preservation rules:
+    def _purge_entities_for_rebuild(self, table_names: Optional[list] = None) -> int:
+        """Table-scoped refresh: delete auto-discovered entities (and their orphaned entity nodes)
+        for the tables in scope so an explicit sweep re-run rebuilds those tables cleanly.
+
+        This is a table refresh, NOT a bundle operation:
+        - Scoped by source_tables intersection with table_names (via _source_tables_scope_sql).
+          Tables NOT in scope are never touched, so entities from other bundles keep coexisting.
+        - Empty table_names = all tables in scope (full-schema replacement).
+        - Bundle-agnostic: any auto-discovered entity on an in-scope table is removed, then the
+          subsequent discovery pass repopulates those tables from the current bundle. (Entities the
+          run no longer produces -- e.g. a different bundle's old classification, or filtered
+          primitive datatypes -- are thus cleared.)
+
+        Preservation rule:
         - auto_discovered=FALSE rows are steward overrides / human locks and are ALWAYS preserved.
-          (This is the real protection flag. The `validated` column is only a reviewer UI status
-          that the pipeline resets on content changes; it is NOT deletion protection and is not
-          consulted here.)
-        - NULL ontology_bundle rows are left untouched.
+          (The `validated` column is only a reviewer UI status, NOT deletion protection.)
 
-        After deleting foreign entities, orphan entity concept nodes (those whose deterministic id
-        no longer maps to any surviving entity) are removed from graph_nodes via an exact anti-join
-        on CANONICAL_ID_SQL. Returns the number of foreign entity rows deleted.
+        After deleting entities, orphan entity concept nodes (those whose deterministic id no longer
+        maps to any surviving entity) are removed from graph_nodes via an exact anti-join on
+        CANONICAL_ID_SQL. Returns the number of entity rows deleted.
         """
-        if not old_bundles:
-            return 0
         ent_table = self.config.fully_qualified_entities
         nodes_table = f"{self.config.catalog_name}.{self.config.schema_name}.{self.config.nodes_table}"
-        bundle_list = ", ".join("'" + b.replace("'", "''") + "'" for b in old_bundles)
+        scope = self._source_tables_scope_sql(table_names)
+        where = f"COALESCE(auto_discovered, TRUE) = TRUE {scope}"
         try:
             deleted = self.spark.sql(
-                f"SELECT COUNT(*) AS c FROM {ent_table} "
-                f"WHERE ontology_bundle IN ({bundle_list}) AND COALESCE(auto_discovered, TRUE) = TRUE"
+                f"SELECT COUNT(*) AS c FROM {ent_table} WHERE {where}"
             ).collect()[0].c
-            self.spark.sql(
-                f"DELETE FROM {ent_table} "
-                f"WHERE ontology_bundle IN ({bundle_list}) AND COALESCE(auto_discovered, TRUE) = TRUE"
-            )
+            self.spark.sql(f"DELETE FROM {ent_table} WHERE {where}")
             self.spark.sql(
                 f"DELETE FROM {nodes_table} "
                 f"WHERE node_type = 'entity' AND source_system = 'ontology' "
                 f"AND id NOT IN (SELECT {self.CANONICAL_ID_SQL} FROM {ent_table} WHERE entity_name IS NOT NULL)"
             )
             logger.warning(
-                "Purged %d foreign-bundle entities (bundles=%s) and their orphaned graph nodes",
-                deleted, sorted(old_bundles),
+                "Purged %d auto-discovered entities (table_scope=%s) and their orphaned graph nodes",
+                deleted, table_names or "all",
             )
             return deleted
         except Exception as e:
-            logger.warning("Could not purge foreign-bundle entities: %s", e)
+            logger.warning("Could not purge entities for rebuild: %s", e)
             return 0
 
     def _sync_entity_nodes_to_graph(self) -> int:
@@ -5924,11 +5948,15 @@ class OntologyBuilder:
 
         return ttl_path
 
-    def run(self, apply_tags=False):
+    def run(self, apply_tags=False, sweep_stale_entities: bool = False):
         """Execute the ontology building pipeline.
 
         Args:
             apply_tags: If True, write entity_type tags to UC tables/columns via ALTER TABLE SET TAGS.
+            sweep_stale_entities: On a non-incremental run, purge the current bundle's auto-discovered
+                entities (and orphan nodes) before re-discovery so stale rows that are no longer
+                produced are cleared. Steward locks (auto_discovered=FALSE) are preserved. Ignored in
+                incremental mode (a clean rebuild requires a full re-discovery pass).
 
         With incremental enabled, skips role/column-property/edge work when discovery finds zero new entities
         (classification only runs when table or column entities changed).
@@ -5978,6 +6006,13 @@ class OntologyBuilder:
 
         _step("create_entities_table", self.create_entities_table)
         _step("create_metrics_table", self.create_metrics_table)
+
+        # Explicit sweep refresh: on a non-incremental sweep, evict the in-scope tables'
+        # auto-discovered entities (and orphan nodes) before re-discovery, which then repopulates
+        # them from the current bundle. Scoped to table_names so tables NOT in the run are never
+        # touched (other bundles keep coexisting); empty table_names = full-schema replacement.
+        if sweep_stale_entities and not self.config.incremental:
+            _step("sweep_refresh_purge", self._purge_entities_for_rebuild, self.config.table_names)
 
         table_discovered = _step("discover_table_entities", self.discover_and_store_entities)
         logger.info(f"Discovered {table_discovered} table-level entities")
@@ -6080,7 +6115,11 @@ class OntologyBuilder:
 
         if edge_dfs:
             combined = reduce(lambda a, b: a.unionByName(b), edge_dfs).dropDuplicates(["edge_id"])
-            edges_added = merge_edges(self.spark, edges_table, combined, source_system="ontology")
+            # On a sweep run, also sweep stale ontology edges. Safe for coexistence: the edge
+            # builders read all surviving entities, so out-of-scope bundles' edges are regenerated
+            # into `combined` and preserved by the MERGE.
+            edges_added = merge_edges(self.spark, edges_table, combined,
+                                      source_system="ontology", sweep_stale=sweep_stale_entities)
         else:
             edges_added = 0
 
@@ -6147,9 +6186,9 @@ class OntologyBuilder:
         the latest ontology_relationships.updated_at for source='fk_inferred'. Sweeping
         (sweep_stale or sweep_stale_entities) suppresses the early exit so cleanup runs.
 
-        sweep_stale_entities purges entities (and orphaned graph nodes) from prior ontology
-        bundles before edges are rebuilt, and implies the edge sweep so purged entities never
-        leave orphan edges behind.
+        This task is edge-only: it never deletes entities (it does not re-discover them, so it
+        could not repopulate them). Entity refresh belongs to the full ontology run(). Here
+        sweep_stale_entities is treated as an alias for the edge sweep.
         """
         import time as _time
         from dbxmetagen.knowledge_graph import merge_edges, align_edge_schema
@@ -6176,19 +6215,6 @@ class OntologyBuilder:
                     return {"named_relationships": 0, "bundle_edges": 0, "graph_edges": 0}
             except Exception as e:
                 logger.debug("Incremental watermark check failed (%s), running full", e)
-
-        if sweep_stale_entities:
-            current_bundle = self.config.ontology_bundle or ""
-            if current_bundle:
-                try:
-                    stored = self.spark.sql(
-                        f"SELECT DISTINCT ontology_bundle FROM {self.config.fully_qualified_entities} "
-                        "WHERE ontology_bundle IS NOT NULL"
-                    ).collect()
-                    old_bundles = {r.ontology_bundle for r in stored} - {current_bundle}
-                    self._purge_foreign_bundle_entities(old_bundles)
-                except Exception as e:
-                    logger.warning("Foreign-bundle entity purge skipped: %s", e)
 
         named = self.discover_named_relationships()
         bundle = self.emit_bundle_edges()
@@ -6286,6 +6312,7 @@ def build_ontology(
     ontology_vs_index: str = "",
     vs_endpoint_name: str = "dbxmetagen-vs",
     federation_mode: bool = False,
+    sweep_stale_entities: bool = False,
 ) -> Dict[str, Any]:
     """Convenience function to build the ontology.
 
@@ -6305,6 +6332,8 @@ def build_ontology(
             When set, entity/edge classification uses HYBRID vector search.
         vs_endpoint_name: Vector Search endpoint name for ontology queries.
         federation_mode: Use SET TAG ON syntax for federated (FOREIGN) tables.
+        sweep_stale_entities: On a non-incremental run, clean-rebuild the current bundle's
+            auto-discovered entities before re-discovery (steward locks preserved).
     """
     config = OntologyConfig(
         catalog_name=catalog_name,
@@ -6319,4 +6348,4 @@ def build_ontology(
         federation_mode=federation_mode,
     )
     builder = OntologyBuilder(spark, config, model_endpoint=model_endpoint)
-    return builder.run(apply_tags=apply_tags)
+    return builder.run(apply_tags=apply_tags, sweep_stale_entities=sweep_stale_entities)

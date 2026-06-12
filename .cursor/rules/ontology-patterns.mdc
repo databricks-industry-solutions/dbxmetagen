@@ -42,7 +42,21 @@ WHERE oe.last_classified IS NULL
 
 ## Multi-Bundle Coexistence
 
-Entities from multiple ontology bundles coexist in `ontology_entities` within the same schema. `run()` emits a `logger.warning` if entities from a different bundle exist -- this is informational only, no purge occurs.
+> **INVARIANT (do not violate):** Two rules govern entity cleanup. Read both before touching any
+> deletion/purge code in `ontology.py`.
+> 1. **Default run (no sweep) = coexist, NO purge.** Entities from multiple bundles live side by
+>    side in `ontology_entities`. A normal run never deletes another bundle's entities.
+> 2. **Explicit sweep (`sweep_stale_entities=true`, non-incremental) = table-scoped refresh.** It
+>    deletes auto-discovered entities/edges only on the tables IN THIS RUN (any bundle on those
+>    tables), then re-discovers them from the current bundle. Tables NOT in the run are NEVER
+>    touched, so other bundles keep coexisting. Empty `table_names` = all tables in scope (full
+>    replacement). Steward locks (`auto_discovered=FALSE`) are always preserved.
+>
+> The sweep is a TABLE operation, not a BUNDLE operation. There is no "delete other bundles"
+> concept. The implementation is `_purge_entities_for_rebuild(table_names)` (called from `run()`
+> only). `refresh_relationships()` is edge-only and must NEVER delete entities.
+
+Entities from multiple ontology bundles coexist in `ontology_entities` within the same schema. `run()` emits a `logger.warning` if entities from a different bundle exist -- informational only; no purge occurs unless an explicit sweep is requested (see invariant above).
 
 Key behaviors:
 - Running bundle B on tables D,E,F leaves bundle A entities on tables X,Y,Z untouched.

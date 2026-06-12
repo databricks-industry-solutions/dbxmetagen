@@ -3616,32 +3616,44 @@ class TestCategoryEdges:
         builder.spark.createDataFrame.assert_not_called()
 
 
-class TestPurgeForeignBundleEntities:
-    """Cleanup of prior-bundle entities/nodes when switching ontology bundles."""
+class TestPurgeEntitiesForRebuild:
+    """Table-scoped, bundle-agnostic entity refresh used by an explicit sweep run.
 
-    def test_noop_when_no_old_bundles(self):
-        builder = _make_builder_with_config({}, bundle="omop_cdm")
-        assert builder._purge_foreign_bundle_entities(set()) == 0
-        builder.spark.sql.assert_not_called()
+    Refreshes only the tables in scope (any bundle on those tables); tables not in scope are
+    untouched so other bundles coexist. Steward locks (auto_discovered=FALSE) are preserved."""
 
-    def test_deletes_foreign_entities_preserving_steward_locks(self):
-        builder = _make_builder_with_config({}, bundle="omop_cdm")
-        builder._purge_foreign_bundle_entities({"fhir_r4"})
+    def _entity_delete(self, builder):
         sql_calls = [c[0][0] for c in builder.spark.sql.call_args_list]
-        entity_deletes = [
+        deletes = [
             s for s in sql_calls
             if s.lstrip().startswith("DELETE FROM") and "ontology_entities" in s
             and "node_type" not in s
         ]
-        assert len(entity_deletes) == 1
-        ed = entity_deletes[0]
-        assert "ontology_bundle IN ('fhir_r4')" in ed
-        # auto_discovered=FALSE rows (steward overrides) must be preserved
+        assert len(deletes) == 1
+        return deletes[0]
+
+    def test_full_schema_purge_is_bundle_agnostic(self):
+        builder = _make_builder_with_config({}, bundle="omop_cdm")
+        builder._purge_entities_for_rebuild(None)
+        ed = self._entity_delete(builder)
+        # No bundle filter -- a sweep is a table refresh, not a bundle operation
+        assert "ontology_bundle" not in ed
+        # Steward overrides preserved
+        assert "COALESCE(auto_discovered, TRUE) = TRUE" in ed
+        # No table-scope clause when table_names is empty (all tables in scope)
+        assert "source_tables" not in ed
+
+    def test_scoped_purge_filters_by_source_tables(self):
+        builder = _make_builder_with_config({}, bundle="omop_cdm")
+        builder._purge_entities_for_rebuild(["cat.sch.patients"])
+        ed = self._entity_delete(builder)
+        assert "ontology_bundle" not in ed
+        assert "exists(source_tables, x -> x IN ('cat.sch.patients'))" in ed
         assert "COALESCE(auto_discovered, TRUE) = TRUE" in ed
 
     def test_deletes_orphan_entity_nodes_via_canonical_id_antijoin(self):
         builder = _make_builder_with_config({}, bundle="omop_cdm")
-        builder._purge_foreign_bundle_entities({"fhir_r4"})
+        builder._purge_entities_for_rebuild(None)
         sql_calls = [c[0][0] for c in builder.spark.sql.call_args_list]
         node_deletes = [
             s for s in sql_calls
@@ -3653,11 +3665,11 @@ class TestPurgeForeignBundleEntities:
         assert OntologyBuilder.CANONICAL_ID_SQL in nd
         assert "NOT IN" in nd
 
-    def test_escapes_bundle_names(self):
+    def test_escapes_table_names(self):
         builder = _make_builder_with_config({}, bundle="omop_cdm")
-        builder._purge_foreign_bundle_entities({"o'brien"})
+        builder._purge_entities_for_rebuild(["cat.sch.o'brien"])
         sql_calls = [c[0][0] for c in builder.spark.sql.call_args_list]
-        assert any("'o''brien'" in s for s in sql_calls)
+        assert any("o''brien" in s for s in sql_calls)
 
 
 class TestRefreshRelationshipsSweepThreading:
@@ -3675,6 +3687,105 @@ class TestRefreshRelationshipsSweepThreading:
             instance.refresh_relationships.assert_called_once_with(
                 sweep_stale=False, sweep_stale_entities=True, incremental=False,
             )
+
+    def test_refresh_never_deletes_entities(self):
+        # refresh_relationships is edge-only: it must not purge entities (it cannot re-discover
+        # them). Entity refresh belongs to the full run().
+        import inspect
+        src = inspect.getsource(OntologyBuilder.refresh_relationships)
+        assert "_purge_entities_for_rebuild" not in src
+        assert "_purge_foreign_bundle_entities" not in src
+
+
+class TestRunCleanRebuildPurge:
+    """run() triggers the table-scoped sweep refresh only on non-incremental + sweep_stale_entities."""
+
+    _STUB_METHODS = [
+        "create_entities_table", "create_metrics_table",
+        "discover_and_store_entities", "discover_and_store_column_entities",
+        "backfill_source_columns", "classify_entity_roles", "_deduplicate_primary_entities",
+        "_flag_low_confidence_primaries", "classify_column_properties",
+        "validate_entity_conformance", "discover_named_relationships", "emit_bundle_edges",
+        "_seed_concept_parent_entities", "_sync_entity_nodes_to_graph",
+        "_enrich_table_nodes_with_ontology", "validate_ontology_completeness",
+        "compute_ontology_metrics", "apply_entity_tags", "_get_bundle_version",
+        "_store_discovery_diff", "_serialize_turtle",
+    ]
+
+    def _builder(self, incremental):
+        b = _make_builder_with_config({}, bundle="schema_org")
+        b.config.incremental = incremental
+        for name in self._STUB_METHODS:
+            setattr(b, name, MagicMock(return_value=0))
+        b._snapshot_ontology_state = MagicMock(return_value={})
+        b.discover_inter_entity_relationships = MagicMock(return_value={})
+        for edge_fn in ("_build_structural_edges", "_build_hierarchy_edges",
+                        "_build_category_edges", "_build_same_entity_type_edges"):
+            setattr(b, edge_fn, MagicMock(return_value=None))
+        b.get_entity_summary = MagicMock(return_value=MagicMock(
+            count=MagicMock(return_value=0), collect=MagicMock(return_value=[])))
+        b.generate_discovery_diff = MagicMock(return_value={})
+        b._purge_entities_for_rebuild = MagicMock(return_value=0)
+        return b
+
+    def test_purge_called_on_non_incremental_sweep(self):
+        b = self._builder(incremental=False)
+        b.config.table_names = None
+        b.run(sweep_stale_entities=True)
+        b._purge_entities_for_rebuild.assert_called_once_with(None)
+
+    def test_purge_scoped_to_table_names(self):
+        b = self._builder(incremental=False)
+        b.config.table_names = ["cat.sch.patients"]
+        b.run(sweep_stale_entities=True)
+        b._purge_entities_for_rebuild.assert_called_once_with(["cat.sch.patients"])
+
+    def test_purge_skipped_when_incremental(self):
+        b = self._builder(incremental=True)
+        b.run(sweep_stale_entities=True)
+        b._purge_entities_for_rebuild.assert_not_called()
+
+    def test_purge_skipped_without_sweep(self):
+        b = self._builder(incremental=False)
+        b.run(sweep_stale_entities=False)
+        b._purge_entities_for_rebuild.assert_not_called()
+
+
+class TestSourceTablesScopeSQL:
+    """_source_tables_scope_sql builds an array-intersect clause scoping the purge."""
+
+    def test_empty_is_no_scope(self):
+        from dbxmetagen.ontology import OntologyBuilder
+        assert OntologyBuilder._source_tables_scope_sql(None) == ""
+        assert OntologyBuilder._source_tables_scope_sql([]) == ""
+
+    def test_literal_tables(self):
+        from dbxmetagen.ontology import OntologyBuilder
+        sql = OntologyBuilder._source_tables_scope_sql(["c.s.a", "c.s.b"])
+        assert "exists(source_tables, x -> x IN ('c.s.a', 'c.s.b'))" in sql
+        assert sql.startswith("AND (")
+
+    def test_wildcard_prefix(self):
+        from dbxmetagen.ontology import OntologyBuilder
+        sql = OntologyBuilder._source_tables_scope_sql(["c.s.*"])
+        assert "exists(source_tables, x -> x LIKE 'c.s.%')" in sql
+
+    def test_single_quote_escaped(self):
+        from dbxmetagen.ontology import OntologyBuilder
+        sql = OntologyBuilder._source_tables_scope_sql(["c.s.o'brien"])
+        assert "o''brien" in sql
+
+
+class TestBuildOntologySweepThreading:
+    """build_ontology must forward sweep_stale_entities into builder.run()."""
+
+    def test_build_ontology_forwards_sweep_stale_entities(self):
+        with patch("dbxmetagen.ontology.OntologyBuilder") as MockBuilder:
+            instance = MockBuilder.return_value
+            instance.run.return_value = {}
+            build_ontology(MagicMock(), "cat", "sch", sweep_stale_entities=True)
+            _, kwargs = instance.run.call_args
+            assert kwargs.get("sweep_stale_entities") is True
 
 
 
