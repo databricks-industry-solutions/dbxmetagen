@@ -163,9 +163,7 @@ export default function BatchJobs({ onNavigate, pipelineStats }) {
   const [activeTab, setActiveTab] = useState('core')
   const [similarityThreshold, setSimilarityThreshold] = useState(0.8)
   const [incremental, setIncremental] = useState(true)
-  const [sweepStaleDocs, setSweepStaleDocs] = useState(false)
-  const [sweepStaleEdges, setSweepStaleEdges] = useState(false)
-  const [sweepStaleEntities, setSweepStaleEntities] = useState(false)
+  const [sweepStale, setSweepStale] = useState(false)
   const [serverless, setServerless] = useState(true)
   const [clusterMinK, setClusterMinK] = useState(2)
   const [clusterMaxK, setClusterMaxK] = useState(15)
@@ -931,23 +929,9 @@ export default function BatchJobs({ onNavigate, pipelineStats }) {
               </div>
               <div className="pb-1">
                 <label className="flex items-center gap-2 text-xs text-slate-600 dark:text-slate-300 cursor-pointer"
-                  title="Remove orphaned documents from the vector index that no longer have a backing entity or table. Recommended after switching ontology bundles.">
-                  <input type="checkbox" checked={sweepStaleDocs} onChange={e => setSweepStaleDocs(e.target.checked)} />
-                  Sweep stale docs (clean up orphaned vector index entries)
-                </label>
-              </div>
-              <div className="pb-1">
-                <label className="flex items-center gap-2 text-xs text-slate-600 dark:text-slate-300 cursor-pointer"
-                  title="Remove orphaned graph_edges that no longer correspond to current ontology relationships. Recommended after switching ontology bundles. Use with a non-incremental run.">
-                  <input type="checkbox" checked={sweepStaleEdges} onChange={e => setSweepStaleEdges(e.target.checked)} />
-                  Sweep stale edges (clean up orphaned graph edges)
-                </label>
-              </div>
-              <div className="pb-1">
-                <label className="flex items-center gap-2 text-xs text-slate-600 dark:text-slate-300 cursor-pointer"
-                  title="Purge entities and graph nodes left over from a previous ontology bundle (e.g. switching FHIR to OMOP). Preserves steward-overridden entities. Implies edge sweep. Use with a non-incremental run.">
-                  <input type="checkbox" checked={sweepStaleEntities} onChange={e => setSweepStaleEntities(e.target.checked)} />
-                  Sweep stale entities (purge prior-bundle entities)
+                  title="Table-scoped cleanup refresh: on the tables in scope, deletes entities, graph nodes/edges, and vector-index docs that the run no longer reproduces, then rebuilds them from the current bundle. Tables not in the run are untouched, so other bundles keep coexisting. Steward-overridden entities are preserved. Use with a non-incremental run; recommended after switching ontology bundles.">
+                  <input type="checkbox" checked={sweepStale} onChange={e => setSweepStale(e.target.checked)} />
+                  Sweep stale artifacts (refresh entities, edges &amp; docs in scope)
                 </label>
               </div>
               <div className="pb-1">
@@ -972,9 +956,9 @@ export default function BatchJobs({ onNavigate, pipelineStats }) {
               ontology_bundle: ontologyBundle,
               apply_ddl: applyDdl,
               federation_mode: federationMode,
-              sweep_stale_docs: sweepStaleDocs,
-              sweep_stale_edges: sweepStaleEdges,
-              sweep_stale_entities: sweepStaleEntities,
+              sweep_stale_docs: sweepStale,
+              sweep_stale_edges: sweepStale,
+              sweep_stale_entities: sweepStale,
               use_kb_comments: settings.use_kb_comments,
               use_customer_context: settings.use_customer_context,
               include_lineage: settings.include_lineage,

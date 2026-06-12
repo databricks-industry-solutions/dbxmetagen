@@ -4908,7 +4908,7 @@ class OntologyBuilder:
             n = 0
         logger.info("_flag_low_confidence_primaries: flagged %s primaries below floor %.2f",
                     n, self._PRIMARY_CONFIDENCE_FLOOR)
-        return 0
+        return n
 
     def _build_bundle_property_index(self, entity_type: str) -> Dict[str, Tuple[str, str, Optional[str], Optional[Any]]]:
         """Build column_name_lower -> (role, property_name, edge, target_entity) from bundle properties."""
