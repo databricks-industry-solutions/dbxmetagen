@@ -3483,6 +3483,18 @@ def _make_builder_with_config(definitions, bundle=""):
         return OntologyBuilder(mock_spark, config)
 
 
+def _entity_delete_sql(builder):
+    """Return the single DELETE statement against ontology_entities (excludes node deletes)."""
+    sql_calls = [c[0][0] for c in builder.spark.sql.call_args_list]
+    deletes = [
+        s for s in sql_calls
+        if s.lstrip().startswith("DELETE FROM") and "ontology_entities" in s
+        and "node_type" not in s
+    ]
+    assert len(deletes) == 1
+    return deletes[0]
+
+
 class TestSeedConceptParentEntities:
     """Fix 2b: seed undiscovered ancestor types as abstract concept rows.
 
@@ -3516,6 +3528,26 @@ class TestSeedConceptParentEntities:
         merge = [c[0][0] for c in builder.spark.sql.call_args_list if "MERGE INTO" in c[0][0]][0]
         assert "WHEN NOT MATCHED THEN INSERT" in merge
         assert "WHEN MATCHED" not in merge
+
+    def test_primitive_ancestors_are_not_seeded(self):
+        # Primitive datatype names (Number, etc.) are schema.org DataTypes, not semantic
+        # ancestors -- they must be filtered from the seed set (mirrors the discovered filter).
+        from types import SimpleNamespace
+        builder = _make_builder_with_config(
+            {
+                "Quantity": {"parents": ["Number", "StructuredValue"]},
+                "StructuredValue": {"description": "sv"},
+            },
+            bundle="schema_org",
+        )
+        builder.spark.sql.return_value.collect.return_value = [
+            SimpleNamespace(entity_type="Quantity"),
+        ]
+        builder._seed_concept_parent_entities()
+        rows = builder.spark.createDataFrame.call_args[0][0]
+        names = {r[1] for r in rows}
+        assert "Number" not in names
+        assert "StructuredValue" in names
 
     def test_no_seed_when_all_ancestors_discovered(self):
         from types import SimpleNamespace
@@ -3616,6 +3648,35 @@ class TestCategoryEdges:
         builder.spark.createDataFrame.assert_not_called()
 
 
+class TestCoexistenceInvariants:
+    """Guard tests for the multi-bundle coexistence invariant (ontology-patterns.mdc).
+
+    These fail loudly if a future change reintroduces a bundle purge or makes the default
+    (no-sweep) path delete entities."""
+
+    def test_store_entities_is_additive_no_delete(self):
+        import inspect
+        src = inspect.getsource(OntologyBuilder._store_entities)
+        assert "DELETE FROM" not in src.upper()
+        assert "NOT MATCHED BY SOURCE" not in src.upper()
+
+    def test_table_scope_deletion_is_bundle_agnostic(self):
+        # Table-attributed deletion is a table operation, never a bundle operation.
+        # The ONLY bundle filter allowed is the table-less seed branch, which must always
+        # be co-located with an empty-source_tables guard.
+        builder = _make_builder_with_config({}, bundle="schema_org")
+        builder._purge_entities_for_rebuild(["cat.sch.patients"])
+        ed = _entity_delete_sql(builder)
+        if "ontology_bundle" in ed:
+            assert "cardinality(source_tables) = 0" in ed
+
+    def test_refresh_relationships_never_deletes_entities(self):
+        import inspect
+        src = inspect.getsource(OntologyBuilder.refresh_relationships)
+        assert "_purge_entities_for_rebuild" not in src
+        assert "_purge_foreign_bundle_entities" not in src
+
+
 class TestPurgeEntitiesForRebuild:
     """Table-scoped, bundle-agnostic entity refresh used by an explicit sweep run.
 
@@ -3647,9 +3708,19 @@ class TestPurgeEntitiesForRebuild:
         builder = _make_builder_with_config({}, bundle="omop_cdm")
         builder._purge_entities_for_rebuild(["cat.sch.patients"])
         ed = self._entity_delete(builder)
-        assert "ontology_bundle" not in ed
         assert "exists(source_tables, x -> x IN ('cat.sch.patients'))" in ed
         assert "COALESCE(auto_discovered, TRUE) = TRUE" in ed
+
+    def test_scoped_purge_refreshes_current_bundle_seeds(self):
+        # Table-less seeds (empty source_tables) can't be matched by a table scope, so a scoped
+        # purge also deletes the CURRENT bundle's table-less seeds (OR'd with the table scope).
+        builder = _make_builder_with_config({}, bundle="schema_org")
+        builder._purge_entities_for_rebuild(["cat.sch.patients"])
+        ed = self._entity_delete(builder)
+        assert "cardinality(source_tables) = 0" in ed
+        assert "COALESCE(ontology_bundle, '') = 'schema_org'" in ed
+        assert "exists(source_tables, x -> x IN ('cat.sch.patients'))" in ed
+        assert " OR " in ed
 
     def test_deletes_orphan_entity_nodes_via_canonical_id_antijoin(self):
         builder = _make_builder_with_config({}, bundle="omop_cdm")
@@ -3687,14 +3758,6 @@ class TestRefreshRelationshipsSweepThreading:
             instance.refresh_relationships.assert_called_once_with(
                 sweep_stale=False, sweep_stale_entities=True, incremental=False,
             )
-
-    def test_refresh_never_deletes_entities(self):
-        # refresh_relationships is edge-only: it must not purge entities (it cannot re-discover
-        # them). Entity refresh belongs to the full run().
-        import inspect
-        src = inspect.getsource(OntologyBuilder.refresh_relationships)
-        assert "_purge_entities_for_rebuild" not in src
-        assert "_purge_foreign_bundle_entities" not in src
 
 
 class TestRunCleanRebuildPurge:
@@ -3756,23 +3819,24 @@ class TestSourceTablesScopeSQL:
 
     def test_empty_is_no_scope(self):
         from dbxmetagen.ontology import OntologyBuilder
-        assert OntologyBuilder._source_tables_scope_sql(None) == ""
-        assert OntologyBuilder._source_tables_scope_sql([]) == ""
+        assert OntologyBuilder._source_tables_scope_predicate(None) == ""
+        assert OntologyBuilder._source_tables_scope_predicate([]) == ""
 
     def test_literal_tables(self):
         from dbxmetagen.ontology import OntologyBuilder
-        sql = OntologyBuilder._source_tables_scope_sql(["c.s.a", "c.s.b"])
+        sql = OntologyBuilder._source_tables_scope_predicate(["c.s.a", "c.s.b"])
         assert "exists(source_tables, x -> x IN ('c.s.a', 'c.s.b'))" in sql
-        assert sql.startswith("AND (")
+        # Predicate has no leading AND (callers compose it).
+        assert not sql.startswith("AND")
 
     def test_wildcard_prefix(self):
         from dbxmetagen.ontology import OntologyBuilder
-        sql = OntologyBuilder._source_tables_scope_sql(["c.s.*"])
+        sql = OntologyBuilder._source_tables_scope_predicate(["c.s.*"])
         assert "exists(source_tables, x -> x LIKE 'c.s.%')" in sql
 
     def test_single_quote_escaped(self):
         from dbxmetagen.ontology import OntologyBuilder
-        sql = OntologyBuilder._source_tables_scope_sql(["c.s.o'brien"])
+        sql = OntologyBuilder._source_tables_scope_predicate(["c.s.o'brien"])
         assert "o''brien" in sql
 
 

@@ -55,6 +55,24 @@ WHERE oe.last_classified IS NULL
 > The sweep is a TABLE operation, not a BUNDLE operation. There is no "delete other bundles"
 > concept. The implementation is `_purge_entities_for_rebuild(table_names)` (called from `run()`
 > only). `refresh_relationships()` is edge-only and must NEVER delete entities.
+>
+> **One exception -- table-LESS seeded ancestors.** `_seed_concept_parent_entities` seeds abstract
+> hierarchy concepts (Thing, MedicalEntity, ...) with EMPTY `source_tables`, so a table scope can
+> never match them. On a scoped sweep, the purge ALSO deletes the CURRENT bundle's table-less seeds
+> (re-seeded fresh right after), so stale seeds (e.g. a primitive no longer seeded) clear. This is
+> the ONLY place a bundle filter is allowed -- bundle is the only attribution a table-less row has --
+> and it is scoped to the current bundle, so OTHER bundles' seeds keep coexisting. The guard is
+> always `(source_tables IS NULL OR cardinality(source_tables) = 0) AND ontology_bundle = <current>`;
+> a bundle filter without the empty-source_tables guard is the wrong (bundle-purge) redesign.
+>
+> **This section is the canonical source for cleanup/coexistence.** The ontology-pipeline skill,
+> `docs/MULTI_BUNDLE_USAGE.md`, and `CLAUDE.md` pitfall #8 only summarize it and link here; if you
+> change behavior, update this section first, then the summaries -- do not let them restate mechanics
+> independently (drift between them is what caused past regressions).
+>
+> **Naming rule:** destructive/cleanup functions are named by the scope they operate on
+> (e.g. `_purge_entities_for_rebuild(table_names)`), never by an inferred relationship like
+> "foreign_bundle". A name that implies "delete other bundles" invites exactly the wrong redesign.
 
 Entities from multiple ontology bundles coexist in `ontology_entities` within the same schema. `run()` emits a `logger.warning` if entities from a different bundle exist -- informational only; no purge occurs unless an explicit sweep is requested (see invariant above).
 

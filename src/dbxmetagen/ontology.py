@@ -4012,6 +4012,13 @@ class OntologyBuilder:
                 if c not in discovered:
                     categories.add(c)
 
+        # Drop primitive datatype names (Number, Date, Integer, ...): they are
+        # schema.org DataTypes, not semantic ancestors, and add noise. Mirrors the
+        # discovered-entity filter in _store_entities. Inert for FHIR/OMOP, which
+        # define none of these names as parents/categories.
+        ancestors = {a for a in ancestors if a.lower() not in EntityDiscoverer.PRIMITIVE_TYPE_NAMES}
+        categories = {c for c in categories if c.lower() not in EntityDiscoverer.PRIMITIVE_TYPE_NAMES}
+
         if not ancestors and not categories:
             return 0
 
@@ -4236,9 +4243,9 @@ class OntologyBuilder:
     CANONICAL_ID_SQL = "CONCAT('entity::', COALESCE(ontology_bundle, '_default'), '::', entity_name)"
 
     @staticmethod
-    def _source_tables_scope_sql(table_names: Optional[list]) -> str:
-        """Return an ``AND (...)`` clause keeping only entities whose source_tables
-        intersect *table_names*. Returns "" (no scoping) when table_names is empty.
+    def _source_tables_scope_predicate(table_names: Optional[list]) -> str:
+        """Return a boolean SQL predicate (no leading ``AND``) keeping only entities
+        whose source_tables intersect *table_names*. Returns "" when table_names is empty.
 
         source_tables is an array, so this uses the higher-order ``exists`` predicate.
         Supports ``catalog.schema.*`` wildcards (LIKE) and literal names (=)."""
@@ -4257,22 +4264,27 @@ class OntologyBuilder:
             parts.append(f"exists(source_tables, x -> x IN ({', '.join(literals)}))")
         for pfx in wild_prefixes:
             parts.append(f"exists(source_tables, x -> x LIKE '{pfx}.%')")
-        if not parts:
-            return ""
-        return f"AND ({' OR '.join(parts)})"
+        return " OR ".join(parts)
 
     def _purge_entities_for_rebuild(self, table_names: Optional[list] = None) -> int:
         """Table-scoped refresh: delete auto-discovered entities (and their orphaned entity nodes)
         for the tables in scope so an explicit sweep re-run rebuilds those tables cleanly.
 
-        This is a table refresh, NOT a bundle operation:
-        - Scoped by source_tables intersection with table_names (via _source_tables_scope_sql).
+        Primarily a table refresh, NOT a bundle operation:
+        - Scoped by source_tables intersection with table_names (via _source_tables_scope_predicate).
           Tables NOT in scope are never touched, so entities from other bundles keep coexisting.
         - Empty table_names = all tables in scope (full-schema replacement).
-        - Bundle-agnostic: any auto-discovered entity on an in-scope table is removed, then the
-          subsequent discovery pass repopulates those tables from the current bundle. (Entities the
-          run no longer produces -- e.g. a different bundle's old classification, or filtered
-          primitive datatypes -- are thus cleared.)
+        - Bundle-agnostic for table-attributed rows: any auto-discovered entity on an in-scope table
+          is removed, then the subsequent discovery pass repopulates those tables from the current
+          bundle. (Entities the run no longer produces -- e.g. a different bundle's old
+          classification, or filtered primitive datatypes -- are thus cleared.)
+
+        One exception, for table-LESS seeded ancestors only: seeded hierarchy concepts
+        (_seed_concept_parent_entities) carry empty source_tables, so a table scope can never match
+        them. When a table scope is present, this also deletes the CURRENT bundle's table-less seeds
+        (re-seeded fresh after the purge), so stale seeds (e.g. a primitive no longer seeded) clear.
+        This is the single place a bundle filter is allowed -- it is the only attribution a table-less
+        row has -- and it is scoped to the current bundle so OTHER bundles' seeds keep coexisting.
 
         Preservation rule:
         - auto_discovered=FALSE rows are steward overrides / human locks and are ALWAYS preserved.
@@ -4284,8 +4296,25 @@ class OntologyBuilder:
         """
         ent_table = self.config.fully_qualified_entities
         nodes_table = f"{self.config.catalog_name}.{self.config.schema_name}.{self.config.nodes_table}"
-        scope = self._source_tables_scope_sql(table_names)
-        where = f"COALESCE(auto_discovered, TRUE) = TRUE {scope}"
+        scope_pred = self._source_tables_scope_predicate(table_names)
+        if scope_pred:
+            # Table-attributed entities are matched by the table scope (bundle-agnostic).
+            # Seeded hierarchy ancestors carry empty source_tables, so they have no table to
+            # scope by -- the only safe attribution is the bundle that seeded them. Refresh ONLY
+            # the current bundle's table-less seeds (re-seeded after the purge); other bundles'
+            # seeds are preserved, keeping coexistence intact.
+            bundle = (self.config.ontology_bundle or "").replace("\\", "\\\\").replace("'", "''")
+            seed_pred = (
+                "(source_tables IS NULL OR cardinality(source_tables) = 0) "
+                f"AND COALESCE(ontology_bundle, '') = '{bundle}'"
+            )
+            where = (
+                "COALESCE(auto_discovered, TRUE) = TRUE "
+                f"AND (({scope_pred}) OR ({seed_pred}))"
+            )
+        else:
+            # Empty table_names = full replacement: delete all auto-discovered rows (incl. seeds).
+            where = "COALESCE(auto_discovered, TRUE) = TRUE"
         try:
             deleted = self.spark.sql(
                 f"SELECT COUNT(*) AS c FROM {ent_table} WHERE {where}"
@@ -5996,9 +6025,9 @@ class OntologyBuilder:
                 if old_bundles:
                     msg = (
                         f"ontology_entities contains entities from bundle(s) {old_bundles} but current "
-                        f"bundle is '{current_bundle}'. Unvalidated entities from previous bundles will be "
-                        "purged. Validated entities will be preserved. Consider running with "
-                        "incremental=false for a clean rebuild."
+                        f"bundle is '{current_bundle}'. These coexist and are NOT deleted by a normal run. "
+                        "To clear a previous bundle's classification on specific tables, run "
+                        "non-incrementally with sweep_stale_entities=true (a table-scoped refresh)."
                     )
                     logger.warning(msg)
             except Exception:
