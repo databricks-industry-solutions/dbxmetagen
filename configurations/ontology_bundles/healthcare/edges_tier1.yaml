@@ -1,3 +1,27 @@
+- name: addresses
+  domain: CarePlan
+  range: Condition
+  cardinality: many-to-many
+  label: null
+  facet: null
+- name: addresses
+  domain: Immunization
+  range: Condition
+  cardinality: unknown
+  label: null
+  facet: null
+- name: addresses
+  domain: Medication
+  range: Condition
+  cardinality: many-to-one
+  label: null
+  facet: null
+- name: addresses
+  domain: Procedure
+  range: Condition
+  cardinality: many-to-one
+  label: null
+  facet: null
 - name: collected_from
   domain: Specimen
   range: Patient
@@ -11,6 +35,24 @@
   label: null
   facet: null
 - name: contains
+  domain: CarePlan
+  range: Procedure
+  cardinality: one-to-many
+  label: null
+  facet: null
+- name: contains
+  domain: DiagnosticReport
+  range: Observation
+  cardinality: one-to-many
+  label: null
+  facet: null
+- name: contains
+  domain: Encounter
+  range: Observation
+  cardinality: one-to-many
+  label: null
+  facet: null
+- name: contains
   domain: Organization
   range: Person
   cardinality: one-to-many
@@ -20,6 +62,12 @@
   domain: Organization
   range: Location
   cardinality: one-to-many
+  label: null
+  facet: null
+- name: contraindicates
+  domain: AllergyIntolerance
+  range: Medication
+  cardinality: many-to-many
   label: null
   facet: null
 - name: covered_by
@@ -46,6 +94,24 @@
   cardinality: many-to-one
   label: null
   facet: null
+- name: documents
+  domain: DiagnosticReport
+  range: Condition
+  cardinality: many-to-one
+  label: null
+  facet: null
+- name: documents
+  domain: Observation
+  range: Condition
+  cardinality: many-to-one
+  label: null
+  facet: null
+- name: enrolled_in
+  domain: Patient
+  range: ClinicalTrial
+  cardinality: unknown
+  label: null
+  facet: null
 - name: enrolls
   domain: ClinicalTrial
   range: Patient
@@ -54,6 +120,12 @@
   facet: null
 - name: for_encounter
   domain: Claim
+  range: Encounter
+  cardinality: many-to-one
+  label: null
+  facet: null
+- name: for_encounter
+  domain: DiagnosticReport
   range: Encounter
   cardinality: many-to-one
   label: null
@@ -94,6 +166,36 @@
   cardinality: many-to-one
   label: null
   facet: null
+- name: managed_by
+  domain: CarePlan
+  range: Provider
+  cardinality: many-to-one
+  label: null
+  facet: null
+- name: order_of
+  domain: Procedure
+  range: Encounter
+  cardinality: unknown
+  label: null
+  facet: null
+- name: ordered_for
+  domain: Immunization
+  range: Encounter
+  cardinality: many-to-one
+  label: null
+  facet: null
+- name: ordered_for
+  domain: Medication
+  range: Encounter
+  cardinality: many-to-one
+  label: null
+  facet: null
+- name: ordered_for
+  domain: Procedure
+  range: Encounter
+  cardinality: many-to-one
+  label: null
+  facet: null
 - name: ordered_for
   domain: Provider
   range: Encounter
@@ -112,8 +214,38 @@
   cardinality: one-to-many
   label: null
   facet: null
+- name: paid_by
+  domain: Claim
+  range: Payer
+  cardinality: unknown
+  label: null
+  facet: null
+- name: part_of
+  domain: Facility
+  range: Organization
+  cardinality: many-to-one
+  label: null
+  facet: null
+- name: part_of
+  domain: Location
+  range: Organization
+  cardinality: many-to-one
+  label: null
+  facet: null
+- name: part_of
+  domain: Organization
+  range: Organization
+  cardinality: many-to-one
+  label: null
+  facet: null
 - name: part_of
   domain: Person
+  range: Organization
+  cardinality: many-to-one
+  label: null
+  facet: null
+- name: part_of
+  domain: Provider
   range: Organization
   cardinality: many-to-one
   label: null
@@ -124,6 +256,30 @@
   cardinality: one-to-many
   label: null
   facet: null
+- name: performed_at
+  domain: Encounter
+  range: Facility
+  cardinality: unknown
+  label: null
+  facet: null
+- name: performed_at
+  domain: Procedure
+  range: Facility
+  cardinality: unknown
+  label: null
+  facet: null
+- name: performed_by
+  domain: DiagnosticReport
+  range: Provider
+  cardinality: many-to-one
+  label: null
+  facet: null
+- name: performed_by
+  domain: Immunization
+  range: Provider
+  cardinality: many-to-one
+  label: null
+  facet: null
 - name: performed_by
   domain: Procedure
   range: Provider
@@ -131,9 +287,21 @@
   label: null
   facet: null
 - name: performs
-  domain: Practitioner
+  domain: Provider
   range: Procedure
   cardinality: one-to-many
+  label: null
+  facet: null
+- name: placed_by
+  domain: Transaction
+  range: Person
+  cardinality: unknown
+  label: null
+  facet: null
+- name: prescribed_by
+  domain: Medication
+  range: Provider
+  cardinality: many-to-one
   label: null
   facet: null
 - name: prescribed_to
@@ -155,8 +323,110 @@
   label: null
   facet: null
 - name: references
+  domain: AllergyIntolerance
+  range: Patient
+  cardinality: many-to-one
+  label: null
+  facet: null
+- name: references
+  domain: CarePlan
+  range: Patient
+  cardinality: many-to-one
+  label: null
+  facet: null
+- name: references
+  domain: Claim
+  range: Patient
+  cardinality: many-to-one
+  label: null
+  facet: null
+- name: references
+  domain: ClinicalTrial
+  range: Organization
+  cardinality: many-to-one
+  label: null
+  facet: null
+- name: references
+  domain: Condition
+  range: Patient
+  cardinality: many-to-one
+  label: null
+  facet: null
+- name: references
+  domain: Consent
+  range: Organization
+  cardinality: many-to-one
+  label: null
+  facet: null
+- name: references
+  domain: Coverage
+  range: Person
+  cardinality: many-to-one
+  label: null
+  facet: null
+- name: references
+  domain: DiagnosticReport
+  range: Patient
+  cardinality: many-to-one
+  label: null
+  facet: null
+- name: references
+  domain: Document
+  range: Person
+  cardinality: many-to-one
+  label: null
+  facet: null
+- name: references
+  domain: Encounter
+  range: Patient
+  cardinality: many-to-one
+  label: null
+  facet: null
+- name: references
+  domain: Event
+  range: Person
+  cardinality: many-to-one
+  label: null
+  facet: null
+- name: references
+  domain: Immunization
+  range: Patient
+  cardinality: many-to-one
+  label: null
+  facet: null
+- name: references
+  domain: LabResult
+  range: Patient
+  cardinality: many-to-one
+  label: null
+  facet: null
+- name: references
+  domain: Observation
+  range: Patient
+  cardinality: many-to-one
+  label: null
+  facet: null
+- name: references
+  domain: Procedure
+  range: Patient
+  cardinality: many-to-one
+  label: null
+  facet: null
+- name: references
   domain: Product
   range: Reference
+  cardinality: many-to-one
+  label: null
+  facet: null
+- name: references
+  domain: Specimen
+  range: Encounter
+  cardinality: many-to-one
+  label: null
+  facet: null
+- name: references
+  domain: Transaction
+  range: Person
   cardinality: many-to-one
   label: null
   facet: null
@@ -182,5 +452,17 @@
   domain: Device
   range: Procedure
   cardinality: many-to-many
+  label: null
+  facet: null
+- name: uses_device
+  domain: Encounter
+  range: Device
+  cardinality: unknown
+  label: null
+  facet: null
+- name: uses_device
+  domain: Procedure
+  range: Device
+  cardinality: unknown
   label: null
   facet: null

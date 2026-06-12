@@ -130,6 +130,18 @@ treats:
   label: null
   facet: null
   sub_property_of: null
+performs:
+  name: performs
+  domain: Provider
+  range: Procedure
+  ranges:
+  - Procedure
+  uri: ''
+  inverse: performed_by
+  cardinality: one-to-many
+  label: null
+  facet: null
+  sub_property_of: null
 ordered_for:
   name: ordered_for
   domain: Provider
@@ -190,6 +202,18 @@ performed_by:
   label: null
   facet: null
   sub_property_of: null
+addresses:
+  name: addresses
+  domain: Procedure
+  range: Condition
+  ranges:
+  - Condition
+  uri: ''
+  inverse: addressed_by
+  cardinality: many-to-one
+  label: null
+  facet: null
+  sub_property_of: null
 prescribed_to:
   name: prescribed_to
   domain: Medication
@@ -202,6 +226,18 @@ prescribed_to:
   label: null
   facet: null
   sub_property_of: null
+prescribed_by:
+  name: prescribed_by
+  domain: Medication
+  range: Provider
+  ranges:
+  - Provider
+  uri: ''
+  inverse: prescribes
+  cardinality: many-to-one
+  label: null
+  facet: null
+  sub_property_of: null
 recorded_in:
   name: recorded_in
   domain: Observation
@@ -210,6 +246,18 @@ recorded_in:
   - Encounter
   uri: ''
   inverse: records
+  cardinality: many-to-one
+  label: null
+  facet: null
+  sub_property_of: null
+documents:
+  name: documents
+  domain: Observation
+  range: Condition
+  ranges:
+  - Condition
+  uri: ''
+  inverse: documented_by
   cardinality: many-to-one
   label: null
   facet: null
@@ -246,6 +294,30 @@ provided_by:
   - Organization
   uri: ''
   inverse: ''
+  cardinality: many-to-one
+  label: null
+  facet: null
+  sub_property_of: null
+contraindicates:
+  name: contraindicates
+  domain: AllergyIntolerance
+  range: Medication
+  ranges:
+  - Medication
+  uri: ''
+  inverse: contraindicated_by
+  cardinality: many-to-many
+  label: null
+  facet: null
+  sub_property_of: null
+managed_by:
+  name: managed_by
+  domain: CarePlan
+  range: Provider
+  ranges:
+  - Provider
+  uri: ''
+  inverse: manages
   cardinality: many-to-one
   label: null
   facet: null
@@ -316,18 +388,6 @@ covers:
   range: Patient
   ranges:
   - Patient
-  uri: ''
-  inverse: ''
-  cardinality: one-to-many
-  label: null
-  facet: null
-  sub_property_of: null
-performs:
-  name: performs
-  domain: Practitioner
-  range: Procedure
-  ranges:
-  - Procedure
   uri: ''
   inverse: ''
   cardinality: one-to-many

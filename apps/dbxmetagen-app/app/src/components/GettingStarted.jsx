@@ -92,7 +92,7 @@ export default function GettingStarted({ onNavigate, onStartTour }) {
           />
           <FoundationCard
             step={2}
-            title="Knowledge Graph"
+            title="Advanced Metadata (Knowledge Graph)"
             what="Maps your tables to business concepts (Patient, Account, Transaction) using industry ontologies. Discovers foreign key relationships. Computes column similarity. Builds a searchable index."
             why="The knowledge graph answers structural questions — 'which tables represent patients?', 'how do these 50 tables connect?' — whether you use agents or just browse it directly."
             onClick={() => onNavigate('jobs')}
@@ -214,7 +214,7 @@ export default function GettingStarted({ onNavigate, onStartTour }) {
           <ul className="space-y-1 text-xs text-slate-500 dark:text-slate-400">
             <li><span className="font-medium text-slate-600 dark:text-slate-300">Ontology entities</span> — check confidence scores; below 0.6 means the mapping is uncertain</li>
             <li><span className="font-medium text-slate-600 dark:text-slate-300">PI / PHI / PCI</span> — verify all classifications; false negatives have compliance implications</li>
-            <li><span className="font-medium text-slate-600 dark:text-slate-300">FK predictions</span> — approve high-confidence ones, review medium, reject false positives</li>
+            <li><span className="font-medium text-slate-600 dark:text-slate-300">FK predictions</span> — approve high-confidence ones, review medium, reject false positives. Do this before generating metric views, since their joins are built from approved foreign keys</li>
             <li><span className="font-medium text-slate-600 dark:text-slate-300">Comments</span> — spot-check 10-20% for accuracy, especially domain-specific tables</li>
           </ul>
         </div>
@@ -267,7 +267,7 @@ export default function GettingStarted({ onNavigate, onStartTour }) {
           />
           <OutcomeCard
             title="Define Metrics"
-            description="Create reusable KPI definitions from business questions. These become governed Unity Catalog metric views that any tool can query consistently."
+            description="Turn business questions into governed Unity Catalog metric views any tool can query consistently. For the richest output, select fact tables together with their dimensions so the generator can join them — review and approve FK predictions first, since joins come from foreign keys. Already-aggregated gold/data-mart tables instead produce simple single-table views with no joins."
             onClick={() => onNavigate('semantic')}
             linkLabel="Define Metric Views"
           />
@@ -341,8 +341,10 @@ export default function GettingStarted({ onNavigate, onStartTour }) {
         <h3 className="text-sm font-bold text-slate-700 dark:text-slate-200 mb-2">Re-running and cleanup</h3>
         <p className="text-xs text-slate-500 dark:text-slate-400 leading-relaxed">
           Re-running the pipeline is safe — results merge via deterministic IDs. If you see too many similarity edges
-          or stale data from a previous ontology bundle, use <code className="text-xs bg-slate-100 dark:bg-dbx-navy-500 px-1 py-0.5 rounded">sweep_stale_edges=true</code> and <code className="text-xs bg-slate-100 dark:bg-dbx-navy-500 px-1 py-0.5 rounded">sweep_stale_docs=true</code> on
-          the next pipeline run. For targeted cleanup, query <code className="text-xs bg-slate-100 dark:bg-dbx-navy-500 px-1 py-0.5 rounded">graph_edges</code> grouped
+          or stale data from a previous ontology bundle, check <span className="font-medium">Sweep stale artifacts</span> on the
+          next full (non-incremental) pipeline run — it refreshes stale entities, edges, and docs together for the tables in scope.
+          To sweep just one artifact type after review, the Advanced Metadata tab's <span className="font-medium">Sync Knowledge Graph</span> button
+          sweeps edges and <span className="font-medium">Sync Vector Index</span> sweeps docs. For targeted cleanup, query <code className="text-xs bg-slate-100 dark:bg-dbx-navy-500 px-1 py-0.5 rounded">graph_edges</code> grouped
           by <code className="text-xs bg-slate-100 dark:bg-dbx-navy-500 px-1 py-0.5 rounded">source_system</code> to diagnose which module is producing excess edges.
         </p>
       </div>

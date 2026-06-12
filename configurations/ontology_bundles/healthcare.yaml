@@ -111,12 +111,16 @@ ontology:
       domain:
       - Procedure
       - Medication
+      - Immunization
       range: Encounter
       symmetric: false
       category: business
     performed_by:
       inverse: performs
-      domain: Procedure
+      domain:
+      - Procedure
+      - Immunization
+      - DiagnosticReport
       range: Provider
       symmetric: false
       category: business
@@ -280,12 +284,49 @@ ontology:
       range: Patient
       category: business
     performs:
-      domain: Practitioner
+      inverse: performed_by
+      domain: Provider
       range: Procedure
       category: business
     hosts:
       domain: Facility
       range: Encounter
+      category: business
+    addresses:
+      inverse: addressed_by
+      domain:
+      - Procedure
+      - Medication
+      - CarePlan
+      - Immunization
+      range: Condition
+      symmetric: false
+      category: business
+    prescribed_by:
+      inverse: prescribes
+      domain: Medication
+      range: Provider
+      symmetric: false
+      category: business
+    documents:
+      inverse: documented_by
+      domain:
+      - DiagnosticReport
+      - Observation
+      range: Condition
+      symmetric: false
+      category: business
+    contraindicates:
+      inverse: contraindicated_by
+      domain: AllergyIntolerance
+      range: Medication
+      symmetric: false
+      category: business
+    managed_by:
+      inverse: manages
+      domain: CarePlan
+      range: Provider
+      symmetric: false
       category: business
   entities:
     auto_discover: true
@@ -878,6 +919,7 @@ ontology:
         - physician
         - practitioner
         - clinician
+        - therapist
         - npi
         synonyms:
         - doctor
@@ -885,6 +927,8 @@ ontology:
         - specialist
         - attending
         - caregiver
+        - healthcare_worker
+        - provider_individual
         typical_attributes:
         - id
         - npi
@@ -898,6 +942,9 @@ ontology:
           treats:
             target: Patient
             cardinality: many-to-many
+          performs:
+            target: Procedure
+            cardinality: one-to-many
           ordered_for:
             target: Encounter
             cardinality: one-to-many
@@ -1161,6 +1208,9 @@ ontology:
           performed_by:
             target: Provider
             cardinality: many-to-one
+          addresses:
+            target: Condition
+            cardinality: many-to-one
           references:
             target: Patient
             cardinality: many-to-one
@@ -1230,6 +1280,12 @@ ontology:
           prescribed_to:
             target: Patient
             cardinality: many-to-one
+          prescribed_by:
+            target: Provider
+            cardinality: many-to-one
+          addresses:
+            target: Condition
+            cardinality: many-to-one
         properties:
           id:
             kind: data_property
@@ -1286,6 +1342,9 @@ ontology:
             cardinality: many-to-one
           recorded_in:
             target: Encounter
+            cardinality: many-to-one
+          documents:
+            target: Condition
             cardinality: many-to-one
         properties:
           id:
@@ -1509,6 +1568,12 @@ ontology:
           contains:
             target: Observation
             cardinality: one-to-many
+          documents:
+            target: Condition
+            cardinality: many-to-one
+          performed_by:
+            target: Provider
+            cardinality: many-to-one
         properties:
           id:
             kind: data_property
@@ -1572,6 +1637,12 @@ ontology:
           references:
             target: Patient
             cardinality: many-to-one
+          ordered_for:
+            target: Encounter
+            cardinality: many-to-one
+          performed_by:
+            target: Provider
+            cardinality: many-to-one
         properties:
           id:
             kind: data_property
@@ -1632,6 +1703,9 @@ ontology:
           references:
             target: Patient
             cardinality: many-to-one
+          contraindicates:
+            target: Medication
+            cardinality: many-to-many
         properties:
           id:
             kind: data_property
@@ -1696,6 +1770,12 @@ ontology:
           contains:
             target: Procedure
             cardinality: one-to-many
+          addresses:
+            target: Condition
+            cardinality: many-to-many
+          managed_by:
+            target: Provider
+            cardinality: many-to-one
         properties:
           id:
             kind: data_property
@@ -2019,73 +2099,6 @@ ontology:
             typical_attributes:
             - cms_id
             edge: has_cms
-      Practitioner:
-        description: Individual clinicians, physicians, nurses, and allied health professionals
-        uri: http://hl7.org/fhir/StructureDefinition/Practitioner
-        source_ontology: FHIR_R4
-        parent: Person
-        keywords:
-        - practitioner
-        - physician
-        - nurse
-        - clinician
-        - therapist
-        - npi
-        synonyms:
-        - doctor
-        - healthcare_worker
-        - provider_individual
-        typical_attributes:
-        - id
-        - name
-        - npi
-        - specialty
-        - qualification
-        - active
-        - gender
-        relationships:
-          performs:
-            target: Procedure
-            cardinality: one-to-many
-          part_of:
-            target: Organization
-            cardinality: many-to-one
-        properties:
-          id:
-            kind: data_property
-            role: primary_key
-            typical_attributes:
-            - id
-          name:
-            kind: data_property
-            role: label
-            typical_attributes:
-            - name
-          npi:
-            kind: data_property
-            role: label
-            typical_attributes:
-            - npi
-          specialty:
-            kind: data_property
-            role: label
-            typical_attributes:
-            - specialty
-          qualification:
-            kind: data_property
-            role: label
-            typical_attributes:
-            - qualification
-          active:
-            kind: data_property
-            role: label
-            typical_attributes:
-            - active
-          gender:
-            kind: data_property
-            role: label
-            typical_attributes:
-            - gender
       Facility:
         description: Hospitals, clinics, labs, pharmacies, and care sites
         uri: http://hl7.org/fhir/StructureDefinition/Location
@@ -2315,7 +2328,6 @@ ontology:
     clinical:
     - Patient
     - Provider
-    - Practitioner
     - Encounter
     - Condition
     - Procedure
@@ -2407,7 +2419,7 @@ ontology:
     - Device
     workforce:
     - Person
-    - Practitioner
+    - Provider
     - Organization
     - Location
     - Facility

@@ -245,10 +245,51 @@ def build_tiers(
                     "sub_property_of": edge.get("sub_property_of"),
                 }
 
-    edges_t1 = [{"name": e["name"], "domain": e["domain"], "range": e.get("range"),
-                  "cardinality": e.get("cardinality", "unknown"),
-                  "label": e.get("label"), "facet": e.get("facet")}
-                for e in sorted(all_edges.values(), key=lambda x: x["name"])]
+    # edges_tier1 keeps one row per (domain, name, range) so reused edge names
+    # (e.g. `addresses` on multiple entities) don't collapse to a single domain,
+    # and concrete edge_catalog entries that aren't mirrored per-entity still
+    # surface. This mirrors emit_bundle_edges' root-YAML + catalog passes; the
+    # runtime tier loop discovery-gates and dedups these rows.
+    edge_rows: Dict[tuple, Dict[str, Any]] = {}
+
+    def _add_edge_row(name, domain, rng, cardinality, label, facet):
+        if not name or not domain:
+            return
+        key = (name, domain, rng)
+        if key in edge_rows:
+            return
+        edge_rows[key] = {
+            "name": name, "domain": domain, "range": rng,
+            "cardinality": cardinality or "unknown",
+            "label": label, "facet": facet,
+        }
+
+    for ent_name, data in all_entities.items():
+        rels = data.get("relationships", {})
+        for edge in data.get("outgoing_edges", []):
+            ename = edge.get("name")
+            card = rels.get(ename, {}).get("cardinality", "unknown") if isinstance(rels.get(ename), dict) else "unknown"
+            _add_edge_row(ename, ent_name, edge.get("range"), card, edge.get("label"), edge.get("facet"))
+
+    def _concrete(v):
+        if v is None or v == "Any":
+            return []
+        return v if isinstance(v, list) else [v]
+
+    for ename, cat in (edge_catalog or {}).items():
+        if not isinstance(cat, dict):
+            continue
+        if cat.get("category") == "structural":
+            continue
+        domains = _concrete(cat.get("domain"))
+        ranges = _concrete(cat.get("range"))
+        if not domains or not ranges:
+            continue
+        for d in domains:
+            for r in ranges:
+                _add_edge_row(ename, d, r, "unknown", cat.get("label"), cat.get("facet"))
+
+    edges_t1 = sorted(edge_rows.values(), key=lambda x: (x["name"], x["domain"], x.get("range") or ""))
     edges_t2 = {k: v for k, v in all_edges.items()}
     edges_t3 = _build_edges_t3(edges_t2, all_entities, edge_catalog)
     uris = {name: data["uri"] for name, data in all_entities.items() if data.get("uri")}

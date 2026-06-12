@@ -1,6 +1,7 @@
 """Unit tests for scripts/build_ontology_indexes.py using synthetic rdflib graphs."""
 from __future__ import annotations
 
+import json
 import tempfile
 from pathlib import Path
 from typing import Any, Dict
@@ -439,6 +440,47 @@ class TestBuildTiers:
             et2 = yaml.safe_load((output / "edges_tier2.yaml").read_text())
             for _, v in et2.items():
                 assert "ranges" in v
+
+    def test_edges_tier1_preserves_multi_domain_and_catalog_edges(self):
+        """Reused edge names keep every domain, and concrete catalog-only edges
+        surface; structural/unconstrained catalog entries are skipped."""
+        def _ent(name, edges):
+            return {
+                "description": f"{name} entity", "label": name, "source": "custom",
+                "uri": f"http://test.org/{name}", "parents": [],
+                "outgoing_edges": [{"name": n, "range": r, "ranges": [r]} for n, r in edges],
+                "relationships": {n: {"target": r, "cardinality": "unknown"} for n, r in edges},
+            }
+
+        all_entities = {
+            "Medication": _ent("Medication", [("addresses", "Condition")]),
+            "CarePlan": _ent("CarePlan", [("addresses", "Condition")]),
+            "Condition": _ent("Condition", []),
+            "Product": _ent("Product", []),
+            "Organization": _ent("Organization", []),
+        }
+        edge_catalog = {
+            "produced_by": {"domain": "Product", "range": "Organization", "inverse": "produces"},
+            "references": {"domain": "Any", "range": "Any"},
+            "subclass_of": {"domain": "Product", "range": "Product", "category": "structural"},
+        }
+
+        with tempfile.TemporaryDirectory() as tmpdir:
+            output = Path(tmpdir) / "test_bundle"
+            build_tiers(all_entities, output, edge_catalog=edge_catalog)
+            rows = json.loads((output / "edges_tier1.json").read_text())
+
+        addresses_domains = sorted(r["domain"] for r in rows if r["name"] == "addresses")
+        assert addresses_domains == ["CarePlan", "Medication"]
+
+        produced_by = [r for r in rows if r["name"] == "produced_by"]
+        assert produced_by == [{"name": "produced_by", "domain": "Product",
+                                 "range": "Organization", "cardinality": "unknown",
+                                 "label": None, "facet": None}]
+
+        names = {r["name"] for r in rows}
+        assert "references" not in names
+        assert "subclass_of" not in names
 
     def test_passes_ontology_index_validation(self):
         g = _make_basic_graph()

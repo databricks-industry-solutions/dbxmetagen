@@ -2875,6 +2875,9 @@ class TestEmitBundleEdges:
             from dbxmetagen.ontology import OntologyBuilder
             b = OntologyBuilder(mock_spark, config)
             b.discoverer = disc_instance
+            # Real (empty) catalog by default so the root-YAML catalog-fallback
+            # loop in emit_bundle_edges iterates a real dict, not a MagicMock.
+            disc_instance._edge_catalog = EdgeCatalog({})
             yield b
 
     def test_emits_edges_for_matching_entity_pairs(self, builder):
@@ -3036,7 +3039,84 @@ class TestEmitBundleEdges:
         """Fallback with empty entity_definitions still returns 0."""
         builder.discoverer._get_index_loader.return_value = None
         builder.discoverer.entity_definitions = []
+        builder.discoverer._edge_catalog = EdgeCatalog({})
         assert builder.emit_bundle_edges() == 0
+
+    def test_root_yaml_fallback_emits_catalog_edges_not_wired_per_entity(self, builder):
+        """Concrete edge_catalog entries emit even when no entity wires them."""
+        builder.discoverer._get_index_loader.return_value = None
+        builder.discoverer.entity_definitions = []
+        builder.discoverer._edge_catalog = EdgeCatalog({
+            "employs": EdgeCatalogEntry(
+                name="employs", domain="Organization", range="Person", category="business",
+            ),
+        })
+
+        Row = type("Row", (), {"__init__": lambda self, **kw: self.__dict__.update(kw)})
+        builder.spark.sql.return_value.collect.return_value = [
+            Row(entity_type="Organization"), Row(entity_type="Person"),
+        ]
+        builder.spark.createDataFrame = MagicMock()
+        builder.spark.catalog = MagicMock()
+
+        result = builder.emit_bundle_edges()
+        assert result == 1
+        row = builder.spark.createDataFrame.call_args[0][0][0]
+        assert row["src_entity_type"] == "Organization"
+        assert row["dst_entity_type"] == "Person"
+        assert row["relationship_name"] == "employs"
+        assert row["source"] == "bundle"
+
+    def test_root_yaml_fallback_skips_structural_and_unconstrained_catalog(self, builder):
+        """Structural and Any->Any catalog entries are not emitted."""
+        builder.discoverer._get_index_loader.return_value = None
+        builder.discoverer.entity_definitions = []
+        builder.discoverer._edge_catalog = EdgeCatalog({
+            "subclass_of": EdgeCatalogEntry(
+                name="subclass_of", domain="Person", range="Organization", category="structural",
+            ),
+            "references": EdgeCatalogEntry(
+                name="references", domain="Any", range="Any", category="business",
+            ),
+        })
+
+        Row = type("Row", (), {"__init__": lambda self, **kw: self.__dict__.update(kw)})
+        builder.spark.sql.return_value.collect.return_value = [
+            Row(entity_type="Person"), Row(entity_type="Organization"),
+        ]
+        builder.spark.createDataFrame = MagicMock()
+        builder.spark.catalog = MagicMock()
+
+        assert builder.emit_bundle_edges() == 0
+
+    def test_root_yaml_per_entity_and_catalog_dedup(self, builder):
+        """An edge present in both per-entity and catalog emits exactly once."""
+        from dbxmetagen.ontology import EntityDefinition
+
+        builder.discoverer._get_index_loader.return_value = None
+        builder.discoverer.entity_definitions = [
+            EntityDefinition(
+                name="Organization", description="",
+                relationships={"employs": {"target": "Person", "cardinality": "one-to-many"}},
+            ),
+            EntityDefinition(name="Person", description="", relationships={}),
+        ]
+        builder.discoverer._edge_catalog = EdgeCatalog({
+            "employs": EdgeCatalogEntry(
+                name="employs", domain="Organization", range="Person", category="business",
+            ),
+        })
+
+        Row = type("Row", (), {"__init__": lambda self, **kw: self.__dict__.update(kw)})
+        builder.spark.sql.return_value.collect.return_value = [
+            Row(entity_type="Organization"), Row(entity_type="Person"),
+        ]
+        builder.spark.createDataFrame = MagicMock()
+        builder.spark.catalog = MagicMock()
+
+        result = builder.emit_bundle_edges()
+        assert result == 1
+        assert len(builder.spark.createDataFrame.call_args[0][0]) == 1
 
 
 class TestBuildTiersEnrichedSchema:
@@ -3850,6 +3930,152 @@ class TestBuildOntologySweepThreading:
             build_ontology(MagicMock(), "cat", "sch", sweep_stale_entities=True)
             _, kwargs = instance.run.call_args
             assert kwargs.get("sweep_stale_entities") is True
+
+
+class TestStructuralEdgeResolver:
+    """_build_structural_edges named-relationship edges must resolve src/dst within the
+    SAME bundle and must not re-emit category edges that have a dedicated builder."""
+
+    def _rel_sql(self, builder):
+        builder._build_structural_edges()
+        calls = [c[0][0] for c in builder.spark.sql.call_args_list]
+        rel = [s for s in calls if "relationship_name NOT IN" in s]
+        assert len(rel) == 1
+        return rel[0]
+
+    def test_same_bundle_resolver_predicate(self):
+        builder = _make_builder_with_config({"A": {}}, bundle="fhir_r4")
+        sql = self._rel_sql(builder)
+        # Same-bundle comparison, NOT a current-bundle literal filter.
+        assert "se.ontology_bundle = de.ontology_bundle" in sql
+        assert "se.ontology_bundle = 'fhir_r4'" not in sql
+
+    def test_blocklist_excludes_only_category_edges(self):
+        builder = _make_builder_with_config({"A": {}}, bundle="fhir_r4")
+        sql = self._rel_sql(builder)
+        # Quoted forms appear only in the NOT IN list (the comment uses unquoted names).
+        assert "NOT IN" in sql
+        assert "'categorized_as'" in sql
+        assert "'category_of'" in sql
+
+    def test_blocklist_preserves_bundle_structural_edges(self):
+        # contains/part_of/member_of/has_part are bundle-defined tier-1 edges emitted ONLY
+        # by this function -- they must NOT be excluded (quoted forms never appear).
+        builder = _make_builder_with_config({"A": {}}, bundle="fhir_r4")
+        sql = self._rel_sql(builder)
+        for name in ("'contains'", "'part_of'", "'member_of'", "'has_part'", "'contained_in'"):
+            assert name not in sql
+
+
+class TestInterEntitySameBundle:
+    """discover_inter_entity_relationships must require both FK-resolved entity endpoints
+    to share a bundle (second cross-bundle vector)."""
+
+    def test_same_bundle_where_clause(self):
+        src = inspect.getsource(OntologyBuilder.discover_inter_entity_relationships)
+        assert 'F.col("se.ontology_bundle") == F.col("de.ontology_bundle")' in src
+
+
+class TestPurgeOrphanedBundleSeeds:
+    """_purge_orphaned_bundle_seeds removes table-less seeds of bundles that no longer
+    have any table-attributed entities, then drops the orphaned concept nodes."""
+
+    def test_deletes_orphan_seeds_and_nodes(self):
+        builder = _make_builder_with_config({}, bundle="fhir_r4")
+        builder._purge_orphaned_bundle_seeds()
+        calls = [c[0][0] for c in builder.spark.sql.call_args_list]
+        ent_del = [s for s in calls if s.lstrip().startswith("DELETE FROM")
+                   and "ontology_entities" in s and "node_type" not in s]
+        assert len(ent_del) == 1
+        d = ent_del[0]
+        assert "COALESCE(auto_discovered, TRUE) = TRUE" in d
+        assert "cardinality(source_tables) = 0" in d
+        # Orphan test: bundle not among those that still have table-attributed entities.
+        assert "NOT IN" in d and "cardinality(source_tables) > 0" in d
+        node_del = [s for s in calls if s.lstrip().startswith("DELETE FROM")
+                    and "node_type = 'entity'" in s]
+        assert len(node_del) == 1
+        assert OntologyBuilder.CANONICAL_ID_SQL in node_del[0]
+
+    def test_noop_when_no_orphans(self):
+        from types import SimpleNamespace
+        builder = _make_builder_with_config({}, bundle="fhir_r4")
+        builder.spark.sql.return_value.collect.return_value = [SimpleNamespace(c=0)]
+        builder._purge_orphaned_bundle_seeds()
+        calls = [c[0][0] for c in builder.spark.sql.call_args_list]
+        assert not any(s.lstrip().startswith("DELETE FROM") for s in calls)
+
+
+class TestPurgeStaleRelationships:
+    """_purge_stale_relationships deletes ALL auto-generated rows (incl. configured) + NULL,
+    preserving any future human-authored source."""
+
+    def test_delete_allowlist(self):
+        builder = _make_builder_with_config({}, bundle="fhir_r4")
+        builder._purge_stale_relationships()
+        calls = [c[0][0] for c in builder.spark.sql.call_args_list]
+        d = [s for s in calls if s.lstrip().startswith("DELETE FROM")
+             and "ontology_relationships" in s]
+        assert len(d) == 1
+        for src in ("'bundle'", "'fk_inferred'", "'discovered'", "'auto_inverse'", "'configured'"):
+            assert src in d[0]
+        assert "source IS NULL" in d[0]
+
+
+class TestOrphanedSeedAndRelSweepGating:
+    """New sweeps run only on a non-incremental sweep, via run() and refresh_relationships()."""
+
+    _STUBS = [
+        "create_entities_table", "create_metrics_table",
+        "discover_and_store_entities", "discover_and_store_column_entities",
+        "backfill_source_columns", "classify_entity_roles", "_deduplicate_primary_entities",
+        "_flag_low_confidence_primaries", "classify_column_properties",
+        "validate_entity_conformance", "discover_named_relationships", "emit_bundle_edges",
+        "_seed_concept_parent_entities", "_sync_entity_nodes_to_graph",
+        "_enrich_table_nodes_with_ontology", "validate_ontology_completeness",
+        "compute_ontology_metrics", "apply_entity_tags", "_get_bundle_version",
+        "_store_discovery_diff", "_serialize_turtle", "_purge_entities_for_rebuild",
+        "_purge_orphaned_bundle_seeds", "_purge_stale_relationships",
+    ]
+
+    def _builder(self, incremental):
+        b = _make_builder_with_config({}, bundle="schema_org")
+        b.config.incremental = incremental
+        b.config.table_names = None
+        for name in self._STUBS:
+            setattr(b, name, MagicMock(return_value=0))
+        b._snapshot_ontology_state = MagicMock(return_value={})
+        b.discover_inter_entity_relationships = MagicMock(return_value={})
+        for edge_fn in ("_build_structural_edges", "_build_hierarchy_edges",
+                        "_build_category_edges", "_build_same_entity_type_edges"):
+            setattr(b, edge_fn, MagicMock(return_value=None))
+        b.get_entity_summary = MagicMock(return_value=MagicMock(
+            count=MagicMock(return_value=0), collect=MagicMock(return_value=[])))
+        b.generate_discovery_diff = MagicMock(return_value={})
+        return b
+
+    def test_sweeps_called_on_non_incremental_sweep(self):
+        b = self._builder(incremental=False)
+        b.run(sweep_stale_entities=True)
+        b._purge_orphaned_bundle_seeds.assert_called_once()
+        b._purge_stale_relationships.assert_called_once()
+
+    def test_sweeps_skipped_when_incremental(self):
+        b = self._builder(incremental=True)
+        b.run(sweep_stale_entities=True)
+        b._purge_orphaned_bundle_seeds.assert_not_called()
+        b._purge_stale_relationships.assert_not_called()
+
+    def test_sweeps_skipped_without_sweep_flag(self):
+        b = self._builder(incremental=False)
+        b.run(sweep_stale_entities=False)
+        b._purge_orphaned_bundle_seeds.assert_not_called()
+        b._purge_stale_relationships.assert_not_called()
+
+    def test_refresh_rel_sweep_gated_non_incremental(self):
+        src = inspect.getsource(OntologyBuilder.refresh_relationships)
+        assert "_purge_stale_relationships" in src
+        assert "not incremental" in src
 
 
 

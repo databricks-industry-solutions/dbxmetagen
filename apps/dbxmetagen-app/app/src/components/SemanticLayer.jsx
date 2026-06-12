@@ -1280,6 +1280,16 @@ export default function SemanticLayer({ onNavigate, pipelineStats }) {
       <section className={section}>
         <h2 className="text-lg font-semibold mb-1 dark:text-gray-100">Select Tables</h2>
         <p className="text-xs text-slate-500 dark:text-slate-400 mb-3">Choose the source tables you want to create metric views for. Tables can span multiple schemas.</p>
+        <div className="px-3 py-2 mb-3 bg-blue-50 dark:bg-blue-900/20 border border-blue-200 dark:border-blue-700/50 rounded-md text-xs text-blue-800 dark:text-blue-200 leading-relaxed space-y-1.5">
+          <div className="font-semibold">Which tables make good metric views?</div>
+          <ul className="list-disc ml-4 space-y-1">
+            <li><span className="font-medium">Star schema (richest output):</span> select fact / transaction tables (<code className="px-1 bg-blue-100 dark:bg-blue-800/40 rounded">fct_</code>, <code className="px-1 bg-blue-100 dark:bg-blue-800/40 rounded">fact_</code>) together with their related dimension tables (<code className="px-1 bg-blue-100 dark:bg-blue-800/40 rounded">dim_</code>). The generator uses approved foreign keys to join them, producing multi-dimensional breakdowns (e.g. revenue by region, product, and month). Run and approve FK predictions first &mdash; without FKs it can only build single-table views.</li>
+            <li><span className="font-medium">Pre-aggregated gold / data marts:</span> if a table is already heavily aggregated (one row per summarized grain), select it on its own. You'll get a simple single-table metric view with direct aggregations and no joins. Don't expect joins, and don't mix marts with raw facts in the same selection.</li>
+            <li>Avoid raw / bronze / staging, audit / log, and purely operational tables.</li>
+            <li>Don't select dimension tables by themselves &mdash; they carry no measures.</li>
+          </ul>
+          <div className="text-blue-700/80 dark:text-blue-300/80">Only tables that already have core metadata appear in the list below.</div>
+        </div>
         <div className="grid grid-cols-1 md:grid-cols-3 gap-4 mb-4">
           <div>
             <label className={label}>Catalog</label>

@@ -455,6 +455,17 @@ def build_ontology_chunks_table(
     # MERGE with content-change guard: only update when content/keywords/name
     # actually changed. Prevents unnecessary updated_at bumps and CDF noise
     # when the bundle YAML hasn't changed between runs.
+    #
+    # INTENTIONAL: this MERGE has no `WHEN NOT MATCHED BY SOURCE ... DELETE`.
+    # `ontology_chunks` is a per-bundle reference corpus (the full bundle
+    # definition chunked for retrieval), not replaceable run output. Multiple
+    # bundles (e.g. fhir_r4 + omop_cdm + schema_org) coexist here by design, and
+    # retrieval is always scoped by `ontology_bundle` (see `query_entities` /
+    # `query_edges` in ontology_vector_index.py), so a run never sees another
+    # bundle's chunks. Do NOT add a cross-bundle sweep: it would wipe other
+    # bundles' vocab and force a full re-chunk/re-embed on every bundle switch.
+    # (Known minor edge case: editing a bundle YAML to remove concepts leaves
+    # that same bundle's now-removed chunks until manually cleared.)
     spark.sql(f"""
         MERGE INTO {fq_table} AS tgt
         USING _ontology_chunks_src AS src

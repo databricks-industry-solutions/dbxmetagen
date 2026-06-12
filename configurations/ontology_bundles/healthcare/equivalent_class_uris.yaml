@@ -23,6 +23,5 @@ CarePlan: http://hl7.org/fhir/StructureDefinition/CarePlan
 ClinicalTrial: http://hl7.org/fhir/StructureDefinition/ResearchStudy
 Device: http://hl7.org/fhir/StructureDefinition/Device
 Specimen: http://hl7.org/fhir/StructureDefinition/Specimen
-Practitioner: http://hl7.org/fhir/StructureDefinition/Practitioner
 Facility: http://hl7.org/fhir/StructureDefinition/Location
 Consent: http://hl7.org/fhir/StructureDefinition/Consent

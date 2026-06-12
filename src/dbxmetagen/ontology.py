@@ -3861,6 +3861,12 @@ class OntologyBuilder:
             fk_df
             .join(src_ent, fk_df.src_table == F.col("se.tbl"))
             .join(dst_ent, fk_df.dst_table == F.col("de.tbl"))
+            # Same-bundle resolver: a table can map to entities of different bundles, and an
+            # FK can link two tables across bundles. Resolving entity-concept endpoints purely
+            # by table name would fan out into cross-bundle edges (entity::fhir::X ->
+            # entity::schema_org::Y). Require both endpoints to share a bundle. Table-level FK
+            # structure is preserved separately via source_system='fk_predictions'.
+            .where(F.col("se.ontology_bundle") == F.col("de.ontology_bundle"))
             .where(F.col("se.entity_type") != F.col("de.entity_type"))
             .select(
                 F.concat(F.lit("entity::"), F.col("se.ontology_bundle"), F.lit("::"), F.col("se.entity_type")).alias("src_canonical"),
@@ -4334,6 +4340,85 @@ class OntologyBuilder:
             logger.warning("Could not purge entities for rebuild: %s", e)
             return 0
 
+    def _purge_orphaned_bundle_seeds(self) -> int:
+        """Delete table-less seeded ancestors of bundles that no longer have any
+        table-attributed entities, then drop their now-orphaned concept nodes.
+
+        Runs AFTER discovery + seeding -- deliberately NOT folded into
+        _purge_entities_for_rebuild, whose DELETE evaluates its subquery on the
+        pre-discovery snapshot: on a bundle switch (e.g. schema_org -> fhir_r4 on
+        the same tables) the old bundle still has table-attributed entities at
+        purge time, so it would never be detected as orphaned. At this later
+        point a purged foreign bundle has zero table-attributed rows, so the
+        orphan test is correct. Only auto-discovered seeds are touched (steward
+        locks preserved); a bundle with any real table-attributed entity keeps
+        its seeds (coexistence preserved). Gated by the caller on
+        sweep_stale_entities AND NOT incremental.
+        """
+        ent_table = self.config.fully_qualified_entities
+        nodes_table = f"{self.config.catalog_name}.{self.config.schema_name}.{self.config.nodes_table}"
+        where = (
+            "COALESCE(auto_discovered, TRUE) = TRUE "
+            "AND (source_tables IS NULL OR cardinality(source_tables) = 0) "
+            f"AND COALESCE(ontology_bundle, '') NOT IN ("
+            f"SELECT DISTINCT COALESCE(ontology_bundle, '') FROM {ent_table} "
+            "WHERE source_tables IS NOT NULL AND cardinality(source_tables) > 0)"
+        )
+        try:
+            deleted = self.spark.sql(
+                f"SELECT COUNT(*) AS c FROM {ent_table} WHERE {where}"
+            ).collect()[0].c
+            if deleted == 0:
+                return 0
+            self.spark.sql(f"DELETE FROM {ent_table} WHERE {where}")
+            self.spark.sql(
+                f"DELETE FROM {nodes_table} "
+                f"WHERE node_type = 'entity' AND source_system = 'ontology' "
+                f"AND id NOT IN (SELECT {self.CANONICAL_ID_SQL} FROM {ent_table} WHERE entity_name IS NOT NULL)"
+            )
+            logger.warning(
+                "Purged %d orphaned table-less bundle seeds and their orphaned graph nodes",
+                deleted,
+            )
+            return deleted
+        except Exception as e:
+            logger.warning("Could not purge orphaned bundle seeds: %s", e)
+            return 0
+
+    def _purge_stale_relationships(self) -> int:
+        """Delete all auto-generated rows from ontology_relationships so they are
+        regenerated cleanly on a non-incremental sweep.
+
+        ontology_relationships has no other delete path: emit_bundle_edges is
+        INSERT-only and discover_named_relationships is a natural-key upsert, so
+        stale rows (renamed/removed relationships, a prior bundle's edges, the
+        categorized_as/category_of regression) would otherwise persist forever.
+        Every source here is auto-generated -- 'bundle' (emit_bundle_edges) and
+        'fk_inferred'/'discovered'/'auto_inverse'/'configured' (discover_named_
+        relationships; 'configured' is subclass_of from the bundle hierarchy, NOT
+        a steward lock). The allowlist deletes exactly those plus NULL; any future
+        human-authored source is preserved. Gated by the caller on a
+        non-incremental sweep; callers re-run emit_bundle_edges +
+        discover_named_relationships afterward to repopulate.
+        """
+        rels_table = self.config.fully_qualified_relationships
+        cond = (
+            "source IN ('bundle','fk_inferred','discovered','auto_inverse','configured') "
+            "OR source IS NULL"
+        )
+        try:
+            deleted = self.spark.sql(
+                f"SELECT COUNT(*) AS c FROM {rels_table} WHERE {cond}"
+            ).collect()[0].c
+            self.spark.sql(f"DELETE FROM {rels_table} WHERE {cond}")
+            logger.warning(
+                "Purged %d auto-generated ontology_relationships rows for rebuild", deleted
+            )
+            return deleted
+        except Exception as e:
+            logger.warning("Could not purge stale relationships: %s", e)
+            return 0
+
     def _sync_entity_nodes_to_graph(self) -> int:
         """Merge one canonical entity concept node per (entity_name, bundle) into graph_nodes.
 
@@ -4612,11 +4697,25 @@ class OntologyBuilder:
                     SELECT DISTINCT entity_type, COALESCE(ontology_bundle, '_default') AS ontology_bundle
                     FROM {ent_table}
                 ) de ON de.entity_type = r.dst_entity_type
-                WHERE r.src_entity_type != r.dst_entity_type
+                -- Same-bundle resolver: build an entity-concept edge only when src and
+                -- dst resolve within the SAME bundle. A bare entity_type (e.g. 'Organization')
+                -- can exist in multiple coexisting bundles; without this an edge would fan
+                -- out across bundles (fhir::Patient -> schema_org::Organization). Compares the
+                -- two coalesced bundle values (NOT a current-bundle filter, which would drop a
+                -- coexisting live bundle's own within-bundle edges).
+                WHERE se.ontology_bundle = de.ontology_bundle
+                  AND r.src_entity_type != r.dst_entity_type
                   AND r.source != 'configured'
                   AND r.relationship_name NOT IN (
                     'instance_of', 'type_of', 'subclass_of', 'superclass_of',
-                    'is_a', 'about', 'subjectOf'
+                    'is_a', 'about', 'subjectOf',
+                    -- categorized_as/category_of have a dedicated bundle-scoped builder
+                    -- (_build_category_edges); excluding them here stops stale rows in
+                    -- ontology_relationships from being re-emitted as graph edges (the
+                    -- categorized_as regression). NOT the full _INFER_BLOCKLIST: bundle
+                    -- YAMLs legitimately define contains/part_of/member_of, which only this
+                    -- function turns into edges, so those must keep flowing through.
+                    'categorized_as', 'category_of'
                   )
             """)
             if raw.count() > 0:
@@ -5412,6 +5511,50 @@ class OntologyBuilder:
                         "updated_at": now,
                     })
 
+            # Also emit edges from concrete edge_catalog entries (both domain and
+            # range constrained to specific entity types). Closes the gap where a
+            # bundle declares a relationship in edge_catalog but never mirrors it
+            # in any entity's per-entity `relationships:` block. Discovery-gated
+            # like the per-entity path; structural/unconstrained entries are
+            # skipped (subclass_of is handled by discover_named_relationships, and
+            # Any->Any entries carry no (src,dst) signal).
+            catalog = getattr(disc, "_edge_catalog", None)
+            if catalog is not None:
+                def _concrete(v):
+                    if v is None or v == "Any":
+                        return []
+                    return v if isinstance(v, list) else [v]
+                for entry in catalog.entries.values():
+                    if entry.category == "structural" or entry.is_unconstrained():
+                        continue
+                    domains = [d for d in _concrete(entry.domain) if d in discovered_types]
+                    ranges = [r for r in _concrete(entry.range) if r in discovered_types]
+                    for d in domains:
+                        for r in ranges:
+                            key = (d, r, entry.name)
+                            if key in seen:
+                                continue
+                            seen.add(key)
+                            rels.append({
+                                "relationship_id": str(uuid.uuid4()),
+                                "src_entity_type": d,
+                                "relationship_name": entry.name,
+                                "dst_entity_type": r,
+                                "cardinality": "unknown",
+                                "evidence_column": None,
+                                "evidence_table": None,
+                                "source": "bundle",
+                                "confidence": 0.8,
+                                "label": None,
+                                "facet": None,
+                                "sub_property_of": None,
+                                "ranges": [],
+                                "source_ontology": None,
+                                "edge_uri": entry.uri,
+                                "created_at": now,
+                                "updated_at": now,
+                            })
+
         if not rels:
             logger.info("emit_bundle_edges: no matching entity pairs found in tier-1 edges")
             return 0
@@ -6086,6 +6229,13 @@ class OntologyBuilder:
 
         _step("validate_entity_conformance", self.validate_entity_conformance)
 
+        # Relationships sweep (sweep only): ontology_relationships has no other delete path,
+        # so on a clean rebuild we purge all auto-generated rows before regenerating them via
+        # discover_named_relationships + emit_bundle_edges below. Clears stale fk_inferred,
+        # renamed/removed edges, and the categorized_as/category_of residue.
+        if sweep_stale_entities and not self.config.incremental:
+            _step("purge_stale_relationships", self._purge_stale_relationships)
+
         named_rels = _step("discover_named_relationships", self.discover_named_relationships)
         logger.info(f"Discovered {named_rels} named relationships")
 
@@ -6093,6 +6243,13 @@ class OntologyBuilder:
         logger.info(f"Emitted {bundle_rels} bundle-defined edges")
 
         _step("seed_concept_parent_entities", self._seed_concept_parent_entities)
+        # Post-discovery orphan-seed cleanup (sweep only): now that the current bundle has its
+        # freshly discovered+seeded entities, drop table-less seeds of bundles that no longer
+        # have any table-attributed entities (e.g. after a bundle switch on the same tables).
+        # Must run here, not in _purge_entities_for_rebuild, whose pre-discovery snapshot can't
+        # see a foreign bundle as orphaned.
+        if sweep_stale_entities and not self.config.incremental:
+            _step("purge_orphaned_bundle_seeds", self._purge_orphaned_bundle_seeds)
         _step("sync_entity_nodes_to_graph", self._sync_entity_nodes_to_graph)
         _step("enrich_table_nodes_with_ontology", self._enrich_table_nodes_with_ontology)
 
@@ -6244,6 +6401,13 @@ class OntologyBuilder:
                     return {"named_relationships": 0, "bundle_edges": 0, "graph_edges": 0}
             except Exception as e:
                 logger.debug("Incremental watermark check failed (%s), running full", e)
+
+        # Relationships sweep (non-incremental sweep only): purge all auto-generated rows so
+        # discover_named_relationships + emit_bundle_edges below regenerate them cleanly. This is
+        # the refresh-side counterpart to run()'s sweep, and the one that actually clears stale
+        # fk_inferred rows using fresh FK predictions (refresh runs after predict_foreign_keys).
+        if (sweep_stale or sweep_stale_entities) and not incremental:
+            self._purge_stale_relationships()
 
         named = self.discover_named_relationships()
         bundle = self.emit_bundle_edges()

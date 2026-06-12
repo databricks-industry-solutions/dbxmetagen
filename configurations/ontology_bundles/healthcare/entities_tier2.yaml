@@ -93,6 +93,7 @@ Provider:
   - Person
   edges:
   - treats
+  - performs
   - ordered_for
   - part_of
 Encounter:
@@ -125,6 +126,7 @@ Procedure:
   edges:
   - ordered_for
   - performed_by
+  - addresses
   - references
 Medication:
   description: Drugs, prescriptions, or medication orders (FHIR MedicationRequest)
@@ -136,6 +138,8 @@ Medication:
   edges:
   - ordered_for
   - prescribed_to
+  - prescribed_by
+  - addresses
 Observation:
   description: Lab results, vitals, or clinical measurements (FHIR Observation / OMOP
     MEASUREMENT)
@@ -147,6 +151,7 @@ Observation:
   edges:
   - references
   - recorded_in
+  - documents
 Claim:
   description: Insurance claims or billing submissions (FHIR Claim)
   label: Claim
@@ -178,6 +183,8 @@ DiagnosticReport:
   - references
   - for_encounter
   - contains
+  - documents
+  - performed_by
 Immunization:
   description: Vaccination events and immunization records (FHIR Immunization)
   label: Immunization
@@ -187,6 +194,8 @@ Immunization:
   - Event
   edges:
   - references
+  - ordered_for
+  - performed_by
 AllergyIntolerance:
   description: Allergy and intolerance records (FHIR AllergyIntolerance)
   label: AllergyIntolerance
@@ -195,6 +204,7 @@ AllergyIntolerance:
   parents: []
   edges:
   - references
+  - contraindicates
 CarePlan:
   description: Care plans, treatment protocols, and goals (FHIR CarePlan)
   label: CarePlan
@@ -205,6 +215,8 @@ CarePlan:
   edges:
   - references
   - contains
+  - addresses
+  - managed_by
 ClinicalTrial:
   description: Clinical trials, research studies, and investigational protocols
   label: ClinicalTrial
@@ -243,16 +255,6 @@ Payer:
   edges:
   - pays_for
   - covers
-Practitioner:
-  description: Individual clinicians, physicians, nurses, and allied health professionals
-  label: Practitioner
-  source_ontology: FHIR_R4
-  uri: http://hl7.org/fhir/StructureDefinition/Practitioner
-  parents:
-  - Person
-  edges:
-  - performs
-  - part_of
 Facility:
   description: Hospitals, clinics, labs, pharmacies, and care sites
   label: Facility

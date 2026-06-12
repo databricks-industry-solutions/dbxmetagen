@@ -451,8 +451,15 @@ class FKPredictor:
             ) AS _rn
             FROM all_matches
         )
-        SELECT LEAST(col_a, col_b) AS col_a, GREATEST(col_a, col_b) AS col_b,
-               col_similarity, table_a, table_b, dtype_a, dtype_b, table_similarity
+        SELECT
+               CASE WHEN col_a <= col_b THEN col_a ELSE col_b END AS col_a,
+               CASE WHEN col_a <= col_b THEN col_b ELSE col_a END AS col_b,
+               col_similarity,
+               CASE WHEN col_a <= col_b THEN table_a ELSE table_b END AS table_a,
+               CASE WHEN col_a <= col_b THEN table_b ELSE table_a END AS table_b,
+               CASE WHEN col_a <= col_b THEN dtype_a ELSE dtype_b END AS dtype_a,
+               CASE WHEN col_a <= col_b THEN dtype_b ELSE dtype_a END AS dtype_b,
+               table_similarity
         FROM capped WHERE _rn <= {k}
         {self._incremental_pair_filter_sql()}
         """
@@ -564,8 +571,15 @@ class FKPredictor:
                 FROM candidate_pairs
             ) z WHERE z._tp_rn <= {k}
         )
-        SELECT LEAST(col_a, col_b) AS col_a, GREATEST(col_a, col_b) AS col_b,
-               col_similarity, table_a, table_b, dtype_a, dtype_b, table_similarity
+        SELECT
+               CASE WHEN col_a <= col_b THEN col_a ELSE col_b END AS col_a,
+               CASE WHEN col_a <= col_b THEN col_b ELSE col_a END AS col_b,
+               col_similarity,
+               CASE WHEN col_a <= col_b THEN table_a ELSE table_b END AS table_a,
+               CASE WHEN col_a <= col_b THEN table_b ELSE table_a END AS table_b,
+               CASE WHEN col_a <= col_b THEN dtype_a ELSE dtype_b END AS dtype_a,
+               CASE WHEN col_a <= col_b THEN dtype_b ELSE dtype_a END AS dtype_b,
+               table_similarity
         FROM capped
         WHERE 1=1 {self._incremental_pair_filter_sql()}
         """
@@ -683,8 +697,15 @@ class FKPredictor:
             ) AS _rn
             FROM resolved
         )
-        SELECT LEAST(col_a, col_b) AS col_a, GREATEST(col_a, col_b) AS col_b,
-               col_similarity, table_a, table_b, dtype_a, dtype_b, table_similarity
+        SELECT
+               CASE WHEN col_a <= col_b THEN col_a ELSE col_b END AS col_a,
+               CASE WHEN col_a <= col_b THEN col_b ELSE col_a END AS col_b,
+               col_similarity,
+               CASE WHEN col_a <= col_b THEN table_a ELSE table_b END AS table_a,
+               CASE WHEN col_a <= col_b THEN table_b ELSE table_a END AS table_b,
+               CASE WHEN col_a <= col_b THEN dtype_a ELSE dtype_b END AS dtype_a,
+               CASE WHEN col_a <= col_b THEN dtype_b ELSE dtype_a END AS dtype_b,
+               table_similarity
         FROM capped WHERE _rn <= {k}
         {self._incremental_pair_filter_sql()}
         """

@@ -6,9 +6,9 @@ golden files. Any unintentional change to tier output will show up as a diff.
 To update golden files after an intentional change:
     uv run python -c "
     from pathlib import Path
-    from dbxmetagen.ontology_bundle_indexes import entities_from_bundle, build_tiers
-    entities = entities_from_bundle(Path('tests/golden/test_bundle.yaml'))
-    build_tiers(entities, Path('tests/golden'))
+    from dbxmetagen.ontology_bundle_indexes import entities_from_bundle, build_tiers, load_edge_catalog
+    b = Path('tests/golden/test_bundle.yaml')
+    build_tiers(entities_from_bundle(b), Path('tests/golden'), edge_catalog=load_edge_catalog(b) or None)
     "
 """
 
@@ -18,7 +18,7 @@ from pathlib import Path
 
 import pytest
 
-from dbxmetagen.ontology_bundle_indexes import entities_from_bundle, build_tiers
+from dbxmetagen.ontology_bundle_indexes import entities_from_bundle, build_tiers, load_edge_catalog
 
 GOLDEN_DIR = Path(__file__).parent / "golden"
 BUNDLE_PATH = GOLDEN_DIR / "test_bundle.yaml"
@@ -38,8 +38,9 @@ TIER_FILES = [
 def generated_tiers():
     """Run build_tiers on the test bundle into a temp dir."""
     entities = entities_from_bundle(BUNDLE_PATH)
+    edge_catalog = load_edge_catalog(BUNDLE_PATH) or None
     with tempfile.TemporaryDirectory() as tmp:
-        build_tiers(entities, Path(tmp))
+        build_tiers(entities, Path(tmp), edge_catalog=edge_catalog)
         result = {}
         for name in TIER_FILES:
             p = Path(tmp) / name

@@ -123,6 +123,9 @@ Organization:
     part_of:
       target: Organization
       cardinality: many-to-one
+    employs:
+      target: Person
+      cardinality: one-to-many
   properties:
     id:
       kind: data_property
@@ -196,6 +199,9 @@ Product:
   relationships:
     references:
       target: Reference
+      cardinality: many-to-one
+    produced_by:
+      target: Organization
       cardinality: many-to-one
   properties:
     id:
@@ -277,6 +283,9 @@ Transaction:
     for_product:
       target: Product
       cardinality: many-to-many
+    billed_to:
+      target: Organization
+      cardinality: many-to-one
   properties:
     id:
       kind: data_property
@@ -484,6 +493,12 @@ Event:
   relationships:
     references:
       target: Person
+      cardinality: many-to-one
+    assigned_to:
+      target: Person
+      cardinality: many-to-one
+    located_at:
+      target: Location
       cardinality: many-to-one
   properties:
     id:
@@ -702,6 +717,9 @@ Document:
   business_questions: []
   relationships:
     references:
+      target: Person
+      cardinality: many-to-one
+    assigned_to:
       target: Person
       cardinality: many-to-one
   properties:

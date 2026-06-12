@@ -183,6 +183,12 @@ ontology:
       domain: Organization
       range: Location
       category: business
+    produced_by:
+      inverse: produces
+      domain: Product
+      range: Organization
+      symmetric: false
+      category: business
   entities:
     auto_discover: true
     discovery_confidence_threshold: 0.4
@@ -304,6 +310,9 @@ ontology:
           part_of:
             target: Organization
             cardinality: many-to-one
+          employs:
+            target: Person
+            cardinality: one-to-many
         properties:
           id:
             kind: data_property
@@ -373,6 +382,9 @@ ontology:
         relationships:
           references:
             target: Reference
+            cardinality: many-to-one
+          produced_by:
+            target: Organization
             cardinality: many-to-one
         properties:
           id:
@@ -450,6 +462,9 @@ ontology:
           for_product:
             target: Product
             cardinality: many-to-many
+          billed_to:
+            target: Organization
+            cardinality: many-to-one
         properties:
           id:
             kind: data_property
@@ -649,6 +664,12 @@ ontology:
         relationships:
           references:
             target: Person
+            cardinality: many-to-one
+          assigned_to:
+            target: Person
+            cardinality: many-to-one
+          located_at:
+            target: Location
             cardinality: many-to-one
         properties:
           id:
@@ -855,6 +876,9 @@ ontology:
         - type
         relationships:
           references:
+            target: Person
+            cardinality: many-to-one
+          assigned_to:
             target: Person
             cardinality: many-to-one
         properties:

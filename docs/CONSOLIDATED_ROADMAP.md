@@ -426,6 +426,19 @@ watermark-based incremental pattern with content-change guards and stable timest
 | INC-12 | Schema KB: gate AI calls on `incremental` flag | DONE | -- | S | incrementality audit |
 | INC-13 | E2E eval `exclude_tables` parameter for incrementality testing | DONE | -- | S | incrementality audit |
 
+### 5h. Ontology Cross-Bundle Isolation & Sweep Closure (Jun 2026)
+
+Hardening of multi-bundle coexistence and sweep cleanup. Canonical invariants in
+`.cursor/rules/ontology-patterns.mdc`.
+
+| ID | Item | Status | Priority | Effort | Source |
+|----|------|--------|----------|--------|--------|
+| OB-1 | Same-bundle resolver in `_build_structural_edges` AND `discover_inter_entity_relationships` (entity-concept edges never cross bundles) | DONE | -- | M | cross-bundle audit |
+| OB-2 | `_purge_orphaned_bundle_seeds()` post-discovery sweep for orphaned foreign-bundle table-less seeds | DONE | -- | M | bundle-switch audit |
+| OB-3 | `_purge_stale_relationships()` non-incremental sweep of all auto-generated `ontology_relationships` (incl. `configured`); fixes `categorized_as`/`category_of` regression | DONE | -- | M | relationships audit |
+| OB-4 | `_build_structural_edges` excludes `categorized_as`/`category_of` while preserving bundle-defined `contains`/`part_of`/`member_of`/`has_part` | DONE | -- | S | relationships audit |
+| OB-5 | FK pair canonicalization swaps `col`/`table`/`dtype` in lockstep (3 generator sites) | DONE | -- | S | fk label audit |
+
 ---
 
 ## 6. Packaging & Distribution
