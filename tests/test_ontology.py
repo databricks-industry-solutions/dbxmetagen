@@ -2136,13 +2136,15 @@ class TestDeduplicatePrimaryEntities:
     """Verify _deduplicate_primary_entities respects human-created entities."""
 
     def test_source_has_auto_discovered_guard(self):
-        source = inspect.getsource(OntologyBuilder._deduplicate_primary_entities)
+        from dbxmetagen.ontology import _deduplicate_primary_entities_sql
+        source = inspect.getsource(_deduplicate_primary_entities_sql)
         assert "auto_discovered = TRUE" in source, (
             "_deduplicate_primary_entities must only demote auto-discovered entities"
         )
 
     def test_source_ranks_human_created_first(self):
-        source = inspect.getsource(OntologyBuilder._deduplicate_primary_entities)
+        from dbxmetagen.ontology import _deduplicate_primary_entities_sql
+        source = inspect.getsource(_deduplicate_primary_entities_sql)
         assert "auto_discovered = FALSE THEN 0" in source, (
             "_deduplicate_primary_entities must rank human-created entities first"
         )
@@ -4076,6 +4078,86 @@ class TestOrphanedSeedAndRelSweepGating:
         src = inspect.getsource(OntologyBuilder.refresh_relationships)
         assert "_purge_stale_relationships" in src
         assert "not incremental" in src
+
+
+class TestReconcileEntityRoles:
+    """SQL-shape and wiring tests for reconcile_entity_roles and its callers."""
+
+    ENT = "c.s.ontology_entities"
+
+    def _spark(self):
+        spark = MagicMock()
+        spark.sql.return_value.collect.return_value = []
+        spark.sql.return_value.first.return_value = None
+        return spark
+
+    def _sqls(self, spark):
+        return [c[0][0] for c in spark.sql.call_args_list]
+
+    def test_ordering_classify_then_dedup_then_flag(self):
+        from dbxmetagen.ontology import reconcile_entity_roles
+        spark = self._spark()
+        reconcile_entity_roles(spark, self.ENT)
+        sqls = self._sqls(spark)
+        i_classify = next(i for i, s in enumerate(sqls) if "computed_role" in s)
+        i_dedup = next(i for i, s in enumerate(sqls)
+                       if "WHEN MATCHED AND target.auto_discovered = TRUE" in s)
+        i_flag = next(i for i, s in enumerate(sqls) if "needs_human_review" in s)
+        assert i_classify < i_dedup < i_flag
+
+    def test_unscoped_omits_scope_and_runs_orphan_update(self):
+        from dbxmetagen.ontology import reconcile_entity_roles
+        spark = self._spark()
+        reconcile_entity_roles(spark, self.ENT)
+        sqls = self._sqls(spark)
+        classify = next(s for s in sqls if "computed_role" in s)
+        assert "WHERE 1=1" not in classify
+        assert "tbl IN (" not in classify
+        # orphan default-to-referenced UPDATE only runs on the unscoped path
+        assert any("source_tables IS NULL OR SIZE(source_tables) = 0" in s for s in sqls)
+
+    def test_scoped_filters_writes_and_skips_orphan_update(self):
+        from dbxmetagen.ontology import reconcile_entity_roles
+        spark = self._spark()
+        reconcile_entity_roles(spark, self.ENT, table_names=["c.s.t1"])
+        sqls = self._sqls(spark)
+        classify = next(s for s in sqls if "computed_role" in s)
+        assert "WHERE 1=1" in classify
+        assert "tbl IN ('c.s.t1')" in classify
+        flag = next(s for s in sqls if "needs_human_review" in s)
+        assert "get(source_tables, 0) IN ('c.s.t1')" in flag
+        # scoped path must not touch out-of-scope orphan entities
+        assert not any("source_tables IS NULL OR SIZE(source_tables) = 0" in s for s in sqls)
+
+    def test_validator_reconcile_delegates_with_scope(self):
+        from dbxmetagen.ontology_validator import (
+            OntologyValidator, OntologyValidatorConfig,
+        )
+        cfg = OntologyValidatorConfig(catalog_name="c", schema_name="s")
+        validator = OntologyValidator(MagicMock(), cfg)
+        validator._table_names = ["c.s.t1"]
+        with patch("dbxmetagen.ontology.reconcile_entity_roles") as mock_rec:
+            mock_rec.return_value = 7
+            n = validator._reconcile_roles()
+        assert n == 7
+        mock_rec.assert_called_once_with(
+            validator.spark, cfg.fully_qualified_entities, ["c.s.t1"],
+        )
+
+    def test_validator_run_reconciles_on_both_paths(self):
+        from dbxmetagen.ontology_validator import OntologyValidator
+        src = inspect.getsource(OntologyValidator.run)
+        assert src.count("_reconcile_roles()") >= 2
+
+    def test_build_early_exit_reconciles_roles(self):
+        src = inspect.getsource(OntologyBuilder.run)
+        assert "reconcile_entity_roles" in src
+
+    def test_refresh_watermark_checks_entity_roles(self):
+        src = inspect.getsource(OntologyBuilder.refresh_relationships)
+        assert "source = 'bundle'" in src
+        assert "fully_qualified_entities" in src
+        assert "max_ent <= max_bundle" in src
 
 
 

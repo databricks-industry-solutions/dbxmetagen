@@ -2757,6 +2757,200 @@ class EntityDiscoverer:
         return list(groups.values())
 
 
+# ---------------------------------------------------------------------------
+# Entity-role reconciliation (classify -> dedup -> flag)
+#
+# Module-level so both OntologyBuilder and OntologyValidator can run the exact
+# same logic without OntologyValidator needing to construct a builder. Entities
+# are single-table (zero or one source_tables entry), so scoping by
+# get(source_tables, 0) selects exactly the scoped entities. When table_names is
+# None the SQL is byte-identical to the original OntologyBuilder methods.
+# ---------------------------------------------------------------------------
+
+_DEFAULT_PRIMARY_CONFIDENCE_FLOOR = 0.3
+
+
+def _classify_entity_roles_sql(spark, ent_table: str, table_names=None) -> int:
+    """Assign 'primary'/'referenced' roles per source table (see OntologyBuilder.classify_entity_roles)."""
+    tbl_scope = table_filter_sql(table_names, column="tbl") if table_names else ""
+    where_scope = f"WHERE 1=1 {tbl_scope}" if table_names else ""
+    spark.sql(f"""
+        MERGE INTO {ent_table} AS target
+        USING (
+            WITH                 exploded AS (
+                SELECT entity_id,
+                       COALESCE(attributes['granularity'], 'table') AS granularity,
+                       confidence, tbl,
+                       COALESCE(auto_discovered, TRUE) AS auto_discovered
+                FROM {ent_table}
+                LATERAL VIEW EXPLODE(source_tables) AS tbl
+                {where_scope}
+            ),
+            per_table AS (
+                SELECT tbl,
+                       BOOL_OR(granularity = 'table') AS has_table_level
+                FROM exploded GROUP BY tbl
+            ),
+            ent_agg AS (
+                SELECT entity_id,
+                       BOOL_OR(granularity = 'table') AS owned,
+                       COUNT(DISTINCT CASE WHEN granularity = 'column' THEN tbl END) AS column_table_count
+                FROM exploded GROUP BY entity_id
+            ),
+            ranked AS (
+                SELECT e.entity_id,
+                       ROW_NUMBER() OVER (
+                           PARTITION BY e.tbl
+                           ORDER BY
+                               CASE WHEN h.has_table_level AND e.granularity = 'table' THEN 0
+                                    WHEN NOT h.has_table_level AND e.granularity = 'column' THEN 0
+                                    ELSE 1 END,
+                               -- Ownership penalty: a column-level entity for this table
+                               -- that is owned (table-level) elsewhere AND appears as a
+                               -- column across many tables (ubiquitous FK like patient_id)
+                               -- is deprioritized so a table-specific subject wins primary.
+                               CASE WHEN e.granularity = 'column' AND a.owned
+                                         AND a.column_table_count >= 4
+                                         AND e.auto_discovered THEN 1 ELSE 0 END,
+                               e.confidence DESC
+                       ) AS rn
+                FROM exploded e
+                JOIN per_table h ON e.tbl = h.tbl
+                JOIN ent_agg a ON e.entity_id = a.entity_id
+            )
+            SELECT entity_id,
+                   CASE WHEN MAX(CASE WHEN rn = 1 THEN 1 ELSE 0 END) = 1
+                        THEN 'primary' ELSE 'referenced' END AS computed_role
+            FROM ranked
+            GROUP BY entity_id
+        ) AS source
+        ON target.entity_id = source.entity_id
+        WHEN MATCHED AND (
+            COALESCE(target.entity_role, '') != source.computed_role
+            OR target.discovery_confidence IS NULL
+        ) THEN UPDATE SET
+            entity_role = source.computed_role,
+            discovery_confidence = COALESCE(target.discovery_confidence, target.confidence),
+            updated_at = CURRENT_TIMESTAMP()
+    """)
+    # Default orphan (NULL/empty source_tables) entities to 'referenced'. Skipped
+    # when scoped: such entities have no source table to match the scope filter.
+    if not table_names:
+        spark.sql(f"""
+            UPDATE {ent_table}
+            SET entity_role = 'referenced', updated_at = CURRENT_TIMESTAMP()
+            WHERE (source_tables IS NULL OR SIZE(source_tables) = 0)
+              AND entity_role IS NULL
+        """)
+    counts = spark.sql(f"""
+        SELECT entity_role, COUNT(*) AS cnt
+        FROM {ent_table}
+        WHERE entity_role IN ('primary', 'referenced')
+        GROUP BY entity_role
+    """).collect()
+    role_counts = {r.entity_role: r.cnt for r in counts}
+    n_primary = role_counts.get("primary", 0)
+    n_referenced = role_counts.get("referenced", 0)
+    logger.info("classify_entity_roles: %d primary, %d referenced", n_primary, n_referenced)
+    return n_primary + n_referenced
+
+
+def _deduplicate_primary_entities_sql(spark, ent_table: str, table_names=None) -> int:
+    """Demote duplicate primaries per table to 'referenced' (see OntologyBuilder._deduplicate_primary_entities)."""
+    tbl_scope = table_filter_sql(table_names, column="tbl") if table_names else ""
+    spark.sql(f"""
+        MERGE INTO {ent_table} AS target
+        USING (
+            WITH exploded AS (
+                SELECT entity_id, confidence, auto_discovered, tbl
+                FROM {ent_table}
+                LATERAL VIEW EXPLODE(source_tables) AS tbl
+                WHERE entity_role = 'primary' {tbl_scope}
+            ),
+            ranked AS (
+                SELECT entity_id, tbl,
+                       ROW_NUMBER() OVER (
+                           PARTITION BY tbl
+                           ORDER BY
+                               CASE WHEN auto_discovered = FALSE THEN 0 ELSE 1 END,
+                               confidence DESC
+                       ) AS rn
+                FROM exploded
+            ),
+            losers AS (
+                SELECT entity_id
+                FROM ranked
+                WHERE rn > 1
+                GROUP BY entity_id
+                HAVING entity_id NOT IN (
+                    SELECT entity_id FROM ranked WHERE rn = 1
+                )
+            )
+            SELECT entity_id FROM losers
+        ) AS source
+        ON target.entity_id = source.entity_id
+        WHEN MATCHED AND target.auto_discovered = TRUE THEN UPDATE SET
+            entity_role = 'referenced',
+            updated_at = CURRENT_TIMESTAMP()
+    """)
+    counts = spark.sql(f"""
+        SELECT entity_role, COUNT(*) AS cnt
+        FROM {ent_table}
+        WHERE entity_role = 'primary'
+        GROUP BY entity_role
+    """).collect()
+    n_primary = counts[0].cnt if counts else 0
+    logger.info("_deduplicate_primary_entities: %d primary entities remain", n_primary)
+    return n_primary
+
+
+def _flag_low_confidence_primaries_sql(
+    spark, ent_table: str, table_names=None,
+    primary_floor: float = _DEFAULT_PRIMARY_CONFIDENCE_FLOOR,
+) -> int:
+    """Flag below-floor primaries for human review (see OntologyBuilder._flag_low_confidence_primaries)."""
+    st_scope = table_filter_sql(table_names, column="get(source_tables, 0)") if table_names else ""
+    result = spark.sql(f"""
+        UPDATE {ent_table}
+        SET attributes = map_concat(
+                map_filter(attributes, (k, v) -> k != 'needs_human_review'),
+                map('needs_human_review', 'true')),
+            updated_at = CURRENT_TIMESTAMP()
+        WHERE COALESCE(entity_role, 'primary') = 'primary'
+          AND COALESCE(confidence, 1.0) < {primary_floor}
+          AND attributes IS NOT NULL
+          AND COALESCE(attributes['needs_human_review'], 'false') <> 'true'
+          -- Never touch human-locked (steward override) or already-validated
+          -- entities: their review state is authoritative.
+          AND COALESCE(auto_discovered, TRUE) = TRUE
+          AND COALESCE(validated, FALSE) = FALSE
+          {st_scope}
+    """)
+    try:
+        n = result.first()[0] if result is not None and result.first() else 0
+    except Exception:
+        n = 0
+    logger.info("_flag_low_confidence_primaries: flagged %s primaries below floor %.2f",
+                n, primary_floor)
+    return n
+
+
+def reconcile_entity_roles(
+    spark, ent_table: str, table_names=None,
+    primary_floor: float = _DEFAULT_PRIMARY_CONFIDENCE_FLOOR,
+) -> int:
+    """Recompute entity roles end-to-end: classify -> deduplicate -> flag.
+
+    When *table_names* is set, scope every write to entities of those tables
+    (single-table entities, so get(source_tables, 0) identifies them) without
+    touching out-of-scope entities. Returns the classify primary+referenced count.
+    """
+    n = _classify_entity_roles_sql(spark, ent_table, table_names)
+    _deduplicate_primary_entities_sql(spark, ent_table, table_names)
+    _flag_low_confidence_primaries_sql(spark, ent_table, table_names, primary_floor)
+    return n
+
+
 class OntologyBuilder:
     """
     Builder for creating and managing the ontology layer.
@@ -3572,7 +3766,7 @@ class OntologyBuilder:
                 f"""
                 SELECT entity_type, confidence,
                        COALESCE(attributes['discovery_method'], 'unknown') AS discovery_method,
-                       source_tables[0] AS table_name,
+                       get(source_tables, 0) AS table_name,
                        EXPLODE(source_columns) AS col_name
                 FROM {self.config.fully_qualified_entities}
                 WHERE attributes['granularity'] = 'column'
@@ -3700,7 +3894,7 @@ class OntologyBuilder:
             ),
             geo_entities AS (
                 SELECT EXPLODE(source_columns) AS col_name,
-                       source_tables[0] AS table_name,
+                       get(source_tables, 0) AS table_name,
                        entity_type AS geo_entity_subtype,
                        confidence AS entity_confidence
                 FROM {ent}
@@ -3749,7 +3943,7 @@ class OntologyBuilder:
         conflicts = self.spark.sql(f"""
             WITH geo_bound AS (
                 SELECT EXPLODE(source_columns) AS col_name,
-                       source_tables[0] AS table_name,
+                       get(source_tables, 0) AS table_name,
                        entity_type
                 FROM {ent}
                 WHERE attributes['granularity'] = 'column'
@@ -4808,175 +5002,33 @@ class OntologyBuilder:
     # Phase 2: New classification steps for the redesigned ontology model
     # ------------------------------------------------------------------
 
-    def classify_entity_roles(self) -> int:
+    def classify_entity_roles(self, table_names=None) -> int:
         """Mark each entity as 'primary' or 'referenced' per table.
 
         For each source table, the highest-confidence table-granularity entity
         becomes 'primary'. All column-granularity entities are 'referenced'.
         If no table-granularity entity exists, promote the highest-confidence
-        column entity to primary.
+        column entity to primary. *table_names* scopes the recomputation.
         """
-        ent_table = self.config.fully_qualified_entities
-        # Compute roles entirely in SQL: explode source_tables, rank per table,
-        # then merge back. Primary = highest-confidence table-granularity entity
-        # per source table (or column-granularity if no table-level exists).
-        # An entity that is primary for ANY table wins globally.
-        # MERGE: Compute and assign entity_role (primary vs referenced) for every
-        # entity. For each source table, the highest-confidence table-granularity
-        # entity becomes 'primary'; all others become 'referenced'. If no table-
-        # level entity exists for a table, the highest-confidence column entity is
-        # promoted. An entity that is primary for ANY table wins 'primary' globally.
-        # Also backfills discovery_confidence from confidence if not already set.
-        # WHY: The role distinction drives which entity is displayed as the "main"
-        # entity for a table in the dashboard, and which entities are shown as
-        # related/referenced. It also affects edge generation and Genie context.
-        # TRADEOFFS: The CTE chain (EXPLODE -> GROUP BY -> ROW_NUMBER -> GROUP BY)
-        # is complex but runs entirely in Spark SQL without collecting to the
-        # driver. An alternative would be a Python loop over entities, but that
-        # would require collecting the entire entities table. The global aggregation
-        # (entity is primary if primary for ANY table) means a multi-table entity
-        # can be primary even if it's secondary for most of its tables.
-        # WHEN MATCHED guard: skip no-op rows (role unchanged and discovery_confidence already backfilled).
-        self.spark.sql(f"""
-            MERGE INTO {ent_table} AS target
-            USING (
-                WITH                 exploded AS (
-                    SELECT entity_id,
-                           COALESCE(attributes['granularity'], 'table') AS granularity,
-                           confidence, tbl,
-                           COALESCE(auto_discovered, TRUE) AS auto_discovered
-                    FROM {ent_table}
-                    LATERAL VIEW EXPLODE(source_tables) AS tbl
-                ),
-                per_table AS (
-                    SELECT tbl,
-                           BOOL_OR(granularity = 'table') AS has_table_level
-                    FROM exploded GROUP BY tbl
-                ),
-                ent_agg AS (
-                    SELECT entity_id,
-                           BOOL_OR(granularity = 'table') AS owned,
-                           COUNT(DISTINCT CASE WHEN granularity = 'column' THEN tbl END) AS column_table_count
-                    FROM exploded GROUP BY entity_id
-                ),
-                ranked AS (
-                    SELECT e.entity_id,
-                           ROW_NUMBER() OVER (
-                               PARTITION BY e.tbl
-                               ORDER BY
-                                   CASE WHEN h.has_table_level AND e.granularity = 'table' THEN 0
-                                        WHEN NOT h.has_table_level AND e.granularity = 'column' THEN 0
-                                        ELSE 1 END,
-                                   -- Ownership penalty: a column-level entity for this table
-                                   -- that is owned (table-level) elsewhere AND appears as a
-                                   -- column across many tables (ubiquitous FK like patient_id)
-                                   -- is deprioritized so a table-specific subject wins primary.
-                                   CASE WHEN e.granularity = 'column' AND a.owned
-                                             AND a.column_table_count >= 4
-                                             AND e.auto_discovered THEN 1 ELSE 0 END,
-                                   e.confidence DESC
-                           ) AS rn
-                    FROM exploded e
-                    JOIN per_table h ON e.tbl = h.tbl
-                    JOIN ent_agg a ON e.entity_id = a.entity_id
-                )
-                SELECT entity_id,
-                       CASE WHEN MAX(CASE WHEN rn = 1 THEN 1 ELSE 0 END) = 1
-                            THEN 'primary' ELSE 'referenced' END AS computed_role
-                FROM ranked
-                GROUP BY entity_id
-            ) AS source
-            ON target.entity_id = source.entity_id
-            WHEN MATCHED AND (
-                COALESCE(target.entity_role, '') != source.computed_role
-                OR target.discovery_confidence IS NULL
-            ) THEN UPDATE SET
-                entity_role = source.computed_role,
-                discovery_confidence = COALESCE(target.discovery_confidence, target.confidence),
-                updated_at = CURRENT_TIMESTAMP()
-        """)
-        # UPDATE: Default entities with NULL/empty source_tables to 'referenced'.
-        # These entities were never EXPLODEd in the MERGE above (empty arrays
-        # produce zero rows from LATERAL VIEW EXPLODE), so they were never matched.
-        # WHY: Without this, orphaned entities would have entity_role=NULL, which
-        # breaks dashboard filters that expect every entity to have a role.
-        # TRADEOFFS: Setting them to 'referenced' is conservative -- they won't
-        # appear as primary for any table. If source_tables is populated later,
-        # the next classify_entity_roles run will re-evaluate.
-        self.spark.sql(f"""
-            UPDATE {ent_table}
-            SET entity_role = 'referenced', updated_at = CURRENT_TIMESTAMP()
-            WHERE (source_tables IS NULL OR SIZE(source_tables) = 0)
-              AND entity_role IS NULL
-        """)
-        counts = self.spark.sql(f"""
-            SELECT entity_role, COUNT(*) AS cnt
-            FROM {ent_table}
-            WHERE entity_role IN ('primary', 'referenced')
-            GROUP BY entity_role
-        """).collect()
-        role_counts = {r.entity_role: r.cnt for r in counts}
-        n_primary = role_counts.get("primary", 0)
-        n_referenced = role_counts.get("referenced", 0)
-        logger.info("classify_entity_roles: %d primary, %d referenced", n_primary, n_referenced)
-        return n_primary + n_referenced
+        return _classify_entity_roles_sql(
+            self.spark, self.config.fully_qualified_entities, table_names=table_names
+        )
 
-    def _deduplicate_primary_entities(self) -> int:
+    def _deduplicate_primary_entities(self, table_names=None) -> int:
         """Ensure each source table has at most one primary entity.
 
         When multiple entities share entity_role='primary' for the same
         source_tables entry, keep only the highest-confidence one and
         demote the rest to 'referenced'. Human-created entities
         (auto_discovered=FALSE) always win the ranking and are never
-        demoted, since those represent explicit steward overrides.
+        demoted, since those represent explicit steward overrides. *table_names*
+        scopes the deduplication.
         """
-        ent_table = self.config.fully_qualified_entities
-        self.spark.sql(f"""
-            MERGE INTO {ent_table} AS target
-            USING (
-                WITH exploded AS (
-                    SELECT entity_id, confidence, auto_discovered, tbl
-                    FROM {ent_table}
-                    LATERAL VIEW EXPLODE(source_tables) AS tbl
-                    WHERE entity_role = 'primary'
-                ),
-                ranked AS (
-                    SELECT entity_id, tbl,
-                           ROW_NUMBER() OVER (
-                               PARTITION BY tbl
-                               ORDER BY
-                                   CASE WHEN auto_discovered = FALSE THEN 0 ELSE 1 END,
-                                   confidence DESC
-                           ) AS rn
-                    FROM exploded
-                ),
-                losers AS (
-                    SELECT entity_id
-                    FROM ranked
-                    WHERE rn > 1
-                    GROUP BY entity_id
-                    HAVING entity_id NOT IN (
-                        SELECT entity_id FROM ranked WHERE rn = 1
-                    )
-                )
-                SELECT entity_id FROM losers
-            ) AS source
-            ON target.entity_id = source.entity_id
-            WHEN MATCHED AND target.auto_discovered = TRUE THEN UPDATE SET
-                entity_role = 'referenced',
-                updated_at = CURRENT_TIMESTAMP()
-        """)
-        counts = self.spark.sql(f"""
-            SELECT entity_role, COUNT(*) AS cnt
-            FROM {ent_table}
-            WHERE entity_role = 'primary'
-            GROUP BY entity_role
-        """).collect()
-        n_primary = counts[0].cnt if counts else 0
-        logger.info("_deduplicate_primary_entities: %d primary entities remain", n_primary)
-        return n_primary
+        return _deduplicate_primary_entities_sql(
+            self.spark, self.config.fully_qualified_entities, table_names=table_names
+        )
 
-    def _flag_low_confidence_primaries(self) -> int:
+    def _flag_low_confidence_primaries(self, table_names=None) -> int:
         """Flag below-floor primary entities as needing human review.
 
         Sets attributes['needs_human_review']='true' on primary entities whose
@@ -4984,30 +5036,12 @@ class OntologyBuilder:
         then suppresses their instance_of edge. The map_filter drops any existing
         key before re-adding it to avoid map_concat duplicate-key errors, and the
         WHERE guard makes the UPDATE a no-op once flags are set (idempotent).
+        *table_names* scopes the flagging.
         """
-        ent_table = self.config.fully_qualified_entities
-        result = self.spark.sql(f"""
-            UPDATE {ent_table}
-            SET attributes = map_concat(
-                    map_filter(attributes, (k, v) -> k != 'needs_human_review'),
-                    map('needs_human_review', 'true')),
-                updated_at = CURRENT_TIMESTAMP()
-            WHERE COALESCE(entity_role, 'primary') = 'primary'
-              AND COALESCE(confidence, 1.0) < {self._PRIMARY_CONFIDENCE_FLOOR}
-              AND attributes IS NOT NULL
-              AND COALESCE(attributes['needs_human_review'], 'false') <> 'true'
-              -- Never touch human-locked (steward override) or already-validated
-              -- entities: their review state is authoritative.
-              AND COALESCE(auto_discovered, TRUE) = TRUE
-              AND COALESCE(validated, FALSE) = FALSE
-        """)
-        try:
-            n = result.first()[0] if result is not None and result.first() else 0
-        except Exception:
-            n = 0
-        logger.info("_flag_low_confidence_primaries: flagged %s primaries below floor %.2f",
-                    n, self._PRIMARY_CONFIDENCE_FLOOR)
-        return n
+        return _flag_low_confidence_primaries_sql(
+            self.spark, self.config.fully_qualified_entities,
+            table_names=table_names, primary_floor=self._PRIMARY_CONFIDENCE_FLOOR,
+        )
 
     def _build_bundle_property_index(self, entity_type: str) -> Dict[str, Tuple[str, str, Optional[str], Optional[Any]]]:
         """Build column_name_lower -> (role, property_name, edge, target_entity) from bundle properties."""
@@ -5128,7 +5162,7 @@ class OntologyBuilder:
 
         self.create_column_properties_table()
 
-        tn_clause = table_filter_sql(self.config.table_names or [], column="source_tables[0]")
+        tn_clause = table_filter_sql(self.config.table_names or [], column="get(source_tables, 0)")
         try:
             primary_ents = self.spark.sql(f"""
                 SELECT entity_id, entity_type, source_tables, source_columns
@@ -6193,7 +6227,17 @@ class OntologyBuilder:
         logger.info(f"Discovered {column_discovered} column-level entities")
 
         if self.config.incremental and table_discovered == 0 and column_discovered == 0:
-            logger.info("Incremental mode: no new entities discovered, skipping classification and edge rebuild")
+            logger.info("Incremental mode: no new entities discovered, skipping discovery and edge rebuild")
+            # Still reconcile roles: confidence on existing in-scope entities may
+            # have shifted (e.g. via a prior validate run), which can flip primary/
+            # referenced even when no new entities were discovered. Scoped to
+            # table_names so out-of-scope entities (other bundles) are untouched.
+            roles_classified = _step(
+                "reconcile_entity_roles",
+                reconcile_entity_roles,
+                self.spark, self.config.fully_qualified_entities,
+                self.config.table_names or None, self._PRIMARY_CONFIDENCE_FLOOR,
+            )
             total_elapsed = _time.time() - pipeline_start
             logger.info(f"[timing] ontology_build_total: {total_elapsed:.1f}s (early exit)")
             try:
@@ -6207,7 +6251,7 @@ class OntologyBuilder:
                 "entity_types": entity_types,
                 "edges_added": 0,
                 "tags_applied": 0,
-                "roles_classified": 0,
+                "roles_classified": roles_classified,
                 "column_properties": 0,
                 "named_relationships": 0,
                 "bundle_edges": 0,
@@ -6385,6 +6429,7 @@ class OntologyBuilder:
         if incremental and not sweep_stale and not sweep_stale_entities:
             fk_table = f"{self.config.catalog_name}.{self.config.schema_name}.fk_predictions"
             rels_table = self.config.fully_qualified_relationships
+            ent_table = self.config.fully_qualified_entities
             try:
                 max_fk = self.spark.sql(
                     f"SELECT COALESCE(MAX(updated_at), TIMESTAMP '1970-01-01') AS mu FROM {fk_table}"
@@ -6393,10 +6438,22 @@ class OntologyBuilder:
                     f"SELECT COALESCE(MAX(updated_at), TIMESTAMP '1970-01-01') AS mu "
                     f"FROM {rels_table} WHERE source = 'fk_inferred'"
                 ).collect()[0].mu
-                if max_fk <= max_rel:
+                # Bundle edges are role-gated (emit_bundle_edges filters entity_role='primary').
+                # If entity roles were recomputed (e.g. by validate) after the last bundle-edge
+                # build, those edges are stale even when no new FK predictions exist. Re-run
+                # unless BOTH FK predictions and entity roles are no newer than the last build.
+                max_ent = self.spark.sql(
+                    f"SELECT COALESCE(MAX(updated_at), TIMESTAMP '1970-01-01') AS mu FROM {ent_table}"
+                ).collect()[0].mu
+                max_bundle = self.spark.sql(
+                    f"SELECT COALESCE(MAX(updated_at), TIMESTAMP '1970-01-01') AS mu "
+                    f"FROM {rels_table} WHERE source = 'bundle'"
+                ).collect()[0].mu
+                if max_fk <= max_rel and max_ent <= max_bundle:
                     logger.info(
-                        "Incremental: no new FK predictions since last relationship refresh "
-                        "(%s >= %s), skipping", max_rel, max_fk,
+                        "Incremental: no new FK predictions (%s >= %s) and no entity-role "
+                        "changes (%s >= %s) since last relationship refresh, skipping",
+                        max_rel, max_fk, max_bundle, max_ent,
                     )
                     return {"named_relationships": 0, "bundle_edges": 0, "graph_edges": 0}
             except Exception as e:

@@ -25,6 +25,15 @@ globs:
 
 Never skip tier 1 -- always check the bundle index before falling back to heuristics.
 
+## Confidence Semantics (cumulative evidence score, can exceed 1.0)
+
+`confidence` is a cumulative evidence score, not a bounded probability. Discovery clamps it
+to `[0,1]` (see `create_entities_table` / post-MERGE clamps in `ontology.py`), but the
+**validator** (`ontology_validator.py`) then ADDS a signed `confidence_adjustment` with only a
+floor (`GREATEST(0.0, confidence + adj)`) and **no ceiling**. A post-validation value `> 1.0`
+means LLM validation corroborated an already high-confidence entity -- a positive signal, not a
+bug. Do NOT add an upper clamp. Treat `confidence > 1.0` as "strong, multiply-corroborated."
+
 ## Edge Direction
 
 Edges flow `domain -> range` via `EdgeCatalog`. An edge is valid iff `entry.matches_domain(src)` and `entry.matches_range(dst)`. `None` or `"Any"` constraints are wildcards.

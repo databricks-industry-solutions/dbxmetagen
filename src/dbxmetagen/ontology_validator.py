@@ -509,13 +509,13 @@ Evaluate each entity independently. Consider whether table purpose, columns, and
         tn_scope = ""
         if getattr(self, "_table_names", None):
             from dbxmetagen.table_filter import table_filter_sql
-            tn_scope = table_filter_sql(self._table_names, column="e.source_tables[0]")
+            tn_scope = table_filter_sql(self._table_names, column="get(e.source_tables, 0)")
         entities_df = self.spark.sql(f"""
             SELECT e.entity_id, e.entity_name, e.entity_type, e.description,
                    e.source_tables, e.source_columns, e.confidence,
                    kb.comment AS table_comment, kb.domain
             FROM {ent_table} e
-            LEFT JOIN {kb_table} kb ON e.source_tables[0] = kb.table_name
+            LEFT JOIN {kb_table} kb ON get(e.source_tables, 0) = kb.table_name
             WHERE COALESCE(e.attributes['granularity'], 'table') = 'table'
               AND (e.validated = FALSE OR e.validated IS NULL)
               AND e.auto_discovered = TRUE
@@ -674,12 +674,12 @@ Evaluate each entity independently. Consider whether table purpose, columns, and
         has_bindings = True
         try:
             entities_df = self.spark.sql(f"""
-                SELECT e.entity_id, e.entity_type, e.source_tables[0] AS table_name,
+                SELECT e.entity_id, e.entity_type, get(e.source_tables, 0) AS table_name,
                        e.source_columns, e.column_bindings, e.confidence,
                        COALESCE(e.attributes['discovery_method'], 'unknown') AS discovery_method,
                        kb.comment AS table_comment, kb.domain
                 FROM {ent_table} e
-                LEFT JOIN {kb_table} kb ON e.source_tables[0] = kb.table_name
+                LEFT JOIN {kb_table} kb ON get(e.source_tables, 0) = kb.table_name
                 WHERE e.attributes['granularity'] = 'column'
                   AND (e.validated = FALSE OR e.validated IS NULL)
                   AND e.auto_discovered = TRUE
@@ -689,12 +689,12 @@ Evaluate each entity independently. Consider whether table purpose, columns, and
             logger.warning("column_bindings not found in %s, falling back without it", ent_table)
             has_bindings = False
             entities_df = self.spark.sql(f"""
-                SELECT e.entity_id, e.entity_type, e.source_tables[0] AS table_name,
+                SELECT e.entity_id, e.entity_type, get(e.source_tables, 0) AS table_name,
                        e.source_columns, e.confidence,
                        COALESCE(e.attributes['discovery_method'], 'unknown') AS discovery_method,
                        kb.comment AS table_comment, kb.domain
                 FROM {ent_table} e
-                LEFT JOIN {kb_table} kb ON e.source_tables[0] = kb.table_name
+                LEFT JOIN {kb_table} kb ON get(e.source_tables, 0) = kb.table_name
                 WHERE e.attributes['granularity'] = 'column'
                   AND (e.validated = FALSE OR e.validated IS NULL)
                   AND e.auto_discovered = TRUE
@@ -849,6 +849,12 @@ Evaluate each entity independently. Consider whether table purpose, columns, and
             # MERGE with content guard: only update when validated state or
             # validation_notes actually changed, preventing unnecessary updated_at
             # bumps on re-validation with identical results.
+            #
+            # CONFIDENCE SEMANTICS: confidence is a cumulative evidence score, not a
+            # bounded probability. Discovery clamps it to [0,1], but validation ADDS a
+            # signed confidence_adjustment (floored at 0.0, intentionally NOT capped at
+            # 1.0). A value > 1.0 simply means LLM validation corroborated an already
+            # high-confidence entity -- a positive signal, not an error. Do not clamp.
             self.spark.sql(f"""
                 MERGE INTO {self.config.fully_qualified_entities} AS target
                 USING __col_val_results AS source
@@ -918,7 +924,9 @@ Evaluate each entity independently. Consider whether table purpose, columns, and
             
             try:
                 # UPDATE: Single-row update on `ontology_entities` for `entity_id`, setting
-                #   `validated`, incrementing `confidence` by `confidence_adj` (floored at 0.0),
+                #   `validated`, incrementing `confidence` by `confidence_adj` (floored at 0.0,
+                #   intentionally uncapped -- confidence is a cumulative evidence score, so a
+                #   post-validation value > 1.0 is expected and valid, not a bug),
                 #   `validation_notes`, and `updated_at`.
                 # WHY: Fallback path when batched MERGE fails (permissions, analyzer limits, etc.)
                 #   so validation results still land without losing the whole batch.
@@ -1141,6 +1149,25 @@ Evaluate each entity independently. Consider whether table purpose, columns, and
             logger.debug("Edge pruning skipped: %s", e)
             return 0
 
+    def _reconcile_roles(self) -> int:
+        """Recompute entity roles (classify -> dedup -> flag) scoped to this run's tables.
+
+        Validation only adjusts confidence/validated; roles are recomputed here so
+        a confidence shift that should flip primary/referenced is reflected before
+        downstream role-gated edge emission. Scoped to self._table_names so
+        out-of-scope entities (other bundles/tables) are never touched.
+        """
+        from dbxmetagen.ontology import reconcile_entity_roles
+        try:
+            return reconcile_entity_roles(
+                self.spark,
+                self.config.fully_qualified_entities,
+                getattr(self, "_table_names", None) or None,
+            )
+        except Exception as e:
+            logger.warning("Role reconciliation skipped: %s", e)
+            return 0
+
     def run(
         self,
         ontology_config: Optional[Dict] = None,
@@ -1188,11 +1215,16 @@ Evaluate each entity independently. Consider whether table purpose, columns, and
         """).collect()[0]["cnt"]
         if unvalidated_count == 0:
             logger.info("No unvalidated entities, skipping validation (0 LLM calls)")
+            # Reconcile roles even on this fast path: an earlier validate run may
+            # have shifted confidence so that primary/referenced should flip, but
+            # roles are only recomputed here (validate never re-runs discovery).
+            roles_reconciled = self._reconcile_roles()
             return {
                 "entities_validated": 0, "table_entities_validated": 0,
                 "column_entities_validated": 0, "ai_parse_failures": 0,
                 "consistency_issues": 0, "coverage_gaps": 0,
                 "relationship_issues": 0, "pruned_edges": 0,
+                "roles_reconciled": roles_reconciled,
                 "recommendations": {},
             }
 
@@ -1247,6 +1279,10 @@ Evaluate each entity independently. Consider whether table purpose, columns, and
         # Prune edges referencing invalidated entities
         pruned_edges = self.prune_invalid_edges()
 
+        # Validation adjusts confidence, which can change which entity is primary.
+        # Recompute roles now so downstream role-gated edge emission is consistent.
+        roles_reconciled = self._reconcile_roles()
+
         recommendations = self.generate_ontology_recommendations()
         recommendations["consistency_issues"] = consistency_issues
         recommendations["coverage_gaps"] = coverage_gaps
@@ -1262,6 +1298,7 @@ Evaluate each entity independently. Consider whether table purpose, columns, and
             "coverage_gaps": len(coverage_gaps),
             "relationship_issues": len(rel_issues),
             "pruned_edges": pruned_edges,
+            "roles_reconciled": roles_reconciled,
             "recommendations": recommendations,
         }
         if total_failed:

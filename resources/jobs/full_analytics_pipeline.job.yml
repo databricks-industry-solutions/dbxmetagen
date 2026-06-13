@@ -334,6 +334,9 @@ resources:
           depends_on:
             - task_key: predict_foreign_keys
             - task_key: build_ontology
+            # validate_ontology recomputes entity roles; bundle edges are role-gated,
+            # so edge re-emission must run after roles are finalized.
+            - task_key: validate_ontology
           job_cluster_key: analytics_cluster
           notebook_task:
             notebook_path: ../../notebooks/refresh_ontology_edges.py
