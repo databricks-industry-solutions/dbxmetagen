@@ -17,6 +17,7 @@ Organization:
   - contains
   - contains_location
   - part_of
+  - employs
 Product:
   description: Goods, services, SKUs, or catalog items
   label: Product
@@ -25,6 +26,7 @@ Product:
   parents: []
   edges:
   - references
+  - produced_by
 Transaction:
   description: Orders, purchases, payments, invoices, or financial events
   label: Transaction
@@ -34,6 +36,7 @@ Transaction:
   edges:
   - placed_by
   - for_product
+  - billed_to
 Location:
   description: Addresses, sites, regions, facilities, or geographies
   label: Location
@@ -50,6 +53,8 @@ Event:
   parents: []
   edges:
   - references
+  - assigned_to
+  - located_at
 Reference:
   description: Lookup tables, codes, categories, dimensions, or configuration
   label: Reference
@@ -73,3 +78,4 @@ Document:
   parents: []
   edges:
   - references
+  - assigned_to

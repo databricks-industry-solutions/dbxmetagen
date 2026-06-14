@@ -46,6 +46,18 @@ contains_location:
   label: null
   facet: null
   sub_property_of: null
+employs:
+  name: employs
+  domain: Organization
+  range: Person
+  ranges:
+  - Person
+  uri: ''
+  inverse: employed_by
+  cardinality: one-to-many
+  label: null
+  facet: null
+  sub_property_of: null
 references:
   name: references
   domain: Product
@@ -54,6 +66,18 @@ references:
   - Reference
   uri: ''
   inverse: referenced_by
+  cardinality: many-to-one
+  label: null
+  facet: null
+  sub_property_of: null
+produced_by:
+  name: produced_by
+  domain: Product
+  range: Organization
+  ranges:
+  - Organization
+  uri: ''
+  inverse: produces
   cardinality: many-to-one
   label: null
   facet: null
@@ -79,6 +103,42 @@ for_product:
   uri: ''
   inverse: sold_via
   cardinality: many-to-many
+  label: null
+  facet: null
+  sub_property_of: null
+billed_to:
+  name: billed_to
+  domain: Transaction
+  range: Organization
+  ranges:
+  - Organization
+  uri: ''
+  inverse: billing_target_of
+  cardinality: many-to-one
+  label: null
+  facet: null
+  sub_property_of: null
+assigned_to:
+  name: assigned_to
+  domain: Event
+  range: Person
+  ranges:
+  - Person
+  uri: ''
+  inverse: assigned_from
+  cardinality: many-to-one
+  label: null
+  facet: null
+  sub_property_of: null
+located_at:
+  name: located_at
+  domain: Event
+  range: Location
+  ranges:
+  - Location
+  uri: ''
+  inverse: location_of
+  cardinality: many-to-one
   label: null
   facet: null
   sub_property_of: null

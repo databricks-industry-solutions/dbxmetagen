@@ -762,6 +762,8 @@ class JobRunRequest(BaseModel):
     ontology_bundle: Optional[str] = None
     domain_config: Optional[str] = None
     sweep_stale_docs: bool = False
+    sweep_stale_edges: bool = False
+    sweep_stale_entities: bool = False
     extra_params: dict = {}
 
 
@@ -1050,6 +1052,10 @@ def run_job(req: JobRunRequest):
         params["include_lineage"] = "true"
     if req.sweep_stale_docs:
         params["sweep_stale_docs"] = "true"
+    if req.sweep_stale_edges:
+        params["sweep_stale_edges"] = "true"
+    if req.sweep_stale_entities:
+        params["sweep_stale_entities"] = "true"
     if req.federation_mode:
         params["federation_mode"] = "true"
     if req.catalog_name:

@@ -246,9 +246,11 @@ treated_by:
     - physician
     - practitioner
     - clinician
+    - therapist
     - npi
     relationships_preview:
       treats: Patient
+      performs: Procedure
       ordered_for: Encounter
       part_of: Organization
 has_encounter:
@@ -402,9 +404,11 @@ treats:
     - physician
     - practitioner
     - clinician
+    - therapist
     - npi
     relationships_preview:
       treats: Patient
+      performs: Procedure
       ordered_for: Encounter
       part_of: Organization
   range_profile:
@@ -422,11 +426,56 @@ treats:
       has_encounter: Encounter
       has_condition: Condition
       has_coverage: Coverage
+performs:
+  name: performs
+  domain: Provider
+  range: Procedure
+  ranges:
+  - Procedure
+  uri: ''
+  inverse: performed_by
+  cardinality: one-to-many
+  label: null
+  facet: null
+  sub_property_of: null
+  category: business
+  domain_profile:
+    description: Practitioners, clinicians, or care team members (FHIR Practitioner)
+    uri: http://hl7.org/fhir/StructureDefinition/Practitioner
+    source_ontology: FHIR_R4
+    keywords:
+    - provider
+    - physician
+    - practitioner
+    - clinician
+    - therapist
+    - npi
+    relationships_preview:
+      treats: Patient
+      performs: Procedure
+      ordered_for: Encounter
+      part_of: Organization
+  range_profile:
+    description: Medical procedures, surgeries, or interventions (FHIR Procedure)
+    uri: http://hl7.org/fhir/StructureDefinition/Procedure
+    source_ontology: FHIR_R4
+    keywords:
+    - procedure
+    - surgery
+    - cpt
+    - intervention
+    - operation
+    relationships_preview:
+      ordered_for: Encounter
+      performed_by: Provider
+      addresses: Condition
+      references: Patient
 ordered_for:
   name: ordered_for
   domain:
   - Procedure
   - Medication
+  - Immunization
   range: Encounter
   ranges:
   - Encounter
@@ -451,6 +500,7 @@ ordered_for:
     relationships_preview:
       ordered_for: Encounter
       performed_by: Provider
+      addresses: Condition
       references: Patient
   range_profile:
     description: Visits, admissions, or episodes of care (FHIR Encounter)
@@ -508,6 +558,7 @@ has_order:
     relationships_preview:
       ordered_for: Encounter
       performed_by: Provider
+      addresses: Condition
       references: Patient
 located_at:
   name: located_at
@@ -579,7 +630,10 @@ diagnosed_in:
       located_at: Location
 performed_by:
   name: performed_by
-  domain: Procedure
+  domain:
+  - Procedure
+  - Immunization
+  - DiagnosticReport
   range: Provider
   ranges:
   - Provider
@@ -604,6 +658,7 @@ performed_by:
     relationships_preview:
       ordered_for: Encounter
       performed_by: Provider
+      addresses: Condition
       references: Patient
   range_profile:
     description: Practitioners, clinicians, or care team members (FHIR Practitioner)
@@ -614,11 +669,59 @@ performed_by:
     - physician
     - practitioner
     - clinician
+    - therapist
     - npi
     relationships_preview:
       treats: Patient
+      performs: Procedure
       ordered_for: Encounter
       part_of: Organization
+addresses:
+  name: addresses
+  domain:
+  - Procedure
+  - Medication
+  - CarePlan
+  - Immunization
+  range: Condition
+  ranges:
+  - Condition
+  uri: ''
+  inverse: addressed_by
+  cardinality: many-to-one
+  label: null
+  facet: null
+  sub_property_of: null
+  category: business
+  symmetric: false
+  domain_profile:
+    description: Medical procedures, surgeries, or interventions (FHIR Procedure)
+    uri: http://hl7.org/fhir/StructureDefinition/Procedure
+    source_ontology: FHIR_R4
+    keywords:
+    - procedure
+    - surgery
+    - cpt
+    - intervention
+    - operation
+    relationships_preview:
+      ordered_for: Encounter
+      performed_by: Provider
+      addresses: Condition
+      references: Patient
+  range_profile:
+    description: Diagnoses, problems, or diseases (FHIR Condition / OMOP CONDITION_OCCURRENCE)
+    uri: http://hl7.org/fhir/StructureDefinition/Condition
+    source_ontology: FHIR_R4
+    keywords:
+    - diagnosis
+    - condition
+    - icd
+    - disease
+    - problem
+    relationships_preview:
+      references: Patient
+      diagnosed_in: Encounter
 prescribed_to:
   name: prescribed_to
   domain: Medication
@@ -647,6 +750,8 @@ prescribed_to:
     relationships_preview:
       ordered_for: Encounter
       prescribed_to: Patient
+      prescribed_by: Provider
+      addresses: Condition
   range_profile:
     description: Individuals receiving healthcare services (FHIR Patient)
     uri: http://hl7.org/fhir/StructureDefinition/Patient
@@ -662,6 +767,52 @@ prescribed_to:
       has_encounter: Encounter
       has_condition: Condition
       has_coverage: Coverage
+prescribed_by:
+  name: prescribed_by
+  domain: Medication
+  range: Provider
+  ranges:
+  - Provider
+  uri: ''
+  inverse: prescribes
+  cardinality: many-to-one
+  label: null
+  facet: null
+  sub_property_of: null
+  category: business
+  symmetric: false
+  domain_profile:
+    description: Drugs, prescriptions, or medication orders (FHIR MedicationRequest)
+    uri: http://hl7.org/fhir/StructureDefinition/Medication
+    source_ontology: FHIR_R4
+    keywords:
+    - medication
+    - drug
+    - prescription
+    - pharmacy
+    - ndc
+    - rxnorm
+    relationships_preview:
+      ordered_for: Encounter
+      prescribed_to: Patient
+      prescribed_by: Provider
+      addresses: Condition
+  range_profile:
+    description: Practitioners, clinicians, or care team members (FHIR Practitioner)
+    uri: http://hl7.org/fhir/StructureDefinition/Practitioner
+    source_ontology: FHIR_R4
+    keywords:
+    - provider
+    - physician
+    - practitioner
+    - clinician
+    - therapist
+    - npi
+    relationships_preview:
+      treats: Patient
+      performs: Procedure
+      ordered_for: Encounter
+      part_of: Organization
 recorded_in:
   name: recorded_in
   domain: Observation
@@ -691,6 +842,7 @@ recorded_in:
     relationships_preview:
       references: Patient
       recorded_in: Encounter
+      documents: Condition
   range_profile:
     description: Visits, admissions, or episodes of care (FHIR Encounter)
     uri: http://hl7.org/fhir/StructureDefinition/Encounter
@@ -706,6 +858,51 @@ recorded_in:
       has_order: Procedure
       contains: Observation
       located_at: Location
+documents:
+  name: documents
+  domain:
+  - DiagnosticReport
+  - Observation
+  range: Condition
+  ranges:
+  - Condition
+  uri: ''
+  inverse: documented_by
+  cardinality: many-to-one
+  label: null
+  facet: null
+  sub_property_of: null
+  category: business
+  symmetric: false
+  domain_profile:
+    description: Lab reports, pathology reports, or imaging study results (FHIR DiagnosticReport)
+    uri: http://hl7.org/fhir/StructureDefinition/DiagnosticReport
+    source_ontology: FHIR_R4
+    keywords:
+    - diagnostic_report
+    - lab_report
+    - pathology_report
+    - report
+    - study_result
+    relationships_preview:
+      references: Patient
+      for_encounter: Encounter
+      contains: Observation
+      documents: Condition
+      performed_by: Provider
+  range_profile:
+    description: Diagnoses, problems, or diseases (FHIR Condition / OMOP CONDITION_OCCURRENCE)
+    uri: http://hl7.org/fhir/StructureDefinition/Condition
+    source_ontology: FHIR_R4
+    keywords:
+    - diagnosis
+    - condition
+    - icd
+    - disease
+    - problem
+    relationships_preview:
+      references: Patient
+      diagnosed_in: Encounter
 for_encounter:
   name: for_encounter
   domain: Claim
@@ -830,6 +1027,94 @@ provided_by:
       contains: Person
       contains_location: Location
       part_of: Organization
+contraindicates:
+  name: contraindicates
+  domain: AllergyIntolerance
+  range: Medication
+  ranges:
+  - Medication
+  uri: ''
+  inverse: contraindicated_by
+  cardinality: many-to-many
+  label: null
+  facet: null
+  sub_property_of: null
+  category: business
+  symmetric: false
+  domain_profile:
+    description: Allergy and intolerance records (FHIR AllergyIntolerance)
+    uri: http://hl7.org/fhir/StructureDefinition/AllergyIntolerance
+    source_ontology: FHIR_R4
+    keywords:
+    - allergy
+    - intolerance
+    - allergen
+    - adverse_reaction
+    - sensitivity
+    relationships_preview:
+      references: Patient
+      contraindicates: Medication
+  range_profile:
+    description: Drugs, prescriptions, or medication orders (FHIR MedicationRequest)
+    uri: http://hl7.org/fhir/StructureDefinition/Medication
+    source_ontology: FHIR_R4
+    keywords:
+    - medication
+    - drug
+    - prescription
+    - pharmacy
+    - ndc
+    - rxnorm
+    relationships_preview:
+      ordered_for: Encounter
+      prescribed_to: Patient
+      prescribed_by: Provider
+      addresses: Condition
+managed_by:
+  name: managed_by
+  domain: CarePlan
+  range: Provider
+  ranges:
+  - Provider
+  uri: ''
+  inverse: manages
+  cardinality: many-to-one
+  label: null
+  facet: null
+  sub_property_of: null
+  category: business
+  symmetric: false
+  domain_profile:
+    description: Care plans, treatment protocols, and goals (FHIR CarePlan)
+    uri: http://hl7.org/fhir/StructureDefinition/CarePlan
+    source_ontology: FHIR_R4
+    keywords:
+    - care_plan
+    - treatment_plan
+    - protocol
+    - goal
+    - care_team
+    relationships_preview:
+      references: Patient
+      contains: Procedure
+      addresses: Condition
+      managed_by: Provider
+  range_profile:
+    description: Practitioners, clinicians, or care team members (FHIR Practitioner)
+    uri: http://hl7.org/fhir/StructureDefinition/Practitioner
+    source_ontology: FHIR_R4
+    keywords:
+    - provider
+    - physician
+    - practitioner
+    - clinician
+    - therapist
+    - npi
+    relationships_preview:
+      treats: Patient
+      performs: Procedure
+      ordered_for: Encounter
+      part_of: Organization
 enrolls:
   name: enrolls
   domain: ClinicalTrial
@@ -912,6 +1197,7 @@ used_in:
     relationships_preview:
       ordered_for: Encounter
       performed_by: Provider
+      addresses: Condition
       references: Patient
 owned_by:
   name: owned_by
@@ -1072,47 +1358,6 @@ covers:
       has_encounter: Encounter
       has_condition: Condition
       has_coverage: Coverage
-performs:
-  name: performs
-  domain: Practitioner
-  range: Procedure
-  ranges:
-  - Procedure
-  uri: ''
-  inverse: ''
-  cardinality: one-to-many
-  label: null
-  facet: null
-  sub_property_of: null
-  category: business
-  domain_profile:
-    description: Individual clinicians, physicians, nurses, and allied health professionals
-    uri: http://hl7.org/fhir/StructureDefinition/Practitioner
-    source_ontology: FHIR_R4
-    keywords:
-    - practitioner
-    - physician
-    - nurse
-    - clinician
-    - therapist
-    - npi
-    relationships_preview:
-      performs: Procedure
-      part_of: Organization
-  range_profile:
-    description: Medical procedures, surgeries, or interventions (FHIR Procedure)
-    uri: http://hl7.org/fhir/StructureDefinition/Procedure
-    source_ontology: FHIR_R4
-    keywords:
-    - procedure
-    - surgery
-    - cpt
-    - intervention
-    - operation
-    relationships_preview:
-      ordered_for: Encounter
-      performed_by: Provider
-      references: Patient
 hosts:
   name: hosts
   domain: Facility

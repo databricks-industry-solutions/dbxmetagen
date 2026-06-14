@@ -41,6 +41,7 @@ owns:
     relationships_preview:
       placed_by: Person
       for_product: Product
+      billed_to: Organization
 part_of:
   name: part_of
   domain: Person
@@ -85,6 +86,7 @@ part_of:
       contains: Person
       contains_location: Location
       part_of: Organization
+      employs: Person
 contains:
   name: contains
   domain: Organization
@@ -115,6 +117,7 @@ contains:
       contains: Person
       contains_location: Location
       part_of: Organization
+      employs: Person
   range_profile:
     description: People, customers, contacts, users, or employees
     uri: https://schema.org/Person
@@ -159,6 +162,7 @@ contains_location:
       contains: Person
       contains_location: Location
       part_of: Organization
+      employs: Person
   range_profile:
     description: Addresses, sites, regions, facilities, or geographies
     uri: https://schema.org/Place
@@ -172,6 +176,52 @@ contains_location:
     - warehouse
     - store
     relationships_preview:
+      part_of: Organization
+employs:
+  name: employs
+  domain: Organization
+  range: Person
+  ranges:
+  - Person
+  uri: ''
+  inverse: employed_by
+  cardinality: one-to-many
+  label: null
+  facet: null
+  sub_property_of: null
+  category: business
+  symmetric: false
+  domain_profile:
+    description: Companies, departments, facilities, or business units
+    uri: https://schema.org/Organization
+    source_ontology: schema.org
+    keywords:
+    - company
+    - organization
+    - department
+    - facility
+    - tenant
+    - branch
+    - division
+    relationships_preview:
+      contains: Person
+      contains_location: Location
+      part_of: Organization
+      employs: Person
+  range_profile:
+    description: People, customers, contacts, users, or employees
+    uri: https://schema.org/Person
+    source_ontology: schema.org
+    keywords:
+    - customer
+    - employee
+    - user
+    - contact
+    - person
+    - member
+    - staff
+    relationships_preview:
+      owns: Transaction
       part_of: Organization
 references:
   name: references
@@ -200,6 +250,52 @@ references:
     - type
     - status
     relationships_preview: {}
+produced_by:
+  name: produced_by
+  domain: Product
+  range: Organization
+  ranges:
+  - Organization
+  uri: ''
+  inverse: produces
+  cardinality: many-to-one
+  label: null
+  facet: null
+  sub_property_of: null
+  category: business
+  symmetric: false
+  domain_profile:
+    description: Goods, services, SKUs, or catalog items
+    uri: https://schema.org/Product
+    source_ontology: schema.org
+    keywords:
+    - product
+    - item
+    - sku
+    - catalog
+    - offering
+    - service
+    - subscription
+    relationships_preview:
+      references: Reference
+      produced_by: Organization
+  range_profile:
+    description: Companies, departments, facilities, or business units
+    uri: https://schema.org/Organization
+    source_ontology: schema.org
+    keywords:
+    - company
+    - organization
+    - department
+    - facility
+    - tenant
+    - branch
+    - division
+    relationships_preview:
+      contains: Person
+      contains_location: Location
+      part_of: Organization
+      employs: Person
 placed_by:
   name: placed_by
   domain: Transaction
@@ -229,6 +325,7 @@ placed_by:
     relationships_preview:
       placed_by: Person
       for_product: Product
+      billed_to: Organization
   range_profile:
     description: People, customers, contacts, users, or employees
     uri: https://schema.org/Person
@@ -273,6 +370,7 @@ for_product:
     relationships_preview:
       placed_by: Person
       for_product: Product
+      billed_to: Organization
   range_profile:
     description: Goods, services, SKUs, or catalog items
     uri: https://schema.org/Product
@@ -287,6 +385,129 @@ for_product:
     - subscription
     relationships_preview:
       references: Reference
+      produced_by: Organization
+billed_to:
+  name: billed_to
+  domain: Transaction
+  range:
+  - Person
+  - Organization
+  ranges:
+  - Organization
+  uri: ''
+  inverse: billing_target_of
+  cardinality: many-to-one
+  label: null
+  facet: null
+  sub_property_of: null
+  category: business
+  symmetric: false
+  domain_profile:
+    description: Orders, purchases, payments, invoices, or financial events
+    uri: https://schema.org/Invoice
+    source_ontology: schema.org
+    keywords:
+    - transaction
+    - order
+    - payment
+    - invoice
+    - purchase
+    - sale
+    - receipt
+    relationships_preview:
+      placed_by: Person
+      for_product: Product
+      billed_to: Organization
+  range_profile:
+    description: People, customers, contacts, users, or employees
+    uri: https://schema.org/Person
+    source_ontology: schema.org
+    keywords:
+    - customer
+    - employee
+    - user
+    - contact
+    - person
+    - member
+    - staff
+    relationships_preview:
+      owns: Transaction
+      part_of: Organization
+assigned_to:
+  name: assigned_to
+  domain:
+  - Event
+  - Document
+  range: Person
+  ranges:
+  - Person
+  uri: ''
+  inverse: assigned_from
+  cardinality: many-to-one
+  label: null
+  facet: null
+  sub_property_of: null
+  category: business
+  symmetric: false
+  domain_profile:
+    description: Activities, logs, sessions, audits, or system events
+    uri: https://schema.org/Event
+    source_ontology: schema.org
+    keywords:
+    - event
+    - activity
+    - log
+    - audit
+    - session
+    - incident
+    - alert
+    relationships_preview:
+      references: Person
+      assigned_to: Person
+      located_at: Location
+  range_profile:
+    description: People, customers, contacts, users, or employees
+    uri: https://schema.org/Person
+    source_ontology: schema.org
+    keywords:
+    - customer
+    - employee
+    - user
+    - contact
+    - person
+    - member
+    - staff
+    relationships_preview:
+      owns: Transaction
+      part_of: Organization
+located_at:
+  name: located_at
+  domain: Any
+  range: Location
+  ranges:
+  - Location
+  uri: ''
+  inverse: location_of
+  cardinality: many-to-one
+  label: null
+  facet: null
+  sub_property_of: null
+  category: business
+  symmetric: false
+  range_profile:
+    description: Addresses, sites, regions, facilities, or geographies
+    uri: https://schema.org/Place
+    source_ontology: schema.org
+    keywords:
+    - location
+    - address
+    - site
+    - region
+    - facility
+    - warehouse
+    - store
+    relationships_preview:
+      part_of: Organization
 derives_from:
   name: derives_from
   domain: Metric
@@ -329,3 +550,5 @@ derives_from:
     - alert
     relationships_preview:
       references: Person
+      assigned_to: Person
+      located_at: Location

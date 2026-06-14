@@ -842,12 +842,13 @@ wheels = [
 
 [[package]]
 name = "dbxmetagen"
-version = "0.10.2"
+version = "0.10.4"
 source = { editable = "." }
 dependencies = [
     { name = "cloudpickle" },
     { name = "databricks-langchain" },
     { name = "databricks-sdk" },
+    { name = "databricks-vectorsearch" },
     { name = "deprecated" },
     { name = "mlflow" },
     { name = "nest-asyncio" },
@@ -886,6 +887,7 @@ requires-dist = [
     { name = "cloudpickle", specifier = "==3.1.0" },
     { name = "databricks-langchain", specifier = "==0.4.0" },
     { name = "databricks-sdk", specifier = "==0.68.0" },
+    { name = "databricks-vectorsearch", specifier = "==0.66" },
     { name = "deprecated", specifier = "==1.2.13" },
     { name = "mlflow", specifier = "==3.6.0" },
     { name = "nest-asyncio", specifier = ">=1.6.0,<2" },

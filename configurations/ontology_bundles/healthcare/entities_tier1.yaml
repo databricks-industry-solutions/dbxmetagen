@@ -69,9 +69,6 @@
 - name: Person
   description: People, customers, contacts, users, or employees
   label: Person
-- name: Practitioner
-  description: Individual clinicians, physicians, nurses, and allied health professionals
-  label: Practitioner
 - name: Procedure
   description: Medical procedures, surgeries, or interventions (FHIR Procedure)
   label: Procedure

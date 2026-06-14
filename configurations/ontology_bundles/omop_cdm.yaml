@@ -7,6 +7,7 @@ metadata:
   standards_alignment: OMOP CDM
   bundle_type: formal_ontology
   source_url: https://raw.githubusercontent.com/vemonet/omop-cdm-owl/main/omop_cdm_v6.ttl
+  entity_count: 51
 ontology:
   version: '1.0'
   name: OMOP CDM Ontology
@@ -54,6 +55,8 @@ ontology:
             role: measure
             typical_attributes:
             - place_of_service_source_value
+        parents:
+        - OmopCDMThing
       CdmSource:
         description: The CDM_SOURCE table contains detail about the source database and the process used to transform the
           data into the OMOP Common Data Model.
@@ -122,6 +125,8 @@ ontology:
             role: label
             typical_attributes:
             - vocabulary_version
+        parents:
+        - OmopCDMThing
       Cohort:
         description: The COHORT table contains records of subjects that satisfy a given set of criteria for a duration of
           time. The definition of the cohort is contained within the COHORT_DEFINITION table. It is listed as part of the
@@ -156,6 +161,8 @@ ontology:
             role: label
             typical_attributes:
             - has_subject
+        parents:
+        - DateDuration
       CohortDefinition:
         description: The COHORT_DEFINITION table contains records defining a Cohort derived from the data through the associated
           description and syntax and upon instantiation (execution of the algorithm) placed into the COHORT table. Cohorts
@@ -206,6 +213,8 @@ ontology:
             role: label
             typical_attributes:
             - syntax
+        parents:
+        - OmopCDMThing
       Concept:
         description: The Standardized Vocabularies contains records, or Concepts, that uniquely identify each fundamental
           unit of meaning used to express clinical information in all domain tables of the CDM. Concepts are derived from
@@ -259,6 +268,8 @@ ontology:
             role: label
             typical_attributes:
             - code
+        parents:
+        - OmopCDMThing
       ConceptAncestor:
         description: The CONCEPT_ANCESTOR table is designed to simplify observational analysis by providing the complete hierarchical
           relationships between Concepts. Only direct parent-child relationships between Concepts are stored in the CONCEPT_RELATIONSHIP
@@ -304,6 +315,8 @@ ontology:
             role: label
             typical_attributes:
             - min_levels_of_separation
+        parents:
+        - OmopCDMThing
       ConceptClass:
         description: The CONCEPT_CLASS table is a reference table, which includes a list of the classifications used to differentiate
           Concepts within a given Vocabulary. This reference table is populated with a single record for each Concept Class.
@@ -325,6 +338,8 @@ ontology:
             role: dimension
             typical_attributes:
             - has_concept
+        parents:
+        - OmopCDMThing
       ConceptRelationship:
         description: The CONCEPT_RELATIONSHIP table contains records that define direct relationships between any two Concepts
           and the nature or type of the relationship. Each type of a relationship is defined in the RELATIONSHIP table.
@@ -360,6 +375,8 @@ ontology:
             role: label
             typical_attributes:
             - concept_id_2
+        parents:
+        - OmopCDMThing
       ConceptSynonym:
         description: The CONCEPT_SYNONYM table is used to store alternate names and descriptions for Concepts.
         uri: https://w3id.org/omop/ontology/ConceptSynonym
@@ -390,6 +407,8 @@ ontology:
             role: dimension
             typical_attributes:
             - has_concept
+        parents:
+        - OmopCDMThing
       ConditionEra:
         description: 'A Condition Era is defined as a span of time when the Person is assumed to have a given condition. Similar
           to Drug Eras, Condition Eras are chronological periods of Condition Occurrence. Combining individual Condition Occurrences
@@ -415,6 +434,8 @@ ontology:
             role: measure
             typical_attributes:
             - occurrence_count
+        parents:
+        - Era
       ConditionOccurrence:
         description: This table contains records of Events of a Person suggesting the presence of a disease or medical condition
           stated as a diagnosis, a sign, or a symptom, which is either observed by a Provider or reported by the patient.
@@ -481,6 +502,10 @@ ontology:
             role: measure
             typical_attributes:
             - status_source_value
+        parents:
+        - DateDuration
+        - DatetimeDuration
+        - Occurrence
       Cost:
         description: 'The COST table captures records containing the cost of any medical event recorded in one of the OMOP
           clinical event tables such as DRUG_EXPOSURE, PROCEDURE_OCCURRENCE, VISIT_OCCURRENCE, VISIT_DETAIL, DEVICE_OCCURRENCE,
@@ -610,6 +635,8 @@ ontology:
             role: measure
             typical_attributes:
             - revenue_code_source_value
+        parents:
+        - OmopCDMThing
       Death:
         description: Death entity
         uri: https://w3id.org/omop/ontology/Death
@@ -650,6 +677,8 @@ ontology:
             role: measure
             typical_attributes:
             - cause_source_value
+        parents:
+        - Event
       DeviceExposure:
         description: The Device domain captures information about a person's exposure to a foreign physical object or instrument
           which is used for diagnostic or therapeutic purposes through a mechanism beyond chemical action. Devices include
@@ -674,6 +703,8 @@ ontology:
             role: label
             typical_attributes:
             - has_unique_device
+        parents:
+        - Exposure
       Domain:
         description: The DOMAIN table includes a list of OMOP-defined Domains the Concepts of the Standardized Vocabularies
           can belong to. A Domain defines the set of allowable Concepts for the standardized fields in the CDM tables. For
@@ -698,6 +729,8 @@ ontology:
             role: dimension
             typical_attributes:
             - has_concept
+        parents:
+        - OmopCDMThing
       DoseEra:
         description: A Dose Era is defined as a span of time when the Person is assumed to be exposed to a constant dose of
           a specific active ingredient.
@@ -728,6 +761,8 @@ ontology:
             role: label
             typical_attributes:
             - value
+        parents:
+        - Era
       DrugEra:
         description: 'A Drug Era is defined as a span of time when the Person is assumed to be exposed to a particular active
           ingredient. A Drug Era is not the same as a Drug Exposure: Exposures are individual records corresponding to the
@@ -756,6 +791,8 @@ ontology:
             role: label
             typical_attributes:
             - gap_days
+        parents:
+        - Era
       DrugExposure:
         description: This table captures records about the exposure to a Drug ingested or otherwise introduced into the body.
           A Drug is a biochemical substance formulated in such a way that when administered to a Person it will exert a certain
@@ -822,6 +859,8 @@ ontology:
             role: temporal
             typical_attributes:
             - verbatim_end_date
+        parents:
+        - Exposure
       DrugStrength:
         description: The DRUG_STRENGTH table contains structured content about the amount or concentration and associated
           units of a specific ingredient contained within a particular drug product. This table is supplemental information
@@ -903,6 +942,8 @@ ontology:
             role: measure
             typical_attributes:
             - numerator_value
+        parents:
+        - OmopCDMThing
       FactRelationship:
         description: 'The FACT_RELATIONSHIP table contains records about the relationships between facts stored as records
           in any table of the CDM. Relationships can be defined between facts from the same domain, or different domains.
@@ -951,6 +992,8 @@ ontology:
             role: label
             typical_attributes:
             - fact_id_2
+        parents:
+        - OmopCDMThing
       Location:
         description: The LOCATION table represents a generic way to capture physical location or address information of Persons
           and Care Sites. **New to CDM v6.0** The LOCATION table now includes latitude and longitude.
@@ -1014,6 +1057,8 @@ ontology:
             role: geographic
             typical_attributes:
             - zip
+        parents:
+        - OmopCDMThing
       LocationHistory:
         description: The LOCATION HISTORY table stores relationships between Persons or Care Sites and geographic locations
           over time. **This table is new to CDM v6.0**
@@ -1064,6 +1109,8 @@ ontology:
             - has_location_id
             edge: has_location
             target_entity: Location
+        parents:
+        - DateDuration
       Measurement:
         description: The MEASUREMENT table contains records of Measurements, i.e. structured values (numerical or categorical)
           obtained through systematic and standardized examination or testing of a Person or Person's sample. The MEASUREMENT
@@ -1164,6 +1211,9 @@ ontology:
             role: measure
             typical_attributes:
             - value_source_value
+        parents:
+        - Event
+        - Occurrence
       Metadata:
         description: The METADATA table contains metadata information about a dataset that has been transformed to the OMOP
           Common Data Model.
@@ -1202,6 +1252,8 @@ ontology:
             role: dimension
             typical_attributes:
             - has_concept
+        parents:
+        - Event
       Note:
         description: The NOTE table captures unstructured information that was recorded by a provider about a patient in free
           text (in ASCII, or preferably in UTF8 format) notes on a given date. The type of note_text is CLOB or varchar(MAX)
@@ -1299,6 +1351,9 @@ ontology:
             role: label
             typical_attributes:
             - text
+        parents:
+        - ClinicalElement
+        - Event
       NoteNlp:
         description: The NOTE_NLP table encodes all output of NLP on clinical notes. Each row represents a single extracted
           term from a note.
@@ -1380,6 +1435,8 @@ ontology:
             role: label
             typical_attributes:
             - lexical_variant
+        parents:
+        - Event
       Observation:
         description: 'The OBSERVATION table captures clinical facts about a Person obtained in the context of examination,
           questioning or a procedure. Any data that cannot be represented by any other domains, such as social and lifestyle
@@ -1484,6 +1541,8 @@ ontology:
             role: temporal
             typical_attributes:
             - value_as_datetime
+        parents:
+        - Event
       ObservationPeriod:
         description: 'This table contains records which define spans of time during which two conditions are expected to hold:
           (i) Clinical Events that happened to the Person are recorded in the Event tables, and (ii) absense of records indicate
@@ -1509,6 +1568,9 @@ ontology:
             role: dimension
             typical_attributes:
             - has_period_type
+        parents:
+        - ClinicalElement
+        - DateDuration
       PayerPlanPeriod:
         description: The PAYER_PLAN_PERIOD table captures details of the period of time that a Person is continuously enrolled
           under a specific health Plan benefit structure from a given Payer. Each Person receiving healthcare is typically
@@ -1652,6 +1714,8 @@ ontology:
             role: measure
             typical_attributes:
             - contract_source_value
+        parents:
+        - DateDuration
       Person:
         description: This table serves as the central identity management for all Persons in the database. It contains records
           that uniquely identify each person or patient, and some demographic information.
@@ -1955,6 +2019,8 @@ ontology:
             role: measure
             typical_attributes:
             - race_source_value
+        parents:
+        - BasePerson
       ProcedureOccurrence:
         description: This table contains records of activities or processes ordered by, or carried out by, a healthcare provider
           on the patient with a diagnostic or therapeutic purpose.
@@ -2022,6 +2088,9 @@ ontology:
             role: measure
             typical_attributes:
             - modifier_source_value
+        parents:
+        - Event
+        - Occurrence
       Provider:
         description: The PROVIDER table contains a list of uniquely identified healthcare providers. These are individuals
           providing hands-on healthcare to patients, such as physicians, nurses, midwives, physical therapists etc.
@@ -2072,6 +2141,8 @@ ontology:
             role: measure
             typical_attributes:
             - specialty_source_value
+        parents:
+        - BasePerson
       Relationship:
         description: The RELATIONSHIP table provides a reference list of all types of relationships that can be used to associate
           any two concepts in the CONCEPT_RELATIONSHP table.
@@ -2116,6 +2187,8 @@ ontology:
             role: label
             typical_attributes:
             - is_hierarchical
+        parents:
+        - OmopCDMThing
       SourceToConceptMap:
         description: The source to concept map table is a legacy data structure within the OMOP Common Data Model, recommended
           for use in ETL processes to maintain local source codes which are not available as Concepts in the Standardized
@@ -2178,6 +2251,8 @@ ontology:
             role: dimension
             typical_attributes:
             - source_code
+        parents:
+        - OmopCDMThing
       Specimen:
         description: The specimen domain contains the records identifying biological samples from a person.
         uri: https://w3id.org/omop/ontology/Specimen
@@ -2252,6 +2327,8 @@ ontology:
             role: measure
             typical_attributes:
             - disease_status_source_value
+        parents:
+        - Event
       SurveyConduct:
         description: The SURVEY_CONDUCT table is used to store an instance of a completed survey or questionnaire.
         uri: https://w3id.org/omop/ontology/SurveyConduct
@@ -2417,6 +2494,8 @@ ontology:
             role: temporal
             typical_attributes:
             - survey_end_datetime
+        parents:
+        - OmopCDMThing
       VisitDetail:
         description: 'The VISIT_DETAIL table is an optional table used to represents details of each record in the parent
           VISIT_OCCURRENCE table. A good example of this would be the movement between units in a hospital during an inpatient
@@ -2462,6 +2541,8 @@ ontology:
             role: dimension
             typical_attributes:
             - has_admitted_from
+        parents:
+        - BaseVisit
       VisitOccurrence:
         description: 'This table contains Events where Persons engage with the healthcare system for a duration of time. They
           are often also called "Encounters". Visits are defined by a configuration of circumstances under which they occur,
@@ -2520,6 +2601,8 @@ ontology:
             - has_visit_detail_id
             edge: has_visit_detail
             target_entity: VisitDetail
+        parents:
+        - BaseVisit
       Vocabulary:
         description: The VOCABULARY table includes a list of the Vocabularies collected from various sources or created de
           novo by the OMOP community. This reference table is populated with a single record for each Vocabulary source and
@@ -2556,6 +2639,165 @@ ontology:
             role: label
             typical_attributes:
             - reference
+        parents:
+        - OmopCDMThing
+      BasePerson:
+        description: BasePerson (abstract base class)
+        keywords:
+        - base
+        - person
+        - baseperson
+        - abstract
+        - class
+        typical_attributes: []
+        relationships: {}
+        properties: {}
+        parents:
+        - OmopCDMThing
+      BaseVisit:
+        description: BaseVisit (abstract base class)
+        keywords:
+        - base
+        - visit
+        - basevisit
+        - abstract
+        - class
+        typical_attributes: []
+        relationships: {}
+        properties: {}
+        parents:
+        - DateDuration
+        - DatetimeDuration
+        - Occurrence
+      ClinicalElement:
+        description: ClinicalElement (abstract base class)
+        keywords:
+        - clinical
+        - element
+        - clinicalelement
+        - abstract
+        - base
+        - class
+        typical_attributes: []
+        relationships: {}
+        properties: {}
+        parents:
+        - OmopCDMThing
+      DateDuration:
+        description: DateDuration (abstract base class)
+        keywords:
+        - date
+        - duration
+        - dateduration
+        - abstract
+        - base
+        - class
+        typical_attributes: []
+        relationships: {}
+        properties: {}
+        parents:
+        - Duration
+      DatetimeDuration:
+        description: DatetimeDuration (abstract base class)
+        keywords:
+        - datetime
+        - duration
+        - datetimeduration
+        - abstract
+        - base
+        - class
+        typical_attributes: []
+        relationships: {}
+        properties: {}
+        parents:
+        - Duration
+      Duration:
+        description: Duration (abstract base class)
+        keywords:
+        - duration
+        - abstract
+        - base
+        - class
+        typical_attributes: []
+        relationships: {}
+        properties: {}
+        parents:
+        - OmopCDMThing
+      Era:
+        description: Era (abstract base class)
+        keywords:
+        - era
+        - abstract
+        - base
+        - class
+        typical_attributes: []
+        relationships: {}
+        properties: {}
+        parents:
+        - ClinicalElement
+        - DatetimeDuration
+      Event:
+        description: Event (abstract base class)
+        keywords:
+        - event
+        - abstract
+        - base
+        - class
+        typical_attributes: []
+        relationships: {}
+        properties: {}
+        parents:
+        - OmopCDMThing
+      Exposure:
+        description: Exposure (abstract base class)
+        keywords:
+        - exposure
+        - abstract
+        - base
+        - class
+        typical_attributes: []
+        relationships: {}
+        properties: {}
+        parents:
+        - ClinicalElement
+        - DateDuration
+        - DatetimeDuration
+      Occurrence:
+        description: Occurrence (abstract base class)
+        keywords:
+        - occurrence
+        - abstract
+        - base
+        - class
+        typical_attributes: []
+        relationships: {}
+        properties: {}
+        parents:
+        - ClinicalElement
+      OmopCDMThing:
+        description: OmopCDMThing (abstract base class)
+        keywords:
+        - omop
+        - cdmthing
+        - omopcdmthing
+        - abstract
+        - base
+        - class
+        typical_attributes: []
+        relationships: {}
+        properties: {}
+        parents:
+        - Thing
+      Thing:
+        description: Thing (abstract base class)
+        keywords:
+        - thing
+        - abstract
+        - base
+        - class
+        typical_attributes: []
+        relationships: {}
+        properties: {}
   edge_catalog:
     has_place_of_service:
       source: CareSite

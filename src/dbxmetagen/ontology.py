@@ -645,9 +645,38 @@ class EdgeCatalogEntry:
     def validate_edge(self, src_entity: str, dst_entity: str) -> bool:
         return self.matches_domain(src_entity) and self.matches_range(dst_entity)
 
+    def is_unconstrained(self) -> bool:
+        """True when the entry constrains neither side (domain and range both
+        absent or 'Any'). Such an entry carries no (src,dst) signal and would
+        wildcard-match every pair, so it must never be selected by find_edge."""
+        dom_any = self.domain is None or self.domain == "Any"
+        rng_any = self.range is None or self.range == "Any"
+        return dom_any and rng_any
+
 
 class EdgeCatalog:
     """Utility wrapper around a dict of EdgeCatalogEntry objects."""
+
+    # Built-in inverses for common structural/business relationships. Used as a
+    # fallback when a bundle does not declare an explicit ``inverse`` (formal
+    # bundles like FHIR/OMOP define none at the top level), so the auto-inverse
+    # edge generation still produces a denser, navigable graph. Bidirectional.
+    _DEFAULT_INVERSES: Dict[str, str] = {
+        "references": "referenced_by",
+        "referenced_by": "references",
+        "has_part": "part_of",
+        "part_of": "has_part",
+        "contains": "contained_in",
+        "contained_in": "contains",
+        "depends_on": "required_by",
+        "required_by": "depends_on",
+        "derived_from": "derives",
+        "derives": "derived_from",
+        "precedes": "follows",
+        "follows": "precedes",
+        "causes": "caused_by",
+        "caused_by": "causes",
+    }
 
     def __init__(self, entries: Dict[str, "EdgeCatalogEntry"]):
         self._entries = entries
@@ -657,7 +686,9 @@ class EdgeCatalog:
 
     def get_inverse(self, name: str) -> Optional[str]:
         entry = self._entries.get(name)
-        return entry.inverse if entry else None
+        if entry and entry.inverse:
+            return entry.inverse
+        return self._DEFAULT_INVERSES.get(name)
 
     def find_edge(self, src_entity: str, dst_entity: str,
                   bundle_name: Optional[str] = None) -> Optional[EdgeCatalogEntry]:
@@ -665,16 +696,28 @@ class EdgeCatalog:
 
         When *bundle_name* is supplied, entries from that bundle are preferred
         over cross-bundle matches, avoiding false positives when multiple
-        bundles define entities with the same name.
+        bundles define entities with the same name. Fully-unconstrained entries
+        (no domain and no range) are skipped: they carry no (src,dst) signal and
+        would wildcard-match every pair, which is how a custom-bundle catalog
+        entry could pollute FK/discovered edge naming. Among matches, entries
+        that constrain both sides outrank those that constrain only one side.
         """
         scoped = []
         unscoped = []
         for entry in self._entries.values():
+            if entry.is_unconstrained():
+                continue
             if entry.validate_edge(src_entity, dst_entity):
                 if bundle_name and entry.bundle_name == bundle_name:
                     scoped.append(entry)
                 else:
                     unscoped.append(entry)
+
+        def specificity(e: "EdgeCatalogEntry") -> int:
+            return int(e.domain not in (None, "Any")) + int(e.range not in (None, "Any"))
+
+        scoped.sort(key=specificity, reverse=True)
+        unscoped.sort(key=specificity, reverse=True)
         if scoped:
             return scoped[0]
         return unscoped[0] if unscoped else None
@@ -684,6 +727,11 @@ class EdgeCatalog:
         entry = self._entries.get(edge_name)
         if not entry:
             return False, f"Edge '{edge_name}' not in catalog"
+        if entry.is_unconstrained() and entry.category != "structural":
+            return False, (
+                f"Edge '{edge_name}' is unconstrained (no domain/range) and "
+                f"not structural; refusing to wildcard-match {src_entity}->{dst_entity}"
+            )
         if not entry.validate_edge(src_entity, dst_entity):
             return False, (
                 f"Edge '{edge_name}' domain/range violation: "
@@ -1090,12 +1138,18 @@ class OntologyLoader:
         "has_part": {"inverse": "part_of", "symmetric": False, "category": "structural"},
         "contains": {"inverse": "contained_in", "symmetric": False, "category": "structural"},
         "member_of": {"inverse": "has_member", "symmetric": False, "category": "structural"},
+        # categorized_as is emitted deterministically by _build_category_edges
+        # (entity -> W5 category node). Auto-merged here (not persisted to bundle
+        # edge_catalog/tiers) so it is never offered to the LLM edge predictor and
+        # never wildcard-matched by find_edge for FK/discovered relationships.
+        "categorized_as": {"inverse": "category_of", "symmetric": False, "category": "structural"},
     }
 
     _INFER_BLOCKLIST: frozenset = frozenset({
         "about", "subjectOf", "type_of", "instance_of", "is_a",
         "subclass_of", "superclass_of", "has_part", "part_of",
         "contains", "contained_in", "member_of", "has_member",
+        "categorized_as", "category_of",
     })
 
     @staticmethod
@@ -2703,6 +2757,200 @@ class EntityDiscoverer:
         return list(groups.values())
 
 
+# ---------------------------------------------------------------------------
+# Entity-role reconciliation (classify -> dedup -> flag)
+#
+# Module-level so both OntologyBuilder and OntologyValidator can run the exact
+# same logic without OntologyValidator needing to construct a builder. Entities
+# are single-table (zero or one source_tables entry), so scoping by
+# get(source_tables, 0) selects exactly the scoped entities. When table_names is
+# None the SQL is byte-identical to the original OntologyBuilder methods.
+# ---------------------------------------------------------------------------
+
+_DEFAULT_PRIMARY_CONFIDENCE_FLOOR = 0.3
+
+
+def _classify_entity_roles_sql(spark, ent_table: str, table_names=None) -> int:
+    """Assign 'primary'/'referenced' roles per source table (see OntologyBuilder.classify_entity_roles)."""
+    tbl_scope = table_filter_sql(table_names, column="tbl") if table_names else ""
+    where_scope = f"WHERE 1=1 {tbl_scope}" if table_names else ""
+    spark.sql(f"""
+        MERGE INTO {ent_table} AS target
+        USING (
+            WITH                 exploded AS (
+                SELECT entity_id,
+                       COALESCE(attributes['granularity'], 'table') AS granularity,
+                       confidence, tbl,
+                       COALESCE(auto_discovered, TRUE) AS auto_discovered
+                FROM {ent_table}
+                LATERAL VIEW EXPLODE(source_tables) AS tbl
+                {where_scope}
+            ),
+            per_table AS (
+                SELECT tbl,
+                       BOOL_OR(granularity = 'table') AS has_table_level
+                FROM exploded GROUP BY tbl
+            ),
+            ent_agg AS (
+                SELECT entity_id,
+                       BOOL_OR(granularity = 'table') AS owned,
+                       COUNT(DISTINCT CASE WHEN granularity = 'column' THEN tbl END) AS column_table_count
+                FROM exploded GROUP BY entity_id
+            ),
+            ranked AS (
+                SELECT e.entity_id,
+                       ROW_NUMBER() OVER (
+                           PARTITION BY e.tbl
+                           ORDER BY
+                               CASE WHEN h.has_table_level AND e.granularity = 'table' THEN 0
+                                    WHEN NOT h.has_table_level AND e.granularity = 'column' THEN 0
+                                    ELSE 1 END,
+                               -- Ownership penalty: a column-level entity for this table
+                               -- that is owned (table-level) elsewhere AND appears as a
+                               -- column across many tables (ubiquitous FK like patient_id)
+                               -- is deprioritized so a table-specific subject wins primary.
+                               CASE WHEN e.granularity = 'column' AND a.owned
+                                         AND a.column_table_count >= 4
+                                         AND e.auto_discovered THEN 1 ELSE 0 END,
+                               e.confidence DESC
+                       ) AS rn
+                FROM exploded e
+                JOIN per_table h ON e.tbl = h.tbl
+                JOIN ent_agg a ON e.entity_id = a.entity_id
+            )
+            SELECT entity_id,
+                   CASE WHEN MAX(CASE WHEN rn = 1 THEN 1 ELSE 0 END) = 1
+                        THEN 'primary' ELSE 'referenced' END AS computed_role
+            FROM ranked
+            GROUP BY entity_id
+        ) AS source
+        ON target.entity_id = source.entity_id
+        WHEN MATCHED AND (
+            COALESCE(target.entity_role, '') != source.computed_role
+            OR target.discovery_confidence IS NULL
+        ) THEN UPDATE SET
+            entity_role = source.computed_role,
+            discovery_confidence = COALESCE(target.discovery_confidence, target.confidence),
+            updated_at = CURRENT_TIMESTAMP()
+    """)
+    # Default orphan (NULL/empty source_tables) entities to 'referenced'. Skipped
+    # when scoped: such entities have no source table to match the scope filter.
+    if not table_names:
+        spark.sql(f"""
+            UPDATE {ent_table}
+            SET entity_role = 'referenced', updated_at = CURRENT_TIMESTAMP()
+            WHERE (source_tables IS NULL OR SIZE(source_tables) = 0)
+              AND entity_role IS NULL
+        """)
+    counts = spark.sql(f"""
+        SELECT entity_role, COUNT(*) AS cnt
+        FROM {ent_table}
+        WHERE entity_role IN ('primary', 'referenced')
+        GROUP BY entity_role
+    """).collect()
+    role_counts = {r.entity_role: r.cnt for r in counts}
+    n_primary = role_counts.get("primary", 0)
+    n_referenced = role_counts.get("referenced", 0)
+    logger.info("classify_entity_roles: %d primary, %d referenced", n_primary, n_referenced)
+    return n_primary + n_referenced
+
+
+def _deduplicate_primary_entities_sql(spark, ent_table: str, table_names=None) -> int:
+    """Demote duplicate primaries per table to 'referenced' (see OntologyBuilder._deduplicate_primary_entities)."""
+    tbl_scope = table_filter_sql(table_names, column="tbl") if table_names else ""
+    spark.sql(f"""
+        MERGE INTO {ent_table} AS target
+        USING (
+            WITH exploded AS (
+                SELECT entity_id, confidence, auto_discovered, tbl
+                FROM {ent_table}
+                LATERAL VIEW EXPLODE(source_tables) AS tbl
+                WHERE entity_role = 'primary' {tbl_scope}
+            ),
+            ranked AS (
+                SELECT entity_id, tbl,
+                       ROW_NUMBER() OVER (
+                           PARTITION BY tbl
+                           ORDER BY
+                               CASE WHEN auto_discovered = FALSE THEN 0 ELSE 1 END,
+                               confidence DESC
+                       ) AS rn
+                FROM exploded
+            ),
+            losers AS (
+                SELECT entity_id
+                FROM ranked
+                WHERE rn > 1
+                GROUP BY entity_id
+                HAVING entity_id NOT IN (
+                    SELECT entity_id FROM ranked WHERE rn = 1
+                )
+            )
+            SELECT entity_id FROM losers
+        ) AS source
+        ON target.entity_id = source.entity_id
+        WHEN MATCHED AND target.auto_discovered = TRUE THEN UPDATE SET
+            entity_role = 'referenced',
+            updated_at = CURRENT_TIMESTAMP()
+    """)
+    counts = spark.sql(f"""
+        SELECT entity_role, COUNT(*) AS cnt
+        FROM {ent_table}
+        WHERE entity_role = 'primary'
+        GROUP BY entity_role
+    """).collect()
+    n_primary = counts[0].cnt if counts else 0
+    logger.info("_deduplicate_primary_entities: %d primary entities remain", n_primary)
+    return n_primary
+
+
+def _flag_low_confidence_primaries_sql(
+    spark, ent_table: str, table_names=None,
+    primary_floor: float = _DEFAULT_PRIMARY_CONFIDENCE_FLOOR,
+) -> int:
+    """Flag below-floor primaries for human review (see OntologyBuilder._flag_low_confidence_primaries)."""
+    st_scope = table_filter_sql(table_names, column="get(source_tables, 0)") if table_names else ""
+    result = spark.sql(f"""
+        UPDATE {ent_table}
+        SET attributes = map_concat(
+                map_filter(attributes, (k, v) -> k != 'needs_human_review'),
+                map('needs_human_review', 'true')),
+            updated_at = CURRENT_TIMESTAMP()
+        WHERE COALESCE(entity_role, 'primary') = 'primary'
+          AND COALESCE(confidence, 1.0) < {primary_floor}
+          AND attributes IS NOT NULL
+          AND COALESCE(attributes['needs_human_review'], 'false') <> 'true'
+          -- Never touch human-locked (steward override) or already-validated
+          -- entities: their review state is authoritative.
+          AND COALESCE(auto_discovered, TRUE) = TRUE
+          AND COALESCE(validated, FALSE) = FALSE
+          {st_scope}
+    """)
+    try:
+        n = result.first()[0] if result is not None and result.first() else 0
+    except Exception:
+        n = 0
+    logger.info("_flag_low_confidence_primaries: flagged %s primaries below floor %.2f",
+                n, primary_floor)
+    return n
+
+
+def reconcile_entity_roles(
+    spark, ent_table: str, table_names=None,
+    primary_floor: float = _DEFAULT_PRIMARY_CONFIDENCE_FLOOR,
+) -> int:
+    """Recompute entity roles end-to-end: classify -> deduplicate -> flag.
+
+    When *table_names* is set, scope every write to entities of those tables
+    (single-table entities, so get(source_tables, 0) identifies them) without
+    touching out-of-scope entities. Returns the classify primary+referenced count.
+    """
+    n = _classify_entity_roles_sql(spark, ent_table, table_names)
+    _deduplicate_primary_entities_sql(spark, ent_table, table_names)
+    _flag_low_confidence_primaries_sql(spark, ent_table, table_names, primary_floor)
+    return n
+
+
 class OntologyBuilder:
     """
     Builder for creating and managing the ontology layer.
@@ -2984,6 +3232,10 @@ class OntologyBuilder:
         logger.info("Relationships table %s ready", self.config.fully_qualified_relationships)
 
     _MIN_STORE_CONFIDENCE = 0.2
+    # Primary entities below this confidence are treated as abstentions: they are
+    # flagged needs_human_review and their authoritative instance_of (table->entity)
+    # edge is suppressed so the knowledge graph never asserts a low-confidence type.
+    _PRIMARY_CONFIDENCE_FLOOR = 0.3
 
     def _store_entities(
         self,
@@ -3004,6 +3256,20 @@ class OntologyBuilder:
         if len(entities) < before:
             logger.info("Filtered %d low-confidence entities (< %.2f)",
                         before - len(entities), self._MIN_STORE_CONFIDENCE)
+
+        # Drop primitive datatype types (Date, Integer, Boolean, etc.): these are
+        # schema.org DataTypes, not semantic entities, and add no value while
+        # crowding out meaningful mappings. Inert for bundles that never produce
+        # such types (FHIR/OMOP define none of these names as entities).
+        before = len(entities)
+        entities = [
+            e for e in entities
+            if (e.get("entity_type") or e.get("entity_name") or "").lower()
+            not in EntityDiscoverer.PRIMITIVE_TYPE_NAMES
+        ]
+        if len(entities) < before:
+            logger.info("Filtered %d primitive datatype entities", before - len(entities))
+
         if not entities:
             return 0
 
@@ -3071,7 +3337,15 @@ class OntologyBuilder:
         {match_condition}
             target.confidence = source.confidence,
             target.source_columns = source.source_columns,
-            target.attributes = source.attributes,
+            target.attributes = CASE
+                WHEN COALESCE(target.attributes['granularity'], 'table') = 'table'
+                     AND source.attributes['granularity'] = 'column'
+                THEN map_concat(
+                       map_filter(source.attributes, (k, v) -> k NOT IN ('granularity', 'discovery_method')),
+                       map('granularity', 'table',
+                           'discovery_method', COALESCE(target.attributes['discovery_method'], source.attributes['discovery_method'])))
+                ELSE source.attributes
+            END,
             target.column_bindings = source.column_bindings,
             target.bundle_version = source.bundle_version,
             target.entity_uri = source.entity_uri,
@@ -3492,7 +3766,7 @@ class OntologyBuilder:
                 f"""
                 SELECT entity_type, confidence,
                        COALESCE(attributes['discovery_method'], 'unknown') AS discovery_method,
-                       source_tables[0] AS table_name,
+                       get(source_tables, 0) AS table_name,
                        EXPLODE(source_columns) AS col_name
                 FROM {self.config.fully_qualified_entities}
                 WHERE attributes['granularity'] = 'column'
@@ -3620,7 +3894,7 @@ class OntologyBuilder:
             ),
             geo_entities AS (
                 SELECT EXPLODE(source_columns) AS col_name,
-                       source_tables[0] AS table_name,
+                       get(source_tables, 0) AS table_name,
                        entity_type AS geo_entity_subtype,
                        confidence AS entity_confidence
                 FROM {ent}
@@ -3669,7 +3943,7 @@ class OntologyBuilder:
         conflicts = self.spark.sql(f"""
             WITH geo_bound AS (
                 SELECT EXPLODE(source_columns) AS col_name,
-                       source_tables[0] AS table_name,
+                       get(source_tables, 0) AS table_name,
                        entity_type
                 FROM {ent}
                 WHERE attributes['granularity'] = 'column'
@@ -3781,6 +4055,12 @@ class OntologyBuilder:
             fk_df
             .join(src_ent, fk_df.src_table == F.col("se.tbl"))
             .join(dst_ent, fk_df.dst_table == F.col("de.tbl"))
+            # Same-bundle resolver: a table can map to entities of different bundles, and an
+            # FK can link two tables across bundles. Resolving entity-concept endpoints purely
+            # by table name would fan out into cross-bundle edges (entity::fhir::X ->
+            # entity::schema_org::Y). Require both endpoints to share a bundle. Table-level FK
+            # structure is preserved separately via source_system='fk_predictions'.
+            .where(F.col("se.ontology_bundle") == F.col("de.ontology_bundle"))
             .where(F.col("se.entity_type") != F.col("de.entity_type"))
             .select(
                 F.concat(F.lit("entity::"), F.col("se.ontology_bundle"), F.lit("::"), F.col("se.entity_type")).alias("src_canonical"),
@@ -3863,6 +4143,144 @@ class OntologyBuilder:
         result["edges_df"] = write_df
         return result
 
+    def _seed_concept_parent_entities(self) -> int:
+        """Seed abstract concept rows for parent entity types referenced by
+        discovered entities but never discovered themselves (FHIR
+        DomainResource/Resource, OMOP OmopCDMThing, schema_org intermediates).
+
+        Without these rows, _build_hierarchy_edges skips is_a edges to
+        undiscovered parents (it requires both endpoints in discovered_types)
+        and the roots have no graph node. Seeded rows carry empty source_tables
+        so they stay 'referenced', never get instance_of edges, and are ignored
+        by primary/FK logic.
+
+        INSERT-only MERGE: never overwrites an existing (possibly human-edited)
+        row and never bumps updated_at on re-runs, preserving incremental
+        watermarks. Seeding is bounded to the ancestor closure of discovered
+        types, keeping the set tiny.
+        """
+        entity_defs = self.ontology_config.get("entities", {}).get("definitions", {})
+        parent_map: Dict[str, List[str]] = {}
+        category_map: Dict[str, List[str]] = {}
+        for name, defn in entity_defs.items():
+            if not isinstance(defn, dict):
+                continue
+            single = defn.get("parent") or defn.get("subclass_of")
+            if single:
+                parent_map[name] = [single]
+            else:
+                plist = defn.get("parents", [])
+                if isinstance(plist, list) and plist:
+                    parent_map[name] = [p for p in plist if isinstance(p, str)]
+            cats = defn.get("categories", [])
+            if isinstance(cats, list) and cats:
+                category_map[name] = [c for c in cats if isinstance(c, str)]
+        if not parent_map and not category_map:
+            return 0
+
+        ent_table = self.config.fully_qualified_entities
+        try:
+            discovered = {
+                r.entity_type
+                for r in self.spark.sql(
+                    f"SELECT DISTINCT entity_type FROM {ent_table}"
+                ).collect()
+            }
+        except Exception:
+            return 0
+        if not discovered:
+            return 0
+
+        # Ancestor closure of discovered types only.
+        ancestors: set = set()
+        seen: set = set()
+        stack = list(discovered)
+        while stack:
+            node = stack.pop()
+            for p in parent_map.get(node, []):
+                if p not in discovered:
+                    ancestors.add(p)
+                if p not in seen:
+                    seen.add(p)
+                    stack.append(p)
+
+        # Category nodes referenced by discovered types but not discovered (flat,
+        # no closure). Seeded so categorized_as edges have an existing target node.
+        categories: set = set()
+        for node in discovered:
+            for c in category_map.get(node, []):
+                if c not in discovered:
+                    categories.add(c)
+
+        # Drop primitive datatype names (Number, Date, Integer, ...): they are
+        # schema.org DataTypes, not semantic ancestors, and add noise. Mirrors the
+        # discovered-entity filter in _store_entities. Inert for FHIR/OMOP, which
+        # define none of these names as parents/categories.
+        ancestors = {a for a in ancestors if a.lower() not in EntityDiscoverer.PRIMITIVE_TYPE_NAMES}
+        categories = {c for c in categories if c.lower() not in EntityDiscoverer.PRIMITIVE_TYPE_NAMES}
+
+        if not ancestors and not categories:
+            return 0
+
+        bundle = self.config.ontology_bundle or "default"
+        now = datetime.now()
+        rows = []
+
+        def _row(name, granularity):
+            d = entity_defs.get(name)
+            desc = (d.get("description") if isinstance(d, dict) else "") or ""
+            return (
+                f"seeded::{bundle}::{name}", name, name, desc,
+                [], [], {"discovery_method": "seeded_hierarchy", "granularity": granularity},
+                1.0, True, False, bundle, "referenced", now, now,
+            )
+
+        for name in sorted(ancestors):
+            rows.append(_row(name, "abstract"))
+        for name in sorted(categories - ancestors):
+            rows.append(_row(name, "category"))
+
+        seed_schema = StructType([
+            StructField("entity_id", StringType()),
+            StructField("entity_name", StringType()),
+            StructField("entity_type", StringType()),
+            StructField("description", StringType()),
+            StructField("source_tables", ArrayType(StringType())),
+            StructField("source_columns", ArrayType(StringType())),
+            StructField("attributes", MapType(StringType(), StringType())),
+            StructField("confidence", DoubleType()),
+            StructField("auto_discovered", BooleanType()),
+            StructField("validated", BooleanType()),
+            StructField("ontology_bundle", StringType()),
+            StructField("entity_role", StringType()),
+            StructField("created_at", TimestampType()),
+            StructField("updated_at", TimestampType()),
+        ])
+        seed_df = self.spark.createDataFrame(rows, schema=seed_schema)
+        seed_df.createOrReplaceTempView("_seed_concept_entities")
+        self.spark.sql(f"""
+            MERGE INTO {ent_table} AS target
+            USING _seed_concept_entities AS source
+            ON target.entity_id = source.entity_id
+            WHEN NOT MATCHED THEN INSERT (
+                entity_id, entity_name, entity_type, description,
+                source_tables, source_columns, attributes, confidence,
+                auto_discovered, validated, ontology_bundle, entity_role,
+                created_at, updated_at
+            ) VALUES (
+                source.entity_id, source.entity_name, source.entity_type, source.description,
+                source.source_tables, source.source_columns, source.attributes, source.confidence,
+                source.auto_discovered, source.validated, source.ontology_bundle, source.entity_role,
+                source.created_at, source.updated_at
+            )
+        """)
+        self.spark.sql("DROP VIEW IF EXISTS _seed_concept_entities")
+        logger.info(
+            "Seeded %d concept nodes (%d abstract ancestors, %d categories)",
+            len(rows), len(ancestors), len(categories - ancestors),
+        )
+        return len(rows)
+
     def _build_hierarchy_edges(self) -> Optional[DataFrame]:
         """Build is_a edges from child entity types to their parent types.
 
@@ -3874,7 +4292,7 @@ class OntologyBuilder:
         parent_map: Dict[str, List[str]] = {}
         for name, defn in entity_defs.items():
             parents: List[str] = []
-            single = defn.get("parent")
+            single = defn.get("parent") or defn.get("subclass_of")
             if single:
                 parents.append(single)
             else:
@@ -3941,6 +4359,78 @@ class OntologyBuilder:
         logger.info("Built %d hierarchy (is_a) edges", len(new_edges))
         return edge_df
 
+    def _build_category_edges(self) -> Optional[DataFrame]:
+        """Build categorized_as edges from entities to their category nodes.
+
+        Mirrors _build_hierarchy_edges but reads the `categories` field (e.g. FHIR
+        W5 groupings like clinical.general). Keeps categorization on a separate axis
+        from is_a so the class hierarchy stays clean. Category target nodes are
+        seeded by _seed_concept_parent_entities.
+        """
+        entity_defs = self.ontology_config.get("entities", {}).get("definitions", {})
+        category_map: Dict[str, List[str]] = {}
+        for name, defn in entity_defs.items():
+            cats = defn.get("categories", []) if isinstance(defn, dict) else []
+            if isinstance(cats, list):
+                vals = [c for c in cats if isinstance(c, str)]
+                if vals:
+                    category_map[name] = vals
+        if not category_map:
+            return None
+
+        ent_table = self.config.fully_qualified_entities
+        try:
+            discovered_types = {
+                r.entity_type
+                for r in self.spark.sql(
+                    f"SELECT DISTINCT entity_type FROM {ent_table}"
+                ).collect()
+            }
+        except Exception:
+            return None
+
+        bundle = self.config.ontology_bundle or None
+        new_edges = []
+        for child_type, cats in category_map.items():
+            if child_type not in discovered_types:
+                continue
+            for cat in cats:
+                if cat not in discovered_types:
+                    continue
+                child_id = self.canonical_entity_id(child_type, bundle)
+                cat_id = self.canonical_entity_id(cat, bundle)
+                new_edges.append((child_id, cat_id))
+
+        if not new_edges:
+            return None
+
+        now = datetime.now()
+        _category_schema = StructType([
+            StructField("src", StringType()),
+            StructField("dst", StringType()),
+            StructField("relationship", StringType()),
+            StructField("weight", DoubleType()),
+            StructField("edge_id", StringType()),
+            StructField("edge_type", StringType()),
+            StructField("direction", StringType()),
+            StructField("ontology_rel", StringType()),
+            StructField("source_system", StringType()),
+            StructField("status", StringType()),
+            StructField("created_at", TimestampType()),
+            StructField("updated_at", TimestampType()),
+        ])
+        edge_df = self.spark.createDataFrame(
+            [
+                (s, d, "categorized_as", 1.0,
+                 f"{s}::{d}::categorized_as", "categorized_as", "out",
+                 "categorized_as", "ontology", "candidate", now, now)
+                for s, d in new_edges
+            ],
+            schema=_category_schema,
+        )
+        logger.info("Built %d categorized_as edges", len(new_edges))
+        return edge_df
+
     @staticmethod
     def canonical_entity_id(entity_name: str, ontology_bundle: Optional[str] = None) -> str:
         """Deterministic graph node ID for an ontology entity concept.
@@ -3951,6 +4441,177 @@ class OntologyBuilder:
         return f"entity::{bundle}::{entity_name}"
 
     CANONICAL_ID_SQL = "CONCAT('entity::', COALESCE(ontology_bundle, '_default'), '::', entity_name)"
+
+    @staticmethod
+    def _source_tables_scope_predicate(table_names: Optional[list]) -> str:
+        """Return a boolean SQL predicate (no leading ``AND``) keeping only entities
+        whose source_tables intersect *table_names*. Returns "" when table_names is empty.
+
+        source_tables is an array, so this uses the higher-order ``exists`` predicate.
+        Supports ``catalog.schema.*`` wildcards (LIKE) and literal names (=)."""
+        if not table_names:
+            return ""
+        literals: list[str] = []
+        wild_prefixes: list[str] = []
+        for t in table_names:
+            esc = t.replace("\\", "\\\\").replace("'", "''")
+            if esc.endswith(".*"):
+                wild_prefixes.append(esc[:-2])
+            else:
+                literals.append(f"'{esc}'")
+        parts: list[str] = []
+        if literals:
+            parts.append(f"exists(source_tables, x -> x IN ({', '.join(literals)}))")
+        for pfx in wild_prefixes:
+            parts.append(f"exists(source_tables, x -> x LIKE '{pfx}.%')")
+        return " OR ".join(parts)
+
+    def _purge_entities_for_rebuild(self, table_names: Optional[list] = None) -> int:
+        """Table-scoped refresh: delete auto-discovered entities (and their orphaned entity nodes)
+        for the tables in scope so an explicit sweep re-run rebuilds those tables cleanly.
+
+        Primarily a table refresh, NOT a bundle operation:
+        - Scoped by source_tables intersection with table_names (via _source_tables_scope_predicate).
+          Tables NOT in scope are never touched, so entities from other bundles keep coexisting.
+        - Empty table_names = all tables in scope (full-schema replacement).
+        - Bundle-agnostic for table-attributed rows: any auto-discovered entity on an in-scope table
+          is removed, then the subsequent discovery pass repopulates those tables from the current
+          bundle. (Entities the run no longer produces -- e.g. a different bundle's old
+          classification, or filtered primitive datatypes -- are thus cleared.)
+
+        One exception, for table-LESS seeded ancestors only: seeded hierarchy concepts
+        (_seed_concept_parent_entities) carry empty source_tables, so a table scope can never match
+        them. When a table scope is present, this also deletes the CURRENT bundle's table-less seeds
+        (re-seeded fresh after the purge), so stale seeds (e.g. a primitive no longer seeded) clear.
+        This is the single place a bundle filter is allowed -- it is the only attribution a table-less
+        row has -- and it is scoped to the current bundle so OTHER bundles' seeds keep coexisting.
+
+        Preservation rule:
+        - auto_discovered=FALSE rows are steward overrides / human locks and are ALWAYS preserved.
+          (The `validated` column is only a reviewer UI status, NOT deletion protection.)
+
+        After deleting entities, orphan entity concept nodes (those whose deterministic id no longer
+        maps to any surviving entity) are removed from graph_nodes via an exact anti-join on
+        CANONICAL_ID_SQL. Returns the number of entity rows deleted.
+        """
+        ent_table = self.config.fully_qualified_entities
+        nodes_table = f"{self.config.catalog_name}.{self.config.schema_name}.{self.config.nodes_table}"
+        scope_pred = self._source_tables_scope_predicate(table_names)
+        if scope_pred:
+            # Table-attributed entities are matched by the table scope (bundle-agnostic).
+            # Seeded hierarchy ancestors carry empty source_tables, so they have no table to
+            # scope by -- the only safe attribution is the bundle that seeded them. Refresh ONLY
+            # the current bundle's table-less seeds (re-seeded after the purge); other bundles'
+            # seeds are preserved, keeping coexistence intact.
+            bundle = (self.config.ontology_bundle or "").replace("\\", "\\\\").replace("'", "''")
+            seed_pred = (
+                "(source_tables IS NULL OR cardinality(source_tables) = 0) "
+                f"AND COALESCE(ontology_bundle, '') = '{bundle}'"
+            )
+            where = (
+                "COALESCE(auto_discovered, TRUE) = TRUE "
+                f"AND (({scope_pred}) OR ({seed_pred}))"
+            )
+        else:
+            # Empty table_names = full replacement: delete all auto-discovered rows (incl. seeds).
+            where = "COALESCE(auto_discovered, TRUE) = TRUE"
+        try:
+            deleted = self.spark.sql(
+                f"SELECT COUNT(*) AS c FROM {ent_table} WHERE {where}"
+            ).collect()[0].c
+            self.spark.sql(f"DELETE FROM {ent_table} WHERE {where}")
+            self.spark.sql(
+                f"DELETE FROM {nodes_table} "
+                f"WHERE node_type = 'entity' AND source_system = 'ontology' "
+                f"AND id NOT IN (SELECT {self.CANONICAL_ID_SQL} FROM {ent_table} WHERE entity_name IS NOT NULL)"
+            )
+            logger.warning(
+                "Purged %d auto-discovered entities (table_scope=%s) and their orphaned graph nodes",
+                deleted, table_names or "all",
+            )
+            return deleted
+        except Exception as e:
+            logger.warning("Could not purge entities for rebuild: %s", e)
+            return 0
+
+    def _purge_orphaned_bundle_seeds(self) -> int:
+        """Delete table-less seeded ancestors of bundles that no longer have any
+        table-attributed entities, then drop their now-orphaned concept nodes.
+
+        Runs AFTER discovery + seeding -- deliberately NOT folded into
+        _purge_entities_for_rebuild, whose DELETE evaluates its subquery on the
+        pre-discovery snapshot: on a bundle switch (e.g. schema_org -> fhir_r4 on
+        the same tables) the old bundle still has table-attributed entities at
+        purge time, so it would never be detected as orphaned. At this later
+        point a purged foreign bundle has zero table-attributed rows, so the
+        orphan test is correct. Only auto-discovered seeds are touched (steward
+        locks preserved); a bundle with any real table-attributed entity keeps
+        its seeds (coexistence preserved). Gated by the caller on
+        sweep_stale_entities AND NOT incremental.
+        """
+        ent_table = self.config.fully_qualified_entities
+        nodes_table = f"{self.config.catalog_name}.{self.config.schema_name}.{self.config.nodes_table}"
+        where = (
+            "COALESCE(auto_discovered, TRUE) = TRUE "
+            "AND (source_tables IS NULL OR cardinality(source_tables) = 0) "
+            f"AND COALESCE(ontology_bundle, '') NOT IN ("
+            f"SELECT DISTINCT COALESCE(ontology_bundle, '') FROM {ent_table} "
+            "WHERE source_tables IS NOT NULL AND cardinality(source_tables) > 0)"
+        )
+        try:
+            deleted = self.spark.sql(
+                f"SELECT COUNT(*) AS c FROM {ent_table} WHERE {where}"
+            ).collect()[0].c
+            if deleted == 0:
+                return 0
+            self.spark.sql(f"DELETE FROM {ent_table} WHERE {where}")
+            self.spark.sql(
+                f"DELETE FROM {nodes_table} "
+                f"WHERE node_type = 'entity' AND source_system = 'ontology' "
+                f"AND id NOT IN (SELECT {self.CANONICAL_ID_SQL} FROM {ent_table} WHERE entity_name IS NOT NULL)"
+            )
+            logger.warning(
+                "Purged %d orphaned table-less bundle seeds and their orphaned graph nodes",
+                deleted,
+            )
+            return deleted
+        except Exception as e:
+            logger.warning("Could not purge orphaned bundle seeds: %s", e)
+            return 0
+
+    def _purge_stale_relationships(self) -> int:
+        """Delete all auto-generated rows from ontology_relationships so they are
+        regenerated cleanly on a non-incremental sweep.
+
+        ontology_relationships has no other delete path: emit_bundle_edges is
+        INSERT-only and discover_named_relationships is a natural-key upsert, so
+        stale rows (renamed/removed relationships, a prior bundle's edges, the
+        categorized_as/category_of regression) would otherwise persist forever.
+        Every source here is auto-generated -- 'bundle' (emit_bundle_edges) and
+        'fk_inferred'/'discovered'/'auto_inverse'/'configured' (discover_named_
+        relationships; 'configured' is subclass_of from the bundle hierarchy, NOT
+        a steward lock). The allowlist deletes exactly those plus NULL; any future
+        human-authored source is preserved. Gated by the caller on a
+        non-incremental sweep; callers re-run emit_bundle_edges +
+        discover_named_relationships afterward to repopulate.
+        """
+        rels_table = self.config.fully_qualified_relationships
+        cond = (
+            "source IN ('bundle','fk_inferred','discovered','auto_inverse','configured') "
+            "OR source IS NULL"
+        )
+        try:
+            deleted = self.spark.sql(
+                f"SELECT COUNT(*) AS c FROM {rels_table} WHERE {cond}"
+            ).collect()[0].c
+            self.spark.sql(f"DELETE FROM {rels_table} WHERE {cond}")
+            logger.warning(
+                "Purged %d auto-generated ontology_relationships rows for rebuild", deleted
+            )
+            return deleted
+        except Exception as e:
+            logger.warning("Could not purge stale relationships: %s", e)
+            return 0
 
     def _sync_entity_nodes_to_graph(self) -> int:
         """Merge one canonical entity concept node per (entity_name, bundle) into graph_nodes.
@@ -4176,6 +4837,15 @@ class OntologyBuilder:
                 LATERAL VIEW EXPLODE(source_tables) AS tbl
                 WHERE source_tables IS NOT NULL AND SIZE(source_tables) > 0
                   AND COALESCE(entity_role, 'primary') = 'primary'
+                  -- Abstain floor applies only to auto-discovered, unvalidated
+                  -- primaries. Human-locked (auto_discovered=FALSE) and validated
+                  -- entities always keep their instance_of edge regardless of score.
+                  AND (
+                        COALESCE(validated, FALSE) = TRUE
+                        OR COALESCE(auto_discovered, TRUE) = FALSE
+                        OR (COALESCE(confidence, 1.0) >= {self._PRIMARY_CONFIDENCE_FLOOR}
+                            AND COALESCE(attributes['needs_human_review'], 'false') <> 'true')
+                      )
             """)
             if table_entities.count() > 0:
                 raw = table_entities.select(
@@ -4221,11 +4891,25 @@ class OntologyBuilder:
                     SELECT DISTINCT entity_type, COALESCE(ontology_bundle, '_default') AS ontology_bundle
                     FROM {ent_table}
                 ) de ON de.entity_type = r.dst_entity_type
-                WHERE r.src_entity_type != r.dst_entity_type
+                -- Same-bundle resolver: build an entity-concept edge only when src and
+                -- dst resolve within the SAME bundle. A bare entity_type (e.g. 'Organization')
+                -- can exist in multiple coexisting bundles; without this an edge would fan
+                -- out across bundles (fhir::Patient -> schema_org::Organization). Compares the
+                -- two coalesced bundle values (NOT a current-bundle filter, which would drop a
+                -- coexisting live bundle's own within-bundle edges).
+                WHERE se.ontology_bundle = de.ontology_bundle
+                  AND r.src_entity_type != r.dst_entity_type
                   AND r.source != 'configured'
                   AND r.relationship_name NOT IN (
                     'instance_of', 'type_of', 'subclass_of', 'superclass_of',
-                    'is_a', 'about', 'subjectOf'
+                    'is_a', 'about', 'subjectOf',
+                    -- categorized_as/category_of have a dedicated bundle-scoped builder
+                    -- (_build_category_edges); excluding them here stops stale rows in
+                    -- ontology_relationships from being re-emitted as graph edges (the
+                    -- categorized_as regression). NOT the full _INFER_BLOCKLIST: bundle
+                    -- YAMLs legitimately define contains/part_of/member_of, which only this
+                    -- function turns into edges, so those must keep flowing through.
+                    'categorized_as', 'category_of'
                   )
             """)
             if raw.count() > 0:
@@ -4318,158 +5002,46 @@ class OntologyBuilder:
     # Phase 2: New classification steps for the redesigned ontology model
     # ------------------------------------------------------------------
 
-    def classify_entity_roles(self) -> int:
+    def classify_entity_roles(self, table_names=None) -> int:
         """Mark each entity as 'primary' or 'referenced' per table.
 
         For each source table, the highest-confidence table-granularity entity
         becomes 'primary'. All column-granularity entities are 'referenced'.
         If no table-granularity entity exists, promote the highest-confidence
-        column entity to primary.
+        column entity to primary. *table_names* scopes the recomputation.
         """
-        ent_table = self.config.fully_qualified_entities
-        # Compute roles entirely in SQL: explode source_tables, rank per table,
-        # then merge back. Primary = highest-confidence table-granularity entity
-        # per source table (or column-granularity if no table-level exists).
-        # An entity that is primary for ANY table wins globally.
-        # MERGE: Compute and assign entity_role (primary vs referenced) for every
-        # entity. For each source table, the highest-confidence table-granularity
-        # entity becomes 'primary'; all others become 'referenced'. If no table-
-        # level entity exists for a table, the highest-confidence column entity is
-        # promoted. An entity that is primary for ANY table wins 'primary' globally.
-        # Also backfills discovery_confidence from confidence if not already set.
-        # WHY: The role distinction drives which entity is displayed as the "main"
-        # entity for a table in the dashboard, and which entities are shown as
-        # related/referenced. It also affects edge generation and Genie context.
-        # TRADEOFFS: The CTE chain (EXPLODE -> GROUP BY -> ROW_NUMBER -> GROUP BY)
-        # is complex but runs entirely in Spark SQL without collecting to the
-        # driver. An alternative would be a Python loop over entities, but that
-        # would require collecting the entire entities table. The global aggregation
-        # (entity is primary if primary for ANY table) means a multi-table entity
-        # can be primary even if it's secondary for most of its tables.
-        # WHEN MATCHED guard: skip no-op rows (role unchanged and discovery_confidence already backfilled).
-        self.spark.sql(f"""
-            MERGE INTO {ent_table} AS target
-            USING (
-                WITH exploded AS (
-                    SELECT entity_id,
-                           COALESCE(attributes['granularity'], 'table') AS granularity,
-                           confidence, tbl
-                    FROM {ent_table}
-                    LATERAL VIEW EXPLODE(source_tables) AS tbl
-                ),
-                per_table AS (
-                    SELECT tbl,
-                           BOOL_OR(granularity = 'table') AS has_table_level
-                    FROM exploded GROUP BY tbl
-                ),
-                ranked AS (
-                    SELECT e.entity_id,
-                           ROW_NUMBER() OVER (
-                               PARTITION BY e.tbl
-                               ORDER BY
-                                   CASE WHEN h.has_table_level AND e.granularity = 'table' THEN 0
-                                        WHEN NOT h.has_table_level AND e.granularity = 'column' THEN 0
-                                        ELSE 1 END,
-                                   e.confidence DESC
-                           ) AS rn
-                    FROM exploded e
-                    JOIN per_table h ON e.tbl = h.tbl
-                )
-                SELECT entity_id,
-                       CASE WHEN MAX(CASE WHEN rn = 1 THEN 1 ELSE 0 END) = 1
-                            THEN 'primary' ELSE 'referenced' END AS computed_role
-                FROM ranked
-                GROUP BY entity_id
-            ) AS source
-            ON target.entity_id = source.entity_id
-            WHEN MATCHED AND (
-                COALESCE(target.entity_role, '') != source.computed_role
-                OR target.discovery_confidence IS NULL
-            ) THEN UPDATE SET
-                entity_role = source.computed_role,
-                discovery_confidence = COALESCE(target.discovery_confidence, target.confidence),
-                updated_at = CURRENT_TIMESTAMP()
-        """)
-        # UPDATE: Default entities with NULL/empty source_tables to 'referenced'.
-        # These entities were never EXPLODEd in the MERGE above (empty arrays
-        # produce zero rows from LATERAL VIEW EXPLODE), so they were never matched.
-        # WHY: Without this, orphaned entities would have entity_role=NULL, which
-        # breaks dashboard filters that expect every entity to have a role.
-        # TRADEOFFS: Setting them to 'referenced' is conservative -- they won't
-        # appear as primary for any table. If source_tables is populated later,
-        # the next classify_entity_roles run will re-evaluate.
-        self.spark.sql(f"""
-            UPDATE {ent_table}
-            SET entity_role = 'referenced', updated_at = CURRENT_TIMESTAMP()
-            WHERE (source_tables IS NULL OR SIZE(source_tables) = 0)
-              AND entity_role IS NULL
-        """)
-        counts = self.spark.sql(f"""
-            SELECT entity_role, COUNT(*) AS cnt
-            FROM {ent_table}
-            WHERE entity_role IN ('primary', 'referenced')
-            GROUP BY entity_role
-        """).collect()
-        role_counts = {r.entity_role: r.cnt for r in counts}
-        n_primary = role_counts.get("primary", 0)
-        n_referenced = role_counts.get("referenced", 0)
-        logger.info("classify_entity_roles: %d primary, %d referenced", n_primary, n_referenced)
-        return n_primary + n_referenced
+        return _classify_entity_roles_sql(
+            self.spark, self.config.fully_qualified_entities, table_names=table_names
+        )
 
-    def _deduplicate_primary_entities(self) -> int:
+    def _deduplicate_primary_entities(self, table_names=None) -> int:
         """Ensure each source table has at most one primary entity.
 
         When multiple entities share entity_role='primary' for the same
         source_tables entry, keep only the highest-confidence one and
         demote the rest to 'referenced'. Human-created entities
         (auto_discovered=FALSE) always win the ranking and are never
-        demoted, since those represent explicit steward overrides.
+        demoted, since those represent explicit steward overrides. *table_names*
+        scopes the deduplication.
         """
-        ent_table = self.config.fully_qualified_entities
-        self.spark.sql(f"""
-            MERGE INTO {ent_table} AS target
-            USING (
-                WITH exploded AS (
-                    SELECT entity_id, confidence, auto_discovered, tbl
-                    FROM {ent_table}
-                    LATERAL VIEW EXPLODE(source_tables) AS tbl
-                    WHERE entity_role = 'primary'
-                ),
-                ranked AS (
-                    SELECT entity_id, tbl,
-                           ROW_NUMBER() OVER (
-                               PARTITION BY tbl
-                               ORDER BY
-                                   CASE WHEN auto_discovered = FALSE THEN 0 ELSE 1 END,
-                                   confidence DESC
-                           ) AS rn
-                    FROM exploded
-                ),
-                losers AS (
-                    SELECT entity_id
-                    FROM ranked
-                    WHERE rn > 1
-                    GROUP BY entity_id
-                    HAVING entity_id NOT IN (
-                        SELECT entity_id FROM ranked WHERE rn = 1
-                    )
-                )
-                SELECT entity_id FROM losers
-            ) AS source
-            ON target.entity_id = source.entity_id
-            WHEN MATCHED AND target.auto_discovered = TRUE THEN UPDATE SET
-                entity_role = 'referenced',
-                updated_at = CURRENT_TIMESTAMP()
-        """)
-        counts = self.spark.sql(f"""
-            SELECT entity_role, COUNT(*) AS cnt
-            FROM {ent_table}
-            WHERE entity_role = 'primary'
-            GROUP BY entity_role
-        """).collect()
-        n_primary = counts[0].cnt if counts else 0
-        logger.info("_deduplicate_primary_entities: %d primary entities remain", n_primary)
-        return n_primary
+        return _deduplicate_primary_entities_sql(
+            self.spark, self.config.fully_qualified_entities, table_names=table_names
+        )
+
+    def _flag_low_confidence_primaries(self, table_names=None) -> int:
+        """Flag below-floor primary entities as needing human review.
+
+        Sets attributes['needs_human_review']='true' on primary entities whose
+        confidence is below _PRIMARY_CONFIDENCE_FLOOR. _build_structural_edges
+        then suppresses their instance_of edge. The map_filter drops any existing
+        key before re-adding it to avoid map_concat duplicate-key errors, and the
+        WHERE guard makes the UPDATE a no-op once flags are set (idempotent).
+        *table_names* scopes the flagging.
+        """
+        return _flag_low_confidence_primaries_sql(
+            self.spark, self.config.fully_qualified_entities,
+            table_names=table_names, primary_floor=self._PRIMARY_CONFIDENCE_FLOOR,
+        )
 
     def _build_bundle_property_index(self, entity_type: str) -> Dict[str, Tuple[str, str, Optional[str], Optional[Any]]]:
         """Build column_name_lower -> (role, property_name, edge, target_entity) from bundle properties."""
@@ -4590,7 +5162,7 @@ class OntologyBuilder:
 
         self.create_column_properties_table()
 
-        tn_clause = table_filter_sql(self.config.table_names or [], column="source_tables[0]")
+        tn_clause = table_filter_sql(self.config.table_names or [], column="get(source_tables, 0)")
         try:
             primary_ents = self.spark.sql(f"""
                 SELECT entity_id, entity_type, source_tables, source_columns
@@ -4972,6 +5544,50 @@ class OntologyBuilder:
                         "created_at": now,
                         "updated_at": now,
                     })
+
+            # Also emit edges from concrete edge_catalog entries (both domain and
+            # range constrained to specific entity types). Closes the gap where a
+            # bundle declares a relationship in edge_catalog but never mirrors it
+            # in any entity's per-entity `relationships:` block. Discovery-gated
+            # like the per-entity path; structural/unconstrained entries are
+            # skipped (subclass_of is handled by discover_named_relationships, and
+            # Any->Any entries carry no (src,dst) signal).
+            catalog = getattr(disc, "_edge_catalog", None)
+            if catalog is not None:
+                def _concrete(v):
+                    if v is None or v == "Any":
+                        return []
+                    return v if isinstance(v, list) else [v]
+                for entry in catalog.entries.values():
+                    if entry.category == "structural" or entry.is_unconstrained():
+                        continue
+                    domains = [d for d in _concrete(entry.domain) if d in discovered_types]
+                    ranges = [r for r in _concrete(entry.range) if r in discovered_types]
+                    for d in domains:
+                        for r in ranges:
+                            key = (d, r, entry.name)
+                            if key in seen:
+                                continue
+                            seen.add(key)
+                            rels.append({
+                                "relationship_id": str(uuid.uuid4()),
+                                "src_entity_type": d,
+                                "relationship_name": entry.name,
+                                "dst_entity_type": r,
+                                "cardinality": "unknown",
+                                "evidence_column": None,
+                                "evidence_table": None,
+                                "source": "bundle",
+                                "confidence": 0.8,
+                                "label": None,
+                                "facet": None,
+                                "sub_property_of": None,
+                                "ranges": [],
+                                "source_ontology": None,
+                                "edge_uri": entry.uri,
+                                "created_at": now,
+                                "updated_at": now,
+                            })
 
         if not rels:
             logger.info("emit_bundle_edges: no matching entity pairs found in tier-1 edges")
@@ -5538,11 +6154,15 @@ class OntologyBuilder:
 
         return ttl_path
 
-    def run(self, apply_tags=False):
+    def run(self, apply_tags=False, sweep_stale_entities: bool = False):
         """Execute the ontology building pipeline.
 
         Args:
             apply_tags: If True, write entity_type tags to UC tables/columns via ALTER TABLE SET TAGS.
+            sweep_stale_entities: On a non-incremental run, purge the current bundle's auto-discovered
+                entities (and orphan nodes) before re-discovery so stale rows that are no longer
+                produced are cleared. Steward locks (auto_discovered=FALSE) are preserved. Ignored in
+                incremental mode (a clean rebuild requires a full re-discovery pass).
 
         With incremental enabled, skips role/column-property/edge work when discovery finds zero new entities
         (classification only runs when table or column entities changed).
@@ -5582,9 +6202,9 @@ class OntologyBuilder:
                 if old_bundles:
                     msg = (
                         f"ontology_entities contains entities from bundle(s) {old_bundles} but current "
-                        f"bundle is '{current_bundle}'. Unvalidated entities from previous bundles will be "
-                        "purged. Validated entities will be preserved. Consider running with "
-                        "incremental=false for a clean rebuild."
+                        f"bundle is '{current_bundle}'. These coexist and are NOT deleted by a normal run. "
+                        "To clear a previous bundle's classification on specific tables, run "
+                        "non-incrementally with sweep_stale_entities=true (a table-scoped refresh)."
                     )
                     logger.warning(msg)
             except Exception:
@@ -5593,6 +6213,13 @@ class OntologyBuilder:
         _step("create_entities_table", self.create_entities_table)
         _step("create_metrics_table", self.create_metrics_table)
 
+        # Explicit sweep refresh: on a non-incremental sweep, evict the in-scope tables'
+        # auto-discovered entities (and orphan nodes) before re-discovery, which then repopulates
+        # them from the current bundle. Scoped to table_names so tables NOT in the run are never
+        # touched (other bundles keep coexisting); empty table_names = full-schema replacement.
+        if sweep_stale_entities and not self.config.incremental:
+            _step("sweep_refresh_purge", self._purge_entities_for_rebuild, self.config.table_names)
+
         table_discovered = _step("discover_table_entities", self.discover_and_store_entities)
         logger.info(f"Discovered {table_discovered} table-level entities")
 
@@ -5600,7 +6227,17 @@ class OntologyBuilder:
         logger.info(f"Discovered {column_discovered} column-level entities")
 
         if self.config.incremental and table_discovered == 0 and column_discovered == 0:
-            logger.info("Incremental mode: no new entities discovered, skipping classification and edge rebuild")
+            logger.info("Incremental mode: no new entities discovered, skipping discovery and edge rebuild")
+            # Still reconcile roles: confidence on existing in-scope entities may
+            # have shifted (e.g. via a prior validate run), which can flip primary/
+            # referenced even when no new entities were discovered. Scoped to
+            # table_names so out-of-scope entities (other bundles) are untouched.
+            roles_classified = _step(
+                "reconcile_entity_roles",
+                reconcile_entity_roles,
+                self.spark, self.config.fully_qualified_entities,
+                self.config.table_names or None, self._PRIMARY_CONFIDENCE_FLOOR,
+            )
             total_elapsed = _time.time() - pipeline_start
             logger.info(f"[timing] ontology_build_total: {total_elapsed:.1f}s (early exit)")
             try:
@@ -5614,7 +6251,7 @@ class OntologyBuilder:
                 "entity_types": entity_types,
                 "edges_added": 0,
                 "tags_applied": 0,
-                "roles_classified": 0,
+                "roles_classified": roles_classified,
                 "column_properties": 0,
                 "named_relationships": 0,
                 "bundle_edges": 0,
@@ -5629,11 +6266,19 @@ class OntologyBuilder:
         logger.info(f"Classified {roles_classified} entity roles (primary/referenced)")
 
         _step("deduplicate_primary_entities", self._deduplicate_primary_entities)
+        _step("flag_low_confidence_primaries", self._flag_low_confidence_primaries)
 
         col_props = _step("classify_column_properties", self.classify_column_properties)
         logger.info(f"Classified {col_props} column properties")
 
         _step("validate_entity_conformance", self.validate_entity_conformance)
+
+        # Relationships sweep (sweep only): ontology_relationships has no other delete path,
+        # so on a clean rebuild we purge all auto-generated rows before regenerating them via
+        # discover_named_relationships + emit_bundle_edges below. Clears stale fk_inferred,
+        # renamed/removed edges, and the categorized_as/category_of residue.
+        if sweep_stale_entities and not self.config.incremental:
+            _step("purge_stale_relationships", self._purge_stale_relationships)
 
         named_rels = _step("discover_named_relationships", self.discover_named_relationships)
         logger.info(f"Discovered {named_rels} named relationships")
@@ -5641,6 +6286,14 @@ class OntologyBuilder:
         bundle_rels = _step("emit_bundle_edges", self.emit_bundle_edges)
         logger.info(f"Emitted {bundle_rels} bundle-defined edges")
 
+        _step("seed_concept_parent_entities", self._seed_concept_parent_entities)
+        # Post-discovery orphan-seed cleanup (sweep only): now that the current bundle has its
+        # freshly discovered+seeded entities, drop table-less seeds of bundles that no longer
+        # have any table-attributed entities (e.g. after a bundle switch on the same tables).
+        # Must run here, not in _purge_entities_for_rebuild, whose pre-discovery snapshot can't
+        # see a foreign bundle as orphaned.
+        if sweep_stale_entities and not self.config.incremental:
+            _step("purge_orphaned_bundle_seeds", self._purge_orphaned_bundle_seeds)
         _step("sync_entity_nodes_to_graph", self._sync_entity_nodes_to_graph)
         _step("enrich_table_nodes_with_ontology", self._enrich_table_nodes_with_ontology)
 
@@ -5678,6 +6331,10 @@ class OntologyBuilder:
         if hierarchy_df is not None:
             edge_dfs.append(align_edge_schema(hierarchy_df))
 
+        category_df = _step("build_category_edges", self._build_category_edges)
+        if category_df is not None:
+            edge_dfs.append(align_edge_schema(category_df))
+
         rel_result = _step("discover_inter_entity_relationships", self.discover_inter_entity_relationships)
         if rel_result.get("edges_df") is not None:
             edge_dfs.append(align_edge_schema(rel_result["edges_df"]))
@@ -5688,7 +6345,11 @@ class OntologyBuilder:
 
         if edge_dfs:
             combined = reduce(lambda a, b: a.unionByName(b), edge_dfs).dropDuplicates(["edge_id"])
-            edges_added = merge_edges(self.spark, edges_table, combined, source_system="ontology")
+            # On a sweep run, also sweep stale ontology edges. Safe for coexistence: the edge
+            # builders read all surviving entities, so out-of-scope bundles' edges are regenerated
+            # into `combined` and preserved by the MERGE.
+            edges_added = merge_edges(self.spark, edges_table, combined,
+                                      source_system="ontology", sweep_stale=sweep_stale_entities)
         else:
             edges_added = 0
 
@@ -5744,7 +6405,7 @@ class OntologyBuilder:
             "turtle_path": turtle_path,
         }
 
-    def refresh_relationships(self, sweep_stale: bool = False, incremental: bool = True) -> Dict[str, Any]:
+    def refresh_relationships(self, sweep_stale: bool = False, sweep_stale_entities: bool = False, incremental: bool = True) -> Dict[str, Any]:
         """Re-run only edge-building steps after FK predictions are available.
 
         Intended to be called as a post-FK-prediction task so that FK-evidence-
@@ -5752,7 +6413,12 @@ class OntologyBuilder:
         without repeating entity discovery or column property classification.
 
         When incremental=True, returns early unless fk_predictions.updated_at exceeds
-        the latest ontology_relationships.updated_at for source='fk_inferred'.
+        the latest ontology_relationships.updated_at for source='fk_inferred'. Sweeping
+        (sweep_stale or sweep_stale_entities) suppresses the early exit so cleanup runs.
+
+        This task is edge-only: it never deletes entities (it does not re-discover them, so it
+        could not repopulate them). Entity refresh belongs to the full ontology run(). Here
+        sweep_stale_entities is treated as an alias for the edge sweep.
         """
         import time as _time
         from dbxmetagen.knowledge_graph import merge_edges, align_edge_schema
@@ -5760,9 +6426,10 @@ class OntologyBuilder:
 
         start = _time.time()
 
-        if incremental:
+        if incremental and not sweep_stale and not sweep_stale_entities:
             fk_table = f"{self.config.catalog_name}.{self.config.schema_name}.fk_predictions"
             rels_table = self.config.fully_qualified_relationships
+            ent_table = self.config.fully_qualified_entities
             try:
                 max_fk = self.spark.sql(
                     f"SELECT COALESCE(MAX(updated_at), TIMESTAMP '1970-01-01') AS mu FROM {fk_table}"
@@ -5771,17 +6438,37 @@ class OntologyBuilder:
                     f"SELECT COALESCE(MAX(updated_at), TIMESTAMP '1970-01-01') AS mu "
                     f"FROM {rels_table} WHERE source = 'fk_inferred'"
                 ).collect()[0].mu
-                if max_fk <= max_rel:
+                # Bundle edges are role-gated (emit_bundle_edges filters entity_role='primary').
+                # If entity roles were recomputed (e.g. by validate) after the last bundle-edge
+                # build, those edges are stale even when no new FK predictions exist. Re-run
+                # unless BOTH FK predictions and entity roles are no newer than the last build.
+                max_ent = self.spark.sql(
+                    f"SELECT COALESCE(MAX(updated_at), TIMESTAMP '1970-01-01') AS mu FROM {ent_table}"
+                ).collect()[0].mu
+                max_bundle = self.spark.sql(
+                    f"SELECT COALESCE(MAX(updated_at), TIMESTAMP '1970-01-01') AS mu "
+                    f"FROM {rels_table} WHERE source = 'bundle'"
+                ).collect()[0].mu
+                if max_fk <= max_rel and max_ent <= max_bundle:
                     logger.info(
-                        "Incremental: no new FK predictions since last relationship refresh "
-                        "(%s >= %s), skipping", max_rel, max_fk,
+                        "Incremental: no new FK predictions (%s >= %s) and no entity-role "
+                        "changes (%s >= %s) since last relationship refresh, skipping",
+                        max_rel, max_fk, max_bundle, max_ent,
                     )
                     return {"named_relationships": 0, "bundle_edges": 0, "graph_edges": 0}
             except Exception as e:
                 logger.debug("Incremental watermark check failed (%s), running full", e)
 
+        # Relationships sweep (non-incremental sweep only): purge all auto-generated rows so
+        # discover_named_relationships + emit_bundle_edges below regenerate them cleanly. This is
+        # the refresh-side counterpart to run()'s sweep, and the one that actually clears stale
+        # fk_inferred rows using fresh FK predictions (refresh runs after predict_foreign_keys).
+        if (sweep_stale or sweep_stale_entities) and not incremental:
+            self._purge_stale_relationships()
+
         named = self.discover_named_relationships()
         bundle = self.emit_bundle_edges()
+        self._seed_concept_parent_entities()
         self._sync_entity_nodes_to_graph()
 
         # UPDATE: Same legacy source_system backfill as in run() -- see comment there.
@@ -5806,6 +6493,10 @@ class OntologyBuilder:
         if hierarchy_df is not None:
             edge_dfs.append(align_edge_schema(hierarchy_df))
 
+        category_df = self._build_category_edges()
+        if category_df is not None:
+            edge_dfs.append(align_edge_schema(category_df))
+
         inter = self.discover_inter_entity_relationships()
         if inter.get("edges_df") is not None:
             edge_dfs.append(align_edge_schema(inter["edges_df"]))
@@ -5816,7 +6507,7 @@ class OntologyBuilder:
 
         if edge_dfs:
             combined = reduce(lambda a, b: a.unionByName(b), edge_dfs).dropDuplicates(["edge_id"])
-            total_edges = merge_edges(self.spark, edges_table, combined, source_system="ontology", sweep_stale=sweep_stale)
+            total_edges = merge_edges(self.spark, edges_table, combined, source_system="ontology", sweep_stale=(sweep_stale or sweep_stale_entities))
         else:
             total_edges = 0
 
@@ -5839,6 +6530,7 @@ def refresh_ontology_relationships(
     model_endpoint: Optional[str] = None,
     table_names: Optional[List[str]] = None,
     sweep_stale: bool = False,
+    sweep_stale_entities: bool = False,
     incremental: bool = True,
 ) -> Dict[str, Any]:
     """Convenience function to refresh ontology edges after FK prediction."""
@@ -5851,7 +6543,9 @@ def refresh_ontology_relationships(
         table_names=table_names,
     )
     builder = OntologyBuilder(spark, config, model_endpoint=model_endpoint)
-    return builder.refresh_relationships(sweep_stale=sweep_stale, incremental=incremental)
+    return builder.refresh_relationships(
+        sweep_stale=sweep_stale, sweep_stale_entities=sweep_stale_entities, incremental=incremental
+    )
 
 
 def build_ontology(
@@ -5868,6 +6562,7 @@ def build_ontology(
     ontology_vs_index: str = "",
     vs_endpoint_name: str = "dbxmetagen-vs",
     federation_mode: bool = False,
+    sweep_stale_entities: bool = False,
 ) -> Dict[str, Any]:
     """Convenience function to build the ontology.
 
@@ -5887,6 +6582,8 @@ def build_ontology(
             When set, entity/edge classification uses HYBRID vector search.
         vs_endpoint_name: Vector Search endpoint name for ontology queries.
         federation_mode: Use SET TAG ON syntax for federated (FOREIGN) tables.
+        sweep_stale_entities: On a non-incremental run, clean-rebuild the current bundle's
+            auto-discovered entities before re-discovery (steward locks preserved).
     """
     config = OntologyConfig(
         catalog_name=catalog_name,
@@ -5901,4 +6598,4 @@ def build_ontology(
         federation_mode=federation_mode,
     )
     builder = OntologyBuilder(spark, config, model_endpoint=model_endpoint)
-    return builder.run(apply_tags=apply_tags)
+    return builder.run(apply_tags=apply_tags, sweep_stale_entities=sweep_stale_entities)

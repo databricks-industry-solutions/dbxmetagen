@@ -4,7 +4,8 @@ Account:
   label: Account
   source_ontology: FHIR R4
   uri: http://hl7.org/fhir/Account
-  parents: []
+  parents:
+  - DomainResource
   edges:
   - Account.coverage
   - Account.guarantor
@@ -22,7 +23,8 @@ AdverseEvent:
   label: AdverseEvent
   source_ontology: FHIR R4
   uri: http://hl7.org/fhir/AdverseEvent
-  parents: []
+  parents:
+  - DomainResource
   edges:
   - AdverseEvent.suspectEntity
   - AdverseEvent.actuality
@@ -38,7 +40,8 @@ AllergyIntolerance:
   label: AllergyIntolerance
   source_ontology: FHIR R4
   uri: http://hl7.org/fhir/AllergyIntolerance
-  parents: []
+  parents:
+  - DomainResource
   edges:
   - AllergyIntolerance.reaction
   - AllergyIntolerance.asserter
@@ -55,7 +58,8 @@ Appointment:
   label: Appointment
   source_ontology: FHIR R4
   uri: http://hl7.org/fhir/Appointment
-  parents: []
+  parents:
+  - DomainResource
   edges:
   - Appointment.participant
   - Appointment.appointmentType
@@ -71,7 +75,8 @@ AppointmentResponse:
   label: AppointmentResponse
   source_ontology: FHIR R4
   uri: http://hl7.org/fhir/AppointmentResponse
-  parents: []
+  parents:
+  - DomainResource
   edges:
   - AppointmentResponse.actor
   - AppointmentResponse.appointment
@@ -88,7 +93,8 @@ AuditEvent:
   label: AuditEvent
   source_ontology: FHIR R4
   uri: http://hl7.org/fhir/AuditEvent
-  parents: []
+  parents:
+  - DomainResource
   edges:
   - AuditEvent.agent
   - AuditEvent.entity
@@ -106,7 +112,8 @@ BiologicallyDerivedProduct:
   label: BiologicallyDerivedProduct
   source_ontology: FHIR R4
   uri: http://hl7.org/fhir/BiologicallyDerivedProduct
-  parents: []
+  parents:
+  - DomainResource
   edges:
   - BiologicallyDerivedProduct.collection
   - BiologicallyDerivedProduct.manipulation
@@ -123,7 +130,8 @@ BodyStructure:
   label: BodyStructure
   source_ontology: FHIR R4
   uri: http://hl7.org/fhir/BodyStructure
-  parents: []
+  parents:
+  - DomainResource
   edges:
   - BodyStructure.active
   - BodyStructure.description
@@ -140,7 +148,8 @@ CarePlan:
   label: CarePlan
   source_ontology: FHIR R4
   uri: http://hl7.org/fhir/CarePlan
-  parents: []
+  parents:
+  - DomainResource
   edges:
   - CarePlan.activity
   - CarePlan.addresses
@@ -156,7 +165,8 @@ CareTeam:
   label: CareTeam
   source_ontology: FHIR R4
   uri: http://hl7.org/fhir/CareTeam
-  parents: []
+  parents:
+  - DomainResource
   edges:
   - CareTeam.participant
   - CareTeam.category
@@ -172,7 +182,8 @@ CatalogEntry:
   label: CatalogEntry
   source_ontology: FHIR R4
   uri: http://hl7.org/fhir/CatalogEntry
-  parents: []
+  parents:
+  - DomainResource
   edges:
   - CatalogEntry.relatedEntry
   - CatalogEntry.additionalCharacteristic
@@ -190,7 +201,8 @@ ChargeItem:
   label: ChargeItem
   source_ontology: FHIR R4
   uri: http://hl7.org/fhir/ChargeItem
-  parents: []
+  parents:
+  - DomainResource
   edges:
   - ChargeItem.performer
   - ChargeItem.priceOverride
@@ -207,7 +219,8 @@ Claim:
   label: Claim
   source_ontology: FHIR R4
   uri: http://hl7.org/fhir/Claim
-  parents: []
+  parents:
+  - DomainResource
   edges:
   - Claim.accident
   - Claim.careTeam
@@ -223,7 +236,8 @@ ClaimResponse:
   label: ClaimResponse
   source_ontology: FHIR R4
   uri: http://hl7.org/fhir/ClaimResponse
-  parents: []
+  parents:
+  - DomainResource
   edges:
   - ClaimResponse.addItem
   - ClaimResponse.adjudication
@@ -241,7 +255,8 @@ ClinicalImpression:
   label: ClinicalImpression
   source_ontology: FHIR R4
   uri: http://hl7.org/fhir/ClinicalImpression
-  parents: []
+  parents:
+  - DomainResource
   edges:
   - ClinicalImpression.finding
   - ClinicalImpression.investigation
@@ -258,7 +273,8 @@ Communication:
   label: Communication
   source_ontology: FHIR R4
   uri: http://hl7.org/fhir/Communication
-  parents: []
+  parents:
+  - DomainResource
   edges:
   - Communication.payload
   - Communication.about
@@ -275,7 +291,8 @@ CommunicationRequest:
   label: CommunicationRequest
   source_ontology: FHIR R4
   uri: http://hl7.org/fhir/CommunicationRequest
-  parents: []
+  parents:
+  - DomainResource
   edges:
   - CommunicationRequest.payload
   - CommunicationRequest.about
@@ -293,7 +310,8 @@ Composition:
   label: Composition
   source_ontology: FHIR R4
   uri: http://hl7.org/fhir/Composition
-  parents: []
+  parents:
+  - DomainResource
   edges:
   - Composition.attester
   - Composition.event
@@ -309,7 +327,8 @@ Condition:
   label: Condition
   source_ontology: FHIR R4
   uri: http://hl7.org/fhir/Condition
-  parents: []
+  parents:
+  - DomainResource
   edges:
   - Condition.evidence
   - Condition.stage
@@ -326,7 +345,8 @@ Consent:
   label: Consent
   source_ontology: FHIR R4
   uri: http://hl7.org/fhir/Consent
-  parents: []
+  parents:
+  - DomainResource
   edges:
   - Consent.policy
   - Consent.provision
@@ -342,7 +362,8 @@ Contract:
   label: Contract
   source_ontology: FHIR R4
   uri: http://hl7.org/fhir/Contract
-  parents: []
+  parents:
+  - DomainResource
   edges:
   - Contract.contentDefinition
   - Contract.friendly
@@ -358,7 +379,8 @@ Coverage:
   label: Coverage
   source_ontology: FHIR R4
   uri: http://hl7.org/fhir/Coverage
-  parents: []
+  parents:
+  - DomainResource
   edges:
   - Coverage.class
   - Coverage.costToBeneficiary
@@ -376,7 +398,8 @@ CoverageEligibilityRequest:
   label: CoverageEligibilityRequest
   source_ontology: FHIR R4
   uri: http://hl7.org/fhir/CoverageEligibilityRequest
-  parents: []
+  parents:
+  - DomainResource
   edges:
   - CoverageEligibilityRequest.insurance
   - CoverageEligibilityRequest.item
@@ -392,7 +415,8 @@ CoverageEligibilityResponse:
   label: CoverageEligibilityResponse
   source_ontology: FHIR R4
   uri: http://hl7.org/fhir/CoverageEligibilityResponse
-  parents: []
+  parents:
+  - DomainResource
   edges:
   - CoverageEligibilityResponse.error
   - CoverageEligibilityResponse.insurance
@@ -409,7 +433,8 @@ DetectedIssue:
   label: DetectedIssue
   source_ontology: FHIR R4
   uri: http://hl7.org/fhir/DetectedIssue
-  parents: []
+  parents:
+  - DomainResource
   edges:
   - DetectedIssue.evidence
   - DetectedIssue.mitigation
@@ -426,7 +451,8 @@ Device:
   label: Device
   source_ontology: FHIR R4
   uri: http://hl7.org/fhir/Device
-  parents: []
+  parents:
+  - DomainResource
   edges:
   - Device.deviceName
   - Device.property
@@ -442,7 +468,8 @@ DeviceDefinition:
   label: DeviceDefinition
   source_ontology: FHIR R4
   uri: http://hl7.org/fhir/DeviceDefinition
-  parents: []
+  parents:
+  - DomainResource
   edges:
   - DeviceDefinition.capability
   - DeviceDefinition.deviceName
@@ -458,7 +485,8 @@ DeviceMetric:
   label: DeviceMetric
   source_ontology: FHIR R4
   uri: http://hl7.org/fhir/DeviceMetric
-  parents: []
+  parents:
+  - DomainResource
   edges:
   - DeviceMetric.calibration
   - DeviceMetric.category
@@ -475,7 +503,8 @@ DeviceRequest:
   label: DeviceRequest
   source_ontology: FHIR R4
   uri: http://hl7.org/fhir/DeviceRequest
-  parents: []
+  parents:
+  - DomainResource
   edges:
   - DeviceRequest.parameter
   - DeviceRequest.authoredOn
@@ -491,7 +520,8 @@ DeviceUseStatement:
   label: DeviceUseStatement
   source_ontology: FHIR R4
   uri: http://hl7.org/fhir/DeviceUseStatement
-  parents: []
+  parents:
+  - DomainResource
   edges:
   - DeviceUseStatement.basedOn
   - DeviceUseStatement.bodySite
@@ -509,7 +539,8 @@ DiagnosticReport:
   label: DiagnosticReport
   source_ontology: FHIR R4
   uri: http://hl7.org/fhir/DiagnosticReport
-  parents: []
+  parents:
+  - DomainResource
   edges:
   - DiagnosticReport.media
   - DiagnosticReport.basedOn
@@ -525,7 +556,8 @@ DocumentManifest:
   label: DocumentManifest
   source_ontology: FHIR R4
   uri: http://hl7.org/fhir/DocumentManifest
-  parents: []
+  parents:
+  - DomainResource
   edges:
   - DocumentManifest.related
   - DocumentManifest.author
@@ -543,7 +575,8 @@ DocumentReference:
   label: DocumentReference
   source_ontology: FHIR R4
   uri: http://hl7.org/fhir/DocumentReference
-  parents: []
+  parents:
+  - DomainResource
   edges:
   - DocumentReference.content
   - DocumentReference.context
@@ -560,7 +593,8 @@ EffectEvidenceSynthesis:
   label: EffectEvidenceSynthesis
   source_ontology: FHIR R4
   uri: http://hl7.org/fhir/EffectEvidenceSynthesis
-  parents: []
+  parents:
+  - DomainResource
   edges:
   - EffectEvidenceSynthesis.author
   - EffectEvidenceSynthesis.certainty
@@ -577,7 +611,8 @@ Encounter:
   label: Encounter
   source_ontology: FHIR R4
   uri: http://hl7.org/fhir/Encounter
-  parents: []
+  parents:
+  - DomainResource
   edges:
   - Encounter.classHistory
   - Encounter.diagnosis
@@ -594,7 +629,8 @@ Endpoint:
   label: Endpoint
   source_ontology: FHIR R4
   uri: http://hl7.org/fhir/Endpoint
-  parents: []
+  parents:
+  - DomainResource
   edges:
   - Endpoint.address
   - Endpoint.connectionType
@@ -610,7 +646,8 @@ EnrollmentRequest:
   label: EnrollmentRequest
   source_ontology: FHIR R4
   uri: http://hl7.org/fhir/EnrollmentRequest
-  parents: []
+  parents:
+  - DomainResource
   edges:
   - EnrollmentRequest.candidate
   - EnrollmentRequest.coverage
@@ -625,7 +662,8 @@ EnrollmentResponse:
   label: EnrollmentResponse
   source_ontology: FHIR R4
   uri: http://hl7.org/fhir/EnrollmentResponse
-  parents: []
+  parents:
+  - DomainResource
   edges:
   - EnrollmentResponse.created
   - EnrollmentResponse.disposition
@@ -642,7 +680,8 @@ EpisodeOfCare:
   label: EpisodeOfCare
   source_ontology: FHIR R4
   uri: http://hl7.org/fhir/EpisodeOfCare
-  parents: []
+  parents:
+  - DomainResource
   edges:
   - EpisodeOfCare.diagnosis
   - EpisodeOfCare.statusHistory
@@ -659,7 +698,8 @@ Evidence:
   label: Evidence
   source_ontology: FHIR R4
   uri: http://hl7.org/fhir/Evidence
-  parents: []
+  parents:
+  - DomainResource
   edges:
   - Evidence.author
   - Evidence.contact
@@ -675,7 +715,8 @@ EvidenceVariable:
   label: EvidenceVariable
   source_ontology: FHIR R4
   uri: http://hl7.org/fhir/EvidenceVariable
-  parents: []
+  parents:
+  - DomainResource
   edges:
   - EvidenceVariable.author
   - EvidenceVariable.characteristic
@@ -692,7 +733,8 @@ ExplanationOfBenefit:
   label: ExplanationOfBenefit
   source_ontology: FHIR R4
   uri: http://hl7.org/fhir/ExplanationOfBenefit
-  parents: []
+  parents:
+  - DomainResource
   edges:
   - ExplanationOfBenefit.accident
   - ExplanationOfBenefit.addItem
@@ -708,7 +750,8 @@ FamilyMemberHistory:
   label: FamilyMemberHistory
   source_ontology: FHIR R4
   uri: http://hl7.org/fhir/FamilyMemberHistory
-  parents: []
+  parents:
+  - DomainResource
   edges:
   - FamilyMemberHistory.condition
   - FamilyMemberHistory.ageAge
@@ -724,7 +767,8 @@ Flag:
   label: Flag
   source_ontology: FHIR R4
   uri: http://hl7.org/fhir/Flag
-  parents: []
+  parents:
+  - DomainResource
   edges:
   - Flag.author
   - Flag.category
@@ -741,7 +785,8 @@ Goal:
   label: Goal
   source_ontology: FHIR R4
   uri: http://hl7.org/fhir/Goal
-  parents: []
+  parents:
+  - DomainResource
   edges:
   - Goal.target
   - Goal.achievementStatus
@@ -759,7 +804,8 @@ Group:
   label: Group
   source_ontology: FHIR R4
   uri: http://hl7.org/fhir/Group
-  parents: []
+  parents:
+  - DomainResource
   edges:
   - Group.characteristic
   - Group.member
@@ -776,7 +822,8 @@ GuidanceResponse:
   label: GuidanceResponse
   source_ontology: FHIR R4
   uri: http://hl7.org/fhir/GuidanceResponse
-  parents: []
+  parents:
+  - DomainResource
   edges:
   - GuidanceResponse.dataRequirement
   - GuidanceResponse.encounter
@@ -791,7 +838,8 @@ HealthcareService:
   label: HealthcareService
   source_ontology: FHIR R4
   uri: http://hl7.org/fhir/HealthcareService
-  parents: []
+  parents:
+  - DomainResource
   edges:
   - HealthcareService.availableTime
   - HealthcareService.eligibility
@@ -809,7 +857,8 @@ ImagingStudy:
   label: ImagingStudy
   source_ontology: FHIR R4
   uri: http://hl7.org/fhir/ImagingStudy
-  parents: []
+  parents:
+  - DomainResource
   edges:
   - ImagingStudy.series
   - ImagingStudy.basedOn
@@ -825,7 +874,8 @@ Immunization:
   label: Immunization
   source_ontology: FHIR R4
   uri: http://hl7.org/fhir/Immunization
-  parents: []
+  parents:
+  - DomainResource
   edges:
   - Immunization.education
   - Immunization.performer
@@ -841,7 +891,8 @@ ImmunizationEvaluation:
   label: ImmunizationEvaluation
   source_ontology: FHIR R4
   uri: http://hl7.org/fhir/ImmunizationEvaluation
-  parents: []
+  parents:
+  - DomainResource
   edges:
   - ImmunizationEvaluation.authority
   - ImmunizationEvaluation.date
@@ -857,7 +908,8 @@ ImmunizationRecommendation:
   label: ImmunizationRecommendation
   source_ontology: FHIR R4
   uri: http://hl7.org/fhir/ImmunizationRecommendation
-  parents: []
+  parents:
+  - DomainResource
   edges:
   - ImmunizationRecommendation.recommendation
   - ImmunizationRecommendation.authority
@@ -869,7 +921,8 @@ InsurancePlan:
   label: InsurancePlan
   source_ontology: FHIR R4
   uri: http://hl7.org/fhir/InsurancePlan
-  parents: []
+  parents:
+  - DomainResource
   edges:
   - InsurancePlan.contact
   - InsurancePlan.coverage
@@ -885,7 +938,8 @@ Invoice:
   label: Invoice
   source_ontology: FHIR R4
   uri: http://hl7.org/fhir/Invoice
-  parents: []
+  parents:
+  - DomainResource
   edges:
   - Invoice.lineItem
   - Invoice.participant
@@ -901,7 +955,8 @@ Linkage:
   label: Linkage
   source_ontology: FHIR R4
   uri: http://hl7.org/fhir/Linkage
-  parents: []
+  parents:
+  - DomainResource
   edges:
   - Linkage.item
   - Linkage.active
@@ -911,7 +966,8 @@ List:
   label: List
   source_ontology: FHIR R4
   uri: http://hl7.org/fhir/List
-  parents: []
+  parents:
+  - DomainResource
   edges:
   - List.entry
   - List.code
@@ -928,7 +984,8 @@ Location:
   label: Location
   source_ontology: FHIR R4
   uri: http://hl7.org/fhir/Location
-  parents: []
+  parents:
+  - DomainResource
   edges:
   - Location.hoursOfOperation
   - Location.position
@@ -943,7 +1000,8 @@ Measure:
   label: Measure
   source_ontology: FHIR R4
   uri: http://hl7.org/fhir/Measure
-  parents: []
+  parents:
+  - DomainResource
   edges:
   - Measure.author
   - Measure.contact
@@ -959,7 +1017,8 @@ MeasureReport:
   label: MeasureReport
   source_ontology: FHIR R4
   uri: http://hl7.org/fhir/MeasureReport
-  parents: []
+  parents:
+  - DomainResource
   edges:
   - MeasureReport.group
   - MeasureReport.date
@@ -975,7 +1034,8 @@ Media:
   label: Media
   source_ontology: FHIR R4
   uri: http://hl7.org/fhir/Media
-  parents: []
+  parents:
+  - DomainResource
   edges:
   - Media.basedOn
   - Media.bodySite
@@ -992,7 +1052,8 @@ Medication:
   label: Medication
   source_ontology: FHIR R4
   uri: http://hl7.org/fhir/Medication
-  parents: []
+  parents:
+  - DomainResource
   edges:
   - Medication.batch
   - Medication.ingredient
@@ -1010,7 +1071,8 @@ MedicationAdministration:
   label: MedicationAdministration
   source_ontology: FHIR R4
   uri: http://hl7.org/fhir/MedicationAdministration
-  parents: []
+  parents:
+  - DomainResource
   edges:
   - MedicationAdministration.dosage
   - MedicationAdministration.performer
@@ -1028,7 +1090,8 @@ MedicationDispense:
   label: MedicationDispense
   source_ontology: FHIR R4
   uri: http://hl7.org/fhir/MedicationDispense
-  parents: []
+  parents:
+  - DomainResource
   edges:
   - MedicationDispense.dosageInstruction
   - MedicationDispense.performer
@@ -1043,7 +1106,8 @@ MedicationKnowledge:
   label: MedicationKnowledge
   source_ontology: FHIR R4
   uri: http://hl7.org/fhir/MedicationKnowledge
-  parents: []
+  parents:
+  - DomainResource
   edges:
   - MedicationKnowledge.administrationGuidelines
   - MedicationKnowledge.cost
@@ -1061,7 +1125,8 @@ MedicationRequest:
   label: MedicationRequest
   source_ontology: FHIR R4
   uri: http://hl7.org/fhir/MedicationRequest
-  parents: []
+  parents:
+  - DomainResource
   edges:
   - MedicationRequest.dispenseRequest
   - MedicationRequest.dosageInstruction
@@ -1079,7 +1144,8 @@ MedicationStatement:
   label: MedicationStatement
   source_ontology: FHIR R4
   uri: http://hl7.org/fhir/MedicationStatement
-  parents: []
+  parents:
+  - DomainResource
   edges:
   - MedicationStatement.dosage
   - MedicationStatement.basedOn
@@ -1095,7 +1161,8 @@ MedicinalProduct:
   label: MedicinalProduct
   source_ontology: FHIR R4
   uri: http://hl7.org/fhir/MedicinalProduct
-  parents: []
+  parents:
+  - DomainResource
   edges:
   - MedicinalProduct.manufacturingBusinessOperation
   - MedicinalProduct.marketingStatus
@@ -1110,7 +1177,8 @@ MedicinalProductAuthorization:
   label: MedicinalProductAuthorization
   source_ontology: FHIR R4
   uri: http://hl7.org/fhir/MedicinalProductAuthorization
-  parents: []
+  parents:
+  - DomainResource
   edges:
   - MedicinalProductAuthorization.jurisdictionalAuthorization
   - MedicinalProductAuthorization.procedure
@@ -1126,7 +1194,8 @@ MedicinalProductContraindication:
   label: MedicinalProductContraindication
   source_ontology: FHIR R4
   uri: http://hl7.org/fhir/MedicinalProductContraindication
-  parents: []
+  parents:
+  - DomainResource
   edges:
   - MedicinalProductContraindication.otherTherapy
   - MedicinalProductContraindication.population
@@ -1140,7 +1209,8 @@ MedicinalProductIndication:
   label: MedicinalProductIndication
   source_ontology: FHIR R4
   uri: http://hl7.org/fhir/MedicinalProductIndication
-  parents: []
+  parents:
+  - DomainResource
   edges:
   - MedicinalProductIndication.otherTherapy
   - MedicinalProductIndication.population
@@ -1155,7 +1225,8 @@ MedicinalProductIngredient:
   label: MedicinalProductIngredient
   source_ontology: FHIR R4
   uri: http://hl7.org/fhir/MedicinalProductIngredient
-  parents: []
+  parents:
+  - DomainResource
   edges:
   - MedicinalProductIngredient.specifiedSubstance
   - MedicinalProductIngredient.substance
@@ -1169,7 +1240,8 @@ MedicinalProductInteraction:
   label: MedicinalProductInteraction
   source_ontology: FHIR R4
   uri: http://hl7.org/fhir/MedicinalProductInteraction
-  parents: []
+  parents:
+  - DomainResource
   edges:
   - MedicinalProductInteraction.interactant
   - MedicinalProductInteraction.description
@@ -1183,7 +1255,8 @@ MedicinalProductManufactured:
   label: MedicinalProductManufactured
   source_ontology: FHIR R4
   uri: http://hl7.org/fhir/MedicinalProductManufactured
-  parents: []
+  parents:
+  - DomainResource
   edges:
   - MedicinalProductManufactured.physicalCharacteristics
   - MedicinalProductManufactured.ingredient
@@ -1197,7 +1270,8 @@ MedicinalProductPackaged:
   label: MedicinalProductPackaged
   source_ontology: FHIR R4
   uri: http://hl7.org/fhir/MedicinalProductPackaged
-  parents: []
+  parents:
+  - DomainResource
   edges:
   - MedicinalProductPackaged.batchIdentifier
   - MedicinalProductPackaged.marketingStatus
@@ -1213,7 +1287,8 @@ MedicinalProductPharmaceutical:
   label: MedicinalProductPharmaceutical
   source_ontology: FHIR R4
   uri: http://hl7.org/fhir/MedicinalProductPharmaceutical
-  parents: []
+  parents:
+  - DomainResource
   edges:
   - MedicinalProductPharmaceutical.characteristics
   - MedicinalProductPharmaceutical.routeOfAdministration
@@ -1227,7 +1302,8 @@ MedicinalProductUndesirableEffect:
   label: MedicinalProductUndesirableEffect
   source_ontology: FHIR R4
   uri: http://hl7.org/fhir/MedicinalProductUndesirableEffect
-  parents: []
+  parents:
+  - DomainResource
   edges:
   - MedicinalProductUndesirableEffect.population
   - MedicinalProductUndesirableEffect.classification
@@ -1242,7 +1318,8 @@ MessageHeader:
   label: MessageHeader
   source_ontology: FHIR R4
   uri: http://hl7.org/fhir/MessageHeader
-  parents: []
+  parents:
+  - DomainResource
   edges:
   - MessageHeader.destination
   - MessageHeader.response
@@ -1257,7 +1334,8 @@ MolecularSequence:
   label: MolecularSequence
   source_ontology: FHIR R4
   uri: http://hl7.org/fhir/MolecularSequence
-  parents: []
+  parents:
+  - DomainResource
   edges:
   - MolecularSequence.quality
   - MolecularSequence.referenceSeq
@@ -1273,7 +1351,8 @@ NutritionOrder:
   label: NutritionOrder
   source_ontology: FHIR R4
   uri: http://hl7.org/fhir/NutritionOrder
-  parents: []
+  parents:
+  - DomainResource
   edges:
   - NutritionOrder.enteralFormula
   - NutritionOrder.oralDiet
@@ -1289,7 +1368,8 @@ Observation:
   label: Observation
   source_ontology: FHIR R4
   uri: http://hl7.org/fhir/Observation
-  parents: []
+  parents:
+  - DomainResource
   edges:
   - Observation.component
   - Observation.referenceRange
@@ -1307,7 +1387,8 @@ Organization:
   label: Organization
   source_ontology: FHIR R4
   uri: http://hl7.org/fhir/Organization
-  parents: []
+  parents:
+  - DomainResource
   edges:
   - Organization.contact
   - Organization.active
@@ -1323,7 +1404,8 @@ OrganizationAffiliation:
   label: OrganizationAffiliation
   source_ontology: FHIR R4
   uri: http://hl7.org/fhir/OrganizationAffiliation
-  parents: []
+  parents:
+  - DomainResource
   edges:
   - OrganizationAffiliation.active
   - OrganizationAffiliation.code
@@ -1339,7 +1421,8 @@ Patient:
   label: Patient
   source_ontology: FHIR R4
   uri: http://hl7.org/fhir/Patient
-  parents: []
+  parents:
+  - DomainResource
   edges:
   - Patient.communication
   - Patient.contact
@@ -1355,7 +1438,8 @@ PaymentNotice:
   label: PaymentNotice
   source_ontology: FHIR R4
   uri: http://hl7.org/fhir/PaymentNotice
-  parents: []
+  parents:
+  - DomainResource
   edges:
   - PaymentNotice.amount
   - PaymentNotice.created
@@ -1371,7 +1455,8 @@ PaymentReconciliation:
   label: PaymentReconciliation
   source_ontology: FHIR R4
   uri: http://hl7.org/fhir/PaymentReconciliation
-  parents: []
+  parents:
+  - DomainResource
   edges:
   - PaymentReconciliation.detail
   - PaymentReconciliation.paymentAmount
@@ -1387,7 +1472,8 @@ Person:
   label: Person
   source_ontology: FHIR R4
   uri: http://hl7.org/fhir/Person
-  parents: []
+  parents:
+  - DomainResource
   edges:
   - Person.link
   - Person.active
@@ -1403,7 +1489,8 @@ Practitioner:
   label: Practitioner
   source_ontology: FHIR R4
   uri: http://hl7.org/fhir/Practitioner
-  parents: []
+  parents:
+  - DomainResource
   edges:
   - Practitioner.qualification
   - Practitioner.active
@@ -1419,7 +1506,8 @@ PractitionerRole:
   label: PractitionerRole
   source_ontology: FHIR R4
   uri: http://hl7.org/fhir/PractitionerRole
-  parents: []
+  parents:
+  - DomainResource
   edges:
   - PractitionerRole.availableTime
   - PractitionerRole.notAvailable
@@ -1436,7 +1524,8 @@ Procedure:
   label: Procedure
   source_ontology: FHIR R4
   uri: http://hl7.org/fhir/Procedure
-  parents: []
+  parents:
+  - DomainResource
   edges:
   - Procedure.focalDevice
   - Procedure.performer
@@ -1454,7 +1543,8 @@ Provenance:
   label: Provenance
   source_ontology: FHIR R4
   uri: http://hl7.org/fhir/Provenance
-  parents: []
+  parents:
+  - DomainResource
   edges:
   - Provenance.agent
   - Provenance.entity
@@ -1471,7 +1561,8 @@ Questionnaire:
   label: Questionnaire
   source_ontology: FHIR R4
   uri: http://hl7.org/fhir/Questionnaire
-  parents: []
+  parents:
+  - DomainResource
   edges:
   - Questionnaire.contact
   - Questionnaire.item
@@ -1488,7 +1579,8 @@ QuestionnaireResponse:
   label: QuestionnaireResponse
   source_ontology: FHIR R4
   uri: http://hl7.org/fhir/QuestionnaireResponse
-  parents: []
+  parents:
+  - DomainResource
   edges:
   - QuestionnaireResponse.item
   - QuestionnaireResponse.author
@@ -1505,7 +1597,8 @@ RelatedPerson:
   label: RelatedPerson
   source_ontology: FHIR R4
   uri: http://hl7.org/fhir/RelatedPerson
-  parents: []
+  parents:
+  - DomainResource
   edges:
   - RelatedPerson.communication
   - RelatedPerson.active
@@ -1521,7 +1614,8 @@ RequestGroup:
   label: RequestGroup
   source_ontology: FHIR R4
   uri: http://hl7.org/fhir/RequestGroup
-  parents: []
+  parents:
+  - DomainResource
   edges:
   - RequestGroup.action
   - RequestGroup.author
@@ -1538,7 +1632,8 @@ ResearchDefinition:
   label: ResearchDefinition
   source_ontology: FHIR R4
   uri: http://hl7.org/fhir/ResearchDefinition
-  parents: []
+  parents:
+  - DomainResource
   edges:
   - ResearchDefinition.author
   - ResearchDefinition.contact
@@ -1554,7 +1649,8 @@ ResearchElementDefinition:
   label: ResearchElementDefinition
   source_ontology: FHIR R4
   uri: http://hl7.org/fhir/ResearchElementDefinition
-  parents: []
+  parents:
+  - DomainResource
   edges:
   - ResearchElementDefinition.author
   - ResearchElementDefinition.characteristic
@@ -1572,7 +1668,8 @@ ResearchStudy:
   label: ResearchStudy
   source_ontology: FHIR R4
   uri: http://hl7.org/fhir/ResearchStudy
-  parents: []
+  parents:
+  - DomainResource
   edges:
   - ResearchStudy.arm
   - ResearchStudy.contact
@@ -1588,7 +1685,8 @@ ResearchSubject:
   label: ResearchSubject
   source_ontology: FHIR R4
   uri: http://hl7.org/fhir/ResearchSubject
-  parents: []
+  parents:
+  - DomainResource
   edges:
   - ResearchSubject.actualArm
   - ResearchSubject.assignedArm
@@ -1604,7 +1702,8 @@ RiskAssessment:
   label: RiskAssessment
   source_ontology: FHIR R4
   uri: http://hl7.org/fhir/RiskAssessment
-  parents: []
+  parents:
+  - DomainResource
   edges:
   - RiskAssessment.prediction
   - RiskAssessment.basedOn
@@ -1621,7 +1720,8 @@ RiskEvidenceSynthesis:
   label: RiskEvidenceSynthesis
   source_ontology: FHIR R4
   uri: http://hl7.org/fhir/RiskEvidenceSynthesis
-  parents: []
+  parents:
+  - DomainResource
   edges:
   - RiskEvidenceSynthesis.author
   - RiskEvidenceSynthesis.certainty
@@ -1636,7 +1736,8 @@ Schedule:
   label: Schedule
   source_ontology: FHIR R4
   uri: http://hl7.org/fhir/Schedule
-  parents: []
+  parents:
+  - DomainResource
   edges:
   - Schedule.active
   - Schedule.actor
@@ -1652,7 +1753,8 @@ ServiceRequest:
   label: ServiceRequest
   source_ontology: FHIR R4
   uri: http://hl7.org/fhir/ServiceRequest
-  parents: []
+  parents:
+  - DomainResource
   edges:
   - ServiceRequest.asNeededBoolean
   - ServiceRequest.asNeededCodeableConcept
@@ -1667,7 +1769,8 @@ Slot:
   label: Slot
   source_ontology: FHIR R4
   uri: http://hl7.org/fhir/Slot
-  parents: []
+  parents:
+  - DomainResource
   edges:
   - Slot.appointmentType
   - Slot.comment
@@ -1682,7 +1785,8 @@ Specimen:
   label: Specimen
   source_ontology: FHIR R4
   uri: http://hl7.org/fhir/Specimen
-  parents: []
+  parents:
+  - DomainResource
   edges:
   - Specimen.collection
   - Specimen.container
@@ -1700,7 +1804,8 @@ Subscription:
   label: Subscription
   source_ontology: FHIR R4
   uri: http://hl7.org/fhir/Subscription
-  parents: []
+  parents:
+  - DomainResource
   edges:
   - Subscription.channel
   - Subscription.contact
@@ -1714,7 +1819,8 @@ Substance:
   label: Substance
   source_ontology: FHIR R4
   uri: http://hl7.org/fhir/Substance
-  parents: []
+  parents:
+  - DomainResource
   edges:
   - Substance.ingredient
   - Substance.instance
@@ -1730,7 +1836,8 @@ SubstanceNucleicAcid:
   label: SubstanceNucleicAcid
   source_ontology: FHIR R4
   uri: http://hl7.org/fhir/SubstanceNucleicAcid
-  parents: []
+  parents:
+  - DomainResource
   edges:
   - SubstanceNucleicAcid.subunit
   - SubstanceNucleicAcid.areaOfHybridisation
@@ -1742,7 +1849,8 @@ SubstancePolymer:
   label: SubstancePolymer
   source_ontology: FHIR R4
   uri: http://hl7.org/fhir/SubstancePolymer
-  parents: []
+  parents:
+  - DomainResource
   edges:
   - SubstancePolymer.monomerSet
   - SubstancePolymer.repeat
@@ -1758,7 +1866,8 @@ SubstanceProtein:
   label: SubstanceProtein
   source_ontology: FHIR R4
   uri: http://hl7.org/fhir/SubstanceProtein
-  parents: []
+  parents:
+  - DomainResource
   edges:
   - SubstanceProtein.subunit
   - SubstanceProtein.disulfideLinkage
@@ -1769,7 +1878,8 @@ SubstanceReferenceInformation:
   label: SubstanceReferenceInformation
   source_ontology: FHIR R4
   uri: http://hl7.org/fhir/SubstanceReferenceInformation
-  parents: []
+  parents:
+  - DomainResource
   edges:
   - SubstanceReferenceInformation.classification
   - SubstanceReferenceInformation.gene
@@ -1784,7 +1894,8 @@ SubstanceSourceMaterial:
   label: SubstanceSourceMaterial
   source_ontology: FHIR R4
   uri: http://hl7.org/fhir/SubstanceSourceMaterial
-  parents: []
+  parents:
+  - DomainResource
   edges:
   - SubstanceSourceMaterial.fractionDescription
   - SubstanceSourceMaterial.organism
@@ -1800,7 +1911,8 @@ SubstanceSpecification:
   label: SubstanceSpecification
   source_ontology: FHIR R4
   uri: http://hl7.org/fhir/SubstanceSpecification
-  parents: []
+  parents:
+  - DomainResource
   edges:
   - SubstanceSpecification.code
   - SubstanceSpecification.moiety
@@ -1815,7 +1927,8 @@ SupplyDelivery:
   label: SupplyDelivery
   source_ontology: FHIR R4
   uri: http://hl7.org/fhir/SupplyDelivery
-  parents: []
+  parents:
+  - DomainResource
   edges:
   - SupplyDelivery.suppliedItem
   - SupplyDelivery.basedOn
@@ -1831,7 +1944,8 @@ SupplyRequest:
   label: SupplyRequest
   source_ontology: FHIR R4
   uri: http://hl7.org/fhir/SupplyRequest
-  parents: []
+  parents:
+  - DomainResource
   edges:
   - SupplyRequest.parameter
   - SupplyRequest.authoredOn
@@ -1846,7 +1960,8 @@ Task:
   label: Task
   source_ontology: FHIR R4
   uri: http://hl7.org/fhir/Task
-  parents: []
+  parents:
+  - DomainResource
   edges:
   - Task.input
   - Task.output
@@ -1862,7 +1977,8 @@ VerificationResult:
   label: VerificationResult
   source_ontology: FHIR R4
   uri: http://hl7.org/fhir/VerificationResult
-  parents: []
+  parents:
+  - DomainResource
   edges:
   - VerificationResult.attestation
   - VerificationResult.primarySource
@@ -1878,7 +1994,8 @@ VisionPrescription:
   label: VisionPrescription
   source_ontology: FHIR R4
   uri: http://hl7.org/fhir/VisionPrescription
-  parents: []
+  parents:
+  - DomainResource
   edges:
   - VisionPrescription.lensSpecification
   - VisionPrescription.created
@@ -1888,3 +2005,166 @@ VisionPrescription:
   - VisionPrescription.patient
   - VisionPrescription.prescriber
   - VisionPrescription.status
+DomainResource:
+  description: DomainResource (abstract base class)
+  label: DomainResource
+  source_ontology: custom
+  uri: ''
+  parents:
+  - Resource
+  edges: []
+Resource:
+  description: Resource (abstract base class)
+  label: Resource
+  source_ontology: custom
+  uri: ''
+  parents:
+  - Thing
+  edges: []
+Thing:
+  description: Thing (abstract base class)
+  label: Thing
+  source_ontology: custom
+  uri: ''
+  parents: []
+  edges: []
+administrative.device:
+  description: administrative.device (category)
+  label: administrative.device
+  source_ontology: custom
+  uri: ''
+  parents: []
+  edges: []
+administrative.entity:
+  description: administrative.entity (category)
+  label: administrative.entity
+  source_ontology: custom
+  uri: ''
+  parents: []
+  edges: []
+administrative.group:
+  description: administrative.group (category)
+  label: administrative.group
+  source_ontology: custom
+  uri: ''
+  parents: []
+  edges: []
+administrative.individual:
+  description: administrative.individual (category)
+  label: administrative.individual
+  source_ontology: custom
+  uri: ''
+  parents: []
+  edges: []
+clinical.careprovision:
+  description: clinical.careprovision (category)
+  label: clinical.careprovision
+  source_ontology: custom
+  uri: ''
+  parents: []
+  edges: []
+clinical.diagnostics:
+  description: clinical.diagnostics (category)
+  label: clinical.diagnostics
+  source_ontology: custom
+  uri: ''
+  parents: []
+  edges: []
+clinical.general:
+  description: clinical.general (category)
+  label: clinical.general
+  source_ontology: custom
+  uri: ''
+  parents: []
+  edges: []
+clinical.medication:
+  description: clinical.medication (category)
+  label: clinical.medication
+  source_ontology: custom
+  uri: ''
+  parents: []
+  edges: []
+conformance.content:
+  description: conformance.content (category)
+  label: conformance.content
+  source_ontology: custom
+  uri: ''
+  parents: []
+  edges: []
+financial.billing:
+  description: financial.billing (category)
+  label: financial.billing
+  source_ontology: custom
+  uri: ''
+  parents: []
+  edges: []
+financial.other:
+  description: financial.other (category)
+  label: financial.other
+  source_ontology: custom
+  uri: ''
+  parents: []
+  edges: []
+financial.payment:
+  description: financial.payment (category)
+  label: financial.payment
+  source_ontology: custom
+  uri: ''
+  parents: []
+  edges: []
+financial.support:
+  description: financial.support (category)
+  label: financial.support
+  source_ontology: custom
+  uri: ''
+  parents: []
+  edges: []
+infrastructure.documents:
+  description: infrastructure.documents (category)
+  label: infrastructure.documents
+  source_ontology: custom
+  uri: ''
+  parents: []
+  edges: []
+infrastructure.exchange:
+  description: infrastructure.exchange (category)
+  label: infrastructure.exchange
+  source_ontology: custom
+  uri: ''
+  parents: []
+  edges: []
+infrastructure.information:
+  description: infrastructure.information (category)
+  label: infrastructure.information
+  source_ontology: custom
+  uri: ''
+  parents: []
+  edges: []
+infrastructure.structure:
+  description: infrastructure.structure (category)
+  label: infrastructure.structure
+  source_ontology: custom
+  uri: ''
+  parents: []
+  edges: []
+workflow.encounter:
+  description: workflow.encounter (category)
+  label: workflow.encounter
+  source_ontology: custom
+  uri: ''
+  parents: []
+  edges: []
+workflow.order:
+  description: workflow.order (category)
+  label: workflow.order
+  source_ontology: custom
+  uri: ''
+  parents: []
+  edges: []
+workflow.scheduling:
+  description: workflow.scheduling (category)
+  label: workflow.scheduling
+  source_ontology: custom
+  uri: ''
+  parents: []
+  edges: []

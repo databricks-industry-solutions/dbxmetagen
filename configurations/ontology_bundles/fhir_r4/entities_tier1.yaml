@@ -150,6 +150,9 @@
     about the document so that the document can be discovered and managed. The scope
     of a document is any seralized object with a m
   label: DocumentReference
+- name: DomainResource
+  description: DomainResource (abstract base class)
+  label: DomainResource
 - name: EffectEvidenceSynthesis
   description: The EffectEvidenceSynthesis resource describes the difference in an
     outcome between exposures states in a population where the effect estimate is
@@ -423,6 +426,9 @@
   description: A physical entity which is the primary unit of operational and/or administrative
     interest in a study.
   label: ResearchSubject
+- name: Resource
+  description: Resource (abstract base class)
+  label: Resource
 - name: RiskAssessment
   description: An assessment of the likely outcome(s) for a patient or other subject
     as well as the likelihood of each outcome.
@@ -488,6 +494,9 @@
 - name: Task
   description: A task to be performed.
   label: Task
+- name: Thing
+  description: Thing (abstract base class)
+  label: Thing
 - name: VerificationResult
   description: Describes validation requirements, source(s), status and dates for
     one or more elements.
@@ -496,3 +505,63 @@
   description: An authorization for the provision of glasses and/or contact lenses
     to a patient.
   label: VisionPrescription
+- name: administrative.device
+  description: administrative.device (category)
+  label: administrative.device
+- name: administrative.entity
+  description: administrative.entity (category)
+  label: administrative.entity
+- name: administrative.group
+  description: administrative.group (category)
+  label: administrative.group
+- name: administrative.individual
+  description: administrative.individual (category)
+  label: administrative.individual
+- name: clinical.careprovision
+  description: clinical.careprovision (category)
+  label: clinical.careprovision
+- name: clinical.diagnostics
+  description: clinical.diagnostics (category)
+  label: clinical.diagnostics
+- name: clinical.general
+  description: clinical.general (category)
+  label: clinical.general
+- name: clinical.medication
+  description: clinical.medication (category)
+  label: clinical.medication
+- name: conformance.content
+  description: conformance.content (category)
+  label: conformance.content
+- name: financial.billing
+  description: financial.billing (category)
+  label: financial.billing
+- name: financial.other
+  description: financial.other (category)
+  label: financial.other
+- name: financial.payment
+  description: financial.payment (category)
+  label: financial.payment
+- name: financial.support
+  description: financial.support (category)
+  label: financial.support
+- name: infrastructure.documents
+  description: infrastructure.documents (category)
+  label: infrastructure.documents
+- name: infrastructure.exchange
+  description: infrastructure.exchange (category)
+  label: infrastructure.exchange
+- name: infrastructure.information
+  description: infrastructure.information (category)
+  label: infrastructure.information
+- name: infrastructure.structure
+  description: infrastructure.structure (category)
+  label: infrastructure.structure
+- name: workflow.encounter
+  description: workflow.encounter (category)
+  label: workflow.encounter
+- name: workflow.order
+  description: workflow.order (category)
+  label: workflow.order
+- name: workflow.scheduling
+  description: workflow.scheduling (category)
+  label: workflow.scheduling

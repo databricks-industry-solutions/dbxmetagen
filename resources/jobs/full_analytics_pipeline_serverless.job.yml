@@ -53,6 +53,8 @@ resources:
           default: "false"
         - name: sweep_stale_edges
           default: "false"
+        - name: sweep_stale_entities
+          default: "false"
         - name: sweep_stale_docs
           default: "false"
         - name: endpoint_name
@@ -201,6 +203,7 @@ resources:
               apply_ddl: "{{job.parameters.apply_ddl}}"
               endpoint_name: "{{job.parameters.endpoint_name}}"
               federation_mode: "{{job.parameters.federation_mode}}"
+              sweep_stale_entities: "{{job.parameters.sweep_stale_entities}}"
 
         - task_key: build_similarity_edges
           max_retries: 1
@@ -303,6 +306,9 @@ resources:
           depends_on:
             - task_key: predict_foreign_keys
             - task_key: build_ontology
+            # validate_ontology recomputes entity roles; bundle edges are role-gated,
+            # so edge re-emission must run after roles are finalized.
+            - task_key: validate_ontology
           environment_key: default
           notebook_task:
             notebook_path: ../../notebooks/refresh_ontology_edges.py
@@ -313,6 +319,7 @@ resources:
               model: "{{job.parameters.model}}"
               table_names: "{{job.parameters.table_names}}"
               sweep_stale_edges: "{{job.parameters.sweep_stale_edges}}"
+              sweep_stale_entities: "{{job.parameters.sweep_stale_entities}}"
               incremental: "{{job.parameters.incremental}}"
 
         - task_key: final_analysis

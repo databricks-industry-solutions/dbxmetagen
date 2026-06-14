@@ -618,6 +618,7 @@ Provider:
   - physician
   - practitioner
   - clinician
+  - therapist
   - npi
   synonyms:
   - doctor
@@ -625,6 +626,8 @@ Provider:
   - specialist
   - attending
   - caregiver
+  - healthcare_worker
+  - provider_individual
   typical_attributes:
   - id
   - npi
@@ -638,6 +641,9 @@ Provider:
     treats:
       target: Patient
       cardinality: many-to-many
+    performs:
+      target: Procedure
+      cardinality: one-to-many
     ordered_for:
       target: Encounter
       cardinality: one-to-many
@@ -907,6 +913,9 @@ Procedure:
     performed_by:
       target: Provider
       cardinality: many-to-one
+    addresses:
+      target: Condition
+      cardinality: many-to-one
     references:
       target: Patient
       cardinality: many-to-one
@@ -980,6 +989,12 @@ Medication:
     prescribed_to:
       target: Patient
       cardinality: many-to-one
+    prescribed_by:
+      target: Provider
+      cardinality: many-to-one
+    addresses:
+      target: Condition
+      cardinality: many-to-one
   properties:
     id:
       kind: data_property
@@ -1041,6 +1056,9 @@ Observation:
       cardinality: many-to-one
     recorded_in:
       target: Encounter
+      cardinality: many-to-one
+    documents:
+      target: Condition
       cardinality: many-to-one
   properties:
     id:
@@ -1276,6 +1294,12 @@ DiagnosticReport:
     contains:
       target: Observation
       cardinality: one-to-many
+    documents:
+      target: Condition
+      cardinality: many-to-one
+    performed_by:
+      target: Provider
+      cardinality: many-to-one
   properties:
     id:
       kind: data_property
@@ -1343,6 +1367,12 @@ Immunization:
     references:
       target: Patient
       cardinality: many-to-one
+    ordered_for:
+      target: Encounter
+      cardinality: many-to-one
+    performed_by:
+      target: Provider
+      cardinality: many-to-one
   properties:
     id:
       kind: data_property
@@ -1407,6 +1437,9 @@ AllergyIntolerance:
     references:
       target: Patient
       cardinality: many-to-one
+    contraindicates:
+      target: Medication
+      cardinality: many-to-many
   properties:
     id:
       kind: data_property
@@ -1475,6 +1508,12 @@ CarePlan:
     contains:
       target: Procedure
       cardinality: one-to-many
+    addresses:
+      target: Condition
+      cardinality: many-to-many
+    managed_by:
+      target: Provider
+      cardinality: many-to-one
   properties:
     id:
       kind: data_property
@@ -1811,76 +1850,6 @@ Payer:
       typical_attributes:
       - cms_id
       edge: has_cms
-Practitioner:
-  description: Individual clinicians, physicians, nurses, and allied health professionals
-  label: Practitioner
-  source_ontology: FHIR_R4
-  uri: http://hl7.org/fhir/StructureDefinition/Practitioner
-  parents:
-  - Person
-  keywords:
-  - practitioner
-  - physician
-  - nurse
-  - clinician
-  - therapist
-  - npi
-  synonyms:
-  - doctor
-  - healthcare_worker
-  - provider_individual
-  typical_attributes:
-  - id
-  - name
-  - npi
-  - specialty
-  - qualification
-  - active
-  - gender
-  business_questions: []
-  relationships:
-    performs:
-      target: Procedure
-      cardinality: one-to-many
-    part_of:
-      target: Organization
-      cardinality: many-to-one
-  properties:
-    id:
-      kind: data_property
-      role: primary_key
-      typical_attributes:
-      - id
-    name:
-      kind: data_property
-      role: label
-      typical_attributes:
-      - name
-    npi:
-      kind: data_property
-      role: label
-      typical_attributes:
-      - npi
-    specialty:
-      kind: data_property
-      role: label
-      typical_attributes:
-      - specialty
-    qualification:
-      kind: data_property
-      role: label
-      typical_attributes:
-      - qualification
-    active:
-      kind: data_property
-      role: label
-      typical_attributes:
-      - active
-    gender:
-      kind: data_property
-      role: label
-      typical_attributes:
-      - gender
 Facility:
   description: Hospitals, clinics, labs, pharmacies, and care sites
   label: Facility

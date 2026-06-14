@@ -344,6 +344,117 @@ class TestEdgeCatalogBundleScoping:
         assert e.bundle_name is None
 
 
+class TestFindEdgeWildcardGuard:
+    """Fix 2b regression-class guard: a catalog entry with neither domain nor
+    range is a wildcard that matches every (src,dst) pair. find_edge must never
+    select it (that is how a custom-bundle entry could pollute FK/discovered
+    edge naming, like categorized_as did), and validate must refuse it unless it
+    is a deterministic structural edge. Among real matches, a fully-constrained
+    entry must outrank a half-constrained (target/source null) one."""
+
+    def test_unconstrained_entry_never_selected(self):
+        cat = EdgeCatalog({
+            "wildcard": EdgeCatalogEntry(name="wildcard", domain=None, range=None),
+        })
+        assert cat.find_edge("Patient", "Organization") is None
+
+    def test_unconstrained_skipped_real_entry_wins(self):
+        cat = EdgeCatalog({
+            "wildcard": EdgeCatalogEntry(name="wildcard", domain=None, range=None),
+            "treats": EdgeCatalogEntry(name="treats", domain="Practitioner", range="Patient"),
+        })
+        assert cat.find_edge("Practitioner", "Patient").name == "treats"
+
+    def test_fully_constrained_beats_half_constrained(self):
+        # has_subject (Cohort -> *) is a domain-anchored semi-wildcard; a
+        # concrete Cohort->Person edge must win regardless of dict order.
+        cat = EdgeCatalog({
+            "has_subject": EdgeCatalogEntry(name="has_subject", domain="Cohort", range=None),
+            "enrolls": EdgeCatalogEntry(name="enrolls", domain="Cohort", range="Person"),
+        })
+        assert cat.find_edge("Cohort", "Person").name == "enrolls"
+
+    def test_half_constrained_still_matches_when_only_option(self):
+        cat = EdgeCatalog({
+            "has_subject": EdgeCatalogEntry(name="has_subject", domain="Cohort", range=None),
+        })
+        assert cat.find_edge("Cohort", "Anything").name == "has_subject"
+
+    def test_same_bundle_preferred_when_specificity_ties(self):
+        cat = EdgeCatalog({
+            "treats_fhir": EdgeCatalogEntry(
+                name="treats_fhir", domain="Practitioner", range="Patient", bundle_name="fhir_r4"
+            ),
+            "treats_omop": EdgeCatalogEntry(
+                name="treats_omop", domain="Practitioner", range="Patient", bundle_name="omop_cdm"
+            ),
+        })
+        assert cat.find_edge("Practitioner", "Patient", bundle_name="omop_cdm").name == "treats_omop"
+
+    def test_validate_rejects_unconstrained_non_structural(self):
+        cat = EdgeCatalog({
+            "wildcard": EdgeCatalogEntry(name="wildcard", domain=None, range=None, category="business"),
+        })
+        ok, msg = cat.validate("wildcard", "Patient", "Organization")
+        assert ok is False
+        assert "unconstrained" in msg
+
+    def test_validate_allows_unconstrained_structural(self):
+        cat = EdgeCatalog({
+            "is_a": EdgeCatalogEntry(name="is_a", domain=None, range=None, category="structural"),
+        })
+        ok, _ = cat.validate("is_a", "Patient", "Person")
+        assert ok is True
+
+
+class TestEdgeCatalogDefaultInverses:
+    """Fix 2a: built-in inverse fallback for formal bundles with no declared inverses."""
+
+    def test_explicit_inverse_takes_precedence(self):
+        cat = EdgeCatalog({
+            "references": EdgeCatalogEntry(name="references", inverse="custom_inverse"),
+        })
+        assert cat.get_inverse("references") == "custom_inverse"
+
+    def test_default_inverse_when_entry_missing(self):
+        cat = EdgeCatalog({})
+        assert cat.get_inverse("references") == "referenced_by"
+        assert cat.get_inverse("referenced_by") == "references"
+        assert cat.get_inverse("has_part") == "part_of"
+        assert cat.get_inverse("part_of") == "has_part"
+
+    def test_default_inverse_when_entry_has_no_inverse(self):
+        cat = EdgeCatalog({
+            "references": EdgeCatalogEntry(name="references", inverse=None),
+        })
+        assert cat.get_inverse("references") == "referenced_by"
+
+    def test_unknown_relationship_has_no_inverse(self):
+        cat = EdgeCatalog({})
+        assert cat.get_inverse("totally_made_up_edge") is None
+
+
+class TestCategorizedAsNotInferable:
+    """Fix 2b regression: categorized_as is a deterministic structural edge
+    (built by _build_category_edges to W5 category nodes). It must never be a
+    candidate for the LLM edge predictor or FK inference, otherwise it gets
+    wildcard-matched onto resource pairs (e.g. 'Appointment categorized_as
+    Patient'). It is auto-merged as structural and blocklisted from inference,
+    exactly like is_a/instance_of -- and never persisted to a bundle edge_catalog."""
+
+    def test_categorized_as_and_inverse_are_blocklisted(self):
+        from dbxmetagen.ontology import OntologyLoader
+        assert "categorized_as" in OntologyLoader._INFER_BLOCKLIST
+        assert "category_of" in OntologyLoader._INFER_BLOCKLIST
+
+    def test_categorized_as_is_structural_with_inverse(self):
+        from dbxmetagen.ontology import OntologyLoader
+        entry = OntologyLoader._STRUCTURAL_EDGES.get("categorized_as")
+        assert entry is not None
+        assert entry["inverse"] == "category_of"
+        assert entry["category"] == "structural"
+
+
 class TestGetEdgeCatalogBundleStamping:
     """Tests that OntologyLoader.get_edge_catalog stamps bundle_name."""
 

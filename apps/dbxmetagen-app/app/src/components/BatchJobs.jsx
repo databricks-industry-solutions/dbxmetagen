@@ -22,6 +22,19 @@ class TabErrorBoundary extends Component {
   }
 }
 
+function InfoTip({ text }) {
+  return (
+    <span className="relative group/tip cursor-help inline-flex flex-shrink-0">
+      <svg xmlns="http://www.w3.org/2000/svg" className="h-3.5 w-3.5 text-slate-400 group-hover/tip:text-slate-600 dark:group-hover/tip:text-slate-300 transition-colors" viewBox="0 0 20 20" fill="currentColor">
+        <path fillRule="evenodd" d="M18 10a8 8 0 11-16 0 8 8 0 0116 0zm-7-4a1 1 0 11-2 0 1 1 0 012 0zM9 9a1 1 0 000 2v3a1 1 0 001 1h1a1 1 0 100-2v-3a1 1 0 00-1-1H9z" clipRule="evenodd" />
+      </svg>
+      <span className="absolute bottom-full left-1/2 -translate-x-1/2 mb-2 w-72 p-2 text-xs font-normal normal-case text-left text-slate-200 bg-slate-800 rounded-lg shadow-lg opacity-0 group-hover/tip:opacity-100 pointer-events-none transition-opacity z-10">
+        {text}
+      </span>
+    </span>
+  )
+}
+
 const TERMINAL_STATES = new Set(['TERMINATED', 'SKIPPED', 'INTERNAL_ERROR'])
 
 const TABS = [
@@ -163,7 +176,7 @@ export default function BatchJobs({ onNavigate, pipelineStats }) {
   const [activeTab, setActiveTab] = useState('core')
   const [similarityThreshold, setSimilarityThreshold] = useState(0.8)
   const [incremental, setIncremental] = useState(true)
-  const [sweepStaleDocs, setSweepStaleDocs] = useState(false)
+  const [sweepStale, setSweepStale] = useState(false)
   const [serverless, setServerless] = useState(true)
   const [clusterMinK, setClusterMinK] = useState(2)
   const [clusterMaxK, setClusterMaxK] = useState(15)
@@ -902,44 +915,44 @@ export default function BatchJobs({ onNavigate, pipelineStats }) {
                   placeholder="entity_type" title="Unity Catalog tag key for entity type classifications"
                   className="input-base !text-xs" />
               </div>
-              <div className="pb-1">
+              <div className="pb-1 flex items-center gap-1.5">
                 <label className="flex items-center gap-2 text-xs text-slate-600 dark:text-slate-300 cursor-pointer">
                   <input type="checkbox" checked={incremental} onChange={e => setIncremental(e.target.checked)} />
                   Incremental mode (skip already-processed tables)
                 </label>
-                <p className="text-[10px] text-amber-600 dark:text-amber-400 mt-0.5 ml-5">Uncheck for your first run. Incremental mode requires a prior run's control table to exist.</p>
+                <InfoTip text="When checked, each analytics task early-exits if its inputs haven't changed since the last run, so only new or modified tables are reprocessed (fast, cheap). Uncheck for a full run that reprocesses every table in scope — needed after code or ontology changes, and whenever you want the sweep below to take effect." />
               </div>
-              <div className="pb-1">
-                <label className="flex items-center gap-2 text-xs text-slate-600 dark:text-slate-300 cursor-pointer"
-                  title="Apply ontology tags and FK constraints directly to Unity Catalog tables. Disable to review results first.">
+              <div className="pb-1 flex items-center gap-1.5">
+                <label className="flex items-center gap-2 text-xs text-slate-600 dark:text-slate-300 cursor-pointer">
                   <input type="checkbox" checked={applyDdl} disabled={federationMode} onChange={e => setApplyDdl(e.target.checked)} />
                   Apply DDL (tags &amp; FK constraints)
                 </label>
-                {applyDdl && !federationMode && <p className="text-[10px] text-amber-600 dark:text-amber-400 mt-0.5 ml-5">This will write ontology tags (entity_type, property_role) and FK constraints directly to your Unity Catalog tables. Existing tags will be updated.</p>}
+                <InfoTip text="Apply ontology tags and FK constraints directly to Unity Catalog tables. Disable to review results first. When enabled, this writes ontology tags (entity_type, property_role) and FK constraints directly to your tables; existing tags will be updated." />
+                {applyDdl && !federationMode && <span className="text-[10px] text-amber-600 dark:text-amber-400 font-medium">writes to tables</span>}
               </div>
-              <div className="pb-1">
-                <label className="flex items-center gap-2 text-xs text-slate-600 dark:text-slate-300 cursor-pointer"
-                  title="Enable for external/federated catalogs. Disables DDL apply and skips DESCRIBE EXTENDED.">
+              <div className="pb-1 flex items-center gap-1.5">
+                <label className="flex items-center gap-2 text-xs text-slate-600 dark:text-slate-300 cursor-pointer">
                   <input type="checkbox" checked={federationMode} onChange={e => {
                     setFederationMode(e.target.checked)
                     if (e.target.checked) setApplyDdl(false)
                   }} />
                   Federation mode (external catalogs)
                 </label>
+                <InfoTip text="Enable for external/federated catalogs. Disables DDL apply and skips DESCRIBE EXTENDED." />
               </div>
-              <div className="pb-1">
-                <label className="flex items-center gap-2 text-xs text-slate-600 dark:text-slate-300 cursor-pointer"
-                  title="Remove orphaned documents from the vector index that no longer have a backing entity or table. Recommended after switching ontology bundles.">
-                  <input type="checkbox" checked={sweepStaleDocs} onChange={e => setSweepStaleDocs(e.target.checked)} />
-                  Sweep stale docs (clean up orphaned vector index entries)
+              <div className="pb-1 flex items-center gap-1.5">
+                <label className="flex items-center gap-2 text-xs text-slate-600 dark:text-slate-300 cursor-pointer">
+                  <input type="checkbox" checked={sweepStale} onChange={e => setSweepStale(e.target.checked)} />
+                  Sweep stale artifacts (refresh entities, edges &amp; docs in scope)
                 </label>
+                <InfoTip text={'Clean rebuild of derived data for the tables in scope: deletes ontology entities, relationships, graph nodes/edges, and vector-index docs that this run no longer reproduces, then regenerates them from the current bundle. Use it to clear leftovers after switching ontology bundles, changing metadata, or upgrading the pipeline. Tables not in scope and steward-overridden entities are never touched. Only takes effect on a full run, so leave "Incremental mode" unchecked when using it.'} />
               </div>
-              <div className="pb-1">
-                <label className="flex items-center gap-2 text-xs text-slate-600 dark:text-slate-300 cursor-pointer"
-                  title="Run the pipeline on serverless compute instead of classic ML clusters. Faster cold-start, no cluster management.">
+              <div className="pb-1 flex items-center gap-1.5">
+                <label className="flex items-center gap-2 text-xs text-slate-600 dark:text-slate-300 cursor-pointer">
                   <input type="checkbox" checked={serverless} onChange={e => setServerless(e.target.checked)} />
                   Serverless compute
                 </label>
+                <InfoTip text="Run the pipeline on serverless compute instead of classic ML clusters. Faster cold-start, no cluster management." />
               </div>
             </div>
 
@@ -956,7 +969,9 @@ export default function BatchJobs({ onNavigate, pipelineStats }) {
               ontology_bundle: ontologyBundle,
               apply_ddl: applyDdl,
               federation_mode: federationMode,
-              sweep_stale_docs: sweepStaleDocs,
+              sweep_stale_docs: sweepStale,
+              sweep_stale_edges: sweepStale,
+              sweep_stale_entities: sweepStale,
               use_kb_comments: settings.use_kb_comments,
               use_customer_context: settings.use_customer_context,
               include_lineage: settings.include_lineage,
@@ -999,7 +1014,7 @@ export default function BatchJobs({ onNavigate, pipelineStats }) {
                     className="btn-secondary btn-md w-full">
                     {runningAction === 'sync_kg' ? 'Starting...' : 'Sync Knowledge Graph'}
                   </button>
-                  <p className="text-[11px] text-slate-400 mt-1">Rebuilds graph nodes and reference edges from approved FK predictions.</p>
+                  <p className="text-[11px] text-slate-400 mt-1">Rebuilds graph_nodes and graph_edges from knowledge base tables, incorporating approved/rejected FK predictions. Runs with sweep_stale_edges=true to remove orphaned edges. Use after reviewing FKs or editing metadata in the Review tab.</p>
                 </div>
                 <div className="flex-1 min-w-[200px]">
                   <button onClick={() => runJob('build_vector_index', {
@@ -1009,7 +1024,7 @@ export default function BatchJobs({ onNavigate, pipelineStats }) {
                     className="btn-secondary btn-md w-full">
                     {runningAction === 'sync_vi' ? 'Starting...' : 'Sync Vector Index'}
                   </button>
-                  <p className="text-[11px] text-slate-400 mt-1">Refreshes search documents with current metadata and approved FKs.</p>
+                  <p className="text-[11px] text-slate-400 mt-1">Regenerates metadata_documents from knowledge base tables and re-indexes them in Vector Search (metadata_vs_index). Runs with sweep_stale_docs=true to purge orphaned documents. Powers the agent's semantic search and the Search tab.</p>
                 </div>
               </div>
             </div>

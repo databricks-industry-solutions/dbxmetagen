@@ -725,9 +725,9 @@ export default function AgentChat() {
       {/* Agent explanation when on chat or mv tabs */}
       {(subTab === 'chat' || subTab === 'mv') && (
         <div className="rounded-xl border border-slate-200/80 dark:border-dbx-navy-400/30 bg-slate-50/80 dark:bg-dbx-navy-600/40 px-4 py-3 mb-3 text-xs text-slate-500 dark:text-slate-400 leading-relaxed">
-          <span className="font-semibold text-slate-600 dark:text-slate-300">Two agents, different purposes: </span>
-          The <span className="font-medium text-violet-600 dark:text-violet-400">Metadata Agent</span> explores your knowledge graph, metadata, relationships, and data quality using vector search, graph traversal, and SQL.
-          {' '}The <span className="font-medium text-amber-600 dark:text-amber-400">Metric View Agent</span> answers business questions by querying deployed Unity Catalog metric views for KPIs and measures.
+          <span className="font-semibold text-slate-600 dark:text-slate-300">Two agents, different data: </span>
+          The <span className="font-medium text-violet-600 dark:text-violet-400">Metadata Agent</span> has access to the full knowledge graph (nodes, edges, similarity), vector search index, all knowledge base tables, profiling stats, data quality scores, and can run SQL against metadata and source tables. It intent-classifies your question to pick the right tools.
+          {' '}The <span className="font-medium text-amber-600 dark:text-amber-400">Metric View Agent</span> only sees deployed metric views — it searches, queries, and interprets KPIs and measures but does not access the knowledge graph or raw metadata tables.
         </div>
       )}
 

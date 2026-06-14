@@ -1287,3 +1287,32 @@ class TestPKSignal:
         src = inspect.getsource(FKPredictor.rule_score)
         assert '("col_similarity") * 0.05' in src
 
+
+class TestCandidateCanonicalizationAlignment:
+    """All candidate generators must canonicalize pair order by column while keeping
+    each column paired with its OWN table and dtype. The old LEAST/GREATEST(col_a,col_b)
+    reordered the columns but left table_*/dtype_* in place, crossing the labels and
+    corrupting downstream join_rate. Each side must swap col/table/dtype in lockstep."""
+
+    _GENERATORS = (
+        "get_name_based_candidates",
+        "get_ontology_relationship_candidates",
+        "get_column_property_candidates",
+    )
+
+    def test_no_bare_least_greatest_col_swap(self):
+        for name in self._GENERATORS:
+            src = inspect.getsource(getattr(FKPredictor, name))
+            assert "LEAST(col_a, col_b) AS col_a" not in src, name
+            assert "GREATEST(col_a, col_b) AS col_b" not in src, name
+
+    def test_table_and_dtype_swap_in_lockstep_with_col(self):
+        for name in self._GENERATORS:
+            src = inspect.getsource(getattr(FKPredictor, name))
+            assert "CASE WHEN col_a <= col_b THEN col_a ELSE col_b END AS col_a" in src, name
+            assert "CASE WHEN col_a <= col_b THEN col_b ELSE col_a END AS col_b" in src, name
+            assert "CASE WHEN col_a <= col_b THEN table_a ELSE table_b END AS table_a" in src, name
+            assert "CASE WHEN col_a <= col_b THEN table_b ELSE table_a END AS table_b" in src, name
+            assert "CASE WHEN col_a <= col_b THEN dtype_a ELSE dtype_b END AS dtype_a" in src, name
+            assert "CASE WHEN col_a <= col_b THEN dtype_b ELSE dtype_a END AS dtype_b" in src, name
+

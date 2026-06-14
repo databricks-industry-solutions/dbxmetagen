@@ -25,6 +25,15 @@ globs:
 
 Never skip tier 1 -- always check the bundle index before falling back to heuristics.
 
+## Confidence Semantics (cumulative evidence score, can exceed 1.0)
+
+`confidence` is a cumulative evidence score, not a bounded probability. Discovery clamps it
+to `[0,1]` (see `create_entities_table` / post-MERGE clamps in `ontology.py`), but the
+**validator** (`ontology_validator.py`) then ADDS a signed `confidence_adjustment` with only a
+floor (`GREATEST(0.0, confidence + adj)`) and **no ceiling**. A post-validation value `> 1.0`
+means LLM validation corroborated an already high-confidence entity -- a positive signal, not a
+bug. Do NOT add an upper clamp. Treat `confidence > 1.0` as "strong, multiply-corroborated."
+
 ## Edge Direction
 
 Edges flow `domain -> range` via `EdgeCatalog`. An edge is valid iff `entry.matches_domain(src)` and `entry.matches_range(dst)`. `None` or `"Any"` constraints are wildcards.
@@ -40,9 +49,116 @@ WHERE oe.last_classified IS NULL
    OR COALESCE(oe.last_bundle_version, '') != '{current_bv}'
 ```
 
-## Bundle Switch Safety
+## Multi-Bundle Coexistence
 
-`run()` checks `DISTINCT ontology_bundle` in `ontology_entities` at startup and emits a `logger.warning` if entities from a different bundle exist. `_purge_stale_bundle_entities` then deletes unvalidated auto-discovered entities from previous bundles; validated entities are preserved. Use `incremental=false` for a clean rebuild when intentionally switching bundles.
+> **INVARIANT (do not violate):** Two rules govern entity cleanup. Read both before touching any
+> deletion/purge code in `ontology.py`.
+> 1. **Default run (no sweep) = coexist, NO purge.** Entities from multiple bundles live side by
+>    side in `ontology_entities`. A normal run never deletes another bundle's entities.
+> 2. **Explicit sweep (`sweep_stale_entities=true`, non-incremental) = table-scoped refresh.** It
+>    deletes auto-discovered entities/edges only on the tables IN THIS RUN (any bundle on those
+>    tables), then re-discovers them from the current bundle. Tables NOT in the run are NEVER
+>    touched, so other bundles keep coexisting. Empty `table_names` = all tables in scope (full
+>    replacement). Steward locks (`auto_discovered=FALSE`) are always preserved.
+>
+> The sweep is a TABLE operation, not a BUNDLE operation. There is no "delete other bundles"
+> concept. The implementation is `_purge_entities_for_rebuild(table_names)` (called from `run()`
+> only). `refresh_relationships()` is edge-only and must NEVER delete entities.
+>
+> **One exception -- table-LESS seeded ancestors.** `_seed_concept_parent_entities` seeds abstract
+> hierarchy concepts (Thing, MedicalEntity, ...) with EMPTY `source_tables`, so a table scope can
+> never match them. On a scoped sweep, the purge ALSO deletes the CURRENT bundle's table-less seeds
+> (re-seeded fresh right after), so stale seeds (e.g. a primitive no longer seeded) clear. This is
+> the ONLY place a bundle filter is allowed -- bundle is the only attribution a table-less row has --
+> and it is scoped to the current bundle, so OTHER bundles' seeds keep coexisting. The guard is
+> always `(source_tables IS NULL OR cardinality(source_tables) = 0) AND ontology_bundle = <current>`;
+> a bundle filter without the empty-source_tables guard is the wrong (bundle-purge) redesign.
+>
+> **Orphaned foreign-bundle seeds (`_purge_orphaned_bundle_seeds`, sweep-only, post-discovery).**
+> A bundle switch on the same tables (e.g. `schema_org` -> `fhir_r4`) leaves the OLD bundle with
+> zero table-attributed entities but its table-less seeds survive (the current-bundle filter above
+> only clears the new bundle's seeds). The fix is a SEPARATE method that runs AFTER discovery +
+> seeding in `run()`, deleting table-less auto-discovered seeds of any bundle that has NO
+> table-attributed entities left, then dropping their orphaned `entity::<bundle>::*` nodes via the
+> CANONICAL_ID anti-join. It must NOT be folded into `_purge_entities_for_rebuild`: that purge runs
+> pre-discovery, where the old bundle still has table-attributed entities, so its DELETE subquery
+> (evaluated on the pre-delete snapshot) would never see the bundle as orphaned. A bundle with any
+> real table-attributed entity keeps its seeds (coexistence). Gated `sweep_stale_entities AND NOT
+> incremental`.
+>
+> **This section is the canonical source for cleanup/coexistence.** The ontology-pipeline skill,
+> `docs/MULTI_BUNDLE_USAGE.md`, and `CLAUDE.md` pitfall #8 only summarize it and link here; if you
+> change behavior, update this section first, then the summaries -- do not let them restate mechanics
+> independently (drift between them is what caused past regressions).
+>
+> **Naming rule:** destructive/cleanup functions are named by the scope they operate on
+> (e.g. `_purge_entities_for_rebuild(table_names)`), never by an inferred relationship like
+> "foreign_bundle". A name that implies "delete other bundles" invites exactly the wrong redesign.
+
+Entities from multiple ontology bundles coexist in `ontology_entities` within the same schema. `run()` emits a `logger.warning` if entities from a different bundle exist -- informational only; no purge occurs unless an explicit sweep is requested (see invariant above).
+
+Key behaviors:
+- Running bundle B on tables D,E,F leaves bundle A entities on tables X,Y,Z untouched.
+- `_store_entities` MERGE matches on `(entity_name, source_tables)`. Re-processing the same tables with a different bundle inserts new entity rows (different entity_name = no MERGE match).
+- Graph node IDs are namespaced `entity::{bundle}::{entity_name}` so bundles don't collide.
+- Each run's edge catalog only produces named relationships for the current bundle; cross-bundle FK edges get the generic "references" relationship.
+- Structural components (FK predictions, similarity edges, embeddings) connect tables across bundles regardless of ontology bundle.
+- `ontology_chunks` / `ontology_vs_index` are a per-bundle REFERENCE CORPUS (the full bundle vocabulary chunked for retrieval), not run output. Multiple bundles' chunks coexist by design; `build_ontology_chunks_table` MERGEs without `WHEN NOT MATCHED BY SOURCE ... DELETE`, and retrieval is always scoped by `ontology_bundle` (`query_entities` / `query_edges` in `ontology_vector_index.py`). Never sweep this table across bundles -- doing so wipes other bundles' vocab and forces a full re-chunk/re-embed. The coexistence of `schema_org` + `omop_cdm` + `fhir_r4` rows here is correct, NOT a sweep gap.
+
+## Same-bundle edge resolver (entity-CONCEPT edges never cross bundles)
+
+> **INVARIANT:** Any builder that turns a bare `entity_type`/table name into an `entity::<bundle>::<type>`
+> CONCEPT node for BOTH endpoints of an edge MUST require the two endpoints to share a bundle. A bare
+> type name (e.g. `Organization`) can exist in multiple coexisting bundles; resolving by name alone
+> fans an edge out across bundles (`fhir::Patient -> schema_org::Organization`).
+
+- Use a SAME-bundle comparison (`se.ontology_bundle = de.ontology_bundle`), NEVER a current-bundle
+  literal filter -- the latter would drop a coexisting live bundle's own within-bundle edges, which
+  `merge_edges(sweep_stale)` would then delete.
+- The two concept-edge builders that resolve by name and MUST carry this guard:
+  `_build_structural_edges` (named-relationship block, SQL `WHERE se.ontology_bundle = de.ontology_bundle`)
+  and `discover_inter_entity_relationships` (DataFrame `.where(F.col("se.ontology_bundle") == F.col("de.ontology_bundle"))`).
+- `_build_hierarchy_edges` / `_build_category_edges` use `canonical_entity_id(type, self.config.ontology_bundle)`
+  for BOTH endpoints, so they are current-bundle by construction (safe). `_build_same_entity_type_edges`
+  endpoints are TABLE names, not concept nodes -- a table-level structural link, intentionally allowed.
+- Table-level FK structure still crosses bundles (written separately as `source_system='fk_predictions'`).
+
+## Relationships sweep (`ontology_relationships` has no other delete path)
+
+`ontology_relationships` is bundle-agnostic (keyed on `(src_entity_type, dst_entity_type, relationship_name)`,
+NO bundle column). Its only writers are `emit_bundle_edges` (INSERT-only, `source='bundle'`) and
+`discover_named_relationships` (natural-key upsert; sources `fk_inferred`/`discovered`/`auto_inverse`/`configured`).
+There is no human/steward writer. On a non-incremental sweep, `_purge_stale_relationships()` deletes ALL
+auto-generated rows (`source IN ('bundle','fk_inferred','discovered','auto_inverse','configured') OR source IS NULL`)
+BEFORE regeneration, then `discover_named_relationships` + `emit_bundle_edges` repopulate. Called from `run()`
+(gated `sweep_stale_entities AND NOT incremental`) and `refresh_relationships()` (gated `(sweep_stale OR
+sweep_stale_entities) AND NOT incremental`; this is the one that clears stale `fk_inferred` using FRESH FK
+predictions, since `refresh_ontology_edges` runs after `predict_foreign_keys`).
+
+- `'configured'` is auto-generated `subclass_of` from the bundle hierarchy, NOT a steward lock -- it MUST be swept.
+- This also clears the `categorized_as`/`category_of` regression. `_build_structural_edges` additionally
+  excludes `categorized_as`/`category_of` (which have a dedicated builder, `_build_category_edges`) from its
+  NOT-IN list, but must KEEP emitting bundle-defined `contains`/`part_of`/`member_of`/`has_part` (no other
+  builder turns those into edges). Do NOT exclude the full `_INFER_BLOCKLIST`.
+
+## Bounded producer / consumer map (review changes against the closed sets)
+
+ENTITY-CONCEPT GRAPH EDGES are produced by exactly the `edge_dfs` union in `run()` and `refresh_relationships()`:
+`_build_structural_edges`, `_build_hierarchy_edges`, `_build_category_edges`, `discover_inter_entity_relationships`,
+`_build_same_entity_type_edges`. Adding a 6th producer MUST classify it against the same-bundle invariant above.
+
+`ontology_relationships` WRITERS: `emit_bundle_edges`, `discover_named_relationships` (+ `create_relationships_table`
+DDL). All other references are READ-ONLY consumers: `vector_index.py`, `semantic_layer.py`, `genie/context.py`,
+`fk_prediction.py` (ontology candidates), `embeddings.py`, `ontology_validator.py`, `api_server.py`, the agents,
+and eval/monitor notebooks. Because consumers are read-only, the entity-concept graph's correctness is fully
+determined by the producers + the relationships sweep.
+
+LIMITATION: consumers that join the bundle-agnostic `ontology_relationships`/`ontology_entities` by type name
+(`vector_index.py` 188/300, `semantic_layer.py`, `genie/context.py`, `fk_prediction.py`) are clean under the
+supported one-bundle-per-schema pattern and after a sweep, but can mix derived TEXT (not graph edges) under
+same-schema multi-bundle coexistence. Fully closing that needs `ontology_bundle` on `ontology_relationships`
+(deferred). FK pair canonicalization in `fk_prediction.py` (3 sites: name/ontology/column-property generators)
+must swap `col`/`table`/`dtype` in lockstep so each column keeps its own table+dtype.
 
 ## Column Properties Table
 
@@ -52,6 +168,7 @@ Written with `mode("overwrite").saveAsTable(cp_table)` -- full reclassification 
 
 - **Build-time vs. runtime split**: The ontology pipeline materializes to UC Delta tables at build time. Runtime consumers (deep analysis agent, embeddings) read from UC tables, not from bundle YAML or tier files. The one exception is `GenieContextAssembler`, which also loads the active bundle YAML for join_spec extraction via `_get_ontology_join_specs`.
 - **Discovery-gated edge emission**: `emit_bundle_edges` intentionally only emits edges between entity types that were actually discovered in data. This prevents dangling references in the knowledge graph.
+- **Root-YAML bundles emit from BOTH per-entity `relationships` AND `edge_catalog`**: For root-YAML bundles (no tier indexes, e.g. `healthcare`/`general`), `emit_bundle_edges` first iterates each entity's per-entity `relationships:` block, then iterates `edge_catalog` entries that have a concrete (non-`Any`) domain AND range. The catalog pass closes the gap where a bundle declares a relationship in `edge_catalog` but never mirrors it in any entity's `relationships:` block (otherwise it would never emit). Both passes share one `seen` set so an edge declared in both places emits once; structural/unconstrained (`Any->Any`) catalog entries are skipped. Tier bundles (FHIR/OMOP) are unaffected -- they derive edges from `edges_tier1` (which is built from the catalog). Convention: when adding a per-entity relationship name, add a matching `edge_catalog` entry with `domain`, `range`, and `inverse` so the auto-inverse step can densify the graph and FK naming/validation stays consistent.
 - **Discovery-driven entities, not pre-seeded**: Entity types from the bundle YAML are classification candidates, not a pre-materialized catalog. Only entities matched to real tables/columns appear in `ontology_entities`. `validate_ontology_completeness` reports unmatched types -- this is expected.
 - **Tier files are for build-time LLM grounding**: `OntologyIndexLoader` loads tier files to feed three-pass entity classification prompts. They are not loaded by the agent or Genie at runtime.
 
