@@ -638,10 +638,21 @@ class SemanticLayerGenerator:
                 question_text STRING,
                 status STRING,
                 created_at TIMESTAMP,
-                processed_at TIMESTAMP
+                processed_at TIMESTAMP,
+                source_table STRING
             ) COMMENT 'Business questions for semantic layer generation'
         """
         )
+        # Backfill the source_table column on questions tables created by an earlier
+        # version; no-op when the column already exists. Enables per-table batched
+        # generation via generate_metric_views(table_filter=...).
+        try:
+            self.spark.sql(
+                f"ALTER TABLE {fq(self.config.questions_table)} "
+                f"ADD COLUMNS (source_table STRING)"
+            )
+        except Exception:  # noqa: BLE001 -- column already present on a fresh CREATE
+            pass
         self.spark.sql(
             f"""
             CREATE TABLE IF NOT EXISTS {fq(self.config.definitions_table)} (
@@ -666,37 +677,56 @@ class SemanticLayerGenerator:
     # Question ingestion
     # ------------------------------------------------------------------
 
-    def ingest_questions(self, questions: List[str]) -> int:
-        """Insert business questions as ``pending`` rows. Returns number ingested."""
+    def ingest_questions(self, questions: List[str], source_table: Optional[str] = None) -> int:
+        """Insert business questions as ``pending`` rows. Returns number ingested.
+
+        When ``source_table`` is given it is recorded on each row so generation can be
+        scoped per table via ``generate_metric_views(table_filter=...)``. The column list
+        is written explicitly so the optional value lands in the right column regardless
+        of physical table column order.
+        """
         fq_table = self.config.fq(self.config.questions_table)
         now = datetime.utcnow().isoformat()
+        st = source_table.replace(chr(39), chr(39) * 2) if source_table else None
+        st_sql = f"'{st}'" if st else "NULL"
         rows = []
         for q in questions:
             q = q.strip()
             if not q:
                 continue
             rows.append(
-                f"('{uuid.uuid4()}', '{q.replace(chr(39), chr(39)*2)}', 'pending', '{now}', NULL)"
+                f"('{uuid.uuid4()}', '{q.replace(chr(39), chr(39)*2)}', 'pending', '{now}', NULL, {st_sql})"
             )
         if not rows:
             return 0
         values = ", ".join(rows)
         # INSERT: Bulk-append pending semantic-layer questions into the configured questions Delta table with freshly minted
         # question_id (UUID) PKs; fills question_text (escaped single-quote duplication),
-        # status='pending', created_at (UTC ISO); processed_at left NULL until generation completes.
+        # status='pending', created_at (UTC ISO); processed_at left NULL until generation completes;
+        # source_table optionally tags each row for per-table batched generation.
         # WHY: Seeds the semantic-layer pipeline queue so downstream LLM generation can pick only unanswered rows.
         # TRADEOFFS: Bulk INSERT VALUES is fast/low JDBC chatter versus iterative executesSQL—but escapes rely on
         # deterministic sanitisation alone (risk vs parameterized ROW constructors/MERGE); no UPSERT so callers must dedupe upstream question texts manually if uniqueness matters.
-        self.spark.sql(f"INSERT INTO {fq_table} VALUES {values}")
-        logger.info("Ingested %d questions", len(rows))
+        self.spark.sql(
+            f"INSERT INTO {fq_table} "
+            f"(question_id, question_text, status, created_at, processed_at, source_table) "
+            f"VALUES {values}"
+        )
+        logger.info("Ingested %d questions (source_table=%s)", len(rows), source_table or "-")
         return len(rows)
 
     # ------------------------------------------------------------------
     # Context building
     # ------------------------------------------------------------------
 
-    def build_context(self) -> str:
-        """Assemble metadata context from knowledge bases and optional upstream tables."""
+    def build_context(self, focus_table: Optional[str] = None) -> str:
+        """Assemble metadata context from knowledge bases and optional upstream tables.
+
+        When ``focus_table`` is given, the per-table catalog section is narrowed to that
+        table plus any tables it shares an FK relationship with (so cross-table joins are
+        still possible), instead of dumping all KB tables into every prompt. This keeps
+        per-table batched generation cheap and on-topic.
+        """
         fq = self.config.fq
         parts: list[str] = []
 
@@ -731,6 +761,18 @@ class SemanticLayerGenerator:
             f" AND (is_fk IS NULL OR is_fk = TRUE)"
         )
         self._fk_rows = fk_rows
+
+        # Scope to the focus table + its FK neighbors when generating per table.
+        if focus_table:
+            focus_set = {focus_table}
+            for fk in fk_rows:
+                if fk["src_table"] == focus_table:
+                    focus_set.add(fk["dst_table"])
+                elif fk["dst_table"] == focus_table:
+                    focus_set.add(fk["src_table"])
+            tables = [t for t in tables if t["table_name"] in focus_set]
+            fk_rows = [fk for fk in fk_rows
+                       if fk["src_table"] in focus_set and fk["dst_table"] in focus_set]
 
         # Ontology: primary entities per table
         ont_rows = self._safe_collect(
@@ -979,7 +1021,7 @@ class SemanticLayerGenerator:
     # AI generation
     # ------------------------------------------------------------------
 
-    def generate_metric_views(self) -> Dict[str, Any]:
+    def generate_metric_views(self, table_filter: Optional[str] = None) -> Dict[str, Any]:
         """Generate metric view YAML definitions from pending business questions.
 
         Reads pending questions, gathers catalog context (KB comments, FK
@@ -988,15 +1030,25 @@ class SemanticLayerGenerator:
         join columns, optionally dry-runs ``CREATE VIEW`` for validation, and
         persists rows to ``metric_view_definitions``. Returns summary dict with
         counts of generated, validated, and failed views.
+
+        When ``table_filter`` is given (a fully-qualified ``catalog.schema.table``),
+        only pending questions tagged with that ``source_table`` are processed, and the
+        catalog context is narrowed to that table plus its FK neighbors. This is the
+        lever for per-table batched generation: two-phase planning otherwise consolidates
+        ALL pending questions into a handful of cross-theme views, so to get per-table
+        coverage the caller ingests + generates one table at a time.
         """
         fq = self.config.fq
 
-        # Read pending questions
+        # Read pending questions (optionally scoped to one source table for batching)
+        where = "status = 'pending'"
+        if table_filter:
+            where += f" AND source_table = '{table_filter.replace(chr(39), chr(39) * 2)}'"
         q_rows = self.spark.sql(
-            f"SELECT question_id, question_text FROM {fq(self.config.questions_table)} WHERE status = 'pending'"
+            f"SELECT question_id, question_text FROM {fq(self.config.questions_table)} WHERE {where}"
         ).collect()
         if not q_rows:
-            logger.warning("No pending questions found")
+            logger.warning("No pending questions found%s", f" for {table_filter}" if table_filter else "")
             return {"generated": 0, "validated": 0, "failed": 0}
 
         questions = [r["question_text"] for r in q_rows]
@@ -1005,7 +1057,7 @@ class SemanticLayerGenerator:
 
         with _trace_span("semantic_layer.generate_metric_views") as root_span:
             with _trace_span("build_context") as ctx_span:
-                context = self.build_context()
+                context = self.build_context(focus_table=table_filter)
                 if ctx_span is not None:
                     ctx_span.set_outputs({"context_length": len(context)})
 
