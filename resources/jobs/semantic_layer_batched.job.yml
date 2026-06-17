@@ -1,0 +1,65 @@
+resources:
+  jobs:
+    semantic_layer_batched_job:
+      name: "${var.app_name}_semantic_layer_batched"
+
+      # Per-table metric-view generation. Unlike semantic_layer_job (one plan over all
+      # questions -> ~5 themed views), this loops the target tables and generates one or
+      # more metric views PER table, scoping each prompt to that table + its FK neighbors.
+      # Generation runs dbxmetagen's own expression autofix (validate_expressions=True);
+      # apply / committed-YAML conversion is handled downstream by the dpa-table-metadata
+      # converter, not here.
+
+      email_notifications:
+        on_failure:
+          - ${var.current_user}
+
+      parameters:
+        - name: table_names
+          default: ${var.job_table_names}
+        - name: catalog_name
+          default: ${var.catalog_name}
+        - name: schema_name
+          default: ${var.schema_name}
+        - name: model_endpoint
+          default: "databricks-claude-sonnet-4-6"
+        - name: questions_per_table
+          default: "4"
+        - name: max_tables
+          default: ""
+        - name: use_ai_questions
+          default: "true"
+
+      tasks:
+        - task_key: generate_semantic_layer_batched
+          max_retries: 1
+          job_cluster_key: semantic_layer_batched_cluster
+          notebook_task:
+            notebook_path: ../../notebooks/generate_semantic_layer_batched.py
+            base_parameters:
+              table_names: "{{job.parameters.table_names}}"
+              catalog_name: "{{job.parameters.catalog_name}}"
+              schema_name: "{{job.parameters.schema_name}}"
+              model_endpoint: "{{job.parameters.model_endpoint}}"
+              questions_per_table: "{{job.parameters.questions_per_table}}"
+              max_tables: "{{job.parameters.max_tables}}"
+              use_ai_questions: "{{job.parameters.use_ai_questions}}"
+          libraries:
+            - whl: ../../dist/*.whl
+
+      job_clusters:
+        - job_cluster_key: semantic_layer_batched_cluster
+          new_cluster:
+            policy_id: ${var.policy_id}
+            spark_version: 17.3.x-cpu-ml-scala2.13
+            node_type_id: ${var.node_type}
+            data_security_mode: SINGLE_USER
+            num_workers: 1
+            # --- Uncomment for AWS ---
+            # aws_attributes:
+            #   first_on_demand: 1
+            #   availability: SPOT_WITH_FALLBACK
+            # --- Uncomment for Azure ---
+            # azure_attributes:
+            #   first_on_demand: 1
+            #   availability: SPOT_WITH_FALLBACK_AZURE
