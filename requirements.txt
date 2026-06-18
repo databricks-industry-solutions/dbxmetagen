@@ -63,7 +63,7 @@ contourpy==1.3.2 ; python_full_version < '3.11'
     # via matplotlib
 contourpy==1.3.3 ; python_full_version >= '3.11'
     # via matplotlib
-cryptography==46.0.5
+cryptography==48.0.1
     # via
     #   google-auth
     #   mlflow
