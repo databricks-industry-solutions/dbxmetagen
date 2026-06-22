@@ -796,6 +796,46 @@ def resolve_bundle_path(bundle_name: str) -> str:
     return os.path.join(BUNDLE_DIR, filename)
 
 
+def _resolve_tier_dir(resolved_yaml: str) -> Optional[str]:
+    """Return the tier-index directory for a resolved bundle YAML path.
+
+    The tier dir is the sibling directory named after the YAML stem
+    (``.../<bundle>.yaml`` -> ``.../<bundle>/``). This works for built-in
+    bundles and for app-imported bundles loaded from a UC Volume path.
+
+    If the sibling dir is missing its tier files (e.g. the app's best-effort
+    tier upload to the Volume did not run), tiers are regenerated locally from
+    the YAML into a temp dir so three-pass grounding still works. Returns the
+    effective tier dir, or None if tiers cannot be produced.
+    """
+    yaml_path = Path(resolved_yaml)
+    sibling = yaml_path.parent / yaml_path.stem
+    if (sibling / "entities_tier1.json").is_file() or (sibling / "entities_tier1.yaml").is_file():
+        return str(sibling)
+
+    if not yaml_path.is_file():
+        return None
+    try:
+        import tempfile
+        from dbxmetagen.ontology_bundle_indexes import (
+            build_tiers,
+            entities_from_bundle,
+            load_edge_catalog,
+        )
+
+        entities = entities_from_bundle(yaml_path)
+        if not entities:
+            return None
+        edge_catalog = load_edge_catalog(yaml_path)
+        out_dir = Path(tempfile.mkdtemp(prefix=f"tiers_{yaml_path.stem}_"))
+        build_tiers(entities, out_dir, edge_catalog=edge_catalog or None)
+        logger.info("Regenerated tier indexes for '%s' into %s", yaml_path.stem, out_dir)
+        return str(out_dir)
+    except Exception as e:
+        logger.warning("Could not regenerate tier indexes from %s: %s", resolved_yaml, e)
+        return None
+
+
 def list_available_bundles() -> List[Dict[str, Any]]:
     """Return metadata dicts for every bundle YAML found in the bundles directory."""
     bundles: List[Dict[str, Any]] = []
@@ -1252,6 +1292,7 @@ class EntityDiscoverer:
         # Three-pass prediction support (lazy init on first use)
         self._index_loader = None
         self._three_pass_available = None
+        self._tier_dir = None
 
     def _build_bundle_geo_patterns(self) -> frozenset:
         """Collect keywords + typical_attributes from Geographic entities in the bundle."""
@@ -1802,9 +1843,10 @@ class EntityDiscoverer:
                 from dbxmetagen.ontology_index import OntologyIndexLoader
                 bundle = self.config.ontology_bundle or "general"
                 resolved_yaml = resolve_bundle_path(bundle)
-                tier_dir = os.path.join(os.path.dirname(resolved_yaml), bundle)
-                base = tier_dir if os.path.isdir(tier_dir) else None
-                self._index_loader = OntologyIndexLoader(bundle_name=bundle, base_dir=base)
+                stem = Path(resolved_yaml).stem
+                base = _resolve_tier_dir(resolved_yaml)
+                self._tier_dir = base
+                self._index_loader = OntologyIndexLoader(bundle_name=stem, base_dir=base)
                 self._three_pass_available = self._index_loader.has_tier_indexes
                 if self._three_pass_available:
                     logger.info(
@@ -1855,7 +1897,7 @@ class EntityDiscoverer:
 
         bundle = self.config.ontology_bundle or "healthcare"
         bundle_yaml = Path(resolve_bundle_path(bundle))
-        tier_dir = bundle_yaml.parent / bundle_yaml.stem
+        tier_dir = Path(self._tier_dir) if getattr(self, "_tier_dir", None) else bundle_yaml.parent / bundle_yaml.stem
         tier_hash = compute_tier_index_hash(tier_dir) if tier_dir.is_dir() else ""
         bundle_ver = read_bundle_metadata_version(bundle_yaml) or ""
 
