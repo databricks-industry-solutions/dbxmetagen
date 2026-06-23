@@ -381,6 +381,8 @@ if [ -z "${SPN_APP_ID}" ] && [ -n "${APP_SP_ID}" ]; then
     echo "    GRANT CREATE TABLE ON SCHEMA \`${catalog_name}\`.\`${schema_name}\` TO \`<applicationId>\`;"
     echo "    GRANT SELECT ON SCHEMA \`${catalog_name}\`.\`${schema_name}\` TO \`<applicationId>\`;"
     echo "    GRANT MODIFY ON SCHEMA \`${catalog_name}\`.\`${schema_name}\` TO \`<applicationId>\`;"
+    echo "    GRANT READ VOLUME ON SCHEMA \`${catalog_name}\`.\`${schema_name}\` TO \`<applicationId>\`;"
+    echo "    GRANT WRITE VOLUME ON SCHEMA \`${catalog_name}\`.\`${schema_name}\` TO \`<applicationId>\`;"
     echo "  Find the applicationId in: Admin Console > Service Principals > (app name)"
     echo "  Continuing deploy without UC grants..."
     echo ""
@@ -403,12 +405,20 @@ if [ -n "${SPN_APP_ID}" ]; then
         echo "    WARNING: Could not create schema (${CREATE_STATUS}). Grants may fail if schema does not exist."
     fi
 
+    # READ/WRITE VOLUME granted at schema level so the SP can read/write UC
+    # Volumes (e.g. generated_metadata) for DDL exports and imported ontology
+    # bundles. Schema-level grants cascade to all volumes and don't require the
+    # volume to exist yet. Without WRITE VOLUME, bundle imports persist only to
+    # the app's ephemeral container; without READ VOLUME, jobs (run as this SP)
+    # can't load imported bundles.
     GRANT_STATEMENTS=(
         "GRANT USE CATALOG ON CATALOG \`${catalog_name}\` TO \`${SPN_APP_ID}\`"
         "GRANT USE SCHEMA ON SCHEMA \`${catalog_name}\`.\`${schema_name}\` TO \`${SPN_APP_ID}\`"
         "GRANT CREATE TABLE ON SCHEMA \`${catalog_name}\`.\`${schema_name}\` TO \`${SPN_APP_ID}\`"
         "GRANT SELECT ON SCHEMA \`${catalog_name}\`.\`${schema_name}\` TO \`${SPN_APP_ID}\`"
         "GRANT MODIFY ON SCHEMA \`${catalog_name}\`.\`${schema_name}\` TO \`${SPN_APP_ID}\`"
+        "GRANT READ VOLUME ON SCHEMA \`${catalog_name}\`.\`${schema_name}\` TO \`${SPN_APP_ID}\`"
+        "GRANT WRITE VOLUME ON SCHEMA \`${catalog_name}\`.\`${schema_name}\` TO \`${SPN_APP_ID}\`"
     )
 
     GRANT_FAIL=0

@@ -51,7 +51,7 @@ table_names = parse_table_names(table_names_raw) or None
 
 effective_config = "configurations/ontology_config.yaml"
 if ontology_bundle:
-    effective_config = resolve_bundle_path(ontology_bundle)
+    effective_config = resolve_bundle_path(ontology_bundle, catalog_name, schema_name)
     print(f"Resolved bundle '{ontology_bundle}' -> {effective_config}")
 
 result = refresh_ontology_relationships(

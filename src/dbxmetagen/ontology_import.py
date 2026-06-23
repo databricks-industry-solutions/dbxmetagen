@@ -6,10 +6,13 @@ Output is v1 or v2 (OWL-aligned) format.
 """
 
 import logging
+import re
 import yaml
 from collections import Counter
 from pathlib import Path
 from typing import Any, Dict, List, Optional
+
+_OPAQUE_NAME_RE = re.compile(r"^[0-9]+$")
 
 from dbxmetagen.ontology_properties import process_bundle
 
@@ -69,7 +72,7 @@ def owl_to_bundle_yaml(
             if cls in seen_uris:
                 continue
             seen_uris.add(cls)
-            name = _local_name(cls)
+            name = _entity_name(g, cls, SKOS)
             if not name or name.startswith("_"):
                 continue
 
@@ -114,14 +117,14 @@ def owl_to_bundle_yaml(
     for subj in g.subjects(RDFS.subClassOf, None):
         if subj in seen_uris:
             continue
-        name = _local_name(subj)
+        name = _entity_name(g, subj, SKOS)
         if not name or name.startswith("_"):
             continue
         seen_uris.add(subj)
         desc = _get_description(g, subj, RDFS, SKOS, SH) or f"{name} entity"
         keywords = _get_keywords(g, subj, name, RDFS, SKOS, SH)
         synonyms = _get_synonyms(g, subj, SKOS)
-        parents = [_local_name(p) for p in g.objects(subj, RDFS.subClassOf) if _local_name(p)]
+        parents = [_entity_name(g, p, SKOS) for p in g.objects(subj, RDFS.subClassOf) if _entity_name(g, p, SKOS)]
         entry: Dict[str, Any] = {
             "description": desc,
             "keywords": keywords,
@@ -146,14 +149,14 @@ def owl_to_bundle_yaml(
     for subj in g.subjects(SKOS.broader, None):
         if subj in seen_uris:
             continue
-        name = _local_name(subj)
+        name = _entity_name(g, subj, SKOS)
         if not name or name.startswith("_"):
             continue
         seen_uris.add(subj)
         desc = _get_description(g, subj, RDFS, SKOS, SH) or f"{name} entity"
         keywords = _get_keywords(g, subj, name, RDFS, SKOS, SH)
         synonyms = _get_synonyms(g, subj, SKOS)
-        parents = [_local_name(p) for p in g.objects(subj, SKOS.broader) if _local_name(p)]
+        parents = [_entity_name(g, p, SKOS) for p in g.objects(subj, SKOS.broader) if _entity_name(g, p, SKOS)]
         entry: Dict[str, Any] = {
             "description": desc,
             "keywords": keywords,
@@ -179,7 +182,7 @@ def owl_to_bundle_yaml(
         prop_name = _local_name(prop)
         if not prop_name:
             continue
-        domains = [_local_name(d) for d in g.objects(prop, RDFS.domain) if _local_name(d)]
+        domains = [_entity_name(g, d, SKOS) for d in g.objects(prop, RDFS.domain) if _entity_name(g, d, SKOS)]
         ranges = [str(r) for r in g.objects(prop, RDFS.range)]
         for domain_cls in domains:
             if domain_cls in entities:
@@ -200,8 +203,8 @@ def owl_to_bundle_yaml(
         prop_name = _local_name(prop)
         if not prop_name:
             continue
-        domains = [_local_name(d) for d in g.objects(prop, RDFS.domain) if _local_name(d)]
-        ranges = [_local_name(r) for r in g.objects(prop, RDFS.range) if _local_name(r)]
+        domains = [_entity_name(g, d, SKOS) for d in g.objects(prop, RDFS.domain) if _entity_name(g, d, SKOS)]
+        ranges = [_entity_name(g, r, SKOS) for r in g.objects(prop, RDFS.range) if _entity_name(g, r, SKOS)]
         inverse_props = [_local_name(i) for i in g.objects(prop, OWL.inverseOf) if _local_name(i)]
 
         edge_entry: Dict[str, Any] = {"symmetric": False, "category": "business"}
@@ -251,6 +254,9 @@ def owl_to_bundle_yaml(
         "industry": "imported",
         "description": f"Imported from {source_file}",
         "standards_alignment": source_label,
+        "entity_count": len(entities),
+        "edge_count": len(edge_catalog),
+        "domain_count": 0,
     }
     if format_version.startswith("2"):
         metadata["format_version"] = "2.0"
@@ -395,8 +401,17 @@ def _extract_schema_style_properties(
 
 
 def _detect_source_ontology(g) -> Optional[str]:
-    """Heuristic detection of source ontology from graph namespace prefixes."""
-    ns_str = " ".join(str(ns) for _, ns in g.namespaces())
+    """Detect source ontology from namespaces actually used in the graph.
+
+    Scans predicates and rdf:type objects rather than ``g.namespaces()``,
+    because rdflib auto-binds common prefixes (schema.org, brick, etc.) on
+    every graph regardless of use, which caused false-positive matches.
+    """
+    import rdflib
+
+    used = {str(p) for p in g.predicates()}
+    used.update(str(o) for o in g.objects(None, rdflib.RDF.type))
+    ns_str = " ".join(used)
     if "hl7.org/fhir" in ns_str:
         return "FHIR R4"
     if "omop-cdm" in ns_str or "w3id.org/omop" in ns_str:
@@ -417,6 +432,25 @@ def _local_name(uri) -> Optional[str]:
     if "/" in s:
         return s.split("/")[-1]
     return None
+
+
+def _entity_name(g, uri, skos) -> Optional[str]:
+    """Resolve a usable entity name for a URI.
+
+    Most ontologies encode the name in the URI fragment (e.g. ``#Patient``).
+    Code-based ontologies use opaque numeric fragments (e.g. ``#1208``); for
+    those, fall back to a sanitized ``skos:prefLabel`` so entities surface as
+    readable names instead of bare codes. Deterministic per URI, so the same
+    name is produced whether the URI appears as a class, parent, or range.
+    """
+    ln = _local_name(uri)
+    if ln and not _OPAQUE_NAME_RE.match(ln):
+        return ln
+    for val in g.objects(uri, skos.prefLabel):
+        sanitized = re.sub(r"[^0-9A-Za-z]+", "_", _strip_lang(val)).strip("_")
+        if sanitized:
+            return sanitized
+    return ln
 
 
 def _strip_lang(literal) -> str:
@@ -470,7 +504,7 @@ def _get_parents(g, subject, rdfs, skos) -> List[str]:
     parents = []
     for pred in (rdfs.subClassOf, skos.broader):
         for obj in g.objects(subject, pred):
-            pname = _local_name(obj)
+            pname = _entity_name(g, obj, skos)
             if pname and pname not in parents:
                 parents.append(pname)
     return parents

@@ -36,22 +36,10 @@ print(f"Bundle: {ontology_bundle}, Endpoint: {endpoint_name}")
 import sys
 sys.path.append("../src")
 
-from pathlib import Path
-
-# Resolve bundle YAML path -- check repo-local configurations/ first, then wheel-bundled
-bundle_path = None
-for base in [
-    Path("../configurations/ontology_bundles"),
-    Path("/Workspace") / dbutils.widgets.get("catalog_name"),
-]:
-    candidate = base / f"{ontology_bundle}.yaml"
-    if candidate.exists():
-        bundle_path = str(candidate)
-        break
-
-if not bundle_path:
-    from dbxmetagen.ontology import resolve_bundle_path
-    bundle_path = resolve_bundle_path(ontology_bundle)
+# Resolve bundle YAML: curated configurations/ first, then the UC Volume where
+# the app persists imported bundles (e.g. RegeneronDisease.yaml).
+from dbxmetagen.ontology import resolve_bundle_path
+bundle_path = resolve_bundle_path(ontology_bundle, catalog_name, schema_name)
 
 print(f"Bundle source: {bundle_path}")
 

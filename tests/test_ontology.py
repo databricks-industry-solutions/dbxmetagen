@@ -4344,6 +4344,29 @@ class TestOwlImportFieldEmission:
         finally:
             os.unlink(ttl_path)
 
+    @pytest.mark.skipif(not _rdflib_available(), reason="rdflib not installed")
+    def test_source_detection_ignores_unused_bound_namespaces(self):
+        """rdflib auto-binds schema.org/brick; detection must not false-positive.
+
+        This SKOS-annotated OWL file uses no schema.org triples, so it must be
+        detected as SKOS, not Schema.org.
+        """
+        from dbxmetagen.ontology_import import _detect_source_ontology
+        import rdflib
+
+        with tempfile.NamedTemporaryFile(suffix=".ttl", mode="w", delete=False) as ttl:
+            ttl.write(self._TTL)
+            ttl.flush()
+            ttl_path = ttl.name
+        try:
+            g = rdflib.Graph()
+            g.parse(ttl_path, format="turtle")
+            # schema.org is bound by default but unused -> must be ignored.
+            assert any("schema.org" in str(u) for _, u in g.namespaces())
+            assert _detect_source_ontology(g) == "SKOS"
+        finally:
+            os.unlink(ttl_path)
+
 
 def test_generate_bundle_properties_script_reexports():
     """The CLI wrapper re-exports the moved functions from the src module."""
