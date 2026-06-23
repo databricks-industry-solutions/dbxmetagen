@@ -37,7 +37,7 @@ import sys
 sys.path.append("../src")
 
 # Resolve bundle YAML: curated configurations/ first, then the UC Volume where
-# the app persists imported bundles (e.g. RegeneronDisease.yaml).
+# the app persists imported bundles (e.g. my_ontology.yaml).
 from dbxmetagen.ontology import resolve_bundle_path
 bundle_path = resolve_bundle_path(ontology_bundle, catalog_name, schema_name)
 
