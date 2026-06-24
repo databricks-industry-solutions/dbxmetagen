@@ -420,22 +420,27 @@ class TestMaxEdgesCapANN:
         assert "partitionBy" in src
         assert "src" in src
 
-    def test_cap_uses_and_semantics(self):
-        """Edge must be within cap for BOTH src and dst (AND, not OR)."""
+    def test_cap_uses_or_semantics(self):
+        """Edge kept if within cap for src OR dst (preserves hub-spoke edges)."""
         src = inspect.getsource(SimilarityEdgeBuilder._postprocess_ann_edges)
         assert "rn_src" in src and "rn_dst" in src
-        # Must use & (AND), not | (OR)
-        assert '& (F.col("rn_dst")' in src or "&" in src
+        # Must use | (OR), not & (AND), so asymmetric hub edges survive
+        assert '| (F.col("rn_dst")' in src
 
 
 class TestCrossjoinCapAndEntityExclusion:
-    """Tests for AND semantics in cross-join SQL and entity exclusion at query level."""
+    """Tests for OR semantics in cross-join SQL and entity exclusion at query level."""
 
-    def test_crossjoin_cap_uses_and_not_or(self):
-        """The ranked CTE must use AND (not OR) for rn_src/rn_dst cap."""
+    def test_crossjoin_cap_uses_or_not_and(self):
+        """The ranked CTE must use OR (not AND) for rn_src/rn_dst cap.
+
+        OR semantics keep an edge if it is top-K for either endpoint, which
+        preserves asymmetric hub-spoke edges (e.g. a parent key that a child
+        does not rank in its own top-K). AND severed those, dropping FKs.
+        """
         src = inspect.getsource(SimilarityEdgeBuilder._compute_similarity_crossjoin)
-        assert "AND rn_dst" in src
-        assert "OR rn_dst" not in src
+        assert "OR rn_dst" in src
+        assert "AND rn_dst" not in src
 
     def test_entity_nodes_excluded_at_query_level(self):
         """Entity nodes are excluded in get_nodes_with_embeddings, not just pair SQL."""

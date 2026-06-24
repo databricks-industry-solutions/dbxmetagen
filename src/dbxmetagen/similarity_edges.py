@@ -323,7 +323,7 @@ class SimilarityEdgeBuilder:
             current_timestamp() as updated_at
         FROM ranked
         WHERE rn_src <= {self.config.max_edges_per_node}
-          AND rn_dst <= {self.config.max_edges_per_node}
+          OR rn_dst <= {self.config.max_edges_per_node}
         """
 
         try:
@@ -344,30 +344,39 @@ class SimilarityEdgeBuilder:
             norm2 = sum(b * b for b in v2) ** 0.5
             return dot / (norm1 * norm2) if norm1 and norm2 else 0.0
 
-        # Phase 1: per-source cap (top-K per src)
-        src_capped: list[tuple[str, str, float]] = []
+        # Collect all candidate pairs above threshold (undirected, upper triangle).
+        all_pairs: list[tuple[str, str, float]] = []
         for i, node_a in enumerate(nodes):
-            similarities = []
             for j, node_b in enumerate(nodes):
                 if i < j and node_a.embedding and node_b.embedding:
                     sim = cosine_sim(list(node_a.embedding), list(node_b.embedding))
                     if sim >= self.config.similarity_threshold:
-                        similarities.append((node_b.id, sim))
-            similarities.sort(key=lambda x: x[1], reverse=True)
-            for dst, sim in similarities[:self.config.max_edges_per_node]:
-                src_capped.append((node_a.id, dst, sim))
+                        all_pairs.append((node_a.id, node_b.id, sim))
 
-        # Phase 2: per-destination cap (AND semantics -- edge must be top-K for BOTH endpoints)
+        # OR semantics: keep an edge if it is top-K for its src OR its dst.
+        # Mirrors the SQL path (rn_src <= K OR rn_dst <= K) so asymmetric
+        # hub-spoke edges survive even when a spoke does not rank the hub.
         from collections import defaultdict
-        dst_groups: dict[str, list[tuple[str, str, float]]] = defaultdict(list)
-        for src, dst, sim in src_capped:
-            dst_groups[dst].append((src, dst, sim))
-        edges = []
         max_k = self.config.max_edges_per_node
-        for dst, group in dst_groups.items():
+        src_groups: dict[str, list[tuple[str, str, float]]] = defaultdict(list)
+        dst_groups: dict[str, list[tuple[str, str, float]]] = defaultdict(list)
+        for src, dst, sim in all_pairs:
+            src_groups[src].append((src, dst, sim))
+            dst_groups[dst].append((src, dst, sim))
+        kept: set[tuple[str, str]] = set()
+        for group in src_groups.values():
             group.sort(key=lambda x: x[2], reverse=True)
-            for src, dst, sim in group[:max_k]:
-                edges.append({"src": src, "dst": dst, "relationship": self.RELATIONSHIP_TYPE, "weight": sim})
+            for src, dst, _ in group[:max_k]:
+                kept.add((src, dst))
+        for group in dst_groups.values():
+            group.sort(key=lambda x: x[2], reverse=True)
+            for src, dst, _ in group[:max_k]:
+                kept.add((src, dst))
+        edges = [
+            {"src": src, "dst": dst, "relationship": self.RELATIONSHIP_TYPE, "weight": sim}
+            for src, dst, sim in all_pairs
+            if (src, dst) in kept
+        ]
 
         if edges:
             df = self.spark.createDataFrame(edges)
@@ -594,7 +603,7 @@ class SimilarityEdgeBuilder:
             df
             .withColumn("rn_src", F.row_number().over(w_src))
             .withColumn("rn_dst", F.row_number().over(w_dst))
-            .filter((F.col("rn_src") <= max_e) & (F.col("rn_dst") <= max_e))
+            .filter((F.col("rn_src") <= max_e) | (F.col("rn_dst") <= max_e))
             .drop("rn_src", "rn_dst")
         )
 

@@ -641,10 +641,10 @@ class TestManyToManyPenalty:
     """Tests for many-to-many detection in join validation.
 
     The penalty uses a 2x threshold: joined > max(a_count, b_count) * 2
-    triggers rate = 0.0. Combined with the SQL LIMIT cap at
-    cardinality_sample_rows + 1, this makes the penalty effectively
-    dormant for typical samples while still guarding against extreme
-    many-to-many if the LIMIT is raised in the future.
+    triggers rate = 0.0. The join SQL pre-aggregates per-value counts and
+    reports the exact raw join count (SUM(ga.c * gb.c)), so the penalty is
+    fully active: a low-cardinality many-to-many pair shows joined far above
+    2x and is correctly zeroed.
     """
 
     @staticmethod
@@ -729,10 +729,67 @@ class TestManyToManyPenalty:
         src = inspect.getsource(FKPredictor.join_validate)
         assert "max_count * 2" in src
 
-    def test_join_validate_sql_has_limit_cap(self):
-        """The join SQL fragment must have a LIMIT cap to prevent runaway compute."""
+    def test_join_validate_sql_is_blowup_proof(self):
+        """The join SQL must pre-aggregate per-value counts and join on distinct
+        values, so a low-cardinality key cannot fan out into a runaway cross
+        product (the original cause of cluster failures). SUM(ga.c * gb.c) over
+        matching values reproduces the exact raw join count without
+        materializing it."""
         src = inspect.getsource(FKPredictor.join_validate)
-        assert "LIMIT" in src
+        assert "GROUP BY val" in src
+        assert "SUM(ga.c * gb.c)" in src
+
+
+# --- TestCrossKeyNoiseGate ---
+
+
+class TestCrossKeyNoiseGate:
+    """get_candidates drops pairs whose only commonality is the _id/_key/_code
+    suffix (both key-like but stems unrelated, e.g. department_key x patient_key),
+    while keeping same-name and stem-related (role-prefixed) pairs."""
+
+    @staticmethod
+    def _stem(short):
+        return re.sub(r"(_id|_key|_code)$", "", short.lower())
+
+    @classmethod
+    def _dropped(cls, a, b):
+        """Mirror of the SQL gate in get_candidates()."""
+        key = re.compile(r"(_id|_key|_code)$")
+        if not (key.search(a.lower()) and key.search(b.lower())):
+            return False
+        sa, sb = cls._stem(a), cls._stem(b)
+        related = (
+            sa == sb
+            or re.search(rf"(^|_){re.escape(sb)}(_|$)", sa) is not None
+            or re.search(rf"(^|_){re.escape(sa)}(_|$)", sb) is not None
+        )
+        return not related
+
+    def test_cross_entity_keys_dropped(self):
+        assert self._dropped("department_key", "patient_key")
+        assert self._dropped("patient_key", "provider_key")
+        assert self._dropped("pat_id", "referral_id")
+        assert self._dropped("dx_id", "problem_list_id")
+
+    def test_same_stem_kept(self):
+        assert not self._dropped("department_key", "department_id")
+
+    def test_role_prefixed_fk_kept(self):
+        assert not self._dropped("ordering_prov_id", "prov_id")
+
+    def test_same_name_keys_kept(self):
+        assert not self._dropped("pat_id", "pat_id")
+        assert not self._dropped("pat_enc_csn_id", "pat_enc_csn_id")
+
+    def test_non_key_pairs_unaffected(self):
+        assert not self._dropped("department_name", "department_name")
+        assert not self._dropped("specialty", "specialty")
+
+    def test_gate_present_in_get_candidates_source(self):
+        src = inspect.getsource(FKPredictor.get_candidates)
+        assert "(_id|_key|_code)$" in src
+        assert "stem_a" in src and "stem_b" in src
 
 
 # --- TestSafetyFilters ---
