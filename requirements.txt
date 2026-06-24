@@ -401,7 +401,7 @@ puremagic==1.30 ; python_full_version < '3.12'
     # via visions
 puremagic==2.1.0 ; python_full_version >= '3.12'
     # via visions
-pyarrow==22.0.0
+pyarrow==23.0.1
     # via
     #   databricks-connect
     #   mlflow
