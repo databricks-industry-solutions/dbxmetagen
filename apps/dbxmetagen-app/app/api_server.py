@@ -324,6 +324,27 @@ def _ensure_review_updated_at(table_key: str):
 _pg_fallback_warned = False
 
 
+def _kg_noise_filter(alias: str = "") -> str:
+    """SQL predicate matching low-value knowledge-graph edges to exclude from
+    traversal and graph views (read-layer only; edges remain in the table).
+
+    Drops same_schema/same_security_level cliques, similar_embedding below 0.86
+    weight, and same-table column-column similar_embedding pairs. The LIKE guard
+    keeps the same-table rule scoped to column ids (cat.sch.tbl.col -> prefix
+    cat.sch.tbl has >= 2 dots) so table-table pairs sharing a schema are kept.
+    Portable across Postgres (Lakebase) and Spark SQL.
+    """
+    a = f"{alias}." if alias else ""
+    pat = r"\.[^.]+$"
+    return (
+        f"{a}relationship IN ('same_schema','same_security_level') "
+        f"OR ({a}relationship = 'similar_embedding' AND COALESCE({a}weight, 0) < 0.86) "
+        f"OR ({a}relationship = 'similar_embedding' "
+        f"AND REGEXP_REPLACE({a}src, '{pat}', '') = REGEXP_REPLACE({a}dst, '{pat}', '') "
+        f"AND REGEXP_REPLACE({a}src, '{pat}', '') LIKE '%.%.%')"
+    )
+
+
 def graph_query(sql: str) -> list[dict]:
     """Query graph tables: try Lakebase PG first, fall back to UC Delta tables."""
     global _pg_fallback_warned
@@ -391,6 +412,7 @@ def multi_hop_traverse(
         filters.append(f"e.edge_type = {_safe_sql_str(edge_type)}")
     if quality_threshold > 0:
         filters.append(f"COALESCE(e.weight, 1.0) >= {quality_threshold}")
+    filters.append(f"NOT ({_kg_noise_filter('e')})")
     filter_clause = (" AND " + " AND ".join(filters)) if filters else ""
 
     order_limit = ""
@@ -2675,7 +2697,7 @@ def get_ontology_relationships(limit: int = 500):
 def get_ontology_graph_edges(edge_type: str = "", limit: int = 500):
     """Return edges from the knowledge graph (graph_edges table), optionally filtered by type."""
     ge_tbl = fq("graph_edges")
-    clauses = ["relationship NOT IN ('similar_embedding', 'shares_column_name')"]
+    clauses = ["relationship NOT IN ('similar_embedding', 'shares_column_name', 'same_schema', 'same_security_level')"]
     if edge_type and _SAFE_IDENT_RE.match(edge_type):
         clauses.append(f"edge_type = '{_esc_sql(edge_type)}'")
     where = " AND ".join(clauses)
@@ -5724,6 +5746,7 @@ def graph_edge_types_endpoint():
     """Return distinct edge types with counts from graph_edges."""
     return graph_query(
         "SELECT edge_type, COUNT(*) as cnt FROM public.graph_edges "
+        f"WHERE NOT ({_kg_noise_filter()}) "
         "GROUP BY edge_type ORDER BY cnt DESC"
     )
 

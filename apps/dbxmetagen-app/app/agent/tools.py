@@ -75,7 +75,7 @@ def get_node_details(node_id: str) -> dict:
 
 
 @tool
-def find_similar_nodes(node_id: str, min_similarity: float = 0.8, limit: int = 10) -> list[dict]:
+def find_similar_nodes(node_id: str, min_similarity: float = 0.86, limit: int = 10) -> list[dict]:
     """Find nodes similar to the given node based on embedding similarity edges.
 
     Args:
@@ -92,6 +92,8 @@ def find_similar_nodes(node_id: str, min_similarity: float = 0.8, limit: int = 1
         WHERE e.src = '{node_id}'
           AND (e.edge_type = 'similar_to' OR e.relationship = 'similar_embedding')
           AND e.weight >= {min_similarity}
+          AND NOT (REGEXP_REPLACE(e.src, '\\.[^.]+$', '') = REGEXP_REPLACE(e.dst, '\\.[^.]+$', '')
+                   AND REGEXP_REPLACE(e.src, '\\.[^.]+$', '') LIKE '%.%.%')
         ORDER BY e.weight DESC LIMIT {limit}
     """
     return _gq(q, "find_similar_nodes")
