@@ -431,7 +431,7 @@ pydantic==2.10.3
     #   ydata-profiling
 pydantic-core==2.27.1
     # via pydantic
-pydantic-settings==2.13.1
+pydantic-settings==2.14.2
     # via langchain-community
 pyparsing==3.3.2
     # via matplotlib
