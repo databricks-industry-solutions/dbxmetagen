@@ -79,7 +79,7 @@ _check_federation_guard(spark, catalog_name, schema_name, table_names, federatio
 
 effective_config = config_path
 if ontology_bundle:
-    effective_config = resolve_bundle_path(ontology_bundle)
+    effective_config = resolve_bundle_path(ontology_bundle, catalog_name, schema_name)
     print(f"Resolved bundle '{ontology_bundle}' -> {effective_config}")
 
 # Auto-detect ontology VS index if it was built by a prior pipeline stage

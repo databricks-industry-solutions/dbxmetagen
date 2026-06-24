@@ -2,6 +2,7 @@
 
 import inspect
 import json
+import os
 import tempfile
 import pytest
 from pathlib import Path
@@ -21,6 +22,7 @@ from dbxmetagen.ontology import (
     build_ontology,
     _enforce_entity_value,
     _resolve_ontology_config_path,
+    _resolve_tier_dir,
     _DEFAULT_ONTOLOGY_CONFIG_PATH,
     DEFAULT_CLASSIFICATION_MODEL,
     DOMAIN_ENTITY_AFFINITY,
@@ -4159,5 +4161,222 @@ class TestReconcileEntityRoles:
         assert "fully_qualified_entities" in src
         assert "max_ent <= max_bundle" in src
 
+
+class TestResolveTierDir:
+    """_resolve_tier_dir handles built-in/local and Volume-style bundle paths."""
+
+    def _write_bundle(self, path: Path):
+        path.write_text(
+            "metadata:\n"
+            "  name: mybundle\n"
+            "ontology:\n"
+            "  entities:\n"
+            "    definitions:\n"
+            "      Patient:\n"
+            "        description: A person receiving care\n"
+            "      Encounter:\n"
+            "        description: An interaction event\n",
+            encoding="utf-8",
+        )
+
+    def test_returns_sibling_dir_when_tiers_present(self):
+        with tempfile.TemporaryDirectory() as d:
+            base = Path(d)
+            yaml_path = base / "mybundle.yaml"
+            self._write_bundle(yaml_path)
+            tier_dir = base / "mybundle"
+            tier_dir.mkdir()
+            (tier_dir / "entities_tier1.json").write_text("[]", encoding="utf-8")
+
+            assert _resolve_tier_dir(str(yaml_path)) == str(tier_dir)
+
+    def test_regenerates_tiers_when_sibling_missing(self):
+        with tempfile.TemporaryDirectory() as d:
+            yaml_path = Path(d) / "mybundle.yaml"
+            self._write_bundle(yaml_path)
+
+            result = _resolve_tier_dir(str(yaml_path))
+            assert result is not None
+            out = Path(result)
+            assert (out / "entities_tier1.json").is_file() or (out / "entities_tier1.yaml").is_file()
+
+    def test_returns_none_when_yaml_missing_and_no_tiers(self):
+        with tempfile.TemporaryDirectory() as d:
+            missing = Path(d) / "nope.yaml"
+            assert _resolve_tier_dir(str(missing)) is None
+
+
+def _rdflib_available():
+    try:
+        import rdflib  # noqa: F401
+        return True
+    except ImportError:
+        return False
+
+
+class TestProcessBundleProperties:
+    """ontology_properties.process_bundle generates roles and syncs property_roles."""
+
+    def test_generates_roles_from_typical_attributes(self):
+        from dbxmetagen.ontology_properties import process_bundle
+
+        bundle = {
+            "metadata": {"name": "imported"},
+            "ontology": {
+                "property_roles": {},
+                "edge_catalog": {},
+                "entities": {
+                    "definitions": {
+                        "Patient": {
+                            "description": "A patient",
+                            "typical_attributes": ["patient_id", "birth_date", "full_name"],
+                            "relationships": {},
+                            "properties": {},
+                        }
+                    }
+                },
+            },
+        }
+        ent_count, _new, _preserved = process_bundle(bundle, "imported")
+        assert ent_count == 1
+        props = bundle["ontology"]["entities"]["definitions"]["Patient"]["properties"]
+        roles = {p["role"] for p in props.values()}
+        # Should infer non-trivial roles, not a single naive "dimension" for everything.
+        assert "primary_key" in roles or "business_key" in roles
+        assert roles != {"dimension"}
+
+    def test_syncs_canonical_property_roles(self):
+        from dbxmetagen.ontology_properties import process_bundle
+        from dbxmetagen.ontology_roles import property_roles_for_yaml
+
+        bundle = {
+            "metadata": {"name": "imported"},
+            "ontology": {
+                "property_roles": {"stale": {}},
+                "entities": {"definitions": {}},
+            },
+        }
+        process_bundle(bundle, "imported")
+        assert bundle["ontology"]["property_roles"] == property_roles_for_yaml()
+
+    def test_preserves_existing_object_property(self):
+        from dbxmetagen.ontology_properties import process_bundle
+
+        existing = {
+            "kind": "object_property", "role": "object_property",
+            "edge": "has_encounter", "target_entity": "Encounter",
+            "typical_attributes": ["encounter_id"],
+        }
+        bundle = {
+            "metadata": {"name": "imported"},
+            "ontology": {
+                "edge_catalog": {},
+                "entities": {
+                    "definitions": {
+                        "Patient": {
+                            "typical_attributes": [],
+                            "relationships": {},
+                            "properties": {"has_encounter": dict(existing)},
+                        }
+                    }
+                },
+            },
+        }
+        process_bundle(bundle, "imported")
+        props = bundle["ontology"]["entities"]["definitions"]["Patient"]["properties"]
+        assert props["has_encounter"]["role"] == "object_property"
+        assert props["has_encounter"]["target_entity"] == "Encounter"
+
+
+class TestOwlImportFieldEmission:
+    """owl_to_bundle_yaml emits SKOS-derived fields and real property roles."""
+
+    _TTL = """
+    @prefix owl: <http://www.w3.org/2002/07/owl#> .
+    @prefix rdf: <http://www.w3.org/1999/02/22-rdf-syntax-ns#> .
+    @prefix rdfs: <http://www.w3.org/2000/01/rdf-schema#> .
+    @prefix skos: <http://www.w3.org/2004/02/skos/core#> .
+    @prefix ex: <http://example.org/> .
+
+    ex:Disease rdf:type owl:Class .
+    ex:RareDisease rdf:type owl:Class ;
+        rdfs:subClassOf ex:Disease, ex:Condition ;
+        skos:definition "A disease that is rare." ;
+        skos:prefLabel "Rare disease" ;
+        skos:altLabel "orphan disease" , "uncommon disease" .
+    ex:Condition rdf:type owl:Class .
+    """
+
+    @pytest.mark.skipif(not _rdflib_available(), reason="rdflib not installed")
+    def test_emits_synonyms_parents_and_skos_description(self):
+        from dbxmetagen.ontology_import import owl_to_bundle_yaml
+
+        with tempfile.NamedTemporaryFile(suffix=".ttl", mode="w", delete=False) as ttl:
+            ttl.write(self._TTL)
+            ttl.flush()
+            ttl_path = ttl.name
+        try:
+            bundle = owl_to_bundle_yaml(ttl_path, format_version="2.0", bundle_name="imported")
+            defs = bundle["ontology"]["entities"]["definitions"]
+            rare = defs["RareDisease"]
+            # SKOS definition becomes the description.
+            assert rare["description"] == "A disease that is rare."
+            # altLabels become synonyms (not just folded into keywords).
+            assert set(rare["synonyms"]) == {"orphan disease", "uncommon disease"}
+            # Multi-inheritance preserved via plural parents.
+            assert set(rare["parents"]) == {"Disease", "Condition"}
+            assert rare["parent"] in {"Disease", "Condition"}
+        finally:
+            os.unlink(ttl_path)
+
+    @pytest.mark.skipif(not _rdflib_available(), reason="rdflib not installed")
+    def test_property_roles_synced_to_canonical_registry(self):
+        from dbxmetagen.ontology_import import owl_to_bundle_yaml
+        from dbxmetagen.ontology_roles import property_roles_for_yaml
+
+        with tempfile.NamedTemporaryFile(suffix=".ttl", mode="w", delete=False) as ttl:
+            ttl.write(self._TTL)
+            ttl.flush()
+            ttl_path = ttl.name
+        try:
+            bundle = owl_to_bundle_yaml(ttl_path, format_version="2.0", bundle_name="imported")
+            assert bundle["ontology"]["property_roles"] == property_roles_for_yaml()
+        finally:
+            os.unlink(ttl_path)
+
+    @pytest.mark.skipif(not _rdflib_available(), reason="rdflib not installed")
+    def test_source_detection_ignores_unused_bound_namespaces(self):
+        """rdflib auto-binds schema.org/brick; detection must not false-positive.
+
+        This SKOS-annotated OWL file uses no schema.org triples, so it must be
+        detected as SKOS, not Schema.org.
+        """
+        from dbxmetagen.ontology_import import _detect_source_ontology
+        import rdflib
+
+        with tempfile.NamedTemporaryFile(suffix=".ttl", mode="w", delete=False) as ttl:
+            ttl.write(self._TTL)
+            ttl.flush()
+            ttl_path = ttl.name
+        try:
+            g = rdflib.Graph()
+            g.parse(ttl_path, format="turtle")
+            # schema.org is bound by default but unused -> must be ignored.
+            assert any("schema.org" in str(u) for _, u in g.namespaces())
+            assert _detect_source_ontology(g) == "SKOS"
+        finally:
+            os.unlink(ttl_path)
+
+
+def test_generate_bundle_properties_script_reexports():
+    """The CLI wrapper re-exports the moved functions from the src module."""
+    import importlib.util
+
+    script = Path(__file__).resolve().parent.parent / "scripts" / "generate_bundle_properties.py"
+    spec = importlib.util.spec_from_file_location("generate_bundle_properties", script)
+    mod = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(mod)
+    for fn in ("process_bundle", "detect_source", "generate_owl_properties", "generate_pattern_properties"):
+        assert hasattr(mod, fn)
 
 

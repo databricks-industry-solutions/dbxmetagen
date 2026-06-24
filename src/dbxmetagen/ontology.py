@@ -767,13 +767,24 @@ class EntityDefinition:
 BUNDLE_DIR = "configurations/ontology_bundles"
 
 
-def resolve_bundle_path(bundle_name: str) -> str:
+def resolve_bundle_path(
+    bundle_name: str,
+    catalog_name: Optional[str] = None,
+    schema_name: Optional[str] = None,
+    volume_name: Optional[str] = None,
+) -> str:
     """Resolve a bundle name (e.g. 'healthcare') to its YAML path.
 
-    Searches ``configurations/ontology_bundles/`` relative to the package
-    root, CWD, and Workspace.  Returns the first existing path, or falls
-    back to ``<BUNDLE_DIR>/<bundle_name>.yaml`` (which OntologyLoader will
-    then search with its own path resolution).
+    Searches ``configurations/ontology_bundles/`` (curated/wheel-bundled) first,
+    then the UC Volume where the app persists imported bundles
+    (``/Volumes/<catalog>/<schema>/<volume>/ontology_bundles/<name>.yaml``).
+    Returns the first existing path, or falls back to
+    ``<BUNDLE_DIR>/<bundle_name>.yaml``.
+
+    Curated bundles are checked first so built-in names resolve unchanged; the
+    Volume is the fallback for app-imported bundles that aren't shipped in the
+    wheel. ``catalog_name``/``schema_name`` are required to search the Volume;
+    ``volume_name`` defaults to ``$VOLUME_NAME`` or ``generated_metadata``.
     """
     filename = (
         f"{bundle_name}.yaml" if not bundle_name.endswith(".yaml") else bundle_name
@@ -790,10 +801,93 @@ def resolve_bundle_path(bundle_name: str) -> str:
     except Exception:
         pass
 
+    vol_path = None
+    if catalog_name and schema_name:
+        vol = volume_name or os.environ.get("VOLUME_NAME", "generated_metadata")
+        vol_path = f"/Volumes/{catalog_name}/{schema_name}/{vol}/ontology_bundles/{filename}"
+        candidates.append(vol_path)
+
     for path in candidates:
         if os.path.exists(path):
+            logger.info("Resolved bundle '%s' -> %s", bundle_name, path)
             return path
+
+    # FUSE may not expose /Volumes on serverless job compute; fall back to an
+    # SDK download (same mechanism the app uses to read imported bundles).
+    if vol_path:
+        local = _download_volume_bundle(vol_path)
+        if local:
+            logger.info("Resolved bundle '%s' via SDK download -> %s", bundle_name, vol_path)
+            return local
+
+    logger.warning(
+        "Bundle '%s' not found in any candidate (tried %s); falling back to bare path",
+        bundle_name, candidates,
+    )
     return os.path.join(BUNDLE_DIR, filename)
+
+
+def _download_volume_bundle(vol_path: str) -> Optional[str]:
+    """Download a bundle YAML from a UC Volume via the SDK to a temp file.
+
+    Returns the local temp path, or None if the file isn't there / SDK fails.
+    Used as a FUSE-independent fallback for app-imported bundles.
+    """
+    try:
+        import tempfile
+        from databricks.sdk import WorkspaceClient
+
+        resp = WorkspaceClient().files.download(vol_path)
+        data = resp.contents.read()
+        if not data:
+            return None
+        fd, tmp = tempfile.mkstemp(suffix="_" + os.path.basename(vol_path))
+        with os.fdopen(fd, "wb") as f:
+            f.write(data)
+        return tmp
+    except Exception as e:
+        logger.debug("SDK download of bundle %s failed: %s", vol_path, e)
+        return None
+
+
+def _resolve_tier_dir(resolved_yaml: str) -> Optional[str]:
+    """Return the tier-index directory for a resolved bundle YAML path.
+
+    The tier dir is the sibling directory named after the YAML stem
+    (``.../<bundle>.yaml`` -> ``.../<bundle>/``). This works for built-in
+    bundles and for app-imported bundles loaded from a UC Volume path.
+
+    If the sibling dir is missing its tier files (e.g. the app's best-effort
+    tier upload to the Volume did not run), tiers are regenerated locally from
+    the YAML into a temp dir so three-pass grounding still works. Returns the
+    effective tier dir, or None if tiers cannot be produced.
+    """
+    yaml_path = Path(resolved_yaml)
+    sibling = yaml_path.parent / yaml_path.stem
+    if (sibling / "entities_tier1.json").is_file() or (sibling / "entities_tier1.yaml").is_file():
+        return str(sibling)
+
+    if not yaml_path.is_file():
+        return None
+    try:
+        import tempfile
+        from dbxmetagen.ontology_bundle_indexes import (
+            build_tiers,
+            entities_from_bundle,
+            load_edge_catalog,
+        )
+
+        entities = entities_from_bundle(yaml_path)
+        if not entities:
+            return None
+        edge_catalog = load_edge_catalog(yaml_path)
+        out_dir = Path(tempfile.mkdtemp(prefix=f"tiers_{yaml_path.stem}_"))
+        build_tiers(entities, out_dir, edge_catalog=edge_catalog or None)
+        logger.info("Regenerated tier indexes for '%s' into %s", yaml_path.stem, out_dir)
+        return str(out_dir)
+    except Exception as e:
+        logger.warning("Could not regenerate tier indexes from %s: %s", resolved_yaml, e)
+        return None
 
 
 def list_available_bundles() -> List[Dict[str, Any]]:
@@ -1252,6 +1346,7 @@ class EntityDiscoverer:
         # Three-pass prediction support (lazy init on first use)
         self._index_loader = None
         self._three_pass_available = None
+        self._tier_dir = None
 
     def _build_bundle_geo_patterns(self) -> frozenset:
         """Collect keywords + typical_attributes from Geographic entities in the bundle."""
@@ -1801,10 +1896,13 @@ class EntityDiscoverer:
             try:
                 from dbxmetagen.ontology_index import OntologyIndexLoader
                 bundle = self.config.ontology_bundle or "general"
-                resolved_yaml = resolve_bundle_path(bundle)
-                tier_dir = os.path.join(os.path.dirname(resolved_yaml), bundle)
-                base = tier_dir if os.path.isdir(tier_dir) else None
-                self._index_loader = OntologyIndexLoader(bundle_name=bundle, base_dir=base)
+                resolved_yaml = resolve_bundle_path(
+                    bundle, self.config.catalog_name, self.config.schema_name
+                )
+                stem = Path(resolved_yaml).stem
+                base = _resolve_tier_dir(resolved_yaml)
+                self._tier_dir = base
+                self._index_loader = OntologyIndexLoader(bundle_name=stem, base_dir=base)
                 self._three_pass_available = self._index_loader.has_tier_indexes
                 if self._three_pass_available:
                     logger.info(
@@ -1854,8 +1952,10 @@ class EntityDiscoverer:
         from dbxmetagen.ontology_provenance import compute_tier_index_hash, read_bundle_metadata_version
 
         bundle = self.config.ontology_bundle or "healthcare"
-        bundle_yaml = Path(resolve_bundle_path(bundle))
-        tier_dir = bundle_yaml.parent / bundle_yaml.stem
+        bundle_yaml = Path(
+            resolve_bundle_path(bundle, self.config.catalog_name, self.config.schema_name)
+        )
+        tier_dir = Path(self._tier_dir) if getattr(self, "_tier_dir", None) else bundle_yaml.parent / bundle_yaml.stem
         tier_hash = compute_tier_index_hash(tier_dir) if tier_dir.is_dir() else ""
         bundle_ver = read_bundle_metadata_version(bundle_yaml) or ""
 

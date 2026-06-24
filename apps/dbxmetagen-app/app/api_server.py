@@ -324,6 +324,27 @@ def _ensure_review_updated_at(table_key: str):
 _pg_fallback_warned = False
 
 
+def _kg_noise_filter(alias: str = "") -> str:
+    """SQL predicate matching low-value knowledge-graph edges to exclude from
+    traversal and graph views (read-layer only; edges remain in the table).
+
+    Drops same_schema/same_security_level cliques, similar_embedding below 0.86
+    weight, and same-table column-column similar_embedding pairs. The LIKE guard
+    keeps the same-table rule scoped to column ids (cat.sch.tbl.col -> prefix
+    cat.sch.tbl has >= 2 dots) so table-table pairs sharing a schema are kept.
+    Portable across Postgres (Lakebase) and Spark SQL.
+    """
+    a = f"{alias}." if alias else ""
+    pat = r"\.[^.]+$"
+    return (
+        f"{a}relationship IN ('same_schema','same_security_level') "
+        f"OR ({a}relationship = 'similar_embedding' AND COALESCE({a}weight, 0) < 0.86) "
+        f"OR ({a}relationship = 'similar_embedding' "
+        f"AND REGEXP_REPLACE({a}src, '{pat}', '') = REGEXP_REPLACE({a}dst, '{pat}', '') "
+        f"AND REGEXP_REPLACE({a}src, '{pat}', '') LIKE '%.%.%')"
+    )
+
+
 def graph_query(sql: str) -> list[dict]:
     """Query graph tables: try Lakebase PG first, fall back to UC Delta tables."""
     global _pg_fallback_warned
@@ -391,6 +412,7 @@ def multi_hop_traverse(
         filters.append(f"e.edge_type = {_safe_sql_str(edge_type)}")
     if quality_threshold > 0:
         filters.append(f"COALESCE(e.weight, 1.0) >= {quality_threshold}")
+    filters.append(f"NOT ({_kg_noise_filter('e')})")
     filter_clause = (" AND " + " AND ".join(filters)) if filters else ""
 
     order_limit = ""
@@ -1063,12 +1085,14 @@ def run_job(req: JobRunRequest):
     if req.schema_name:
         params["schema_name"] = req.schema_name
     if req.ontology_bundle:
-        vol_path = f"{_volume_bundle_prefix()}/{req.ontology_bundle}.yaml"
+        # Always pass the bundle *name* as provenance -- it stamps
+        # ontology_entities/ontology_chunks.ontology_bundle, and retrieval +
+        # per-bundle MERGE are keyed on it. Notebooks resolve the name to its
+        # volume path via resolve_bundle_path(); passing the raw path here
+        # pollutes provenance and breaks bundle-scoped filtering/idempotency.
+        params["ontology_bundle"] = req.ontology_bundle
         if _load_bundle_from_volume(req.ontology_bundle) is not None:
-            params["ontology_bundle"] = vol_path
-            params["ontology_config_path"] = vol_path
-        else:
-            params["ontology_bundle"] = req.ontology_bundle
+            params["ontology_config_path"] = f"{_volume_bundle_prefix()}/{req.ontology_bundle}.yaml"
     if req.domain_config:
         params["domain_config_path"] = _resolve_domain_config_path(req.domain_config)
     params.update(req.extra_params)
@@ -2673,7 +2697,7 @@ def get_ontology_relationships(limit: int = 500):
 def get_ontology_graph_edges(edge_type: str = "", limit: int = 500):
     """Return edges from the knowledge graph (graph_edges table), optionally filtered by type."""
     ge_tbl = fq("graph_edges")
-    clauses = ["relationship NOT IN ('similar_embedding', 'shares_column_name')"]
+    clauses = ["relationship NOT IN ('similar_embedding', 'shares_column_name', 'same_schema', 'same_security_level')"]
     if edge_type and _SAFE_IDENT_RE.match(edge_type):
         clauses.append(f"edge_type = '{_esc_sql(edge_type)}'")
     where = " AND ".join(clauses)
@@ -3097,8 +3121,25 @@ async def import_ontology(
 
         yaml_str = yaml.dump(bundle, default_flow_style=False, sort_keys=False, allow_unicode=True)
 
-        # Primary persistence: UC Volume
-        vol_path = _save_bundle_to_volume(bundle_name, yaml_str)
+        # Primary persistence: UC Volume (authoritative store the jobs read).
+        # Must hard-fail -- a parsed-but-unsaved bundle looks usable in the UI
+        # but is invisible to the analytics pipeline.
+        try:
+            vol_path = _save_bundle_to_volume(bundle_name, yaml_str)
+        except Exception as e:
+            logger.exception("Bundle volume persistence failed")
+            return JSONResponse(
+                {
+                    "error": (
+                        f"Ontology parsed successfully but could not be saved to the UC Volume "
+                        f"({_volume_bundle_prefix()}): {e}. The app service principal likely lacks "
+                        f"WRITE VOLUME on {CATALOG}.{SCHEMA}. Re-run deploy.sh (it grants "
+                        f"READ/WRITE VOLUME) or grant it manually, then re-import."
+                    ),
+                    "running_as": _auth_identity_label(),
+                },
+                status_code=500,
+            )
 
         # Save source file to volume for provenance
         _save_source_to_volume(bundle_name, content, suffix)
@@ -3208,56 +3249,62 @@ def _volume_bundle_prefix() -> str:
     return f"/Volumes/{CATALOG}/{SCHEMA}/{volume_name}/ontology_bundles"
 
 
-def _save_bundle_to_volume(bundle_key: str, yaml_content: str) -> Optional[str]:
-    """Persist a bundle YAML to a UC Volume. Returns the Volume path or None."""
+def _save_bundle_to_volume(bundle_key: str, yaml_content: str) -> str:
+    """Persist a bundle YAML to a UC Volume. Returns the Volume path.
+
+    Raises on failure -- the Volume is the authoritative store the analytics
+    jobs read from, so a failed write means the bundle is unusable downstream
+    and must not be reported as a success.
+    """
     vol_path = f"{_volume_bundle_prefix()}/{bundle_key}.yaml"
-    try:
-        ws = _get_effective_client()
-        ws.files.upload(vol_path, io.BytesIO(yaml_content.encode("utf-8")), overwrite=True)
-        logger.info("Custom bundle saved to volume: %s", vol_path)
-        return vol_path
-    except Exception as e:
-        logger.warning("Failed to save bundle to volume: %s", e)
-        return None
+    ws = _get_effective_client()
+    ws.files.upload(vol_path, io.BytesIO(yaml_content.encode("utf-8")), overwrite=True)
+    logger.info("Custom bundle saved to volume: %s", vol_path)
+    return vol_path
 
 
+@cached(_yaml_cache, key=lambda: "volume_bundles", lock=_yaml_lock)
 def _list_volume_bundles() -> list[dict]:
-    """List custom ontology bundles stored in the UC Volume."""
+    """List custom ontology bundles stored in the UC Volume.
+
+    Parses only each bundle's ``metadata:`` block (not the full multi-MB YAML)
+    so large imported bundles list quickly. Counts come from metadata fields
+    written at import time; older bundles without them show 0 until re-imported.
+    Cached (shared with the local listing) and invalidated on import/save/delete.
+    """
     prefix = _volume_bundle_prefix()
     bundles = []
     try:
         ws = _get_effective_client()
-        for entry in ws.files.list_directory_contents(prefix):
-            ep = entry.path if hasattr(entry, "path") else str(entry)
-            name = ep.rsplit("/", 1)[-1] if "/" in ep else ep
-            if not name.endswith(".yaml"):
-                continue
-            bundle_key = name.replace(".yaml", "")
-            try:
-                resp = ws.files.download(ep)
-                raw = yaml.safe_load(resp.contents.read())
-                meta = (raw or {}).get("metadata", {})
-                entity_count = len((raw or {}).get("ontology", {}).get("entities", {}).get("definitions", {}))
-                edge_count = len((raw or {}).get("ontology", {}).get("edge_catalog", {}))
-                domain_count = len((raw or {}).get("domains", {}))
-                bundles.append({
-                    "key": bundle_key,
-                    "name": meta.get("name", bundle_key),
-                    "industry": meta.get("industry", "general"),
-                    "description": meta.get("description", ""),
-                    "standards_alignment": meta.get("standards_alignment", ""),
-                    "entity_count": entity_count,
-                    "edge_count": edge_count,
-                    "domain_count": domain_count,
-                    "format_version": meta.get("format_version", "2.0"),
-                    "bundle_type": meta.get("bundle_type", "ontology"),
-                    "custom": True,
-                    "volume_path": ep,
-                })
-            except Exception as e:
-                logger.debug("Could not parse volume bundle %s: %s", name, e)
+        entries = list(ws.files.list_directory_contents(prefix))
     except Exception as e:
-        logger.debug("Could not list volume bundles: %s", e)
+        logger.warning("Could not list volume bundles at %s: %s", prefix, e)
+        return bundles
+    for entry in entries:
+        ep = entry.path if hasattr(entry, "path") else str(entry)
+        name = ep.rsplit("/", 1)[-1] if "/" in ep else ep
+        if not name.endswith(".yaml"):
+            continue
+        bundle_key = name[:-len(".yaml")]
+        try:
+            resp = ws.files.download(ep)
+            meta = _metadata_from_text(resp.contents.read().decode("utf-8", "replace")) or {}
+            bundles.append({
+                "key": bundle_key,
+                "name": meta.get("name", bundle_key),
+                "industry": meta.get("industry", "general"),
+                "description": meta.get("description", ""),
+                "standards_alignment": meta.get("standards_alignment", ""),
+                "entity_count": meta.get("entity_count", 0),
+                "edge_count": meta.get("edge_count", 0),
+                "domain_count": meta.get("domain_count", 0),
+                "format_version": meta.get("format_version", "2.0"),
+                "bundle_type": meta.get("bundle_type", "ontology"),
+                "custom": True,
+                "volume_path": ep,
+            })
+        except Exception as e:
+            logger.warning("Could not read volume bundle %s: %s", name, e)
     return bundles
 
 
@@ -3312,33 +3359,39 @@ def _upload_tier_files_to_volume(bundle_key: str, local_subdir: str) -> int:
     return uploaded
 
 
-def _read_bundle_metadata_fast(filepath: str) -> dict | None:
-    """Read only the metadata block from a bundle YAML without parsing the full file.
+def _metadata_from_text(text: str) -> dict | None:
+    """Extract only the `metadata:` block from bundle YAML text (no full parse).
 
-    Uses line-based parsing: reads lines from `metadata:` until the next
-    top-level key (un-indented line), handling nested values, comments, and
-    blank lines correctly.
+    Reads lines from `metadata:` until the next top-level key (un-indented
+    line), so a multi-MB bundle is never fully parsed.
     """
-    try:
-        lines = []
-        in_meta = False
-        with open(filepath, "r") as f:
-            for line in f:
-                stripped = line.rstrip("\n")
-                if not in_meta:
-                    if stripped.startswith("metadata:"):
-                        in_meta = True
-                        lines.append(stripped)
-                    continue
-                if stripped == "" or stripped.lstrip().startswith("#"):
-                    lines.append(stripped)
-                    continue
-                if stripped[0] not in (" ", "\t"):
-                    break
+    lines = []
+    in_meta = False
+    for stripped in text.splitlines():
+        if not in_meta:
+            if stripped.startswith("metadata:"):
+                in_meta = True
                 lines.append(stripped)
-        if not lines:
-            return None
+            continue
+        if stripped == "" or stripped.lstrip().startswith("#"):
+            lines.append(stripped)
+            continue
+        if stripped[0] not in (" ", "\t"):
+            break
+        lines.append(stripped)
+    if not lines:
+        return None
+    try:
         return yaml.safe_load("\n".join(lines)).get("metadata", {})
+    except Exception:
+        return None
+
+
+def _read_bundle_metadata_fast(filepath: str) -> dict | None:
+    """Read only the metadata block from a bundle YAML file without full parse."""
+    try:
+        with open(filepath, "r") as f:
+            return _metadata_from_text(f.read())
     except Exception:
         return None
 
@@ -4979,9 +5032,18 @@ async def ontology_builder_save(request: Request):
     out = _state_to_yaml_dict(state)
     yaml_content = yaml.dump(out, default_flow_style=False, sort_keys=False, allow_unicode=True)
 
-    vol_path = _save_bundle_to_volume(bundle_key, yaml_content)
-    if not vol_path:
-        raise HTTPException(500, detail="Failed to save bundle to UC Volume. Check that the volume exists and the app has write permissions.")
+    try:
+        vol_path = _save_bundle_to_volume(bundle_key, yaml_content)
+    except Exception as e:
+        logger.exception("Builder bundle volume persistence failed")
+        raise HTTPException(
+            500,
+            detail=(
+                f"Failed to save bundle to UC Volume ({_volume_bundle_prefix()}): {e}. "
+                f"The app service principal likely lacks WRITE VOLUME on {CATALOG}.{SCHEMA}. "
+                f"Re-run deploy.sh (grants READ/WRITE VOLUME) or grant it manually."
+            ),
+        )
 
     bd = _find_bundle_dir()
     if bd:
@@ -5684,6 +5746,7 @@ def graph_edge_types_endpoint():
     """Return distinct edge types with counts from graph_edges."""
     return graph_query(
         "SELECT edge_type, COUNT(*) as cnt FROM public.graph_edges "
+        f"WHERE NOT ({_kg_noise_filter()}) "
         "GROUP BY edge_type ORDER BY cnt DESC"
     )
 

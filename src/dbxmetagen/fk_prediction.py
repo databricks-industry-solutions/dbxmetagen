@@ -357,7 +357,11 @@ class FKPredictor:
         ),
         joined AS (
             SELECT wb.*,
-              COALESCE(ts.table_similarity, 0.0) AS table_similarity
+              COALESCE(ts.table_similarity, 0.0) AS table_similarity,
+              LOWER(ELEMENT_AT(SPLIT(wb.col_a, '\\\\.'), -1)) AS short_a,
+              LOWER(ELEMENT_AT(SPLIT(wb.col_b, '\\\\.'), -1)) AS short_b,
+              REGEXP_REPLACE(LOWER(ELEMENT_AT(SPLIT(wb.col_a, '\\\\.'), -1)), '(_id|_key|_code)$', '') AS stem_a,
+              REGEXP_REPLACE(LOWER(ELEMENT_AT(SPLIT(wb.col_b, '\\\\.'), -1)), '(_id|_key|_code)$', '') AS stem_b
             FROM with_blocks wb
             LEFT JOIN tbl_sim ts
               ON (wb.table_a = ts.src AND wb.table_b = ts.dst)
@@ -370,6 +374,20 @@ class FKPredictor:
             j.block_a = j.block_b
             AND j.table_similarity >= {dup_t}
         ){cross_block_sql}{changed_tables_filter}
+          -- Drop pairs whose only commonality is the _id/_key/_code suffix:
+          -- both sides key-like but stems (suffix stripped) unrelated, e.g.
+          -- department_key x patient_key. Stems related (equal or one a
+          -- token-bounded substring of the other) keep role-prefixed FKs like
+          -- ordering_prov_id x prov_id. Same-name pairs strip to equal stems.
+          AND NOT (
+            j.short_a RLIKE '(_id|_key|_code)$'
+            AND j.short_b RLIKE '(_id|_key|_code)$'
+            AND NOT (
+              j.stem_a = j.stem_b
+              OR RLIKE(j.stem_a, CONCAT('(^|_)', j.stem_b, '(_|$)'))
+              OR RLIKE(j.stem_b, CONCAT('(^|_)', j.stem_a, '(_|$)'))
+            )
+          )
         """
         df = self.spark.sql(sql)
         df = (
@@ -1744,7 +1762,6 @@ class FKPredictor:
             pairs.append((row.table_b, row.col_b.split(".")[-1]))
         self._batch_ensure_table_samples(pairs)
 
-        join_cap = self.config.cardinality_sample_rows + 1
         fragments = []
         for row in rows:
             va = self._table_samples.get((row.table_a, row.col_a.split(".")[-1]))
@@ -1752,12 +1769,20 @@ class FKPredictor:
             if not va or not vb:
                 continue
             ca, cb = row.col_a.replace("'", "''"), row.col_b.replace("'", "''")
+            # Pre-aggregate per-value counts on each side, then join on distinct
+            # values. SUM(ga.c * gb.c) over matching values equals the raw
+            # INNER JOIN row count exactly, but cannot fan out: the join is
+            # distinct x distinct (<= min(distinct_a, distinct_b) rows), so a
+            # low-cardinality key produces a tiny join instead of a billion-row
+            # cross product that fails the cluster.
             fragments.append(
                 f"SELECT '{ca}' AS ca, '{cb}' AS cb, "
                 f"(SELECT COUNT(*) FROM {va}) AS a_count, "
                 f"(SELECT COUNT(*) FROM {vb}) AS b_count, "
-                f"(SELECT COUNT(*) FROM (SELECT 1 FROM {va} a INNER JOIN {vb} b "
-                f"ON a.val = b.val LIMIT {join_cap}) _lim) AS joined"
+                f"(SELECT COALESCE(SUM(ga.c * gb.c), 0) FROM "
+                f"(SELECT val, COUNT(*) c FROM {va} GROUP BY val) ga "
+                f"INNER JOIN (SELECT val, COUNT(*) c FROM {vb} GROUP BY val) gb "
+                f"ON ga.val = gb.val) AS joined"
             )
 
         if not fragments:
