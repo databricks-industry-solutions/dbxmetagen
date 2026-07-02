@@ -38,16 +38,19 @@ The core value of dbxmetagen is **metadata generation and a governed knowledge g
 2. **Azure / GCP users:** The default job cluster node type is `i3.2xlarge` (AWS). Update `node_type` in `variables.yml` before deploying:
    - **Azure:** `Standard_DS4_v2`
    - **GCP:** `n2-highmem-8`
+  
+  You can ignore the other optional variables if you don't have a preference for them. 
+
 
 3. Deploy:
    ```bash
-   ./deploy.sh --profile <your-profile> --target dev
+   ./deploy.sh --profile <your-databricks-profile> --target dev
    ```
    This builds the wheel, compiles the React frontend, deploys jobs + app via Asset Bundles, and starts the dashboard.
 
    To deploy jobs only (skip app build, SP detection, and app start):
    ```bash
-   ./deploy.sh --profile <your-profile> --target dev --no-app
+   ./deploy.sh --profile <your-databricks-profile> --target dev --no-app
    ```
 
 4. Access the app at **Workspace > Apps > dbxmetagen-app** and follow the instructions there.
