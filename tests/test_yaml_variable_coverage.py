@@ -50,6 +50,8 @@ class TestYAMLVariableCoverage:
             "policy_id",  # Bundle-level cluster policy, not a MetadataConfig param
             "budget_policy_id",  # Bundle-level serverless budget policy, not a MetadataConfig param
             "vs_endpoint_name",  # Bundle/job-level param for Vector Search, not a MetadataConfig param
+            "metadata_companion_path",  # Pipeline param for extended metadata companion TTL
+            "skip_ai_for_declared_fk",  # Pipeline param for FK prediction job
         }
 
         # Check for unexpected missing params

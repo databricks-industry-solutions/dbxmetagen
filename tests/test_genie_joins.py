@@ -268,9 +268,9 @@ class TestExtractMVJoinSpecs:
     def test_empty_selected_skips_all_joins(self):
         """When table_identifiers is empty (MV-only room), no joins should be emitted."""
         mv = {
-            "source_table": "rdl_redshift.ppm.dwh.trainprogram",
+            "source_table": "federated_cat.analytics_dwh.trainprogram",
             "json_definition": json.dumps({
-                "joins": [{"name": "project", "source": "rdl_redshift.ppm.dwh.project",
+                "joins": [{"name": "project", "source": "federated_cat.analytics_dwh.project",
                            "on": "source.project_id = project.id"}]
             }),
         }

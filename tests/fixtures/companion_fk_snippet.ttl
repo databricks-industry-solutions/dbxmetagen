@@ -1,0 +1,27 @@
+@prefix rdl: <http://example.org/rdl/> .
+@prefix dcat: <http://www.w3.org/ns/dcat#> .
+@prefix schema: <http://schema.org/> .
+
+<http://example.org/rdl/dataset/dim_target> a dcat:Dataset ;
+    schema:tableName "dwh.dim_target" ;
+    rdl:hasPrimaryKey "target_id" .
+
+<http://example.org/rdl/dataset/bridge_target_program> a dcat:Dataset ;
+    schema:tableName "dwh.bridge_target_program" ;
+    rdl:hasPrimaryKey "trainprogram_id, target_id" ;
+    rdl:foreignKey [
+        rdl:column "target_id" ;
+        rdl:references <http://example.org/rdl/dataset/dim_target>
+    ] .
+
+<http://example.org/rdl/dataset/dim_disease_hierarchy> a dcat:Dataset ;
+    schema:tableName "dwh.dim_disease_hierarchy" ;
+    rdl:hasPrimaryKey "disease_uri" .
+
+<http://example.org/rdl/dataset/fct_disease_rolledup> a dcat:Dataset ;
+    schema:tableName "dwh.fct_disease_rolledup" ;
+    rdl:hasPrimaryKey "project_id, disease_uri, disease_uri_parent" ;
+    rdl:foreignKey [
+        rdl:column "disease_uri_parent" ;
+        rdl:references <http://example.org/rdl/dataset/dim_disease_hierarchy>
+    ] .

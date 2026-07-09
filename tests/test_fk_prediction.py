@@ -134,13 +134,17 @@ def _patch_fk_functions_for_run():
 
 
 class TestDeclaredFKGuard:
-    def test_sql_contains_self_referential_filter(self):
-        """The SQL WHERE clause excludes self-referential FKs."""
+    def test_sql_scopes_by_table_names_when_set(self):
+        """When table_names is set, candidates are filtered to scoped tables."""
         spark = MagicMock()
-        p = FKPredictor(spark, _cfg())
+        cfg = _cfg()
+        cfg.table_names = ["cat.sch.table_a"]
+        p = FKPredictor(spark, cfg)
+        out_mock = spark.sql.return_value.withColumn.return_value
+        out_mock.withColumn.return_value = out_mock
+        out_mock.filter.return_value = out_mock
         p.get_declared_fk_candidates()
-        sql = spark.sql.call_args[0][0]
-        assert "!= table_name" in sql
+        assert out_mock.filter.called
 
     def test_sql_contains_size_filter(self):
         """The SQL WHERE clause excludes malformed refs with < 4 parts."""
@@ -624,6 +628,32 @@ class TestJoinRateCapping:
         assert "join_rate" in src
         assert "0.6" in src and "0.4" in src
 
+    def test_join_validate_skips_haircut_for_declared(self):
+        src = inspect.getsource(FKPredictor.join_validate)
+        assert "SR_DECLARED" in src
+        assert "skip_ai" in src
+
+    def test_federation_batch_samples_run_on_driver(self):
+        src = inspect.getsource(FKPredictor._batch_ensure_table_samples)
+        assert "ThreadPoolExecutor" not in src
+        assert "Federation batch sample fetch failed" in src
+
+    def test_federation_batch_dedupes_column_names_per_table(self):
+        src = inspect.getsource(FKPredictor._batch_ensure_table_samples)
+        assert "col_short not in cols" in src
+
+    def test_sample_from_source_dedupes_select_aliases(self):
+        src = inspect.getsource(FKPredictor._sample_from_source)
+        assert "by_short" in src or "unique_cols" in src
+
+    def test_write_predictions_allows_declared_same_table(self):
+        src = inspect.getsource(FKPredictor.write_predictions)
+        assert "SR_DECLARED" in src
+
+    def test_run_fails_when_declared_candidates_write_zero(self):
+        src = inspect.getsource(FKPredictor.run)
+        assert "OWL-declared candidates were judged" in src
+
     def test_write_predictions_caps_join_rate(self):
         src = inspect.getsource(FKPredictor.write_predictions)
         assert "join_rate" in src
@@ -938,9 +968,10 @@ class TestConfidenceScoringLogic:
         src = inspect.getsource(FKPredictor.rule_score)
         assert "col_similarity" in src
 
-    def test_skip_ai_declared_requires_flag_and_rank(self):
+    def test_skip_ai_declared_always_for_declared_rank(self):
         src = inspect.getsource(FKPredictor._with_skip_ai_flags)
-        assert "skip_ai_for_declared_fk" in src
+        assert "SR_DECLARED" in src
+        assert "source_rank" in src
 
     def test_skip_ai_query_requires_min_observations(self):
         src = inspect.getsource(FKPredictor._with_skip_ai_flags)

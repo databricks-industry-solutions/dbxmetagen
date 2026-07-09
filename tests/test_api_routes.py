@@ -294,3 +294,53 @@ class TestHITLEndpointsExist:
         body_cls = api_server.ResetReviewBody
         assert "level" in body_cls.__annotations__
         assert "table_name" in body_cls.__annotations__
+
+
+# ---------------------------------------------------------------------------
+# Metric view materialization (Public Preview)
+# ---------------------------------------------------------------------------
+class TestMaterialization:
+    def _defn(self, **over):
+        d = {
+            "name": "sales_mv",
+            "source": "cat.sch.orders",
+            "dimensions": [{"name": "order_date", "expr": "o_orderdate"}],
+            "measures": [{"name": "total_revenue", "expr": "SUM(o_totalprice)"}],
+        }
+        d.update(over)
+        return d
+
+    def test_request_has_materialize_fields(self):
+        ann = api_server.SemanticGenerateRequest.__annotations__
+        assert "materialize" in ann
+        assert "materialization_schedule" in ann
+
+    def test_build_default_block(self):
+        block = api_server._build_materialization(self._defn(), "every 6 hours")
+        assert block["mode"] == "relaxed"
+        assert block["schedule"] == "every 6 hours"
+        assert block["materialized_views"] == [{"name": "sales_mv_baseline", "type": "unaggregated"}]
+
+    def test_validate_default_passes(self):
+        d = self._defn()
+        d["materialization"] = api_server._build_materialization(d)
+        assert api_server._validate_materialization(d) == []
+
+    def test_validate_bad_mode(self):
+        d = self._defn(materialization={"mode": "x", "materialized_views": [{"name": "b", "type": "unaggregated"}]})
+        assert any("relaxed" in e for e in api_server._validate_materialization(d))
+
+    def test_validate_aggregated_unknown_ref(self):
+        d = self._defn(materialization={
+            "mode": "relaxed",
+            "materialized_views": [{"name": "agg", "type": "aggregated", "dimensions": ["nope"]}],
+        })
+        assert any("unknown dimension 'nope'" in e for e in api_server._validate_materialization(d))
+
+    def test_yaml_emits_only_when_included(self):
+        d = self._defn()
+        d["materialization"] = api_server._build_materialization(d)
+        assert "materialization" not in api_server._definition_to_yaml(dict(d))
+        with_mat = api_server._definition_to_yaml(dict(d), include_materialization=True)
+        assert "materialization" in with_mat
+        assert "sales_mv_baseline" in with_mat

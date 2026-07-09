@@ -825,6 +825,8 @@ class SemanticGenerateRequest(BaseModel):
     business_context: Optional[str] = None
     generation_style: str = "comprehensive"  # "comprehensive" (one broad view per grain) or "targeted" (themed views)
     max_views: Optional[int] = None  # user cap on planned views; None = server-recommended default
+    materialize: bool = False  # attach an unaggregated materialization to each generated view
+    materialization_schedule: str = "every 6 hours"  # refresh schedule (MV schedule clause syntax)
 
 
 class SemanticProjectRequest(BaseModel):
@@ -1908,7 +1910,7 @@ def _build_metric_view_ddl(
         mv_cat = row.get("deployed_catalog") or default_cat
         mv_sch = row.get("deployed_schema") or default_sch
         fq_mv = f"`{mv_cat}`.`{mv_sch}`.`{mv_name}`"
-        yaml_body = _definition_to_yaml(defn)
+        yaml_body = _definition_to_yaml(defn, include_materialization=True)
         stmts.append(f"CREATE OR REPLACE VIEW {fq_mv}\nWITH METRICS LANGUAGE YAML AS $$\n{yaml_body}$$;")
     return stmts
 
@@ -8701,6 +8703,8 @@ def _run_sl_generation(
     profile_id: str = None,
     generation_style: str = "comprehensive",
     max_views: int = None,
+    materialize: bool = False,
+    materialization_schedule: str = "every 6 hours",
 ):
     """Background thread for in-app metric view generation (two-phase)."""
     from datetime import datetime as _dt
@@ -9075,6 +9079,10 @@ def _run_sl_generation(
             _drop_placeholder_dimensions(defn)
             cx = _score_definition_complexity(defn)
 
+            if materialize:
+                defn["materialization"] = _build_materialization(defn, materialization_schedule)
+                errors = (errors or []) + _validate_materialization(defn)
+
             json_str = json.dumps(defn)
             status = "validated" if not errors else "failed"
             error_str = "; ".join(errors).replace("'", "''") if errors else ""
@@ -9200,6 +9208,8 @@ def start_sl_generation(req: SemanticGenerateRequest):
             req.profile_id,
             req.generation_style,
             req.max_views,
+            req.materialize,
+            req.materialization_schedule,
         ),
     )
 
@@ -9512,13 +9522,17 @@ class _IndentYamlDumper(yaml.Dumper):
         return super().increase_indent(flow, False)
 
 
-def _definition_to_yaml(defn: dict) -> str:
+def _definition_to_yaml(defn: dict, include_materialization: bool = False) -> str:
     """Convert a JSON definition to the YAML body for CREATE VIEW WITH METRICS.
 
     Uses yaml.dump with an indenting Dumper so nested join lists are
     properly indented (Databricks' parser rejects the compact style for
     nested joins).  Pre-processing backfills currency_code and normalises
     window specs.
+
+    ``include_materialization`` is False by default so dry-run validation never
+    emits the materialization block (it would provision a Lakeflow pipeline).
+    Real create/apply/export paths pass True.
     """
     source = defn.get("source", "")
     if not source:
@@ -9554,7 +9568,70 @@ def _definition_to_yaml(defn: dict) -> str:
     mv["measures"] = measures_out
     if defn.get("joins"):
         mv["joins"] = defn["joins"]
+    if include_materialization and defn.get("materialization"):
+        mv["materialization"] = defn["materialization"]
     return yaml.dump(mv, Dumper=_IndentYamlDumper, default_flow_style=False, sort_keys=False)
+
+
+def _build_materialization(defn: dict, schedule: str = "every 6 hours") -> dict:
+    """Default materialization block: one unaggregated baseline MV (mode relaxed)."""
+    mv_name = defn.get("name") or "metric_view"
+    block: dict = {"mode": "relaxed"}
+    if schedule and schedule.strip():
+        block["schedule"] = schedule.strip()
+    block["materialized_views"] = [{"name": f"{mv_name}_baseline", "type": "unaggregated"}]
+    return block
+
+
+def _validate_materialization(defn: dict) -> list[str]:
+    """Structurally validate a materialization block. Returns error strings (empty if valid/absent)."""
+    mat = defn.get("materialization")
+    if mat is None:
+        return []
+    if not isinstance(mat, dict):
+        return ["materialization must be a mapping"]
+    errors: list[str] = []
+    if mat.get("mode") != "relaxed":
+        errors.append("materialization.mode must be 'relaxed'")
+    schedule = mat.get("schedule")
+    if schedule is not None:
+        if not isinstance(schedule, str):
+            errors.append("materialization.schedule must be a string")
+        elif "TRIGGER ON UPDATE" in schedule.upper():
+            errors.append("materialization.schedule does not support TRIGGER ON UPDATE")
+    mvs = mat.get("materialized_views")
+    if not isinstance(mvs, list) or not mvs:
+        errors.append("materialization.materialized_views must be a non-empty list")
+        return errors
+    dim_names = {d.get("name") for d in defn.get("dimensions", []) if d.get("name")}
+    measure_names = {m.get("name") for m in defn.get("measures", []) if m.get("name")}
+    seen: set[str] = set()
+    for entry in mvs:
+        if not isinstance(entry, dict):
+            errors.append("each materialized_views entry must be a mapping")
+            continue
+        name = entry.get("name")
+        if not name:
+            errors.append("materialized_views entry missing 'name'")
+        elif name in seen:
+            errors.append(f"duplicate materialized_views name '{name}'")
+        else:
+            seen.add(name)
+        mtype = entry.get("type")
+        if mtype not in ("aggregated", "unaggregated"):
+            errors.append(f"materialized_views '{name}': type must be aggregated or unaggregated")
+        if mtype == "aggregated":
+            dims = entry.get("dimensions") or []
+            meas = entry.get("measures") or []
+            if not dims and not meas:
+                errors.append(f"materialized_views '{name}': aggregated requires dimensions and/or measures")
+            for d in dims:
+                if d not in dim_names:
+                    errors.append(f"materialized_views '{name}': unknown dimension '{d}'")
+            for m in meas:
+                if m not in measure_names:
+                    errors.append(f"materialized_views '{name}': unknown measure '{m}'")
+    return errors
 
 
 _agent_ref_cache: dict[str, dict] = {}
@@ -9739,7 +9816,7 @@ def create_metric_view(definition_id: str, req: CreateDefinitionRequest):
                 item["expr"] = _autofix_expr(item["expr"])
     if defn.get("filter"):
         defn["filter"] = _autofix_expr(defn["filter"])
-    yaml_body = _definition_to_yaml(defn)
+    yaml_body = _definition_to_yaml(defn, include_materialization=True)
     sql = f"CREATE OR REPLACE VIEW {fq_mv}\nWITH METRICS LANGUAGE YAML AS $$\n{yaml_body}$$"
     try:
         execute_sql(sql, timeout=60)
@@ -9858,7 +9935,7 @@ def export_metric_views_sql(catalog: Optional[str] = None, schema: Optional[str]
         mv_cat = row.get("deployed_catalog") or default_cat
         mv_sch = row.get("deployed_schema") or default_sch
         fq_mv = f"`{mv_cat}`.`{mv_sch}`.`{mv_name}`"
-        yaml_body = _definition_to_yaml(defn)
+        yaml_body = _definition_to_yaml(defn, include_materialization=True)
         statements.append(f"CREATE OR REPLACE VIEW {fq_mv}\nWITH METRICS LANGUAGE YAML AS $$\n{yaml_body}$$")
     if not statements:
         raise HTTPException(404, detail="No valid definitions to export")
