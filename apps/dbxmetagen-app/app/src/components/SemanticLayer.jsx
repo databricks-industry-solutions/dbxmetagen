@@ -225,6 +225,8 @@ export default function SemanticLayer({ onNavigate, pipelineStats }) {
   const [businessContext, setBusinessContext] = useState('')
   const [generationStyle, setGenerationStyle] = useState('comprehensive')
   const [maxViews, setMaxViews] = useState(null)
+  const [materialize, setMaterialize] = useState(false)
+  const [materializationSchedule, setMaterializationSchedule] = useState('every 6 hours')
 
   // Generation
   const [taskId, setTaskId] = useState(null)
@@ -699,6 +701,8 @@ export default function SemanticLayer({ onNavigate, pipelineStats }) {
         profile_id: activeProfileId || undefined,
         generation_style: generationStyle,
         max_views: maxViews || undefined,
+        materialize,
+        materialization_schedule: materializationSchedule,
       }
       if (selectedProjectId) body.project_id = selectedProjectId
       const res = await fetch('/api/semantic-layer/generate', {
@@ -1635,6 +1639,30 @@ export default function SemanticLayer({ onNavigate, pipelineStats }) {
             {selectedTables.length > 0 && ` (recommended: ${Math.min(Math.max(Math.floor(selectedTables.length / 3), 2), 15)})`}
           </span>
         </div>
+        <label className="flex items-center gap-2 mb-2 cursor-pointer select-none">
+          <input type="checkbox" checked={materialize}
+            onChange={e => setMaterialize(e.target.checked)}
+            className="accent-dbx-lava w-4 h-4" />
+          <span className="text-sm font-medium text-slate-700 dark:text-slate-200">Materialize (Public Preview)</span>
+          <span className="text-xs text-slate-400 dark:text-slate-500 ml-1"
+            title="Adds an unaggregated materialization to each view so Databricks pre-computes joins/filters and routes queries to it for faster, lower-cost reads. Refreshed on the schedule below.">
+            Accelerates queries via a maintained materialized view per metric view
+          </span>
+        </label>
+        {materialize && (
+          <div className="flex items-center gap-2 mb-4 ml-6">
+            <label className="text-sm font-medium text-slate-700 dark:text-slate-200 whitespace-nowrap">Refresh schedule</label>
+            <input type="text"
+              value={materializationSchedule}
+              onChange={e => setMaterializationSchedule(e.target.value)}
+              placeholder="every 6 hours"
+              className="w-48 px-2 py-1 border rounded text-sm dark:bg-slate-700 dark:border-slate-600 dark:text-white" />
+            <span className="text-xs text-slate-400 dark:text-slate-500"
+              title="Materialized view schedule clause syntax, e.g. 'every 6 hours' or a CRON expression. Leave blank for manual refresh only. TRIGGER ON UPDATE is not supported.">
+              blank = manual refresh only
+            </span>
+          </div>
+        )}
         <div className="flex gap-3 flex-wrap">
           <button onClick={() => startGeneration('replace')}
             disabled={loading || isGenerating || !selectedTables.length || !questionLines.length}

@@ -16,14 +16,19 @@
 dbutils.widgets.text("catalog_name", "", "Catalog Name")
 dbutils.widgets.text("schema_name", "", "Schema Name")
 dbutils.widgets.text("model_endpoint", "databricks-gpt-oss-120b", "Model Endpoint")
+dbutils.widgets.dropdown("materialize", "false", ["true", "false"], "Materialize Metric Views")
+dbutils.widgets.text("materialization_schedule", "every 6 hours", "Materialization Schedule")
 
 catalog_name = dbutils.widgets.get("catalog_name")
 schema_name = dbutils.widgets.get("schema_name")
 model_endpoint = dbutils.widgets.get("model_endpoint")
+materialize = dbutils.widgets.get("materialize").lower() == "true"
+materialization_schedule = dbutils.widgets.get("materialization_schedule")
 
 print(f"Catalog: {catalog_name}")
 print(f"Schema: {schema_name}")
 print(f"Model: {model_endpoint}")
+print(f"Materialize: {materialize} (schedule: {materialization_schedule})")
 
 # COMMAND ----------
 
@@ -36,6 +41,8 @@ config = SemanticLayerConfig(
     catalog_name=catalog_name,
     schema_name=schema_name,
     model_endpoint=model_endpoint,
+    materialize_metric_views=materialize,
+    materialization_schedule=materialization_schedule,
 )
 gen = SemanticLayerGenerator(spark, config)
 gen.create_tables()
