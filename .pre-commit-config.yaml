@@ -21,6 +21,14 @@ repos:
         pass_filenames: false
         stages: [pre-commit]
 
+      - id: check-uv-lock-public
+        name: Reject internal PyPI proxy URLs in uv.lock
+        language: system
+        entry: bash -c 'if grep -q pypi-proxy uv.lock; then echo "uv.lock contains internal PyPI proxy URLs; run UV_INDEX_URL=https://pypi.org/simple uv lock"; exit 1; fi'
+        files: ^uv\.lock$
+        pass_filenames: false
+        stages: [pre-commit]
+
       - id: sync-requirements
         name: Sync requirements.txt from uv.lock
         language: system

@@ -1,0 +1,51 @@
+name: Regenerate uv.lock
+
+# Regenerate uv.lock against public PyPI. Required for developers on
+# Databricks corp networks where pip defaults to pypi-proxy.dev.databricks.com.
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+jobs:
+  regenerate-lock:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Install uv
+        uses: astral-sh/setup-uv@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+
+      - name: Regenerate lock and requirements
+        run: |
+          UV_INDEX_URL=https://pypi.org/simple uv lock
+          bash scripts/export_requirements.sh
+          if grep -q pypi-proxy uv.lock; then
+            echo "uv.lock still contains internal PyPI proxy URLs"
+            exit 1
+          fi
+
+      - name: Commit and push
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add uv.lock requirements.txt
+          if git diff --staged --quiet; then
+            echo "uv.lock and requirements.txt already up to date"
+            exit 0
+          fi
+          git commit -m "$(cat <<'EOF'
+chore: regenerate uv.lock against public PyPI
+
+Internal Databricks PyPI proxy URLs in uv.lock break deploy.sh for
+external customers. Regenerated on GitHub Actions with public PyPI.
+EOF
+)"
+          git push

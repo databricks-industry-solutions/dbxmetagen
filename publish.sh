@@ -9,11 +9,7 @@
 
 set -e
 
-# Bridge pip proxy config to uv (see deploy.sh for explanation)
-if [ -z "$UV_INDEX_URL" ]; then
-    _pip_idx=$(pip3 config get global.index-url 2>/dev/null || true)
-    [ -n "$_pip_idx" ] && export UV_INDEX_URL="$_pip_idx"
-fi
+source "$(dirname "$0")/scripts/ensure_public_pypi.sh"
 
 PROFILE="DEFAULT"
 VOLUME_PATH=""

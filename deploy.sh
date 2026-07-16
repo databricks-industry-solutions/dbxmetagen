@@ -10,12 +10,8 @@
 
 set -e
 
-# Bridge pip proxy config to uv (internal devs have pip configured for the
-# Databricks PyPI proxy; uv doesn't read pip config, so we forward it).
-if [ -z "$UV_INDEX_URL" ]; then
-    _pip_idx=$(pip3 config get global.index-url 2>/dev/null || true)
-    [ -n "$_pip_idx" ] && export UV_INDEX_URL="$_pip_idx"
-fi
+# Always resolve deps from public PyPI (see scripts/ensure_public_pypi.sh).
+source "$(dirname "$0")/scripts/ensure_public_pypi.sh"
 
 TARGET="dev"
 PROFILE="DEFAULT"

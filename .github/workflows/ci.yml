@@ -2,9 +2,9 @@ name: CI Pipeline
 
 on:
   pull_request:
-    branches: [main, master, preview]
+    branches: [main, master, preview, dev]
   push:
-    branches: [main, master, preview]
+    branches: [main, master, preview, dev]
   workflow_dispatch:
 
 jobs:
@@ -23,6 +23,14 @@ jobs:
         uses: actions/setup-python@v5
         with:
           python-version: "3.11"
+
+      - name: Reject internal PyPI proxy in uv.lock
+        run: |
+          if grep -q pypi-proxy uv.lock; then
+            echo "::error::uv.lock contains internal Databricks PyPI proxy URLs."
+            echo "Run Actions > Regenerate uv.lock on this branch (requires public PyPI; use GitHub Actions)."
+            exit 1
+          fi
 
       - name: Install pre-commit
         run: pip install pre-commit
