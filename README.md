@@ -444,6 +444,16 @@ Requires DBR 14.3+ (ML runtime recommended for PI detection with spaCy). Serverl
 
 ## Troubleshooting
 
+### `deploy.sh` fails downloading from `pypi-proxy.dev.databricks.com`
+
+Older clones may have a `uv.lock` generated on Databricks internal networks. `./deploy.sh` now regenerates a poisoned lock against public PyPI when reachable and no longer runs `uv run` during the wheel build (so deploy does not pull `scikit-learn`).
+
+If you still hit proxy URLs while developing locally, run:
+
+```bash
+UV_INDEX_URL=https://pypi.org/simple uv lock
+```
+
 ### `uv sync` fails with `invalid peer certificate: UnknownIssuer`
 
 If you see an error like:

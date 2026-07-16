@@ -12,6 +12,7 @@ set -e
 
 # Always resolve deps from public PyPI (see scripts/ensure_public_pypi.sh).
 source "$(dirname "$0")/scripts/ensure_public_pypi.sh"
+regenerate_lock_if_poisoned
 
 TARGET="dev"
 PROFILE="DEFAULT"
@@ -269,7 +270,12 @@ rm -rf dist/
 # Stamp version with deploy timestamp so the app platform always reinstalls.
 # DAB does this for job artifacts via dynamic_version; the app gets a direct
 # file copy whose version must differ each deploy to avoid pip skipping it.
-BASE_VERSION=$(uv run python3 -c "import tomllib; v=tomllib.load(open('pyproject.toml','rb'))['project']['version']; print(v.split('+')[0])")
+# Read version without `uv run` so deploy does not sync mlflow/sklearn from uv.lock.
+BASE_VERSION=$(sed -n 's/^version = "\([^"+]*\).*/\1/p' pyproject.toml | head -1)
+if [ -z "${BASE_VERSION}" ]; then
+    echo "Error: could not parse version from pyproject.toml"
+    exit 1
+fi
 DEPLOY_VERSION="${BASE_VERSION}+$(date +%s)"
 sed -i.deploy_bak "s/^version = \"${BASE_VERSION}[^\"]*\"/version = \"${DEPLOY_VERSION}\"/" pyproject.toml
 uv build -q
