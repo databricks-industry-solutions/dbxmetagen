@@ -15,6 +15,35 @@ const STAGES = {
   done: 'Complete',
 }
 
+const MAT_STORAGE_KEY = 'dbxmetagen.sl.materialize'
+const MAT_SCHEDULE_KEY = 'dbxmetagen.sl.matSchedule'
+const MAT_PRESET_KEY = 'dbxmetagen.sl.matPreset'
+const MAT_SCHEDULE_PRESETS = [
+  { id: '6h', label: 'Every 6 hours', value: 'every 6 hours' },
+  { id: '12h', label: 'Every 12 hours', value: 'every 12 hours' },
+  { id: '1d', label: 'Every 1 day', value: 'every 1 day' },
+  { id: 'manual', label: 'Manual only', value: '' },
+  { id: 'custom', label: 'Custom...', value: '__custom__' },
+]
+
+function matBadge(hasMat, schedule) {
+  if (hasMat) {
+    const sched = schedule || 'manual refresh'
+    return (
+      <span className="px-1.5 py-0.5 rounded text-[10px] font-medium bg-sky-100 text-sky-700 dark:bg-sky-900/30 dark:text-sky-300"
+        title={`Materialized baseline MV; schedule: ${sched}`}>
+        Materialized{schedule ? ` (${schedule})` : ''}
+      </span>
+    )
+  }
+  return (
+    <span className="px-1.5 py-0.5 rounded text-[10px] font-medium bg-slate-100 text-slate-500 dark:bg-slate-800 dark:text-slate-400"
+      title="No materialization block in definition">
+      No materialization
+    </span>
+  )
+}
+
 // ---------------------------------------------------------------------------
 // MV Analysis Panel
 // ---------------------------------------------------------------------------
@@ -227,6 +256,9 @@ export default function SemanticLayer({ onNavigate, pipelineStats }) {
   const [maxViews, setMaxViews] = useState(null)
   const [materialize, setMaterialize] = useState(false)
   const [materializationSchedule, setMaterializationSchedule] = useState('every 6 hours')
+  const [matSchedulePreset, setMatSchedulePreset] = useState('6h')
+  const [defMatFilter, setDefMatFilter] = useState('all')
+  const [deployMatPrefs, setDeployMatPrefs] = useState({})
 
   // Generation
   const [taskId, setTaskId] = useState(null)
@@ -293,6 +325,25 @@ export default function SemanticLayer({ onNavigate, pipelineStats }) {
     return () => document.removeEventListener('mousedown', handler)
   }, [])
 
+  useEffect(() => {
+    try {
+      const savedMat = localStorage.getItem(MAT_STORAGE_KEY)
+      const savedSched = localStorage.getItem(MAT_SCHEDULE_KEY)
+      const savedPreset = localStorage.getItem(MAT_PRESET_KEY)
+      if (savedMat != null) setMaterialize(savedMat === 'true')
+      if (savedSched != null) setMaterializationSchedule(savedSched)
+      if (savedPreset) setMatSchedulePreset(savedPreset)
+    } catch {}
+  }, [])
+
+  useEffect(() => {
+    try {
+      localStorage.setItem(MAT_STORAGE_KEY, String(materialize))
+      localStorage.setItem(MAT_SCHEDULE_KEY, materializationSchedule)
+      localStorage.setItem(MAT_PRESET_KEY, matSchedulePreset)
+    } catch {}
+  }, [materialize, materializationSchedule, matSchedulePreset])
+
   const getDefaultTarget = (d) => {
     if (d.deployed_catalog && d.deployed_schema) return `${d.deployed_catalog}.${d.deployed_schema}`
     const parts = d.source_table?.split('.') || []
@@ -302,6 +353,32 @@ export default function SemanticLayer({ onNavigate, pipelineStats }) {
     if (globalTargetOverride) return globalTargetOverride
     return perMvTargets[d.definition_id] || getDefaultTarget(d)
   }
+
+  const getDeployMatEnabled = (d) => {
+    const pref = deployMatPrefs[d.definition_id]
+    if (pref && typeof pref.enabled === 'boolean') return pref.enabled
+    return !!d.has_materialization
+  }
+
+  const getDeployMatSchedule = (d) => {
+    const pref = deployMatPrefs[d.definition_id]
+    return pref?.schedule ?? d.materialization_schedule ?? materializationSchedule
+  }
+
+  const buildCreateBody = (d, tCat, tSch) => {
+    const body = { target_catalog: tCat, target_schema: tSch }
+    const enabled = getDeployMatEnabled(d)
+    const schedule = getDeployMatSchedule(d)
+    if (enabled && !d.has_materialization) {
+      body.materialize = true
+      body.materialization_schedule = schedule
+    } else if (!enabled && d.has_materialization) {
+      body.materialize = false
+      body.strip_materialization = true
+    }
+    return body
+  }
+
   const schemaOptions = [...new Set(
     definitions.map(d => getDefaultTarget(d)).filter(Boolean)
   )]
@@ -857,7 +934,7 @@ export default function SemanticLayer({ onNavigate, pipelineStats }) {
     try {
       const res = await fetch(`/api/semantic-layer/definitions/${defId}/create`, {
         method: 'POST', headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ target_catalog: tCat, target_schema: tSch }),
+        body: JSON.stringify(buildCreateBody(d, tCat, tSch)),
       })
       const text = await res.text()
       let data
@@ -887,7 +964,7 @@ export default function SemanticLayer({ onNavigate, pipelineStats }) {
     const results = await Promise.allSettled(validated.map(async (d) => {
       const res = await fetch(`/api/semantic-layer/definitions/${d.definition_id}/create`, {
         method: 'POST', headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ target_catalog: getEffectiveTarget(d).split('.')[0], target_schema: getEffectiveTarget(d).split('.')[1] }),
+        body: JSON.stringify(buildCreateBody(d, getEffectiveTarget(d).split('.')[0], getEffectiveTarget(d).split('.')[1])),
       })
       const text = await res.text()
       let data; try { data = JSON.parse(text) } catch { data = { detail: text } }
@@ -1639,30 +1716,61 @@ export default function SemanticLayer({ onNavigate, pipelineStats }) {
             {selectedTables.length > 0 && ` (recommended: ${Math.min(Math.max(Math.floor(selectedTables.length / 3), 2), 15)})`}
           </span>
         </div>
-        <label className="flex items-center gap-2 mb-2 cursor-pointer select-none">
-          <input type="checkbox" checked={materialize}
-            onChange={e => setMaterialize(e.target.checked)}
-            className="accent-dbx-lava w-4 h-4" />
-          <span className="text-sm font-medium text-slate-700 dark:text-slate-200">Materialize (Public Preview)</span>
-          <span className="text-xs text-slate-400 dark:text-slate-500 ml-1"
-            title="Adds an unaggregated materialization to each view so Databricks pre-computes joins/filters and routes queries to it for faster, lower-cost reads. Refreshed on the schedule below.">
-            Accelerates queries via a maintained materialized view per metric view
-          </span>
-        </label>
-        {materialize && (
-          <div className="flex items-center gap-2 mb-4 ml-6">
-            <label className="text-sm font-medium text-slate-700 dark:text-slate-200 whitespace-nowrap">Refresh schedule</label>
-            <input type="text"
-              value={materializationSchedule}
-              onChange={e => setMaterializationSchedule(e.target.value)}
-              placeholder="every 6 hours"
-              className="w-48 px-2 py-1 border rounded text-sm dark:bg-slate-700 dark:border-slate-600 dark:text-white" />
-            <span className="text-xs text-slate-400 dark:text-slate-500"
-              title="Materialized view schedule clause syntax, e.g. 'every 6 hours' or a CRON expression. Leave blank for manual refresh only. TRIGGER ON UPDATE is not supported.">
-              blank = manual refresh only
-            </span>
+        <div className="mb-4 p-4 rounded-lg border border-slate-200 dark:border-slate-700 bg-slate-50/50 dark:bg-slate-900/30">
+          <div className="flex items-center gap-2 mb-2">
+            <h3 className="text-sm font-semibold text-slate-800 dark:text-slate-100">Query acceleration (Materialization)</h3>
+            <span className="px-1.5 py-0.5 rounded text-[10px] font-semibold bg-violet-100 text-violet-700 dark:bg-violet-900/40 dark:text-violet-300">Public Preview</span>
           </div>
-        )}
+          <p className="text-xs text-slate-500 dark:text-slate-400 mb-3">
+            Pre-compute joins and filters via an unaggregated materialized view; Databricks routes eligible queries automatically.
+          </p>
+          <label className="flex items-center gap-2 mb-3 cursor-pointer select-none">
+            <input type="checkbox" checked={materialize}
+              onChange={e => setMaterialize(e.target.checked)}
+              className="accent-dbx-lava w-4 h-4" />
+            <span className="text-sm font-medium text-slate-700 dark:text-slate-200">Enable materialization for generated views</span>
+          </label>
+          {materialize && (
+            <div className="space-y-3">
+              <div className="flex items-center gap-2 flex-wrap">
+                <label className="text-sm font-medium text-slate-700 dark:text-slate-200 whitespace-nowrap">Refresh schedule</label>
+                <select value={matSchedulePreset}
+                  onChange={e => {
+                    const preset = e.target.value
+                    setMatSchedulePreset(preset)
+                    const p = MAT_SCHEDULE_PRESETS.find(x => x.id === preset)
+                    if (p && p.value !== '__custom__') setMaterializationSchedule(p.value)
+                  }}
+                  className="px-2 py-1 border rounded text-sm dark:bg-slate-700 dark:border-slate-600 dark:text-white">
+                  {MAT_SCHEDULE_PRESETS.map(p => <option key={p.id} value={p.id}>{p.label}</option>)}
+                </select>
+                {(matSchedulePreset === 'custom' || !MAT_SCHEDULE_PRESETS.some(p => p.id !== 'custom' && p.value === materializationSchedule)) && (
+                  <input type="text"
+                    value={materializationSchedule}
+                    onChange={e => { setMaterializationSchedule(e.target.value); setMatSchedulePreset('custom') }}
+                    placeholder="every 6 hours"
+                    className="w-48 px-2 py-1 border rounded text-sm dark:bg-slate-700 dark:border-slate-600 dark:text-white" />
+                )}
+              </div>
+              <div className="p-3 rounded-md border border-amber-200 dark:border-amber-800 bg-amber-50/80 dark:bg-amber-900/20 text-xs text-amber-900 dark:text-amber-200 space-y-1">
+                <p className="font-medium">Requirements</p>
+                <ul className="list-disc ml-4 space-y-0.5">
+                  <li>Serverless compute enabled in workspace</li>
+                  <li>SQL warehouse on DBR 17.3+</li>
+                  <li>Creates a Databricks-managed Lakeflow pipeline per metric view</li>
+                </ul>
+                <p>
+                  <a href="https://docs.databricks.com/en/metric-views/materialization" target="_blank" rel="noopener noreferrer"
+                    className="text-amber-800 dark:text-amber-300 underline">Databricks materialization docs</a>
+                  {' '}&mdash; unaggregated baseline may not help simple single-table views.
+                </p>
+              </div>
+            </div>
+          )}
+        </div>
+        <p className="text-xs text-slate-500 dark:text-slate-400 mb-4">
+          Materialization: <strong>{materialize ? `ON (${materializationSchedule || 'manual refresh'})` : 'OFF'}</strong>
+        </p>
         <div className="flex gap-3 flex-wrap">
           <button onClick={() => startGeneration('replace')}
             disabled={loading || isGenerating || !selectedTables.length || !questionLines.length}
@@ -1727,6 +1835,15 @@ export default function SemanticLayer({ onNavigate, pipelineStats }) {
                 {taskStatus.result.repaired > 0 && <span>Repaired: <strong className="text-amber-600 dark:text-amber-400">{taskStatus.result.repaired}</strong></span>}
                 {taskStatus.result.skipped > 0 && <span>Skipped: <strong>{taskStatus.result.skipped}</strong></span>}
               </div>
+              {taskStatus.result.materialize != null && (
+                <p className="text-xs text-slate-500 dark:text-slate-400">
+                  Materialization: <strong>{taskStatus.result.materialize ? 'enabled' : 'disabled'}</strong>
+                  {taskStatus.result.materialize && (
+                    <> &mdash; schedule: {taskStatus.result.materialization_schedule || 'manual refresh'};
+                    {' '}{taskStatus.result.materialized_count ?? 0} of {taskStatus.result.generated} views materialized</>
+                  )}
+                </p>
+              )}
               {taskStatus.retry_recovered > 0 && (
                 <span className="text-xs text-amber-600 dark:text-amber-400">
                   {taskStatus.retry_recovered} view(s) recovered with simplified retry
@@ -1766,6 +1883,9 @@ export default function SemanticLayer({ onNavigate, pipelineStats }) {
                     {taskStatus.result.definitions.map((d, i) => (
                       <div key={i} className="flex items-start gap-2">
                         <span className={`shrink-0 px-1 rounded ${d.status === 'validated' ? 'bg-green-100 dark:bg-green-900/40 text-green-700 dark:text-green-300' : d.status === 'failed' ? 'bg-red-100 dark:bg-red-900/40 text-red-700 dark:text-red-300' : 'bg-slate-100 dark:bg-slate-800 text-slate-500'}`}>{d.status}</span>
+                        <span className={`shrink-0 px-1 rounded text-[10px] ${d.has_materialization ? 'bg-sky-100 dark:bg-sky-900/40 text-sky-700 dark:text-sky-300' : 'bg-slate-100 dark:bg-slate-800 text-slate-400'}`}>
+                          {d.has_materialization ? 'mat' : 'no mat'}
+                        </span>
                         <span className="font-medium">{d.name}</span>
                         {d.source && <span className="text-gray-400">({d.source.split('.').pop()})</span>}
                         {d.validation_errors?.length > 0 && <span className="text-red-500 truncate">{d.validation_errors[0]}</span>}
@@ -1810,6 +1930,8 @@ export default function SemanticLayer({ onNavigate, pipelineStats }) {
       ) : (() => {
         const filtered = definitions.filter(d => {
           if (defStatusFilter !== 'all' && d.status !== defStatusFilter) return false
+          if (defMatFilter === 'materialized' && !d.has_materialization) return false
+          if (defMatFilter === 'not_materialized' && d.has_materialization) return false
           if (defFilter && !d.metric_view_name?.toLowerCase().includes(defFilter.toLowerCase()) && !d.source_table?.toLowerCase().includes(defFilter.toLowerCase())) return false
           return true
         })
@@ -1889,7 +2011,19 @@ export default function SemanticLayer({ onNavigate, pipelineStats }) {
                 </button>
               ))}
             </div>
-            {(defFilter || defStatusFilter !== 'all') && <span className="text-xs text-slate-400">{filtered.length} of {definitions.length}</span>}
+            <div className="inline-flex bg-dbx-oat/60 dark:bg-dbx-navy-600 rounded-lg p-0.5">
+              {[
+                { id: 'all', label: 'All mat' },
+                { id: 'materialized', label: 'Materialized' },
+                { id: 'not_materialized', label: 'No mat' },
+              ].map(s => (
+                <button key={s.id} onClick={() => setDefMatFilter(s.id)}
+                  className={`px-2 py-0.5 text-[10px] rounded-md transition-colors ${defMatFilter === s.id ? 'bg-white dark:bg-dbx-navy-500 shadow-sm font-semibold' : 'text-slate-500 hover:text-slate-700 dark:hover:text-slate-300'}`}>
+                  {s.label}
+                </button>
+              ))}
+            </div>
+            {(defFilter || defStatusFilter !== 'all' || defMatFilter !== 'all') && <span className="text-xs text-slate-400">{filtered.length} of {definitions.length}</span>}
           </div>
 
           {kpiCoverage && kpiCoverage.total > 0 && (
@@ -1983,6 +2117,7 @@ export default function SemanticLayer({ onNavigate, pipelineStats }) {
                         </span>
                       )}
                       {statusBadge(d.status)}
+                      {matBadge(d.has_materialization, d.materialization_schedule)}
                       {(d.complexity_score != null || d.quality_score != null) && (() => {
                         const combined = (Number(d.complexity_score) || 0) + (Number(d.quality_score) || 0)
                         const pct = combined / 50
@@ -2063,6 +2198,30 @@ export default function SemanticLayer({ onNavigate, pipelineStats }) {
                   {d.validation_errors && (
                     <p className="text-xs text-red-600 dark:text-red-400 mt-1">{d.validation_errors}</p>
                   )}
+                  {(d.status === 'validated' || d.status === 'applied') && (
+                    <div className="mt-2 flex flex-wrap items-center gap-2 text-xs">
+                      <label className="flex items-center gap-1.5 cursor-pointer select-none text-slate-600 dark:text-slate-300">
+                        <input type="checkbox"
+                          checked={getDeployMatEnabled(d)}
+                          onChange={e => setDeployMatPrefs(prev => ({
+                            ...prev,
+                            [d.definition_id]: { ...prev[d.definition_id], enabled: e.target.checked },
+                          }))}
+                          className="accent-dbx-lava w-3.5 h-3.5" />
+                        Include materialization on deploy
+                      </label>
+                      {getDeployMatEnabled(d) && (
+                        <input type="text"
+                          value={getDeployMatSchedule(d)}
+                          onChange={e => setDeployMatPrefs(prev => ({
+                            ...prev,
+                            [d.definition_id]: { ...prev[d.definition_id], enabled: true, schedule: e.target.value },
+                          }))}
+                          placeholder="every 6 hours"
+                          className="w-40 px-2 py-0.5 border rounded text-[10px] dark:bg-slate-700 dark:border-slate-600 dark:text-white" />
+                      )}
+                    </div>
+                  )}
                   {createError[d.definition_id] && (
                     <div className="mt-2 p-2 bg-red-50 dark:bg-red-900/20 border border-red-200 dark:border-red-800 rounded text-xs">
                       <p className="text-red-700 dark:text-red-300 font-medium mb-1">Create failed:</p>
@@ -2080,6 +2239,12 @@ export default function SemanticLayer({ onNavigate, pipelineStats }) {
                   )}
                   {expandedDef === d.definition_id && expandedJson && (
                     <div className="mt-2 space-y-2">
+                      {d.has_materialization && (
+                        <p className="text-xs text-sky-600 dark:text-sky-400">
+                          Materialization schedule: {d.materialization_schedule || 'manual refresh only'}
+                          {d.status === 'applied' && ' — check DESCRIBE EXTENDED on the deployed view for pipeline refresh status.'}
+                        </p>
+                      )}
                       {/* Toggle between raw JSON and structured view */}
                       <div className="flex items-center gap-2">
                         <label className="flex items-center gap-1 text-xs text-slate-500 cursor-pointer">

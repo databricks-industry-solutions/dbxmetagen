@@ -344,3 +344,38 @@ class TestMaterialization:
         with_mat = api_server._definition_to_yaml(dict(d), include_materialization=True)
         assert "materialization" in with_mat
         assert "sales_mv_baseline" in with_mat
+
+    def test_create_request_has_materialize_fields(self):
+        ann = api_server.CreateDefinitionRequest.__annotations__
+        assert "materialize" in ann
+        assert "strip_materialization" in ann
+
+    def test_apply_materialization_override_attaches(self):
+        d = self._defn()
+        req = api_server.CreateDefinitionRequest(
+            target_catalog="c", target_schema="s", materialize=True,
+        )
+        assert api_server._apply_materialization_override(d, req) == []
+        assert "materialization" in d
+
+    def test_apply_materialization_override_strips(self):
+        d = self._defn()
+        d["materialization"] = api_server._build_materialization(d)
+        req = api_server.CreateDefinitionRequest(
+            target_catalog="c", target_schema="s", strip_materialization=True,
+        )
+        api_server._apply_materialization_override(d, req)
+        assert "materialization" not in d
+
+    def test_yaml_dry_run_passes_include_materialization(self, monkeypatch):
+        calls = []
+
+        def fake_execute_sql(sql, timeout=30):
+            calls.append(sql)
+
+        monkeypatch.setattr(api_server, "execute_sql", fake_execute_sql)
+        d = self._defn()
+        d["materialization"] = api_server._build_materialization(d)
+        err = api_server._yaml_dry_run(d, "cat", "sch", include_materialization=True)
+        assert err is None
+        assert any("materialization" in c for c in calls)

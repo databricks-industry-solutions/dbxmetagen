@@ -1177,17 +1177,6 @@ class SemanticLayerGenerator:
                     errors = self._validate_definition(defn)
                     if self.config.validate_expressions and not errors:
                         errors = self._validate_expressions(defn)
-                    if not errors and self.config.validate_before_store:
-                        dry_run_name = f"{mv_name}_dry_run"
-                        fq_dry = f"{self.config.catalog_name}.{self.config.schema_name}.{dry_run_name}"
-                        try:
-                            yaml_body = self._definition_to_yaml(defn)
-                            self.spark.sql(
-                                f"CREATE OR REPLACE VIEW {fq_dry}\nWITH METRICS LANGUAGE YAML AS $$\n{yaml_body}$$"
-                            )
-                            self.spark.sql(f"DROP VIEW IF EXISTS {fq_dry}")
-                        except Exception as e:
-                            errors = [f"dry-run CREATE failed: {e}"]
                     if val_span is not None:
                         val_span.set_inputs({"metric_view_name": mv_name, "source": source})
                         val_span.set_outputs({"outcome": "validated" if not errors else "failed", "validation_errors": errors or None})
@@ -1204,14 +1193,6 @@ class SemanticLayerGenerator:
                         swap_errors = self._validate_definition(swapped)
                         if not swap_errors and self.config.validate_expressions:
                             swap_errors = self._validate_expressions(swapped)
-                        if not swap_errors and self.config.validate_before_store:
-                            try:
-                                yaml_body = self._definition_to_yaml(swapped)
-                                dry_name = f"{self.config.catalog_name}.{self.config.schema_name}.{mv_name}_swap_dry"
-                                self.spark.sql(f"CREATE OR REPLACE VIEW {dry_name}\nWITH METRICS LANGUAGE YAML AS $$\n{yaml_body}$$")
-                                self.spark.sql(f"DROP VIEW IF EXISTS {dry_name}")
-                            except Exception as e:
-                                swap_errors = [f"swap dry-run failed: {e}"]
                         if not swap_errors:
                             logger.info("Tier 1 recovery (swap) succeeded for '%s'", mv_name)
                             defn = swapped
@@ -1228,14 +1209,6 @@ class SemanticLayerGenerator:
                             dim_errors = self._validate_definition(dim_only)
                             if not dim_errors and self.config.validate_expressions:
                                 dim_errors = self._validate_expressions(dim_only)
-                            if not dim_errors and self.config.validate_before_store:
-                                try:
-                                    yaml_body = self._definition_to_yaml(dim_only)
-                                    dry_name = f"{self.config.catalog_name}.{self.config.schema_name}.{mv_name}_dim_dry"
-                                    self.spark.sql(f"CREATE OR REPLACE VIEW {dry_name}\nWITH METRICS LANGUAGE YAML AS $$\n{yaml_body}$$")
-                                    self.spark.sql(f"DROP VIEW IF EXISTS {dry_name}")
-                                except Exception as e:
-                                    dim_errors = [f"dim-only dry-run failed: {e}"]
                             if not dim_errors:
                                 logger.info("Tier 2 recovery (dim-only) succeeded for '%s'", mv_name)
                                 defn = dim_only
@@ -1244,6 +1217,20 @@ class SemanticLayerGenerator:
                 if self.config.materialize_metric_views:
                     defn["materialization"] = build_materialization(defn, self.config.materialization_schedule)
                     errors = (errors or []) + validate_materialization(defn)
+
+                if not errors and self.config.validate_before_store:
+                    dry_run_name = f"{mv_name}_dry_run"
+                    fq_dry = f"{self.config.catalog_name}.{self.config.schema_name}.{dry_run_name}"
+                    try:
+                        yaml_body = self._definition_to_yaml(
+                            defn, include_materialization=self.config.materialize_metric_views
+                        )
+                        self.spark.sql(
+                            f"CREATE OR REPLACE VIEW {fq_dry}\nWITH METRICS LANGUAGE YAML AS $$\n{yaml_body}$$"
+                        )
+                        self.spark.sql(f"DROP VIEW IF EXISTS {fq_dry}")
+                    except Exception as e:
+                        errors = (errors or []) + [f"dry-run CREATE failed: {e}"]
 
                 status = "validated" if not errors else "failed"
                 error_str = "; ".join(errors).replace("'", "''") if errors else ""

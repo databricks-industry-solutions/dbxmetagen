@@ -5981,7 +5981,9 @@ def list_semantic_definitions(project_id: Optional[str] = None):
         f"validation_errors, genie_space_id, created_at, applied_at, "
         f"COALESCE(version, 1) as version, parent_definition_id, project_id, "
         f"complexity_score, complexity_level, deployed_catalog, deployed_schema, "
-        f"quality_score, quality_level "
+        f"quality_score, quality_level, "
+        f"(get_json_object(json_definition, '$.materialization') IS NOT NULL) AS has_materialization, "
+        f"get_json_object(json_definition, '$.materialization.schedule') AS materialization_schedule "
         f"FROM {fq('metric_view_definitions')} "
         f"{where} "
         f"ORDER BY created_at DESC"
@@ -6015,6 +6017,9 @@ def list_semantic_definitions(project_id: Optional[str] = None):
             for r in applied:
                 fqn = f"{r['deployed_catalog']}.{r['deployed_schema']}.{r['metric_view_name']}".lower()
                 r["deployed_exists"] = fqn in uc_mvs
+    for r in rows:
+        hm = r.get("has_materialization")
+        r["has_materialization"] = hm is True or str(hm).lower() == "true"
     return rows
 
 
@@ -8671,10 +8676,10 @@ def _inject_fk_joins(plan_views: list[dict], tables: list[str], cat: str, sch: s
     return plan_views, fk_rows
 
 
-def _yaml_dry_run(defn: dict, cat: str, sch: str) -> Optional[str]:
+def _yaml_dry_run(defn: dict, cat: str, sch: str, include_materialization: bool = False) -> Optional[str]:
     """Attempt CREATE VIEW WITH METRICS LANGUAGE YAML; return error string or None."""
     try:
-        yaml_body = _definition_to_yaml(defn)
+        yaml_body = _definition_to_yaml(defn, include_materialization=include_materialization)
         mv_name = defn.get("name", "dry_run_test")
         dry_name = f"`{cat}`.`{sch}`.`_mv_dryrun_{mv_name}`"
         execute_sql(
@@ -8987,13 +8992,6 @@ def _run_sl_generation(
             _infer_format_specs(defn)
             errors = _validate_defn(defn)
 
-            # YAML dry-run: catches metric-YAML-specific failures that pass SELECT validation
-            if not errors and defn.get("source"):
-                yaml_err = _yaml_dry_run(defn, cat, sch)
-                if yaml_err:
-                    errors.append(yaml_err)
-                    logger.info("YAML dry-run failed for '%s': %s", mv_name, yaml_err[:200])
-
             # Phase 3: Self-repair -- up to 2 LLM retries for failed definitions
             for repair_round in range(1, 3):
                 if not errors:
@@ -9010,10 +9008,6 @@ def _run_sl_generation(
                     repaired["filter"] = _autofix_expr(repaired["filter"])
                 _infer_format_specs(repaired)
                 repair_errors = _validate_defn(repaired)
-                if not repair_errors and repaired.get("source"):
-                    yaml_err = _yaml_dry_run(repaired, cat, sch)
-                    if yaml_err:
-                        repair_errors = [yaml_err]
                 if not repair_errors or len(repair_errors) < len(errors):
                     defn = repaired
                     errors = repair_errors
@@ -9041,10 +9035,6 @@ def _run_sl_generation(
                     swapped = _swap_source_and_join(defn, src_warning["suspected_fact"])
                     swap_errors = _validate_defn(swapped)
                     if not swap_errors:
-                        yaml_err = _yaml_dry_run(swapped, cat, sch)
-                        if yaml_err:
-                            swap_errors = [yaml_err]
-                    if not swap_errors:
                         logger.info("Tier 1 recovery (swap) succeeded for '%s'", mv_name)
                         defn = swapped
                         source = defn.get("source", source)
@@ -9058,10 +9048,6 @@ def _run_sl_generation(
                             if j.get("source", "").split(".")[-1].lower() != src_warning["suspected_fact"].lower()
                         ]
                         dim_errors = _validate_defn(dim_only)
-                        if not dim_errors:
-                            yaml_err = _yaml_dry_run(dim_only, cat, sch)
-                            if yaml_err:
-                                dim_errors = [yaml_err]
                         if not dim_errors:
                             logger.info("Tier 2 recovery (dim-only) succeeded for '%s'", mv_name)
                             defn = dim_only
@@ -9082,6 +9068,15 @@ def _run_sl_generation(
             if materialize:
                 defn["materialization"] = _build_materialization(defn, materialization_schedule)
                 errors = (errors or []) + _validate_materialization(defn)
+
+            if not errors and defn.get("source"):
+                yaml_err = _yaml_dry_run(
+                    defn, cat, sch,
+                    include_materialization=materialize or bool(defn.get("materialization")),
+                )
+                if yaml_err:
+                    errors.append(yaml_err)
+                    logger.info("YAML dry-run failed for '%s': %s", mv_name, yaml_err[:200])
 
             json_str = json.dumps(defn)
             status = "validated" if not errors else "failed"
@@ -9104,7 +9099,14 @@ def _run_sl_generation(
                 "validation_errors": errors if errors else None,
                 "complexity": cx.get("complexity_level"),
                 "quality": cx.get("quality_level"),
+                "has_materialization": bool(defn.get("materialization")),
             })
+
+        stats["materialize"] = materialize
+        stats["materialization_schedule"] = materialization_schedule if materialize else None
+        stats["materialized_count"] = sum(
+            1 for r in per_definition_results if r.get("has_materialization")
+        )
 
         # Flag duplicate-source views (same grain generated more than once)
         source_seen: dict[str, list[str]] = {}
@@ -9767,6 +9769,14 @@ class PutDefinitionRequest(BaseModel):
 class CreateDefinitionRequest(BaseModel):
     target_catalog: str
     target_schema: str
+    materialize: Optional[bool] = None
+    materialization_schedule: str = "every 6 hours"
+    strip_materialization: bool = False
+
+
+class MaterializationPatchRequest(BaseModel):
+    enabled: bool
+    schedule: str = "every 6 hours"
 
 
 class DropDefinitionRequest(BaseModel):
@@ -9800,6 +9810,17 @@ def update_definition(definition_id: str, req: PutDefinitionRequest):
     return {"definition_id": definition_id, "status": status, "validation_errors": errs}
 
 
+def _apply_materialization_override(defn: dict, req: CreateDefinitionRequest) -> list[str]:
+    """Apply create-time materialization flags. Returns validation errors."""
+    if req.strip_materialization or req.materialize is False:
+        defn.pop("materialization", None)
+    elif req.materialize is True and not defn.get("materialization"):
+        defn["materialization"] = _build_materialization(defn, req.materialization_schedule)
+    if defn.get("materialization"):
+        return _validate_materialization(defn)
+    return []
+
+
 @app.post("/api/semantic-layer/definitions/{definition_id}/create")
 def create_metric_view(definition_id: str, req: CreateDefinitionRequest):
     """Deploy a validated definition as a real UC metric view."""
@@ -9809,6 +9830,9 @@ def create_metric_view(definition_id: str, req: CreateDefinitionRequest):
     mv_name = defn.get("name") or row.get("metric_view_name", "")
     if not mv_name:
         raise HTTPException(400, detail="Definition has no metric view name")
+    mat_errors = _apply_materialization_override(defn, req)
+    if mat_errors:
+        raise HTTPException(400, detail="; ".join(mat_errors))
     fq_mv = f"`{req.target_catalog}`.`{req.target_schema}`.`{mv_name}`"
     for item_type in ("dimensions", "measures"):
         for item in defn.get(item_type, []):
@@ -9816,7 +9840,8 @@ def create_metric_view(definition_id: str, req: CreateDefinitionRequest):
                 item["expr"] = _autofix_expr(item["expr"])
     if defn.get("filter"):
         defn["filter"] = _autofix_expr(defn["filter"])
-    yaml_body = _definition_to_yaml(defn, include_materialization=True)
+    include_mat = bool(defn.get("materialization"))
+    yaml_body = _definition_to_yaml(defn, include_materialization=include_mat)
     sql = f"CREATE OR REPLACE VIEW {fq_mv}\nWITH METRICS LANGUAGE YAML AS $$\n{yaml_body}$$"
     try:
         execute_sql(sql, timeout=60)
@@ -9836,8 +9861,10 @@ def create_metric_view(definition_id: str, req: CreateDefinitionRequest):
     execute_sql(
         f"UPDATE {fq('metric_view_definitions')} "
         f"SET status = 'applied', applied_at = current_timestamp(), "
-        f"deployed_catalog = '{req.target_catalog}', deployed_schema = '{req.target_schema}' "
-        f"WHERE definition_id = '{definition_id}'"
+        f"deployed_catalog = '{req.target_catalog}', deployed_schema = '{req.target_schema}', "
+        f"json_definition = :json_def "
+        f"WHERE definition_id = '{definition_id}'",
+        parameters=[StatementParameterListItem(name="json_def", value=json.dumps(defn))],
     )
     # Supersede non-applied siblings with the same name (applied views are never auto-superseded)
     mv_esc = mv_name.replace("'", "''")
@@ -9854,6 +9881,39 @@ def create_metric_view(definition_id: str, req: CreateDefinitionRequest):
     except Exception:
         pass
     return {"definition_id": definition_id, "status": "applied", "metric_view": fq_mv}
+
+
+@app.patch("/api/semantic-layer/definitions/{definition_id}/materialization")
+def patch_definition_materialization(definition_id: str, req: MaterializationPatchRequest):
+    """Enable or disable materialization on a stored definition."""
+    _ensure_semantic_layer_tables()
+    row = _fetch_definition(definition_id)
+    if row.get("status") == "applied":
+        raise HTTPException(400, detail="Cannot change materialization on an applied view. Drop it first.")
+    defn = json.loads(row["json_definition"]) if isinstance(row["json_definition"], str) else row["json_definition"]
+    if req.enabled:
+        defn["materialization"] = _build_materialization(defn, req.schedule)
+    else:
+        defn.pop("materialization", None)
+    errors = _validate_materialization(defn) if defn.get("materialization") else []
+    struct_errors = _validate_definition_structure(defn)
+    errors = errors + struct_errors
+    status = "validated" if not errors else "failed"
+    error_str = "; ".join(errors).replace("'", "''") if errors else ""
+    json_str = json.dumps(defn)
+    execute_sql(
+        f"UPDATE {fq('metric_view_definitions')} "
+        f"SET json_definition = :json_def, status = '{status}', validation_errors = '{error_str}' "
+        f"WHERE definition_id = '{definition_id}'",
+        parameters=[StatementParameterListItem(name="json_def", value=json_str)],
+    )
+    return {
+        "definition_id": definition_id,
+        "status": status,
+        "has_materialization": bool(defn.get("materialization")),
+        "materialization_schedule": (defn.get("materialization") or {}).get("schedule"),
+        "validation_errors": errors or None,
+    }
 
 
 class CertifyRequest(BaseModel):

@@ -702,3 +702,15 @@ class TestMaterialization:
         assert "materialization" in with_mat
         assert "unaggregated" in with_mat
         assert "sales_mv_baseline" in with_mat
+
+    def test_dry_run_yaml_includes_materialization_when_enabled(self):
+        from dbxmetagen.semantic_layer import build_materialization
+        config = SemanticLayerConfig(
+            catalog_name="cat", schema_name="sch", materialize_metric_views=True,
+        )
+        gen = SemanticLayerGenerator(MagicMock(), config)
+        d = self._defn()
+        d["materialization"] = build_materialization(d)
+        yaml_body = gen._definition_to_yaml(dict(d), include_materialization=True)
+        assert "materialization:" in yaml_body
+        assert "mode: relaxed" in yaml_body
