@@ -9,8 +9,6 @@
 
 set -e
 
-source "$(dirname "$0")/scripts/ensure_public_pypi.sh"
-
 PROFILE="DEFAULT"
 VOLUME_PATH=""
 WORKSPACE_PATH=""

@@ -7,8 +7,6 @@
 
 set -e
 
-source "$(dirname "$0")/ensure_public_pypi.sh"
-
 if [ -x "/opt/homebrew/bin/databricks" ]; then
   DATABRICKS_CLI="/opt/homebrew/bin/databricks"
 elif [ -x "/usr/local/bin/databricks" ]; then

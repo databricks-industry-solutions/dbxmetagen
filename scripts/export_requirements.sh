@@ -3,8 +3,6 @@
 # with Databricks Runtime (DBR). Called by pre-commit hook when deps change.
 set -e
 
-source "$(dirname "$0")/ensure_public_pypi.sh"
-
 REPO_ROOT="$(cd "$(dirname "$0")/.." && pwd)"
 LOCK_FILE="${REPO_ROOT}/uv.lock"
 

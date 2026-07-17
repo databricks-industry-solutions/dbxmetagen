@@ -10,9 +10,6 @@
 
 set -e
 
-# Always resolve deps from public PyPI (see scripts/ensure_public_pypi.sh).
-source "$(dirname "$0")/scripts/ensure_public_pypi.sh"
-
 TARGET="dev"
 PROFILE="DEFAULT"
 SKIP_APP=false
