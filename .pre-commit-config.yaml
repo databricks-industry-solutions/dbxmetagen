@@ -24,7 +24,7 @@ repos:
       - id: check-uv-lock-public
         name: Reject internal PyPI proxy URLs in uv.lock
         language: system
-        entry: bash -c 'if grep -q pypi-proxy uv.lock; then echo "uv.lock contains internal PyPI proxy URLs; run UV_INDEX_URL=https://pypi.org/simple uv lock"; exit 1; fi'
+        entry: bash -c 'if [ -f uv.lock ] && grep -q pypi-proxy uv.lock; then echo "uv.lock contains internal PyPI proxy URLs; run UV_INDEX_URL=https://pypi.org/simple uv lock"; exit 1; fi'
         files: ^uv\.lock$
         pass_filenames: false
         stages: [pre-commit]
@@ -32,8 +32,8 @@ repos:
       - id: sync-requirements
         name: Sync requirements.txt from uv.lock
         language: system
-        entry: bash -c 'bash scripts/export_requirements.sh && git add requirements.txt'
-        files: ^(pyproject\.toml|uv\.lock)$
+        entry: bash -c 'if [ ! -f uv.lock ]; then echo "No local uv.lock; commit requirements.txt manually after uv lock + export"; exit 0; fi; bash scripts/export_requirements.sh && git add requirements.txt'
+        files: ^pyproject\.toml$
         pass_filenames: false
         stages: [pre-commit]
 

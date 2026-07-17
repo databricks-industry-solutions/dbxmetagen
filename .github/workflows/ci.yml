@@ -24,14 +24,6 @@ jobs:
         with:
           python-version: "3.11"
 
-      - name: Reject internal PyPI proxy in uv.lock
-        run: |
-          if grep -q pypi-proxy uv.lock; then
-            echo "::error::uv.lock contains internal Databricks PyPI proxy URLs."
-            echo "Run Actions > Regenerate uv.lock on this branch (requires public PyPI; use GitHub Actions)."
-            exit 1
-          fi
-
       - name: Install pre-commit
         run: pip install pre-commit
 
@@ -65,7 +57,7 @@ jobs:
         uses: actions/cache@v4
         with:
           path: .venv
-          key: venv-${{ runner.os }}-py${{ matrix.python-version }}-${{ hashFiles('**/uv.lock') }}
+          key: venv-${{ runner.os }}-py${{ matrix.python-version }}-${{ hashFiles('**/pyproject.toml') }}
           restore-keys: |
             venv-${{ runner.os }}-py${{ matrix.python-version }}-
 

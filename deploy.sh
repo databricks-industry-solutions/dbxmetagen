@@ -12,7 +12,6 @@ set -e
 
 # Always resolve deps from public PyPI (see scripts/ensure_public_pypi.sh).
 source "$(dirname "$0")/scripts/ensure_public_pypi.sh"
-regenerate_lock_if_poisoned
 
 TARGET="dev"
 PROFILE="DEFAULT"
@@ -243,15 +242,6 @@ else
     echo "=== Skipping app (--no-app) ==="
     APP_SP_ID=""
     APP_SP_CLIENT_ID=""
-fi
-
-# --- Sync requirements.txt from lock file ---
-echo ""
-echo "=== Syncing requirements.txt ==="
-if git rev-parse --is-inside-work-tree &>/dev/null; then
-    bash scripts/export_requirements.sh
-else
-    echo "  Not inside a git repo -- skipping requirements.txt regeneration (using existing file)"
 fi
 
 cleanup() {

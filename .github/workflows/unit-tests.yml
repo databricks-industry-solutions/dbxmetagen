@@ -27,19 +27,12 @@ jobs:
         with:
           python-version: ${{ matrix.python-version }}
 
-      - name: Reject internal PyPI proxy in uv.lock
-        run: |
-          if grep -q pypi-proxy uv.lock; then
-            echo "::error::uv.lock contains internal Databricks PyPI proxy URLs."
-            exit 1
-          fi
-
       - name: Load cached venv
         id: cached-uv-dependencies
         uses: actions/cache@v4
         with:
           path: .venv
-          key: venv-${{ runner.os }}-${{ matrix.python-version }}-${{ hashFiles('**/uv.lock') }}
+          key: venv-${{ runner.os }}-${{ matrix.python-version }}-${{ hashFiles('**/pyproject.toml') }}
 
       - name: Install dependencies
         run: uv sync
