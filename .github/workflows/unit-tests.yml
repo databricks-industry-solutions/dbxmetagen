@@ -1,10 +1,7 @@
 name: Unit Tests
 
+# Paused: org GitHub Actions are disabled/unreliable. Re-add push/pull_request to re-enable.
 on:
-  pull_request:
-    branches: [main, master, preview, dev]
-  push:
-    branches: [main, master, preview, dev]
   workflow_dispatch:
 
 jobs:

@@ -257,8 +257,8 @@ rm -rf dist/
 # Stamp version with deploy timestamp so the app platform always reinstalls.
 # DAB does this for job artifacts via dynamic_version; the app gets a direct
 # file copy whose version must differ each deploy to avoid pip skipping it.
-# Read version without `uv run` so deploy does not sync mlflow/sklearn from uv.lock.
-BASE_VERSION=$(sed -n 's/^version = "\([^"+]*\).*/\1/p' pyproject.toml | head -1)
+# Read version without `uv run` so deploy does not sync the full project env.
+BASE_VERSION=$(python3 -c "import tomllib; v=tomllib.load(open('pyproject.toml','rb'))['project']['version']; print(v.split('+')[0])")
 if [ -z "${BASE_VERSION}" ]; then
     echo "Error: could not parse version from pyproject.toml"
     exit 1
