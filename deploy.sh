@@ -258,7 +258,18 @@ rm -rf dist/
 # DAB does this for job artifacts via dynamic_version; the app gets a direct
 # file copy whose version must differ each deploy to avoid pip skipping it.
 # Read version without `uv run` so deploy does not sync the full project env.
-BASE_VERSION=$(python3 -c "import tomllib; v=tomllib.load(open('pyproject.toml','rb'))['project']['version']; print(v.split('+')[0])")
+BASE_VERSION=$(python3 -c "
+import sys
+try:
+    import tomllib
+except ImportError:
+    print('Error: deploy.sh requires Python 3.11+ to read pyproject.toml (tomllib is not in Python 3.10).', file=sys.stderr)
+    print('Install Python 3.11+ and ensure python3 points to it (e.g. pyenv local 3.12).', file=sys.stderr)
+    print(f'Current interpreter: {sys.version}', file=sys.stderr)
+    sys.exit(1)
+v = tomllib.load(open('pyproject.toml', 'rb'))['project']['version']
+print(v.split('+')[0])
+") || exit 1
 if [ -z "${BASE_VERSION}" ]; then
     echo "Error: could not parse version from pyproject.toml"
     exit 1
