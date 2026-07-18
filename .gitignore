@@ -3,7 +3,8 @@ __pycache__/
 *.py[cod]
 *$py.class
 
-# Lock files are tracked (uv.lock is committed for reproducibility)
+# uv.lock is local-only (developers); requirements.txt is the committed pin for notebooks
+uv.lock
 
 # Distribution / packaging
 .Python
