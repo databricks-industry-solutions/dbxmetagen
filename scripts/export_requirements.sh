@@ -1,17 +1,18 @@
 #!/bin/bash
-# Regenerate requirements.txt from uv.lock, excluding packages that conflict
-# with Databricks Runtime (DBR). Called by pre-commit hook and deploy.sh.
+# Regenerate requirements.txt from local uv.lock, excluding packages that conflict
+# with Databricks Runtime (DBR). Called by pre-commit hook when deps change.
 set -e
 
-# Bridge pip proxy config to uv (see deploy.sh for explanation)
-if [ -z "$UV_INDEX_URL" ]; then
-    _pip_idx=$(pip3 config get global.index-url 2>/dev/null || true)
-    [ -n "$_pip_idx" ] && export UV_INDEX_URL="$_pip_idx"
+REPO_ROOT="$(cd "$(dirname "$0")/.." && pwd)"
+LOCK_FILE="${REPO_ROOT}/uv.lock"
+
+if [ ! -f "${LOCK_FILE}" ]; then
+    echo "No local uv.lock found; skipping requirements.txt export." >&2
+    echo "Run 'uv lock' locally, then re-run this script." >&2
+    exit 0
 fi
 
-REPO_ROOT="$(cd "$(dirname "$0")/.." && pwd)"
-
-uv export -q --no-dev --no-hashes --no-emit-project \
+uv export -q --frozen --no-dev --no-hashes --no-emit-project \
   --no-emit-package databricks-connect \
   --no-emit-package pyspark \
   --no-emit-package py4j \
@@ -26,4 +27,3 @@ cat >> "$REPO_ROOT/requirements.txt" <<'EOF'
 # Air-gapped alternative:
 #   pip install /Volumes/<catalog>/<schema>/<volume>/en_core_web_md-3.8.0-py3-none-any.whl
 EOF
-

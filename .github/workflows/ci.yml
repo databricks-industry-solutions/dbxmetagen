@@ -1,10 +1,7 @@
 name: CI Pipeline
 
+# Paused: org GitHub Actions are disabled/unreliable. Re-add push/pull_request to re-enable.
 on:
-  pull_request:
-    branches: [main, master, preview]
-  push:
-    branches: [main, master, preview]
   workflow_dispatch:
 
 jobs:
@@ -57,7 +54,7 @@ jobs:
         uses: actions/cache@v4
         with:
           path: .venv
-          key: venv-${{ runner.os }}-py${{ matrix.python-version }}-${{ hashFiles('**/uv.lock') }}
+          key: venv-${{ runner.os }}-py${{ matrix.python-version }}-${{ hashFiles('**/pyproject.toml') }}
           restore-keys: |
             venv-${{ runner.os }}-py${{ matrix.python-version }}-
 

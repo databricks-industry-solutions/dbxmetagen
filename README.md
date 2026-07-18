@@ -432,6 +432,12 @@ uv sync --extra pi          # also install the spaCy model for PI dev
 ./run_tests.sh              # runs 3 test suites in isolated processes
 ./run_tests.sh -q           # quick mode (core tests only)
 
+# Bump dependencies (developers only; uv.lock is gitignored)
+# 1. Edit pyproject.toml
+# 2. uv lock                    # local only; internal proxy on corp laptops
+# 3. bash scripts/export_requirements.sh
+# 4. Commit pyproject.toml + requirements.txt (not uv.lock)
+
 # Build and test wheel locally
 uv build
 pip install dist/*.whl
@@ -443,6 +449,29 @@ DDL regenerator and binary/variant tests must run in separate processes due to i
 Requires DBR 14.3+ (ML runtime recommended for PI detection with spaCy). Serverless runtimes are supported for most operations.
 
 ## Troubleshooting
+
+### PyPI / `uv` on Databricks corp laptops vs external customers
+
+**Databricks internal laptops** cannot reach public PyPI. Set in your shell profile:
+
+```bash
+export UV_INDEX_URL=https://pypi-proxy.dev.databricks.com/simple
+export UV_NATIVE_TLS=1
+```
+
+Use that for `uv sync`, `uv lock`, `./deploy.sh`, and `./publish.sh`. Local `uv.lock` is gitignored; never commit it (it may contain internal proxy URLs). When bumping deps, export `requirements.txt` with `bash scripts/export_requirements.sh` and commit that file.
+
+**External customers** need no special config — `uv` defaults to public PyPI. `./deploy.sh` only runs `uv build` (hatchling) and does not use `uv.lock`.
+
+### `deploy.sh` fails downloading from `pypi-proxy.dev.databricks.com`
+
+This URL is only reachable on Databricks internal networks. If you are **not** on a corp laptop, unset any internal proxy:
+
+```bash
+unset UV_INDEX_URL
+```
+
+If you **are** on a corp laptop, ensure `UV_INDEX_URL` points at the internal proxy (see above), not `pypi.org`.
 
 ### `uv sync` fails with `invalid peer certificate: UnknownIssuer`
 

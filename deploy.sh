@@ -10,13 +10,6 @@
 
 set -e
 
-# Bridge pip proxy config to uv (internal devs have pip configured for the
-# Databricks PyPI proxy; uv doesn't read pip config, so we forward it).
-if [ -z "$UV_INDEX_URL" ]; then
-    _pip_idx=$(pip3 config get global.index-url 2>/dev/null || true)
-    [ -n "$_pip_idx" ] && export UV_INDEX_URL="$_pip_idx"
-fi
-
 TARGET="dev"
 PROFILE="DEFAULT"
 SKIP_APP=false
@@ -248,15 +241,6 @@ else
     APP_SP_CLIENT_ID=""
 fi
 
-# --- Sync requirements.txt from lock file ---
-echo ""
-echo "=== Syncing requirements.txt ==="
-if git rev-parse --is-inside-work-tree &>/dev/null; then
-    bash scripts/export_requirements.sh
-else
-    echo "  Not inside a git repo -- skipping requirements.txt regeneration (using existing file)"
-fi
-
 cleanup() {
     [ -f pyproject.toml.deploy_bak ] && mv pyproject.toml.deploy_bak pyproject.toml
     rm -rf apps/dbxmetagen-app/app/configurations
@@ -273,7 +257,12 @@ rm -rf dist/
 # Stamp version with deploy timestamp so the app platform always reinstalls.
 # DAB does this for job artifacts via dynamic_version; the app gets a direct
 # file copy whose version must differ each deploy to avoid pip skipping it.
-BASE_VERSION=$(uv run python3 -c "import tomllib; v=tomllib.load(open('pyproject.toml','rb'))['project']['version']; print(v.split('+')[0])")
+# Read version without `uv run` so deploy does not sync the full project env.
+BASE_VERSION=$(python3 -c "import tomllib; v=tomllib.load(open('pyproject.toml','rb'))['project']['version']; print(v.split('+')[0])")
+if [ -z "${BASE_VERSION}" ]; then
+    echo "Error: could not parse version from pyproject.toml"
+    exit 1
+fi
 DEPLOY_VERSION="${BASE_VERSION}+$(date +%s)"
 sed -i.deploy_bak "s/^version = \"${BASE_VERSION}[^\"]*\"/version = \"${DEPLOY_VERSION}\"/" pyproject.toml
 uv build -q

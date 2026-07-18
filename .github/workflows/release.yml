@@ -1,8 +1,7 @@
 name: Release
 
+# Paused: org GitHub Actions are disabled/unreliable. Re-add push tags to re-enable.
 on:
-  push:
-    tags: ['v*']
   workflow_dispatch:
 
 jobs:
