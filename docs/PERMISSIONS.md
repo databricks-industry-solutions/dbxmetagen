@@ -29,6 +29,8 @@ GRANT USE SCHEMA  ON SCHEMA  `<catalog>`.`<schema>` TO `<SPN_UUID>`;
 GRANT CREATE TABLE ON SCHEMA `<catalog>`.`<schema>` TO `<SPN_UUID>`;
 GRANT SELECT ON SCHEMA `<catalog>`.`<schema>` TO `<SPN_UUID>`;
 GRANT MODIFY ON SCHEMA `<catalog>`.`<schema>` TO `<SPN_UUID>`;
+GRANT READ VOLUME ON SCHEMA `<catalog>`.`<schema>` TO `<SPN_UUID>`;
+GRANT WRITE VOLUME ON SCHEMA `<catalog>`.`<schema>` TO `<SPN_UUID>`;
 ```
 
 `CREATE TABLE` and `MODIFY` are needed because the app writes to `metric_view_definitions`, `semantic_layer_questions`, and agent state tables directly from the UI (not via jobs).
@@ -39,7 +41,7 @@ GRANT MODIFY ON SCHEMA `<catalog>`.`<schema>` TO `<SPN_UUID>`;
 
 ### Job control
 
-`CAN_MANAGE_RUN` on all 17 bound jobs. This is declared in the DAB app resource and applied automatically. It allows the UI to trigger and monitor job runs.
+`CAN_MANAGE_RUN` on all 15 bound jobs. This is declared in the DAB app resource and applied automatically. It allows the UI to trigger and monitor job runs.
 
 ### Vector Search endpoint
 
@@ -58,7 +60,7 @@ Because most paths swallow VS errors gracefully, a missing `CAN_USE` grant can g
 
 | Grant | `deploy.sh` | Notebook deploy (NB02) | Manual deploy |
 |-------|-------------|----------------------|---------------|
-| UC (5 grants above) | Automatic, every deploy | Automatic | You run the SQL (see `MANUAL_DEPLOYMENT.md` step 7) |
+| UC (7 grants above) | Automatic, every deploy | Automatic | You run the SQL (see `MANUAL_DEPLOYMENT.md`) |
 | SQL warehouse `CAN_USE` | Via DAB resource | Via SDK `AppResource` | Via DAB resource |
 | Job `CAN_MANAGE_RUN` | Via DAB resource + second deploy pass | Via SDK `update_permissions` | Via DAB resource + second deploy pass |
 | VS endpoint `CAN_USE` | Automatic (Permissions API) | Automatic (Permissions API) | **You must grant manually** (see below) |
@@ -163,7 +165,7 @@ To automatically grant groups/users `SELECT` after metadata generation, set `gra
 | Metadata schema (`MODIFY`, `CREATE TABLE`) | Required | Required | N/A | N/A |
 | Metadata schema (`ALTER TABLE`, `SET TAGS`) | Not needed | Required | N/A | N/A |
 | SQL warehouse | `CAN_USE` (via DAB) | N/A (jobs use clusters) | N/A | N/A |
-| Jobs (17 bound jobs) | `CAN_MANAGE_RUN` (via DAB) | `CAN_MANAGE` (bundle owner) | N/A | N/A |
+| Jobs (15 bound jobs) | `CAN_MANAGE_RUN` (via DAB) | `CAN_MANAGE` (bundle owner) | N/A | N/A |
 | VS endpoint | `CAN_USE` (manual or deploy script) | N/A | N/A | N/A |
 | Model serving endpoint | Not needed | Access required for `AI_QUERY` | N/A | N/A |
 | Databricks App | N/A | N/A | `CAN_USE` (via `permission_groups` / `permission_users`) | `CAN_USE` (via `permission_groups` / `permission_users`) |

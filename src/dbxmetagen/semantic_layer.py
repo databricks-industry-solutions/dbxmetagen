@@ -21,6 +21,31 @@ from typing import Any, Dict, List, Optional
 
 from pyspark.sql import SparkSession
 
+# Shared, substrate-agnostic metric-view helpers (single source of truth; also
+# imported by the app backend). Re-exported here for backward compatibility so
+# existing `from dbxmetagen.semantic_layer import ...` call sites keep working.
+from dbxmetagen.metric_view_core import (
+    _infer_display_name,
+    _infer_synonyms,
+    _backfill_agent_metadata,
+    _drop_broken_measures,
+    _drop_placeholder_dimensions,
+    _normalize_window_specs,
+    _strip_kpi_references,
+    _infer_format_specs,
+    _fix_percentage_scaling,
+    _KPI_REF_RE,
+    _SELF_DIV_RE,
+    _ALIAS_DOT_RE,
+    _CURRENCY_PATTERNS,
+    _PERCENTAGE_PATTERNS,
+    _PERCENTAGE_NAME_PATTERNS,
+    _autofix_expr as _autofix_expr_core,
+    _restructure_chained_to_nested,
+    _qualify_nested_refs,
+)
+from dbxmetagen import metric_view_core as _mvc
+
 try:
     import mlflow
 except ImportError:
@@ -373,221 +398,6 @@ def _select_few_shot(context: str) -> str:
     scores = {d: sum(1 for kw in kws if kw in ctx_lower) for d, kws in domain_keywords.items()}
     best = max(scores, key=scores.get) if max(scores.values()) > 0 else "sales"
     return _FEW_SHOT_BY_DOMAIN[best]
-
-
-_CURRENCY_PATTERNS = re.compile(
-    r"SUM\s*\(\s*(total_amount|amount|revenue|cost|price|charge|fee|salary|budget|payment|balance)",
-    re.IGNORECASE,
-)
-_PERCENTAGE_PATTERNS = re.compile(
-    r"(\*\s*1\.0\s*/\s*NULLIF|100(?:\.0)?\s*\*\s*.*?/\s*NULLIF|THEN\s+1\s+ELSE\s+0\s+END\)\s*\*\s*1\.0)",
-    re.IGNORECASE,
-)
-_PERCENTAGE_NAME_PATTERNS = re.compile(r"\brate\b|\bpct\b|\bpercentage\b|\bratio\b", re.IGNORECASE)
-
-
-def _infer_format_specs(defn: dict) -> None:
-    """Infer and backfill format specs on measures that lack them."""
-    for m in defn.get("measures", []):
-        if m.get("format"):
-            continue
-        expr = m.get("expr", "")
-        name = m.get("name", "")
-        if _PERCENTAGE_PATTERNS.search(expr) or _PERCENTAGE_NAME_PATTERNS.search(name):
-            m["format"] = {"type": "percentage"}
-        elif _CURRENCY_PATTERNS.search(expr):
-            m["format"] = {"type": "currency", "currency_code": "USD"}
-        else:
-            m["format"] = {"type": "number"}
-
-
-_PERCENTAGE_PREMULTIPLY = re.compile(
-    r"(?:ROUND\s*\(\s*)?100(?:\.0)?\s*\*\s*", re.IGNORECASE
-)
-
-
-def _fix_percentage_scaling(defn: dict) -> None:
-    """Strip ``100 *`` from percentage-formatted measures to avoid double-multiply.
-
-    Metric view percentage format expects a 0-1 fraction; the rendering layer
-    multiplies by 100. If the expression already does ``100.0 * ratio``, the
-    displayed value is 100x too large (e.g. 1667% instead of 16.7%).
-    """
-    for m in defn.get("measures", []):
-        fmt = m.get("format", {})
-        if fmt.get("type") != "percentage":
-            continue
-        expr = m.get("expr", "")
-        match = _PERCENTAGE_PREMULTIPLY.search(expr)
-        if not match:
-            continue
-        new_expr = expr[:match.start()] + expr[match.end():]
-        if new_expr.rstrip().endswith(")") and "ROUND" in match.group(0).upper():
-            new_expr = re.sub(r",\s*\d+\s*\)\s*$", "", new_expr)
-        m["expr"] = new_expr.strip()
-        logger.info("Stripped 100x multiplier from percentage measure '%s'", m.get("name", "?"))
-
-
-def _infer_display_name(name: str) -> str:
-    """Convert snake_case/kebab-case measure/dimension names to Title Case."""
-    return name.replace("_", " ").replace("-", " ").title()
-
-
-def _infer_synonyms(name: str, comment: str | None) -> list[str]:
-    """Extract 2-3 keyword synonyms from the name and comment."""
-    synonyms = set()
-    clean = name.replace("_", " ").lower()
-    words = clean.split()
-    _STOP = {"the", "a", "an", "of", "for", "by", "in", "to", "and", "or", "is", "as", "per", "with", "from"}
-    # Abbreviation from initials
-    if len(words) >= 2:
-        abbr = "".join(w[0] for w in words if w not in _STOP).upper()
-        if len(abbr) >= 2:
-            synonyms.add(abbr)
-    # Keywords from comment
-    if comment:
-        for w in comment.lower().split():
-            w = w.strip(".,;:()")
-            if len(w) > 3 and w not in _STOP and w not in clean:
-                synonyms.add(w)
-                if len(synonyms) >= 3:
-                    break
-    return list(synonyms)[:5]
-
-
-def _backfill_agent_metadata(defn: dict) -> None:
-    """Backfill display_name and synonyms on measures/dimensions that lack them."""
-    for item in defn.get("measures", []) + defn.get("dimensions", []):
-        if not item.get("display_name"):
-            item["display_name"] = _infer_display_name(item.get("name", ""))
-        if not item.get("synonyms"):
-            item["synonyms"] = _infer_synonyms(item.get("name", ""), item.get("comment"))
-
-
-_KPI_REF_RE = re.compile(
-    r"\.?\s*(?:Implements|Supports|Addresses|Answers|Covers|Partially implements)"
-    r"\s+(?:KPI|question|Q)s?\s*[\d,\s\-and]+\.?"
-    r"|\s*\(KPI:\s*[^)]+\)",
-    re.IGNORECASE,
-)
-
-
-def _strip_kpi_references(defn: dict) -> None:
-    """Remove KPI/question number references from comments."""
-    for field in ("comment",):
-        if defn.get(field):
-            defn[field] = _KPI_REF_RE.sub("", defn[field]).strip().rstrip(".")
-            if defn[field]:
-                defn[field] += "."
-    for item in defn.get("measures", []) + defn.get("dimensions", []):
-        if item.get("comment"):
-            item["comment"] = _KPI_REF_RE.sub("", item["comment"]).strip().rstrip(".")
-            if item["comment"]:
-                item["comment"] += "."
-
-
-_ALIAS_DOT_RE = re.compile(r"\b([A-Za-z_]\w*)\.\w+")
-
-
-def _drop_placeholder_dimensions(defn: dict) -> None:
-    """Drop dimensions whose name implies a join alias but whose expr uses a different alias.
-
-    E.g. a dim named "Territory Code" whose expr is "source.prescription_id" is a placeholder.
-    """
-    joins = defn.get("joins", [])
-    if not joins:
-        return
-
-    def _collect_aliases(jlist: list[dict]) -> set[str]:
-        out: set[str] = set()
-        for j in jlist:
-            alias = j.get("name", "").lower()
-            if alias:
-                out.add(alias)
-            if j.get("joins"):
-                out |= _collect_aliases(j["joins"])
-        return out
-
-    all_aliases = _collect_aliases(joins)
-    if not all_aliases:
-        return
-
-    cleaned: list[dict] = []
-    for d in defn.get("dimensions", []):
-        name_lower = d.get("name", "").lower().replace("_", " ")
-        expr = d.get("expr", "")
-        refs = {m.group(1).lower() for m in _ALIAS_DOT_RE.finditer(expr)}
-
-        implied_alias = None
-        for alias in all_aliases:
-            if alias in name_lower:
-                implied_alias = alias
-                break
-
-        if implied_alias and implied_alias not in refs:
-            continue
-        cleaned.append(d)
-    defn["dimensions"] = cleaned
-
-
-_SELF_DIV_RE = re.compile(
-    r"^(SUM|COUNT|AVG|MIN|MAX)\s*\(([^)]+)\)\s*/\s*NULLIF\s*\(\s*\1\s*\(\2\)",
-    re.IGNORECASE,
-)
-
-
-def _drop_broken_measures(defn: dict) -> None:
-    """Remove self-dividing share measures (always=1.0) and deduplicate identical exprs."""
-    measures = defn.get("measures", [])
-    if not measures:
-        return
-
-    cleaned: list[dict] = []
-    seen_exprs: set[str] = set()
-    for m in measures:
-        expr = re.sub(r"\s+", " ", m.get("expr", "").strip())
-        if _SELF_DIV_RE.search(expr):
-            continue
-        norm = expr.upper()
-        if norm in seen_exprs:
-            continue
-        seen_exprs.add(norm)
-        cleaned.append(m)
-    defn["measures"] = cleaned
-
-
-def _normalize_window_specs(w) -> list[dict]:
-    """Normalize window field to YAML 1.1 spec: array of {order, range/rows, semiadditive}."""
-    if w is None:
-        return []
-    if isinstance(w, dict):
-        w = [w]
-    if not isinstance(w, list):
-        return []
-    result = []
-    for spec in w:
-        if not isinstance(spec, dict):
-            continue
-        order = spec.get("order") or spec.get("order_by")
-        if not order:
-            continue
-        rng = spec.get("range", "")
-        if isinstance(rng, str) and "INTERVAL" in rng.upper():
-            m = re.search(r"INTERVAL\s+(\d+)\s+(\w+)", rng, re.IGNORECASE)
-            if m:
-                rng = f"trailing {m.group(1)} {m.group(2).lower().rstrip('s')}"
-        rows = spec.get("rows", "")
-        if isinstance(rows, str) and "UNBOUNDED" in rows.upper():
-            rng = "unbounded"
-            rows = ""
-        entry = {"order": order}
-        if rng:
-            entry["range"] = rng
-        if rows:
-            entry["rows"] = rows
-        entry["semiadditive"] = spec.get("semiadditive", "last")
-        result.append(entry)
-    return result
 
 
 def build_materialization(defn: dict, schedule: str = "every 6 hours") -> dict:
@@ -1724,444 +1534,40 @@ OUTPUT (one JSON object only, no array, no explanation):"""
     # Expression auto-fix helpers
     # ------------------------------------------------------------------
 
-    _DATE_TRUNC_INTERVALS = {
-        "YEAR",
-        "QUARTER",
-        "MONTH",
-        "WEEK",
-        "DAY",
-        "HOUR",
-        "MINUTE",
-        "SECOND",
-    }
-    _SQL_RESERVED = {
-        "THEN",
-        "ELSE",
-        "END",
-        "AND",
-        "OR",
-        "NOT",
-        "NULL",
-        "TRUE",
-        "FALSE",
-        "CASE",
-        "WHEN",
-        "IN",
-        "IS",
-        "LIKE",
-        "BETWEEN",
-        "SELECT",
-        "FROM",
-        "WHERE",
-        "FILTER",
-        "DISTINCT",
-        "SUM",
-        "AVG",
-        "COUNT",
-        "MIN",
-        "MAX",
-        "DATE_TRUNC",
-        "IF",
-        "COALESCE",
-        "NULLIF",
-        "OVER",
-        "PARTITION",
-        "BY",
-        "ORDER",
-        "ASC",
-        "DESC",
-        "CURRENT_DATE",
-        "CURRENT_TIMESTAMP",
-        "CURRENT_TIME",
-    }
+    # ------------------------------------------------------------------
+    # Expression auto-fix helpers -- now sourced from dbxmetagen.metric_view_core
+    # (shared with the app backend). These classmethods are thin delegators kept
+    # for backward compatibility with existing call sites and tests that invoke
+    # SemanticLayerGenerator._fix_*/._autofix_expr directly. Constants are also
+    # re-exported so any external reference keeps resolving.
+    # ------------------------------------------------------------------
 
-    @classmethod
-    def _fix_unquoted_literals(cls, expr: str) -> str:
-        """Quote bare words/phrases used as string literals in comparisons."""
+    _DATE_TRUNC_INTERVALS = _mvc._DATE_TRUNC_INTERVALS
+    _SQL_RESERVED = _mvc._SQL_RESERVED
+    _DATEDIFF_UNITS = _mvc._DATEDIFF_UNITS
+    _PLURAL_UNITS = _mvc._PLURAL_UNITS
 
-        def _replacer(m):
-            op = m.group(1)
-            value = m.group(2).strip()
-            trail = m.group(3)
-            if not value:
-                return m.group(0)
-            if value.startswith("'") or value.startswith('"'):
-                return m.group(0)
-            if re.match(r"^-?\d+(\.\d+)?$", value):
-                return m.group(0)
-            if "." in value and " " not in value:
-                return m.group(0)
-            # Skip function calls but allow parenthesized string literals
-            if "(" in value and re.match(r"^[A-Za-z_]\w*\(", value):
-                return m.group(0)
-            if value.upper() in cls._SQL_RESERVED or value.upper() in cls._DATE_TRUNC_INTERVALS:
-                return m.group(0)
-            return f"{op}'{value}'{trail}"
+    _fix_unquoted_literals = staticmethod(_mvc._fix_unquoted_literals)
+    _fix_case_quoting = staticmethod(_mvc._fix_case_quoting)
+    _fix_then_else_literals = staticmethod(_mvc._fix_then_else_literals)
+    _fix_in_clause_literals = staticmethod(_mvc._fix_in_clause_literals)
+    _fix_concat_separators = staticmethod(_mvc._fix_concat_separators)
+    _fix_date_part = staticmethod(_mvc._fix_date_part)
+    _fix_datediff = staticmethod(_mvc._fix_datediff)
+    _fix_like_patterns = staticmethod(_mvc._fix_like_patterns)
+    _fix_dquote_identifier = staticmethod(_mvc._fix_dquote_identifier)
+    _fix_instr_bare_arg = staticmethod(_mvc._fix_instr_bare_arg)
+    _fix_position_bare_char = staticmethod(_mvc._fix_position_bare_char)
+    _fix_double_commas = staticmethod(_mvc._fix_double_commas)
+    _fix_bare_whitespace_separator = staticmethod(_mvc._fix_bare_whitespace_separator)
+    _fix_quoted_computation = staticmethod(_mvc._fix_quoted_computation)
+    _fix_bare_comparison = staticmethod(_mvc._fix_bare_comparison)
+    _fix_null_comparison = staticmethod(_mvc._fix_null_comparison)
+    _fix_none_literal = staticmethod(_mvc._fix_none_literal)
+    _fix_concat_bare_first_arg = staticmethod(_mvc._fix_concat_bare_first_arg)
+    _fix_percentile_cont = staticmethod(_mvc._fix_percentile_cont)
+    _autofix_expr = staticmethod(_autofix_expr_core)
 
-        return re.sub(
-            r"([=!<>]+\s*)(.*?)(\s+(?:THEN|ELSE|END|AND|OR|WHEN)\b|\s*[,)]|$)",
-            _replacer,
-            expr,
-            flags=re.IGNORECASE,
-        )
-
-    @classmethod
-    def _fix_case_quoting(cls, expr: str) -> str:
-        """Fix ELSE/END keywords trapped inside single-quoted string literals.
-
-        Rewrites  'Medium Cost ELSE Standard Cost END'
-        to        'Medium Cost' ELSE 'Standard Cost' END
-        """
-        _KW = re.compile(r"\b(ELSE|END|WHEN)\b", re.IGNORECASE)
-
-        def _split_lit(m):
-            full = m.group(0)
-            inner = m.group(1)
-            if not _KW.search(inner):
-                return full
-            if "(" in inner or ")" in inner or "." in inner:
-                return full
-            parts = _KW.split(inner)
-            text_parts = [p.strip() for p in parts if not _KW.fullmatch(p.strip())]
-            if not any(text_parts):
-                return full
-            result = ""
-            for i, part in enumerate(parts):
-                text = part.strip()
-                if _KW.fullmatch(text):
-                    result += f" {text.upper()} "
-                elif text:
-                    result += f"'{text}'"
-            return result.strip()
-
-        return re.sub(r"'([^']*\b(?:ELSE|END|WHEN)\b[^']*)'", _split_lit, expr, flags=re.IGNORECASE)
-
-    @classmethod
-    def _fix_then_else_literals(cls, expr: str) -> str:
-        """Quote bare text after THEN/ELSE that isn't already quoted or a number/column/keyword."""
-
-        def _replacer(m):
-            kw = m.group(1)
-            body = m.group(2).strip()
-            if not body:
-                return m.group(0)
-            if body.startswith("'") or body.startswith('"'):
-                return m.group(0)
-            if re.match(r"^-?\d+(\.\d+)?$", body):
-                return m.group(0)
-            if "." in body and " " not in body:
-                return m.group(0)
-            # Allow parenthesized string literals like "Mild (Grade 1)"
-            # Only skip if the value looks like a function call: word(args)
-            if "(" in body and re.match(r"^[A-Za-z_]\w*\(", body):
-                return m.group(0)
-            tokens = body.split()
-            if len(tokens) == 1 and tokens[0].upper() in cls._SQL_RESERVED:
-                return m.group(0)
-            if len(tokens) == 1 and re.match(r"^[A-Za-z_]\w*$", tokens[0]):
-                if tokens[0].upper() not in cls._SQL_RESERVED:
-                    return f"{kw} '{body}'"
-                return m.group(0)
-            if len(tokens) > 1:
-                return f"{kw} '{body}'"
-            return m.group(0)
-
-        return re.sub(
-            r"\b(THEN|ELSE)\s+(.*?)(?=\s+(?:WHEN|ELSE|END)\b)",
-            _replacer,
-            expr,
-            flags=re.IGNORECASE,
-        )
-
-    @classmethod
-    def _fix_in_clause_literals(cls, expr: str) -> str:
-        """Quote bare words inside IN (...) clauses."""
-
-        def _fix_in_body(m):
-            prefix, body = m.group(1), m.group(2)
-            tokens = [t.strip() for t in body.split(",")]
-            fixed = []
-            for tok in tokens:
-                if not tok or tok.startswith("'") or tok.startswith('"'):
-                    fixed.append(tok)
-                elif re.match(r"^-?\d+(\.\d+)?$", tok):
-                    fixed.append(tok)
-                elif tok.upper() in cls._SQL_RESERVED:
-                    fixed.append(tok)
-                else:
-                    fixed.append(f"'{tok}'")
-            return f"{prefix}{', '.join(fixed)})"
-
-        return re.sub(r"(\bIN\s*\()([^)]+)\)", _fix_in_body, expr, flags=re.IGNORECASE)
-
-    @classmethod
-    def _fix_concat_separators(cls, expr: str) -> str:
-        """Quote bare separator tokens between commas (e.g. -Q, /, : in CONCAT)."""
-        def _repl(m):
-            tok = m.group(1).strip()
-            if re.match(r"^-?\d+(\.\d+)?$", tok):
-                return m.group(0)
-            return f", '{tok}',"
-        return re.sub(
-            r",\s*([^\w\s'\"`(][^'\"`(,)]{0,4})\s*,",
-            _repl,
-            expr,
-        )
-
-    @classmethod
-    def _fix_date_part(cls, expr: str) -> str:
-        """Rewrite DATE_PART(UNIT, col) to EXTRACT(UNIT FROM col)."""
-
-        def _repl(m):
-            unit = m.group(1).upper()
-            col = m.group(2).strip()
-            if unit in cls._DATE_TRUNC_INTERVALS:
-                return f"EXTRACT({unit} FROM {col})"
-            return m.group(0)
-
-        return re.sub(
-            r"DATE_PART\(\s*(['\"]?)(\w+)\1\s*,\s*(.+?)\)",
-            lambda m: (
-                f"EXTRACT({m.group(2).upper()} FROM {m.group(3).strip()})"
-                if m.group(2).upper() in cls._DATE_TRUNC_INTERVALS
-                else m.group(0)
-            ),
-            expr,
-            flags=re.IGNORECASE,
-        )
-
-    _DATEDIFF_UNITS = {
-        "YEAR",
-        "QUARTER",
-        "MONTH",
-        "WEEK",
-        "DAY",
-        "HOUR",
-        "MINUTE",
-        "SECOND",
-        "MILLISECOND",
-        "MICROSECOND",
-    }
-    _PLURAL_UNITS = {
-        "YEARS": "YEAR",
-        "QUARTERS": "QUARTER",
-        "MONTHS": "MONTH",
-        "WEEKS": "WEEK",
-        "DAYS": "DAY",
-        "HOURS": "HOUR",
-        "MINUTES": "MINUTE",
-        "SECONDS": "SECOND",
-    }
-
-    @classmethod
-    def _fix_datediff(cls, expr: str) -> str:
-        """Rewrite DATEDIFF(UNIT, start, end) to TIMESTAMPDIFF(UNIT, start, end)."""
-
-        def _repl(m):
-            unit_raw = m.group(1).upper()
-            unit = cls._PLURAL_UNITS.get(unit_raw, unit_raw)
-            rest = m.group(2)
-            if unit in cls._DATEDIFF_UNITS:
-                return f"TIMESTAMPDIFF({unit}{rest}"
-            return m.group(0)
-
-        return re.sub(
-            r"DATEDIFF\(\s*(['\"]?)(\w+)\1\s*(,\s*\w+.*?,\s*\w+.*?\))",
-            lambda m: (
-                f"TIMESTAMPDIFF({cls._PLURAL_UNITS.get(m.group(2).upper(), m.group(2).upper())}{m.group(3)}"
-                if cls._PLURAL_UNITS.get(m.group(2).upper(), m.group(2).upper())
-                in cls._DATEDIFF_UNITS
-                else m.group(0)
-            ),
-            expr,
-            flags=re.IGNORECASE,
-        )
-
-    @classmethod
-    def _fix_like_patterns(cls, expr: str) -> str:
-        """Quote bare LIKE/NOT LIKE patterns: ``col LIKE HW%`` -> ``col LIKE 'HW%'``."""
-
-        def _repl(m):
-            prefix = m.group(1)
-            pat = m.group(2).strip()
-            if pat.startswith("'") or pat.startswith('"'):
-                return m.group(0)
-            return f"{prefix}'{pat}'"
-
-        return re.sub(
-            r"(LIKE\s+)([^'\"\s(]+)",
-            _repl,
-            expr,
-            flags=re.IGNORECASE,
-        )
-
-    @classmethod
-    def _fix_dquote_identifier(cls, expr: str) -> str:
-        """Convert dotted double-quoted identifiers to backtick-quoted.
-
-        ``source."assay name"`` -> ``source.`assay name```
-        Only matches ``word."..."`` (dotted identifier), never bare ``"..."``
-        (string literals).
-        """
-        return re.sub(r'(\b\w+)\."([^"]+)"', r"\1.`\2`", expr)
-
-    @classmethod
-    def _fix_instr_bare_arg(cls, expr: str) -> str:
-        """Quote bare non-alnum arg in INSTR (2nd arg) and LOCATE (1st arg)."""
-        def _repl_second(m):
-            ch = m.group(2).strip()
-            if ch.startswith("'") or ch.startswith('"'):
-                return m.group(0)
-            return f"{m.group(1)}'{ch}')"
-        expr = re.sub(
-            r"(INSTR\([^,]+,\s*)([^\w\s'\"]+)\)",
-            _repl_second, expr, flags=re.IGNORECASE,
-        )
-        def _repl_first(m):
-            ch = m.group(1).strip()
-            if ch.startswith("'") or ch.startswith('"'):
-                return m.group(0)
-            return f"LOCATE('{ch}'{m.group(2)}"
-        expr = re.sub(
-            r"LOCATE\(\s*([^\w\s'\"]+)(,)",
-            _repl_first, expr, flags=re.IGNORECASE,
-        )
-        return expr
-
-    @classmethod
-    def _fix_position_bare_char(cls, expr: str) -> str:
-        """Quote bare non-alnum char in POSITION(X IN ...)."""
-        def _repl(m):
-            ch = m.group(1).strip()
-            if ch.startswith("'") or ch.startswith('"'):
-                return m.group(0)
-            return f"POSITION('{ch}' IN{m.group(2)}"
-        return re.sub(r"POSITION\(\s*([^\w\s'\"]+)\s+(IN\b)", _repl, expr, flags=re.IGNORECASE)
-
-    @classmethod
-    def _fix_double_commas(cls, expr: str) -> str:
-        """Collapse empty arguments: CONCAT(a, , b) -> CONCAT(a, b)."""
-        while ", ," in expr:
-            expr = expr.replace(", ,", ",")
-        while ",," in expr:
-            expr = expr.replace(",,", ",")
-        return expr
-
-    @classmethod
-    def _fix_bare_whitespace_separator(cls, expr: str) -> str:
-        """Quote bare whitespace between commas: f(a,  , b) -> f(a, ' ', b)."""
-        return re.sub(r",(\s+),", ", ' ',", expr)
-
-    _COMPUTATION_FUNC_RE = re.compile(
-        r'(?:UNIX_TIMESTAMP|DATEDIFF|TIMESTAMPDIFF|CAST|COALESCE|NULLIF|ROUND|ABS|CEIL|FLOOR|DATE_ADD|DATE_SUB|MONTHS_BETWEEN)\s*\(',
-        re.IGNORECASE,
-    )
-
-    @classmethod
-    def _fix_quoted_computation(cls, expr: str) -> str:
-        """Strip quotes from THEN/ELSE values that are SQL computations, not string literals."""
-        def _unquote(m):
-            inner = m.group(2)
-            if cls._COMPUTATION_FUNC_RE.search(inner):
-                return f"{m.group(1)}{inner}{m.group(3)}"
-            return m.group(0)
-        return re.sub(
-            r"((?:THEN|ELSE)\s+)'([^']{20,})'(\s*(?:ELSE|END|WHEN|$))",
-            _unquote, expr, flags=re.IGNORECASE,
-        )
-
-    @classmethod
-    def _fix_bare_comparison(cls, expr: str) -> str:
-        """Insert '' when a comparison operator has no RHS value (LLM omitted empty string literal)."""
-        return re.sub(
-            r"([!=<>]+)\s*(?=\s*[,)]|\s+(?:AND|OR|THEN|ELSE|END|WHEN)\b)",
-            r"\1 ''",
-            expr,
-            flags=re.IGNORECASE,
-        )
-
-    @classmethod
-    def _fix_null_comparison(cls, expr: str) -> str:
-        """Rewrite <> NULL / != NULL to IS NOT NULL, = NULL to IS NULL."""
-        expr = re.sub(r'\s*<>\s*NULL\b', ' IS NOT NULL', expr, flags=re.IGNORECASE)
-        expr = re.sub(r'\s*!=\s*NULL\b', ' IS NOT NULL', expr, flags=re.IGNORECASE)
-        expr = re.sub(r'(?<![!<>])\s*=\s*NULL\b', ' IS NULL', expr, flags=re.IGNORECASE)
-        return expr
-
-    @classmethod
-    def _fix_none_literal(cls, expr: str) -> str:
-        """Replace Python None leaked into SQL with NULL."""
-        return re.sub(r"\bNone\b", "NULL", expr)
-
-    @classmethod
-    def _fix_concat_bare_first_arg(cls, expr: str) -> str:
-        """Quote bare short non-column first arg in CONCAT."""
-        def _repl(m):
-            fn = m.group(1)
-            arg = m.group(2).strip()
-            if arg.startswith("'") or arg.startswith('"'):
-                return m.group(0)
-            if "." in arg or arg.upper() in cls._SQL_RESERVED or re.match(r"^-?\d", arg):
-                return m.group(0)
-            if len(arg) <= 3 and arg.isalpha():
-                return f"{fn}'{arg}',"
-            return m.group(0)
-        return re.sub(r"(CONCAT\(\s*)([^',\s]+)\s*,", _repl, expr, flags=re.IGNORECASE)
-
-    @classmethod
-    def _autofix_expr(cls, expr: str) -> str:
-        """Fix common AI expression mistakes."""
-        expr = cls._fix_dquote_identifier(expr)
-
-        def _fix_date_trunc(m):
-            interval = m.group(1)
-            rest = m.group(2)
-            if interval.upper() in cls._DATE_TRUNC_INTERVALS:
-                return f"DATE_TRUNC('{interval}'{rest}"
-            return m.group(0)
-
-        expr = re.sub(
-            r"DATE_TRUNC\(\s*([A-Za-z]+)(,)", _fix_date_trunc, expr, flags=re.IGNORECASE
-        )
-
-        def _fix_date_format(m):
-            col_part = m.group(1)
-            fmt = m.group(2).strip()
-            if not (fmt.startswith("'") or fmt.startswith('"')):
-                return f"DATE_FORMAT({col_part}, '{fmt}')"
-            return m.group(0)
-
-        expr = re.sub(
-            r"DATE_FORMAT\(([^,]+),\s*([^)]+)\)", _fix_date_format, expr, flags=re.IGNORECASE
-        )
-        expr = cls._fix_date_part(expr)
-        expr = cls._fix_datediff(expr)
-
-        def _fix_substr_date(m):
-            col = m.group(1).strip()
-            length = m.group(2).strip()
-            if any(kw in col.lower() for kw in ("date", "time", "dt", "_ts", "created", "updated")):
-                fmt = "'yyyy-MM'" if length == "7" else "'yyyy'"
-                return f"DATE_FORMAT({col}, {fmt})"
-            return m.group(0)
-        expr = re.sub(r"SUBSTR\(([^,]+),\s*1\s*,\s*(4|7)\)", _fix_substr_date, expr, flags=re.IGNORECASE)
-
-        expr = cls._fix_bare_comparison(expr)
-        expr = cls._fix_null_comparison(expr)
-        expr = cls._fix_none_literal(expr)
-        expr = cls._fix_double_commas(expr)
-        expr = cls._fix_position_bare_char(expr)
-        expr = cls._fix_instr_bare_arg(expr)
-        expr = cls._fix_concat_bare_first_arg(expr)
-        expr = cls._fix_case_quoting(expr)
-        expr = cls._fix_unquoted_literals(expr)
-        expr = cls._fix_then_else_literals(expr)
-        expr = cls._fix_in_clause_literals(expr)
-        expr = cls._fix_concat_separators(expr)
-        expr = cls._fix_like_patterns(expr)
-        expr = cls._fix_bare_whitespace_separator(expr)
-        expr = cls._fix_quoted_computation(expr)
-        return expr
 
     def _validate_expressions(self, defn: dict) -> list[str]:
         """Tier 2: test each expression with LIMIT 0 query, auto-fixing when possible."""
@@ -2305,184 +1711,29 @@ OUTPUT (one JSON object only, no array, no explanation):"""
 
         return {"applied": applied, "failed": failed}
 
-    def _normalize_joins(self, defn: dict) -> None:
-        """Normalize join 'on' to UC format: source.<fk_col> = <join_name>.<pk_col>. Mutates defn."""
-        source = defn.get("source", "")
-        if not source or not defn.get("joins"):
-            return
-        source_short = source.split(".")[-1]
+    # ------------------------------------------------------------------
+    # Join normalization + YAML serialization -- sourced from metric_view_core
+    # (shared with the app backend). _definition_to_yaml runs the join pipeline
+    # here (library contract) then delegates to the shared pure serializer.
+    # ------------------------------------------------------------------
 
-        def _norm(jlist: list[dict], parent_short: str, parent_alias: str) -> None:
-            for j in jlist:
-                on = j.get("on", "")
-                if on and f"{parent_short}." in on:
-                    j["on"] = on.replace(f"{parent_short}.", f"{parent_alias}.")
-                if j.get("joins"):
-                    j_source = j.get("source", "")
-                    j_alias = j.get("name", j_source.split(".")[-1] if j_source else "")
-                    j_short = j_source.split(".")[-1] if j_source else ""
-                    _norm(j["joins"], j_short, j_alias)
-
-        _norm(defn["joins"], source_short, "source")
-
-    @staticmethod
-    def _restructure_chained_to_nested(defn: dict) -> dict:
-        """Convert flat chained joins into proper nested (snowflake) structure."""
-        joins = defn.get("joins", [])
-        if not joins:
-            return defn
-
-        ref_pat = re.compile(r"\b([A-Za-z_]\w*)\.\w+")
-        join_aliases = {j.get("name", "").lower() for j in joins if j.get("name")}
-
-        root_joins: list[dict] = []
-        chained: list[dict] = []
-        for j in joins:
-            if j.get("joins"):
-                root_joins.append(j)
-                continue
-            on = j.get("on", "")
-            refs = {m.group(1).lower() for m in ref_pat.finditer(on)}
-            refs.discard("source")
-            own = j.get("name", "").lower()
-            if refs & join_aliases - {own}:
-                chained.append(j)
-            else:
-                root_joins.append(j)
-
-        if not chained:
-            return defn
-
-        alias_to_join: dict[str, dict] = {}
-        def _index(jlist: list[dict]) -> None:
-            for j in jlist:
-                alias = j.get("name", "").lower()
-                if alias:
-                    alias_to_join[alias] = j
-                if j.get("joins"):
-                    _index(j["joins"])
-        _index(root_joins)
-
-        dropped: set[str] = set()
-        for j in chained:
-            on = j.get("on", "")
-            refs = {m.group(1).lower() for m in ref_pat.finditer(on)}
-            refs.discard("source")
-            own = j.get("name", "").lower()
-            parent_refs = refs & set(alias_to_join.keys()) - {own}
-            if parent_refs:
-                parent = alias_to_join[next(iter(parent_refs))]
-                parent.setdefault("joins", []).append(j)
-                alias_to_join[own] = j
-            else:
-                dropped.add(own)
-
-        defn["joins"] = root_joins
-
-        if dropped:
-            for section in ("dimensions", "measures"):
-                items = defn.get(section, [])
-                defn[section] = [
-                    item for item in items
-                    if not ({m.group(1).lower() for m in ref_pat.finditer(item.get("expr", ""))} & dropped)
-                ]
-        return defn
-
-    @staticmethod
-    def _qualify_nested_refs(defn: dict) -> dict:
-        """Rewrite dimension/measure expressions so nested join aliases use full dot-paths.
-
-        Databricks metric views require ``parent.child.column`` not ``child.column``.
-        """
-        joins = defn.get("joins", [])
-        if not joins:
-            return defn
-        top_aliases: set[str] = set()
-        alias_path: dict[str, str] = {}
-
-        def _walk(jlist, prefix=""):
-            for j in jlist:
-                name = j.get("name", "")
-                if not name:
-                    continue
-                path = f"{prefix}.{name}" if prefix else name
-                alias_path[name.lower()] = path
-                if not prefix:
-                    top_aliases.add(name.lower())
-                if j.get("joins"):
-                    _walk(j["joins"], path)
-
-        _walk(joins)
-        nested = {a: p for a, p in alias_path.items() if a not in top_aliases}
-        if not nested:
-            return defn
-        ref_pat = re.compile(r"\b([A-Za-z_]\w*)\.(\w+)")
-
-        def _rewrite(expr):
-            def _sub(m):
-                al = m.group(1).lower()
-                if al in nested:
-                    return f"{nested[al]}.{m.group(2)}"
-                return m.group(0)
-            return ref_pat.sub(_sub, expr)
-
-        for section in ("dimensions", "measures"):
-            for item in defn.get(section, []):
-                if item.get("expr"):
-                    item["expr"] = _rewrite(item["expr"])
-        if defn.get("filter"):
-            defn["filter"] = _rewrite(defn["filter"])
-        return defn
-
-    class _IndentYamlDumper(yaml.Dumper):
-        """Dumper that always indents list items under their parent key."""
-        def increase_indent(self, flow=False, indentless=False):
-            return super().increase_indent(flow, False)
+    _normalize_joins = staticmethod(_mvc._normalize_joins)
+    _restructure_chained_to_nested = staticmethod(_mvc._restructure_chained_to_nested)
+    _qualify_nested_refs = staticmethod(_mvc._qualify_nested_refs)
+    _IndentYamlDumper = _mvc._IndentYamlDumper
 
     def _definition_to_yaml(self, defn: dict, include_materialization: bool = False) -> str:
-        """Convert a JSON definition to the YAML body for CREATE VIEW WITH METRICS.
+        """Normalize joins, then serialize to YAML for CREATE VIEW WITH METRICS.
 
         ``include_materialization`` is False by default so dry-run validation never
-        emits the materialization block (it would provision a Lakeflow pipeline). Real
-        create/apply paths pass True.
+        emits the materialization block (it would provision a Lakeflow pipeline).
+        Real create/apply paths pass True.
         """
-        self._normalize_joins(defn)
-        defn = self._restructure_chained_to_nested(defn)
-        defn = self._qualify_nested_refs(defn)
-        mv: dict = {"version": "1.1", "source": defn["source"]}
-        if defn.get("comment"):
-            mv["comment"] = defn["comment"]
-        if defn.get("filter"):
-            mv["filter"] = defn["filter"]
-        mv["dimensions"] = [
-            {k: v for k, v in {
-                "name": d["name"], "expr": d["expr"], "comment": d.get("comment"),
-                "display_name": d.get("display_name"), "synonyms": d.get("synonyms"),
-            }.items() if v}
-            for d in defn.get("dimensions", [])
-        ]
-        measures_out = []
-        for m in defn.get("measures", []):
-            entry = {k: v for k, v in {
-                "name": m["name"], "expr": m["expr"], "comment": m.get("comment"),
-                "display_name": m.get("display_name"), "synonyms": m.get("synonyms"),
-            }.items() if v}
-            if m.get("format"):
-                fmt = dict(m["format"]) if isinstance(m["format"], dict) else m["format"]
-                if isinstance(fmt, dict) and fmt.get("type") == "currency" and not fmt.get("currency_code"):
-                    fmt["currency_code"] = "USD"
-                entry["format"] = fmt
-            if m.get("window"):
-                specs = _normalize_window_specs(m["window"])
-                if specs:
-                    entry["window"] = specs
-            measures_out.append(entry)
-        mv["measures"] = measures_out
-        if defn.get("joins"):
-            mv["joins"] = defn["joins"]
-        if include_materialization and defn.get("materialization"):
-            mv["materialization"] = defn["materialization"]
-        return yaml.dump(mv, Dumper=self._IndentYamlDumper, default_flow_style=False, sort_keys=False)
+        _mvc._normalize_joins(defn)
+        defn = _mvc._restructure_chained_to_nested(defn)
+        defn = _mvc._qualify_nested_refs(defn)
+        return _mvc._definition_to_yaml(defn, include_materialization=include_materialization)
+
 
     # ------------------------------------------------------------------
     # Genie space creation

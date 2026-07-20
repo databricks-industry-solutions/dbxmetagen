@@ -21,12 +21,16 @@ repos:
         pass_filenames: false
         stages: [pre-commit]
 
-      - id: check-uv-lock-public
-        name: Reject internal PyPI proxy URLs in uv.lock
-        language: system
-        entry: bash -c 'if [ -f uv.lock ] && grep -q pypi-proxy uv.lock; then echo "uv.lock contains internal PyPI proxy URLs; run UV_INDEX_URL=https://pypi.org/simple uv lock"; exit 1; fi'
+      # uv.lock is intentionally gitignored: on Databricks-internal machines
+      # `uv lock` bakes the internal PyPI proxy URL into the lockfile, which
+      # breaks public customers who cannot reach the proxy (the 0.10.x main
+      # regression). requirements.txt is the committed pin instead. This hook
+      # blocks the lockfile from ever being force-added back into the repo.
+      - id: reject-uv-lock
+        name: Reject committing uv.lock (must stay gitignored)
+        language: fail
+        entry: "uv.lock must not be committed -- it is gitignored to keep internal PyPI proxy URLs out of the public repo. Unstage it: git rm --cached uv.lock (see CLAUDE.md Build & Test Commands)."
         files: ^uv\.lock$
-        pass_filenames: false
         stages: [pre-commit]
 
       - id: sync-requirements

@@ -27,7 +27,7 @@ Run the notebooks in order. Each step depends on the outputs of the previous ste
 |----------|-------------|---------|
 | `01_generate_metadata` | Runs all three modes (comment + PI + domain) for richest Genie context | `metadata_generation_log` |
 | `02_build_knowledge_bases` | Structured KB tables from raw metadata | `table_knowledge_base`, `column_knowledge_base`, `schema_knowledge_base`, `extended_metadata` |
-| `03_build_analytics` | Graph, ontology, embeddings, profiling, FK prediction, quality | `knowledge_graph_*`, `ontology_*`, `embeddings`, `fk_predictions`, `data_quality_scores` |
+| `03_build_analytics` | Graph, ontology, embeddings, profiling, FK prediction, quality | `graph_nodes`, `graph_edges`, `ontology_entities`, `ontology_relationships`, `fk_predictions`, `data_quality_scores` (embeddings are stored in the `graph_nodes.embedding` column, not a separate table) |
 | `04_generate_semantic_layer` | Metric view definitions from business questions | `metric_view_definitions`, `semantic_layer_questions` |
 | `05_create_genie_spaces` | Genie spaces with auto-splitting for large schemas | Genie space(s) + JSON exports in UC Volume |
 

@@ -12,7 +12,7 @@ Most important settings in `variables.yml`:
 
 **Model & Performance:**
 - `model`: LLM endpoint (recommend `databricks-claude-sonnet-4-6`)
-- `columns_per_call`: Columns per LLM call (5-10 recommended)
+- `columns_per_call`: Columns per LLM call (default 20; 5-10 for richer per-column context)
 - `temperature`: Model creativity (0.1 for consistency)
 - `max_tokens`: Maximum output length
 
@@ -36,7 +36,7 @@ Most important settings in `variables.yml`:
 | allow_data_in_comments | Include data in comments | true |
 | sample_size | Rows to sample | 5 |
 | add_metadata | Include extended metadata | true |
-| include_datatype_from_metadata | Include data types | false |
+| include_datatype_from_metadata | Include data types | true |
 | include_possible_data_fields_in_metadata | Include min/max (may leak PII) | true |
 | disable_medical_information_value | Treat medical data as PHI | false |
 | solo_medical_identifier | MRN classification (pii or phi) | pii |
@@ -45,13 +45,13 @@ Most important settings in `variables.yml`:
 | max_tokens | Maximum output tokens | 8192 |
 | max_prompt_length | Maximum prompt length | 16384 |
 | columns_per_call | Columns per LLM call | 20 |
-| word_limit_per_cell | Max words per cell | 100 |
+| word_limit_per_cell | Max words per cell | 200 |
 | limit_prompt_based_on_cell_len | Truncate long cells | true |
 | apply_ddl | Apply DDL to tables | false |
 | ddl_output_format | DDL format (sql/tsv/excel) | sql |
 | reviewable_output_format | Review file format | tsv |
 | review_input_file_type | Review input format | tsv |
-| review_output_file_type | Review output format | excel |
+| review_output_file_type | Review output format (sql/excel/tsv) | tsv |
 | review_apply_ddl | Apply reviewed DDL | false |
 | include_deterministic_pi | Use Presidio detection | true |
 | spacy_model_names | SpaCy model for Presidio | en_core_web_md |
@@ -246,7 +246,9 @@ Configure with `solo_medical_identifier` and `disable_medical_information_value`
 
 Categorizes tables into business domains using a two-stage LLM pipeline: keyword pre-filter, then domain classification, then subdomain classification. Domain configuration is defined in the `domain_config` section of an ontology bundle YAML (e.g. `configurations/ontology_bundles/example_iot.yaml`) or as a standalone YAML file passed via `domain_config_path`.
 
-**12 default domains** (aligned with DAMA DMBOK, FHIR, OMOP): clinical, diagnostics, payer, pharmaceutical, quality_safety, research, finance, operations, workforce, customer, technology, governance. Each domain includes subdomains with keywords and descriptions.
+**Domain source resolution** (`load_domain_config`): domains come from (1) the `domains:` section of the ontology bundle if present, else (2) a standalone `domain_config_path` YAML, else (3) a hardcoded fallback to `configurations/domain_config_healthcare.yaml`. Note: the **default** bundle `general` has **no** `domains:` section, so a default-config domain run falls through to the healthcare fallback below. Set `ontology_bundle` to a bundle that defines domains (or set `domain_config_path`) to override this.
+
+**Healthcare fallback (12 domains, aligned with DAMA DMBOK, FHIR, OMOP):** clinical, diagnostics, payer, pharmaceutical, quality_safety, research, finance, operations, workforce, customer, technology, governance. Each domain includes subdomains with keywords and descriptions.
 
 Customize domains and subdomains by editing the bundle's `domain_config` section or providing a standalone YAML via `domain_config_path`.
 
@@ -308,7 +310,7 @@ The `build_community_summaries` task runs as part of `full_analytics_pipeline_jo
 
 ## Vector Search
 
-dbxmetagen uses Databricks Vector Search for hybrid (ANN + keyword) semantic search. All indexes share a single endpoint and use the `databricks-gte-large-en` embedding model.
+dbxmetagen uses Databricks Vector Search for hybrid (ANN + keyword) semantic search. All indexes share a single endpoint. The `graph_nodes_vs_index` is self-managed and uses the `databricks-bge-large-en` embedding model (1024-dim -- see `embedding_dimension` below); other indexes use Databricks-managed embeddings.
 
 ### Endpoint
 

@@ -36,7 +36,7 @@ The core value of dbxmetagen is **metadata generation and a governed knowledge g
    ```
 
 2. **Azure / GCP users:** The default job cluster node type is `i3.2xlarge` (AWS). Update `node_type` in `variables.yml` before deploying:
-   - **Azure:** `Standard_DS4_v2`
+   - **Azure:** `Standard_D8s_v3`
    - **GCP:** `n2-highmem-8`
 
 3. Deploy:
@@ -358,7 +358,7 @@ Settings are in `variables.yml`. Key options:
 | `mode` | `comment` | Generation mode: `comment`, `pi`, or `domain` |
 | `apply_ddl` | `false` | Apply generated metadata directly to Unity Catalog |
 | `allow_data` | `true` | Set `false` to prevent data from being sent to LLMs |
-| `node_type` | `i3.2xlarge` | Job cluster node type. Change for Azure (`Standard_DS4_v2`) or GCP (`n2-highmem-8`) |
+| `node_type` | `i3.2xlarge` | Job cluster node type. Change for Azure (`Standard_D8s_v3`) or GCP (`n2-highmem-8`) |
 | `include_deterministic_pi` | `true` | Enable SpaCy/Presidio for rule-based PI detection (default model: `en_core_web_md`; set `spacy_model_names=en_core_web_lg` for higher accuracy -- see [Configuration docs](docs/CONFIGURATION.md)) |
 | `federation_mode` | `false` | Enable for federated catalog sources (Redshift, Snowflake) |
 
@@ -428,7 +428,8 @@ dbxmetagen exposes its knowledge base, knowledge graph, and vector index as [Dat
 
 ```bash
 uv sync                     # core deps (comment/domain modes)
-uv sync --extra pi          # also install the spaCy model for PI dev
+uv sync --extra pi          # spaCy/Presidio libs for PI dev (model installed separately)
+uv pip install -r requirements-pi.txt   # the en_core_web_md spaCy model (required for PI mode)
 ./run_tests.sh              # runs 3 test suites in isolated processes
 ./run_tests.sh -q           # quick mode (core tests only)
 
@@ -518,7 +519,7 @@ The default `node_type` in `variables.yml` is `i3.2xlarge`, which is an AWS inst
 | Cloud | Recommended `node_type` |
 |-------|------------------------|
 | AWS   | `i3.2xlarge` (default) |
-| Azure | `Standard_DS4_v2`      |
+| Azure | `Standard_D8s_v3`      |
 | GCP   | `n2-highmem-8`         |
 
 You may need to try a couple different node types if your organization doesn't have capacity for these in your cloud.
