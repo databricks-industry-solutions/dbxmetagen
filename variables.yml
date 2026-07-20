@@ -242,6 +242,12 @@ variables:
   federation_mode:
     description: "Enable federation compatibility mode for running against federated catalogs (e.g., Redshift, Snowflake via Unity Catalog federation). When true: DESCRIBE DETAIL is skipped (Delta-specific), DESCRIBE EXTENDED is skipped, DDL apply is forced to false (cannot ALTER federated tables), and tag operations are disabled. SELECT, DESCRIBE TABLE, and SHOW TABLES still work. dbxmetagen output tables remain Delta."
     default: false
+  metadata_companion_path:
+    description: "Optional path to companion DCAT/TTL metadata (rdl:foreignKey, rdl:hasPrimaryKey) merged into extended_table_metadata constraints. Empty = no companion merge."
+    default: ""
+  skip_ai_for_declared_fk:
+    description: "When true, skip AI_QUERY for FK candidates from declared constraints in extended_table_metadata. Recommended when metadata_companion_path is set."
+    default: false
   use_kb_comments:
     description: "When true, PI and domain classification prompts are enriched with comments from knowledge base tables (table_knowledge_base, column_knowledge_base) when UC table/column comments are empty. Requires the knowledge base to have been built first."
     default: false

@@ -9,7 +9,9 @@ globs:
 ## Property Role Vocabulary (closed set)
 
 `_heuristic_classify` returns one of exactly these roles:
-`object_property`, `primary_key`, `pii`, `dimension`, `geographic`, `audit`, `temporal`, `label`, `measure`
+`object_property`, `primary_key`, `business_key`, `dimension`, `geographic`, `audit`, `temporal`, `label`, `measure` (fallback: `dimension`).
+
+The authoritative valid set is `_VALID_PROPERTY_ROLES` in `ontology.py`, which additionally includes `derived` and `composite_component`. Note: `pii` is NOT a property role.
 
 **Never `link`.** The `link` role was removed. If you see it in SQL filters, remove it.
 

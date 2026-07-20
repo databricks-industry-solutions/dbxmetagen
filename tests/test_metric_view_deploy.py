@@ -600,3 +600,117 @@ class TestCreateGenieSpaceDeployedLocation:
         select_sql = create_calls[0][0][0]
         assert "deployed_catalog" in select_sql
         assert "deployed_schema" in select_sql
+
+
+# ── Materialization (Public Preview) ────────────────────────────────
+
+
+class TestMaterialization:
+    """build_materialization / validate_materialization and YAML emission."""
+
+    from dbxmetagen.semantic_layer import build_materialization, validate_materialization
+
+    def _defn(self, **over):
+        d = {
+            "name": "sales_mv",
+            "source": "cat.sch.orders",
+            "dimensions": [{"name": "order_date", "expr": "source.o_orderdate"}],
+            "measures": [{"name": "total_revenue", "expr": "SUM(source.o_totalprice)"}],
+        }
+        d.update(over)
+        return d
+
+    def test_build_default_is_unaggregated_baseline(self):
+        from dbxmetagen.semantic_layer import build_materialization
+        block = build_materialization(self._defn(), "every 6 hours")
+        assert block["mode"] == "relaxed"
+        assert block["schedule"] == "every 6 hours"
+        assert block["materialized_views"] == [{"name": "sales_mv_baseline", "type": "unaggregated"}]
+
+    def test_build_omits_blank_schedule(self):
+        from dbxmetagen.semantic_layer import build_materialization
+        block = build_materialization(self._defn(), "  ")
+        assert "schedule" not in block
+
+    def test_validate_absent_is_ok(self):
+        from dbxmetagen.semantic_layer import validate_materialization
+        assert validate_materialization(self._defn()) == []
+
+    def test_validate_default_block_passes(self):
+        from dbxmetagen.semantic_layer import build_materialization, validate_materialization
+        d = self._defn()
+        d["materialization"] = build_materialization(d)
+        assert validate_materialization(d) == []
+
+    def test_validate_bad_mode(self):
+        from dbxmetagen.semantic_layer import validate_materialization
+        d = self._defn(materialization={"mode": "incremental", "materialized_views": [{"name": "b", "type": "unaggregated"}]})
+        assert any("mode must be 'relaxed'" in e for e in validate_materialization(d))
+
+    def test_validate_empty_list(self):
+        from dbxmetagen.semantic_layer import validate_materialization
+        d = self._defn(materialization={"mode": "relaxed", "materialized_views": []})
+        assert any("non-empty list" in e for e in validate_materialization(d))
+
+    def test_validate_bad_type(self):
+        from dbxmetagen.semantic_layer import validate_materialization
+        d = self._defn(materialization={"mode": "relaxed", "materialized_views": [{"name": "b", "type": "rollup"}]})
+        assert any("aggregated or unaggregated" in e for e in validate_materialization(d))
+
+    def test_validate_aggregated_unknown_refs(self):
+        from dbxmetagen.semantic_layer import validate_materialization
+        d = self._defn(materialization={
+            "mode": "relaxed",
+            "materialized_views": [{"name": "agg", "type": "aggregated", "dimensions": ["nope"], "measures": ["bad"]}],
+        })
+        errs = validate_materialization(d)
+        assert any("unknown dimension 'nope'" in e for e in errs)
+        assert any("unknown measure 'bad'" in e for e in errs)
+
+    def test_validate_aggregated_known_refs_ok(self):
+        from dbxmetagen.semantic_layer import validate_materialization
+        d = self._defn(materialization={
+            "mode": "relaxed",
+            "materialized_views": [{"name": "agg", "type": "aggregated", "dimensions": ["order_date"], "measures": ["total_revenue"]}],
+        })
+        assert validate_materialization(d) == []
+
+    def test_validate_duplicate_names(self):
+        from dbxmetagen.semantic_layer import validate_materialization
+        d = self._defn(materialization={
+            "mode": "relaxed",
+            "materialized_views": [{"name": "b", "type": "unaggregated"}, {"name": "b", "type": "unaggregated"}],
+        })
+        assert any("duplicate materialized_views name" in e for e in validate_materialization(d))
+
+    def test_validate_trigger_on_update_rejected(self):
+        from dbxmetagen.semantic_layer import validate_materialization
+        d = self._defn(materialization={
+            "mode": "relaxed", "schedule": "TRIGGER ON UPDATE",
+            "materialized_views": [{"name": "b", "type": "unaggregated"}],
+        })
+        assert any("TRIGGER ON UPDATE" in e for e in validate_materialization(d))
+
+    def test_yaml_emits_only_when_included(self):
+        from dbxmetagen.semantic_layer import build_materialization
+        config = SemanticLayerConfig(catalog_name="cat", schema_name="sch")
+        gen = SemanticLayerGenerator(MagicMock(), config)
+        d = self._defn()
+        d["materialization"] = build_materialization(d)
+        assert "materialization" not in gen._definition_to_yaml(dict(d))
+        with_mat = gen._definition_to_yaml(dict(d), include_materialization=True)
+        assert "materialization" in with_mat
+        assert "unaggregated" in with_mat
+        assert "sales_mv_baseline" in with_mat
+
+    def test_dry_run_yaml_includes_materialization_when_enabled(self):
+        from dbxmetagen.semantic_layer import build_materialization
+        config = SemanticLayerConfig(
+            catalog_name="cat", schema_name="sch", materialize_metric_views=True,
+        )
+        gen = SemanticLayerGenerator(MagicMock(), config)
+        d = self._defn()
+        d["materialization"] = build_materialization(d)
+        yaml_body = gen._definition_to_yaml(dict(d), include_materialization=True)
+        assert "materialization:" in yaml_body
+        assert "mode: relaxed" in yaml_body

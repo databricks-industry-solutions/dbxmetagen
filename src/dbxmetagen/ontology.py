@@ -17,7 +17,7 @@ import re
 import json
 from pathlib import Path
 from dataclasses import dataclass, field, replace as dc_replace
-from typing import Dict, Any, List, Optional, Tuple
+from typing import Dict, Any, List, Optional, Set, Tuple
 from datetime import datetime
 import uuid
 from pyspark.sql import SparkSession, DataFrame
@@ -5452,6 +5452,169 @@ class OntologyBuilder:
         )
         return len(props)
 
+    def merge_owl_declared_fks(self, sweep_stale_entities: bool = False) -> int:
+        """Resolve OWL bundle declared_constraints to extended_table_metadata FK/PK maps."""
+        from datetime import datetime
+
+        from pyspark.sql.types import ArrayType, MapType, StringType, StructField, StructType, TimestampType
+
+        from dbxmetagen.extended_metadata import ExtendedMetadataBuilder, ExtendedMetadataConfig
+        from dbxmetagen.owl_constraints import (
+            dedupe_string_map,
+            merge_owl_foreign_keys,
+            resolve_declared_constraints_to_tables,
+        )
+        from dbxmetagen.table_filter import table_filter_sql
+
+        constraints = self.ontology_config.get("declared_constraints") or {}
+        sweep_owl_fks = bool(sweep_stale_entities and not self.config.incremental)
+
+        ent_table = self.config.fully_qualified_entities
+        col_kb = self.config.fully_qualified_column_kb
+        ext_table = f"{self.config.catalog_name}.{self.config.schema_name}.extended_table_metadata"
+        tn_clause = table_filter_sql(self.config.table_names or [], column="get(source_tables, 0)")
+
+        try:
+            ent_rows = self.spark.sql(f"""
+                SELECT entity_type, source_tables
+                FROM {ent_table}
+                WHERE entity_role = 'primary'
+                  AND source_tables IS NOT NULL
+                  AND SIZE(source_tables) > 0
+                {tn_clause}
+            """).collect()
+        except Exception as e:
+            logger.warning("merge_owl_declared_fks: cannot read entities: %s", e)
+            return 0
+
+        entity_tables: Dict[str, List[str]] = {}
+        all_tables: set = set()
+        for r in ent_rows:
+            tables = list(r.source_tables or [])
+            if tables:
+                merged = list(dict.fromkeys((entity_tables.get(r.entity_type) or []) + tables))
+                entity_tables[r.entity_type] = merged
+                all_tables.update(tables)
+
+        if not constraints:
+            if entity_tables:
+                logger.warning(
+                    "merge_owl_declared_fks: bundle has no declared_constraints but %d "
+                    "primary entity type(s) map to tables — verify ontology_bundle matches "
+                    "the imported OWL bundle (e.g. Volume YAML name)",
+                    len(entity_tables),
+                )
+            return 0
+
+        if not all_tables:
+            logger.info("merge_owl_declared_fks: no primary entity tables to resolve")
+            return 0
+
+        tbl_in = ",".join(f"'{t}'" for t in sorted(all_tables))
+        try:
+            col_rows = self.spark.sql(f"""
+                SELECT table_name, column_name
+                FROM {col_kb}
+                WHERE table_name IN ({tbl_in})
+            """).collect()
+        except Exception as e:
+            logger.warning("merge_owl_declared_fks: cannot read column KB: %s", e)
+            return 0
+
+        table_columns: Dict[str, Set[str]] = {}
+        for r in col_rows:
+            table_columns.setdefault(r.table_name, set()).add(r.column_name)
+
+        resolved = resolve_declared_constraints_to_tables(
+            constraints, entity_tables, table_columns,
+        )
+        if not resolved:
+            logger.info("merge_owl_declared_fks: no constraints resolved to tables")
+            return 0
+
+        em_cfg = ExtendedMetadataConfig(
+            catalog_name=self.config.catalog_name,
+            schema_name=self.config.schema_name,
+        )
+        ExtendedMetadataBuilder(self.spark, em_cfg).create_target_table()
+
+        now = datetime.utcnow()
+        staged_rows = []
+        fk_count = 0
+        for tbl, (pks, fks) in resolved.items():
+            if not pks and not fks:
+                continue
+            exist_pks: List[str] = []
+            exist_fks: Dict[str, str] = {}
+            try:
+                exist = self.spark.sql(f"""
+                    SELECT primary_key_columns, foreign_keys
+                    FROM {ext_table}
+                    WHERE table_name = '{tbl.replace("'", "''")}'
+                """).collect()
+                if exist:
+                    exist_pks = list(exist[0].primary_key_columns or [])
+                    exist_fks = dedupe_string_map(
+                        dict(exist[0].foreign_keys or {}),
+                        context=f"existing extended_table_metadata {tbl}",
+                    )
+            except Exception:
+                pass
+
+            merged_pks = exist_pks if exist_pks else pks
+            merged_fks, added = merge_owl_foreign_keys(
+                exist_fks,
+                fks,
+                constraints=constraints,
+                entity_tables=entity_tables,
+                table_columns=table_columns,
+                table_fqn=tbl,
+                table_pk_cols=merged_pks or pks,
+                sweep_owl_fks=sweep_owl_fks,
+            )
+            fk_count += added
+
+            merged_fks = dedupe_string_map(
+                merged_fks, context=f"staged extended_table_metadata {tbl}",
+            )
+            staged_rows.append((tbl, merged_pks, merged_fks, now))
+
+        if not staged_rows:
+            return 0
+
+        schema = StructType([
+            StructField("table_name", StringType(), False),
+            StructField("primary_key_columns", ArrayType(StringType()), True),
+            StructField("foreign_keys", MapType(StringType(), StringType()), True),
+            StructField("updated_at", TimestampType(), True),
+        ])
+        staged_df = self.spark.createDataFrame(staged_rows, schema)
+        staged_df.createOrReplaceTempView("_owl_declared_fk_staged")
+
+        self.spark.sql(f"""
+            MERGE INTO {ext_table} AS target
+            USING _owl_declared_fk_staged AS source
+            ON target.table_name = source.table_name
+            WHEN MATCHED THEN UPDATE SET
+                target.primary_key_columns = CASE
+                    WHEN SIZE(COALESCE(target.primary_key_columns, ARRAY())) > 0
+                    THEN target.primary_key_columns
+                    ELSE source.primary_key_columns
+                END,
+                target.foreign_keys = source.foreign_keys,
+                target.updated_at = source.updated_at
+            WHEN NOT MATCHED THEN INSERT (
+                table_name, primary_key_columns, foreign_keys, updated_at
+            ) VALUES (
+                source.table_name, source.primary_key_columns, source.foreign_keys, source.updated_at
+            )
+        """)
+        logger.info(
+            "merge_owl_declared_fks: merged %d OWL FK entries across %d tables",
+            fk_count, len(staged_rows),
+        )
+        return fk_count
+
     def _resolve_edge_name(self, src_type: str, dst_type: str, column_name: Optional[str] = None) -> str:
         """Resolve the best edge name for a (src, dst) entity pair using edge catalog.
 
@@ -6370,6 +6533,13 @@ class OntologyBuilder:
 
         col_props = _step("classify_column_properties", self.classify_column_properties)
         logger.info(f"Classified {col_props} column properties")
+
+        owl_fks = _step(
+            "merge_owl_declared_fks",
+            self.merge_owl_declared_fks,
+            sweep_stale_entities,
+        )
+        logger.info(f"Merged {owl_fks} OWL-declared FK entries into extended metadata")
 
         _step("validate_entity_conformance", self.validate_entity_conformance)
 

@@ -225,22 +225,22 @@ Rules:
 
 ## Running the Eval Pipeline from CLI
 
-The eval harness lives in a git worktree at `../dbxmetagen-eval` on branch `feat/evaluation-job`.
-It uses synthetic FHIR healthcare tables (patients, providers, encounters, diagnoses, medications,
-lab_results) with known ground truth for comments, PII, domain, ontology, and FK predictions.
+The eval jobs now live in the **main repo** (`resources/jobs/eval_setup.job.yml`,
+`eval_compare.job.yml`, `eval_e2e.job.yml`) -- there is no longer a separate
+`../dbxmetagen-eval` worktree. The FHIR eval uses synthetic healthcare tables (patients,
+providers, encounters, diagnoses, medications, lab_results) with known ground truth for
+comments, PII, domain, ontology, and FK predictions.
 
 ### Three-step workflow
 
 ```bash
-cd /path/to/dbxmetagen-eval
-
 # 1. Deploy (builds wheel, syncs bundle -- skip the app)
 ./deploy.sh --profile DMVM --target demo --no-app
 
 # 2. Run the full analytics pipeline with FHIR bundle + eval tables
-#    IMPORTANT: You MUST pass ontology_bundle and table_names explicitly.
-#    The job YAML default for ontology_bundle is "healthcare" (not fhir_r4)
-#    and table_names defaults to "" (all tables). Neither is correct for eval.
+#    Pass ontology_bundle and table_names explicitly: ontology_bundle defaults to
+#    ${var.ontology_bundle} (variables.yml default = general, not fhir_r4) and
+#    table_names defaults to "" (all tables). Neither is right for the FHIR eval.
 #
 #    NOTE: `databricks bundle run --param` chokes when values contain commas.
 #    Use `databricks jobs run-now --json` instead (get job_id from `databricks bundle summary`):
@@ -273,16 +273,17 @@ as job parameters, overriding the defaults correctly.
 
 ### Key gotcha
 
-The `full_analytics_pipeline_job` YAML has `ontology_bundle` defaulting to `"healthcare"`
-(hardcoded, not `${var.ontology_bundle}`). When triggered from the app, the app overrides this
-with whatever you select. When running from CLI, you **must** pass `--param ontology_bundle=fhir_r4`
-or it will use the wrong bundle.
+The `full_analytics_pipeline_job` YAML `ontology_bundle` parameter defaults to
+`${var.ontology_bundle}` (whose `variables.yml` default is `general`). When triggered from
+the app, the app overrides it with whatever you select. When running from CLI for the FHIR
+eval, you **must** pass `ontology_bundle=fhir_r4` explicitly (via the `job_parameters` JSON
+above) or it will use the deploy-time default bundle, not the FHIR eval bundle.
 
 ## Investment Ops E2E Eval (Built-In)
 
 The repo includes a self-contained e2e eval that builds a star schema from public market
-data and scores pipeline outputs. Unlike the FHIR eval (which lives in a separate worktree),
-this runs entirely from the main repo.
+data and scores pipeline outputs (`eval_e2e_job`). Like the FHIR eval jobs, this runs
+entirely from the main repo.
 
 ```bash
 # Full run (downloads data + generates + evaluates)

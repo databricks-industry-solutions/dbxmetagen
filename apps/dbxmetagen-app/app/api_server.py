@@ -27,6 +27,48 @@ from databricks.sdk import WorkspaceClient
 from databricks.sdk.service.sql import StatementParameterListItem
 from db import pg_execute, get_engine, pg_configured
 from dbxmetagen.ddl_bundle_utils import rewrite_ddl_catalog_schema as _rewrite_ddl_catalog_schema, dq_grade as _dq_grade
+# Shared, substrate-agnostic metric-view helpers -- single source of truth, also
+# used by the library generator. These were previously duplicated inline below.
+from dbxmetagen.metric_view_core import (
+    _infer_display_name,
+    _infer_synonyms,
+    _backfill_agent_metadata,
+    _drop_broken_measures,
+    _drop_placeholder_dimensions,
+    _normalize_window_specs,
+    _strip_kpi_references,
+    _infer_format_specs,
+    _fix_percentage_scaling,
+    _KPI_REF_RE,
+    _SELF_DIV_RE,
+    _ALIAS_DOT_RE,
+    _ALIAS_DOT_RE as _ALIAS_DOT_PH_RE,  # app's historical alias for the same regex
+    _CURRENCY_PATTERNS,
+    _PERCENTAGE_PATTERNS,
+    _PERCENTAGE_NAME_PATTERNS,
+    _autofix_expr,
+    _fix_dquote_identifier,
+    _fix_bare_comparison,
+    _fix_unquoted_literals,
+    _fix_then_else_literals,
+    _fix_in_clause_literals,
+    _fix_concat_separators,
+    _fix_like_patterns,
+    _fix_instr_bare_arg,
+    _fix_position_bare_char,
+    _fix_double_commas,
+    _fix_bare_whitespace_separator,
+    _fix_none_literal,
+    _fix_concat_bare_first_arg,
+    _fix_percentile_cont,
+    _DATE_TRUNC_INTERVALS,
+    _SQL_RESERVED,
+    _normalize_joins,
+    _restructure_chained_to_nested,
+    _qualify_nested_refs,
+    _definition_to_yaml,
+    _IndentYamlDumper,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -825,6 +867,8 @@ class SemanticGenerateRequest(BaseModel):
     business_context: Optional[str] = None
     generation_style: str = "comprehensive"  # "comprehensive" (one broad view per grain) or "targeted" (themed views)
     max_views: Optional[int] = None  # user cap on planned views; None = server-recommended default
+    materialize: bool = False  # attach an unaggregated materialization to each generated view
+    materialization_schedule: str = "every 6 hours"  # refresh schedule (MV schedule clause syntax)
 
 
 class SemanticProjectRequest(BaseModel):
@@ -1908,7 +1952,7 @@ def _build_metric_view_ddl(
         mv_cat = row.get("deployed_catalog") or default_cat
         mv_sch = row.get("deployed_schema") or default_sch
         fq_mv = f"`{mv_cat}`.`{mv_sch}`.`{mv_name}`"
-        yaml_body = _definition_to_yaml(defn)
+        yaml_body = _definition_to_yaml(defn, include_materialization=True)
         stmts.append(f"CREATE OR REPLACE VIEW {fq_mv}\nWITH METRICS LANGUAGE YAML AS $$\n{yaml_body}$$;")
     return stmts
 
@@ -5979,7 +6023,9 @@ def list_semantic_definitions(project_id: Optional[str] = None):
         f"validation_errors, genie_space_id, created_at, applied_at, "
         f"COALESCE(version, 1) as version, parent_definition_id, project_id, "
         f"complexity_score, complexity_level, deployed_catalog, deployed_schema, "
-        f"quality_score, quality_level "
+        f"quality_score, quality_level, "
+        f"(get_json_object(json_definition, '$.materialization') IS NOT NULL) AS has_materialization, "
+        f"get_json_object(json_definition, '$.materialization.schedule') AS materialization_schedule "
         f"FROM {fq('metric_view_definitions')} "
         f"{where} "
         f"ORDER BY created_at DESC"
@@ -6013,6 +6059,9 @@ def list_semantic_definitions(project_id: Optional[str] = None):
             for r in applied:
                 fqn = f"{r['deployed_catalog']}.{r['deployed_schema']}.{r['metric_view_name']}".lower()
                 r["deployed_exists"] = fqn in uc_mvs
+    for r in rows:
+        hm = r.get("has_materialization")
+        r["has_materialization"] = hm is True or str(hm).lower() == "true"
     return rows
 
 
@@ -7044,7 +7093,7 @@ SQL SYNTAX REMINDERS:
 AGGREGATION CORRECTNESS:
 - Ratios must use NULLIF in denominator: SUM(a) / NULLIF(SUM(b), 0), NEVER SUM(a) / SUM(b)
 - AVG of a pre-aggregated value is usually wrong. For "average revenue per customer", use SUM(revenue) / NULLIF(COUNT(DISTINCT customer_id), 0), not AVG(revenue)
-- Percentages: SUM(CASE WHEN cond THEN 1 ELSE 0 END) * 100.0 / NULLIF(COUNT(*), 0)
+- Percentages/rates with format:percentage must return a 0-to-1 FRACTION -- do NOT multiply by 100, the rendering layer scales for display. Write SUM(CASE WHEN cond THEN 1 ELSE 0 END) * 1.0 / NULLIF(COUNT(*), 0) (returns 0.167 -> "16.7%"), NOT * 100.0 (returns 16.7 -> "1667%"). Do not wrap in ROUND().
 
 {_REFERENCE_RULES_BLOCK}
 
@@ -7418,353 +7467,6 @@ def _validate_definition_structure(defn: dict) -> list[str]:
     return errors
 
 
-_DATE_TRUNC_INTERVALS = {
-    "YEAR",
-    "QUARTER",
-    "MONTH",
-    "WEEK",
-    "DAY",
-    "HOUR",
-    "MINUTE",
-    "SECOND",
-}
-_SQL_RESERVED = {
-    "THEN",
-    "ELSE",
-    "END",
-    "AND",
-    "OR",
-    "NOT",
-    "NULL",
-    "TRUE",
-    "FALSE",
-    "CASE",
-    "WHEN",
-    "IN",
-    "IS",
-    "LIKE",
-    "BETWEEN",
-    "SELECT",
-    "FROM",
-    "WHERE",
-    "FILTER",
-    "DISTINCT",
-    "SUM",
-    "AVG",
-    "COUNT",
-    "MIN",
-    "MAX",
-    "DATE_TRUNC",
-    "IF",
-    "COALESCE",
-    "NULLIF",
-    "OVER",
-    "PARTITION",
-    "BY",
-    "ORDER",
-    "ASC",
-    "DESC",
-    "CURRENT_DATE",
-    "CURRENT_TIMESTAMP",
-    "CURRENT_TIME",
-}
-
-
-def _fix_bare_comparison(expr: str) -> str:
-    """Insert '' when a comparison operator has no RHS value (LLM omitted empty string literal)."""
-    return re.sub(
-        r"([!=<>]+)\s*(?=\s*[,)]|\s+(?:AND|OR|THEN|ELSE|END|WHEN)\b)",
-        r"\1 ''",
-        expr,
-        flags=re.IGNORECASE,
-    )
-
-
-def _fix_unquoted_literals(expr: str) -> str:
-    """Quote bare words/phrases used as string literals in comparisons.
-
-    Masks already-quoted strings before scanning so operators inside quotes
-    (e.g. ``'SMB (<50M)'``) are not mistaken for comparison operators.
-    """
-    placeholders: list[str] = []
-
-    def _mask(m):
-        placeholders.append(m.group(0))
-        return f"__Q{len(placeholders) - 1}__"
-
-    masked = re.sub(r"'[^']*'", _mask, expr)
-
-    def _replacer(m):
-        op = m.group(1)
-        value = m.group(2).strip()
-        trail = m.group(3)
-        if not value:
-            return m.group(0)
-        if value.startswith("'") or value.startswith('"'):
-            return m.group(0)
-        if re.match(r"^__Q\d+__$", value):
-            return m.group(0)
-        if re.match(r"^-?\d+(\.\d+)?$", value):
-            return m.group(0)
-        if "." in value and " " not in value:
-            return m.group(0)
-        if "(" in value and re.match(r"^[A-Za-z_]\w*\(", value):
-            return m.group(0)
-        if value.upper() in _SQL_RESERVED or value.upper() in _DATE_TRUNC_INTERVALS:
-            return m.group(0)
-        return f"{op}'{value}'{trail}"
-
-    fixed = re.sub(
-        r"([=!<>]+\s*)(.*?)(\s+(?:THEN|ELSE|END|AND|OR|WHEN)\b|\s*[,)]|$)",
-        _replacer,
-        masked,
-        flags=re.IGNORECASE,
-    )
-    for i, orig in enumerate(placeholders):
-        fixed = fixed.replace(f"__Q{i}__", orig)
-    return fixed
-
-
-def _fix_then_else_literals(expr: str) -> str:
-    """Quote bare text after THEN/ELSE that isn't already quoted or a number/column/keyword."""
-    def _replacer(m):
-        kw = m.group(1)
-        body = m.group(2).strip()
-        if not body:
-            return m.group(0)
-        if body.startswith("'") or body.startswith('"'):
-            return m.group(0)
-        if re.match(r"^-?\d+(\.\d+)?$", body):
-            return m.group(0)
-        if "." in body and " " not in body:
-            return m.group(0)
-        # Allow parenthesized string literals like "Mild (Grade 1)"
-        # Only skip if the value looks like a function call: word(args)
-        if "(" in body and re.match(r"^[A-Za-z_]\w*\(", body):
-            return m.group(0)
-        tokens = body.split()
-        if len(tokens) == 1 and tokens[0].upper() in _SQL_RESERVED:
-            return m.group(0)
-        if len(tokens) == 1 and tokens[0].upper() in _SQL_RESERVED:
-            return m.group(0)
-        return f"{kw} '{body}'"
-
-    return re.sub(
-        r"\b(THEN|ELSE)\s+(.*?)(?=\s+(?:WHEN|ELSE|END)\b)",
-        _replacer,
-        expr,
-        flags=re.IGNORECASE,
-    )
-
-
-def _fix_in_clause_literals(expr: str) -> str:
-    """Quote bare words inside IN (...) clauses."""
-
-    def _fix_in_body(m):
-        prefix = m.group(1)
-        body = m.group(2)
-        tokens = [t.strip() for t in body.split(",")]
-        fixed = []
-        for tok in tokens:
-            if not tok:
-                continue
-            elif tok.startswith("'") or tok.startswith('"'):
-                fixed.append(tok)
-            elif re.match(r"^-?\d+(\.\d+)?$", tok):
-                fixed.append(tok)
-            elif tok.upper() in _SQL_RESERVED:
-                fixed.append(tok)
-            else:
-                fixed.append(f"'{tok}'")
-        return f"{prefix}{', '.join(fixed)})"
-
-    return re.sub(
-        r"(\bIN\s*\()([^)]+)\)",
-        _fix_in_body,
-        expr,
-        flags=re.IGNORECASE,
-    )
-
-
-def _fix_concat_separators(expr: str) -> str:
-    """Quote bare separator tokens between commas (e.g. -Q, /, : in CONCAT)."""
-    def _repl(m):
-        tok = m.group(1).strip()
-        if re.match(r"^-?\d+(\.\d+)?$", tok):
-            return m.group(0)
-        return f", '{tok}',"
-    return re.sub(
-        r",\s*([^\w\s'\"`(][^'\"`(,)]{0,4})\s*,",
-        _repl,
-        expr,
-    )
-
-
-def _fix_like_patterns(expr: str) -> str:
-    """Quote bare LIKE/NOT LIKE patterns, including multi-word patterns with spaces."""
-    def _repl(m):
-        prefix = m.group(1)
-        pat = m.group(2).strip()
-        if pat.startswith("'") or pat.startswith('"'):
-            return m.group(0)
-        if not pat:
-            return m.group(0)
-        return f"{prefix}'{pat}'"
-    return re.sub(
-        r"(LIKE\s+)(.*?)(?=\s+(?:AND|OR|THEN|ELSE|END|WHEN)\b|\s*[)]|$)",
-        _repl, expr, flags=re.IGNORECASE,
-    )
-
-
-def _fix_dquote_identifier(expr: str) -> str:
-    """Convert dotted double-quoted identifiers to backtick-quoted.
-
-    ``source."assay name"`` -> ``source.`assay name```
-    Only matches ``word."..."`` (dotted identifier), never bare ``"..."``
-    (string literals).
-    """
-    return re.sub(r'(\b\w+)\."([^"]+)"', r"\1.`\2`", expr)
-
-
-def _fix_instr_bare_arg(expr: str) -> str:
-    """Quote bare non-alnum arg in INSTR (2nd arg) and LOCATE (1st arg)."""
-    def _repl_second(m):
-        ch = m.group(2).strip()
-        if ch.startswith("'") or ch.startswith('"'):
-            return m.group(0)
-        return f"{m.group(1)}'{ch}')"
-    expr = re.sub(
-        r"(INSTR\([^,]+,\s*)([^\w\s'\"]+)\)",
-        _repl_second, expr, flags=re.IGNORECASE,
-    )
-    def _repl_first(m):
-        ch = m.group(1).strip()
-        if ch.startswith("'") or ch.startswith('"'):
-            return m.group(0)
-        return f"LOCATE('{ch}'{m.group(2)}"
-    expr = re.sub(
-        r"LOCATE\(\s*([^\w\s'\"]+)(,)",
-        _repl_first, expr, flags=re.IGNORECASE,
-    )
-    return expr
-
-
-def _fix_position_bare_char(expr: str) -> str:
-    """Quote bare non-alnum char in POSITION(X IN ...): POSITION(- IN col) -> POSITION('-' IN col)."""
-    def _repl(m):
-        ch = m.group(1).strip()
-        if ch.startswith("'") or ch.startswith('"'):
-            return m.group(0)
-        return f"POSITION('{ch}' IN{m.group(2)}"
-    return re.sub(r"POSITION\(\s*([^\w\s'\"]+)\s+(IN\b)", _repl, expr, flags=re.IGNORECASE)
-
-
-def _fix_double_commas(expr: str) -> str:
-    """Collapse empty arguments: CONCAT(a, , b) -> CONCAT(a, b)."""
-    while ", ," in expr:
-        expr = expr.replace(", ,", ",")
-    while ",," in expr:
-        expr = expr.replace(",,", ",")
-    return expr
-
-
-def _fix_bare_whitespace_separator(expr: str) -> str:
-    """Quote bare whitespace between commas: f(a,  , b) -> f(a, ' ', b)."""
-    return re.sub(r",(\s+),", ", ' ',", expr)
-
-
-def _fix_none_literal(expr: str) -> str:
-    """Replace Python None leaked into SQL with NULL."""
-    return re.sub(r"\bNone\b", "NULL", expr)
-
-
-def _fix_concat_bare_first_arg(expr: str) -> str:
-    """Quote bare single-word non-column first arg in CONCAT: CONCAT(Q, ...) -> CONCAT('Q', ...)."""
-    def _repl(m):
-        fn = m.group(1)
-        arg = m.group(2).strip()
-        if arg.startswith("'") or arg.startswith('"'):
-            return m.group(0)
-        if "." in arg or arg.upper() in _SQL_RESERVED or re.match(r"^-?\d", arg):
-            return m.group(0)
-        if len(arg) <= 3 and arg.isalpha():
-            return f"{fn}'{arg}',"
-        return m.group(0)
-    return re.sub(r"(CONCAT\(\s*)([^',\s]+)\s*,", _repl, expr, flags=re.IGNORECASE)
-
-
-def _fix_percentile_cont(expr: str) -> str:
-    """Rewrite 2-arg percentile_cont/disc to ANSI WITHIN GROUP syntax."""
-    def _repl(m):
-        func = m.group(1)
-        pct = m.group(2).strip()
-        col = m.group(3).strip()
-        return f"{func}({pct}) WITHIN GROUP (ORDER BY {col})"
-    return re.sub(
-        r"\b(PERCENTILE_CONT|PERCENTILE_DISC)\s*\(\s*([^,]+?)\s*,\s*([^)]+?)\s*\)",
-        _repl, expr, flags=re.IGNORECASE,
-    )
-
-
-def _autofix_expr(expr: str) -> str:
-    """Fix common AI expression mistakes before validation."""
-    expr = _fix_dquote_identifier(expr)
-
-    # Fix unquoted DATE_TRUNC intervals: DATE_TRUNC(WEEK, col) -> DATE_TRUNC('WEEK', col)
-    def _fix_date_trunc(m):
-        interval = m.group(1)
-        rest = m.group(2)
-        if interval.upper() in _DATE_TRUNC_INTERVALS:
-            return f"DATE_TRUNC('{interval}'{rest}"
-        return m.group(0)
-
-    expr = re.sub(
-        r"DATE_TRUNC\(\s*([A-Za-z]+)(,)", _fix_date_trunc, expr, flags=re.IGNORECASE
-    )
-
-    for iv in _DATE_TRUNC_INTERVALS:
-        pat = re.compile(rf"\b{iv}\s*\(([^)]+)\)", re.IGNORECASE)
-        match = pat.search(expr)
-        if match and expr.strip().upper().startswith(iv.upper()):
-            expr = pat.sub(rf"DATE_TRUNC('{iv}', \1)", expr)
-
-    # Fix DATE_FORMAT with unquoted format strings: DATE_FORMAT(col, yyyy) -> DATE_FORMAT(col, 'yyyy')
-    def _fix_date_format(m):
-        col_part = m.group(1)
-        fmt = m.group(2).strip()
-        if not (fmt.startswith("'") or fmt.startswith('"')):
-            return f"DATE_FORMAT({col_part}, '{fmt}')"
-        return m.group(0)
-
-    expr = re.sub(
-        r"DATE_FORMAT\(([^,]+),\s*([^)]+)\)", _fix_date_format, expr, flags=re.IGNORECASE
-    )
-
-    # SUBSTR(date_col, 1, 7) -> DATE_FORMAT(col, 'yyyy-MM'); SUBSTR(date_col, 1, 4) -> DATE_FORMAT(col, 'yyyy')
-    def _fix_substr_date(m):
-        col = m.group(1).strip()
-        length = m.group(2).strip()
-        if any(kw in col.lower() for kw in ("date", "time", "dt", "_ts", "created", "updated")):
-            fmt = "'yyyy-MM'" if length == "7" else "'yyyy'"
-            return f"DATE_FORMAT({col}, {fmt})"
-        return m.group(0)
-    expr = re.sub(r"SUBSTR\(([^,]+),\s*1\s*,\s*(4|7)\)", _fix_substr_date, expr, flags=re.IGNORECASE)
-
-    expr = _fix_bare_comparison(expr)
-    expr = _fix_none_literal(expr)
-    expr = _fix_double_commas(expr)
-    expr = _fix_position_bare_char(expr)
-    expr = _fix_instr_bare_arg(expr)
-    expr = _fix_concat_bare_first_arg(expr)
-    expr = _fix_then_else_literals(expr)
-    expr = _fix_unquoted_literals(expr)
-    expr = _fix_in_clause_literals(expr)
-    expr = _fix_concat_separators(expr)
-    expr = _fix_like_patterns(expr)
-    expr = _fix_percentile_cont(expr)
-    expr = _fix_bare_whitespace_separator(expr)
-    expr = re.sub(r'\bOVER\s*\(\s*\)', '', expr, flags=re.IGNORECASE)
-    return expr
 
 
 def _build_from_clause(source_table: str, joins: list[dict] | None = None) -> str:
@@ -7856,17 +7558,6 @@ def _validate_expr(expr: str, source_table: str, joins: list[dict] | None = None
         return err_str, expr
 
 
-_CURRENCY_PATTERNS = re.compile(
-    r"SUM\s*\(\s*(total_amount|amount|revenue|cost|price|charge|fee|salary|budget|payment|balance)",
-    re.IGNORECASE,
-)
-_PERCENTAGE_PATTERNS = re.compile(
-    r"(\*\s*1\.0\s*/\s*NULLIF|\*\s*100\.0\s*/\s*NULLIF|THEN\s+1\s+ELSE\s+0\s+END\)\s*\*\s*1\.0)",
-    re.IGNORECASE,
-)
-_PERCENTAGE_NAME_PATTERNS = re.compile(r"\brate\b|\bpct\b|\bpercentage\b|\bratio\b", re.IGNORECASE)
-
-
 def _compute_kpi_coverage(definitions: list[dict], tables: list[str], profile_id: str | None = None) -> dict:
     """Fuzzy-match KPIs from kpi_definitions against generated measure names/comments.
 
@@ -7931,24 +7622,6 @@ def _compute_kpi_coverage(definitions: list[dict], tables: list[str], profile_id
         "missing": missing,
         "total": len(relevant_kpis),
     }
-
-
-def _infer_format_specs(defn: dict) -> None:
-    """Infer and backfill format specs on measures that lack them."""
-    for m in defn.get("measures", []):
-        fmt = m.get("format")
-        if fmt:
-            if isinstance(fmt, dict) and fmt.get("type") == "currency" and not fmt.get("currency_code"):
-                fmt["currency_code"] = "USD"
-            continue
-        expr = m.get("expr", "")
-        name = m.get("name", "")
-        if _PERCENTAGE_PATTERNS.search(expr) or _PERCENTAGE_NAME_PATTERNS.search(name):
-            m["format"] = {"type": "percentage"}
-        elif _CURRENCY_PATTERNS.search(expr):
-            m["format"] = {"type": "currency", "currency_code": "USD"}
-        else:
-            m["format"] = {"type": "number"}
 
 
 def _count_joins(joins: list[dict] | None) -> tuple[int, int]:
@@ -8173,27 +7846,6 @@ Return ONLY the fixed JSON definition (single object, not array)."""
         return None
 
 
-def _normalize_joins(defn: dict) -> dict:
-    """Rewrite join 'on' clauses to use source.col instead of raw tablename.col for the source table."""
-    source_short = (defn.get("source") or "").split(".")[-1]
-    if not source_short:
-        return defn
-
-    def _rewrite(joins: list[dict], parent_alias: str = "source") -> None:
-        parent_short = parent_alias if parent_alias == "source" else parent_alias
-        for join in joins:
-            on = join.get("on", "")
-            if source_short + "." in on and parent_alias == "source":
-                join["on"] = re.sub(
-                    rf"\b{re.escape(source_short)}\.", "source.", on
-                )
-            if join.get("joins"):
-                _rewrite(join["joins"], join.get("name", ""))
-
-    _rewrite(defn.get("joins", []))
-    return defn
-
-
 def _fix_join_alias_refs(defn: dict) -> dict:
     """Rewrite expressions that use invalid join aliases to the closest valid one."""
     joins = defn.get("joins", [])
@@ -8242,153 +7894,6 @@ def _fix_join_alias_refs(defn: dict) -> dict:
     filt = defn.get("filter")
     if isinstance(filt, str):
         defn["filter"] = _fix_expr(filt)
-    return defn
-
-
-def _restructure_chained_to_nested(defn: dict) -> dict:
-    """Convert flat chained joins into proper nested (snowflake) structure.
-
-    Three-tier strategy:
-    1. Joins already nested (have a ``joins`` key) pass through unchanged.
-    2. Flat joins whose ``on`` references a sibling alias get moved inside
-       that parent as nested children.
-    3. If restructuring fails (cycles / unresolvable refs), drop the
-       problematic joins and their dependent dims/measures.
-    """
-    joins = defn.get("joins", [])
-    if not joins:
-        return defn
-
-    # If all joins already have proper structure (on refs source or are nested), skip
-    ref_pat = re.compile(r"\b([A-Za-z_]\w*)\.\w+")
-    join_aliases = {j.get("name", "").lower() for j in joins if j.get("name")}
-
-    # Separate root joins (on references "source") from chained ones
-    root_joins: list[dict] = []
-    chained: list[dict] = []
-    for j in joins:
-        if j.get("joins"):
-            root_joins.append(j)
-            continue
-        on = j.get("on", "")
-        refs = {m.group(1).lower() for m in ref_pat.finditer(on)}
-        refs.discard("source")
-        own = j.get("name", "").lower()
-        parent_refs = refs & join_aliases - {own}
-        if parent_refs:
-            chained.append(j)
-        else:
-            root_joins.append(j)
-
-    if not chained:
-        return defn
-
-    # Build alias -> join dict for root joins to nest children into
-    alias_to_join: dict[str, dict] = {}
-    def _index(jlist: list[dict]) -> None:
-        for j in jlist:
-            alias = j.get("name", "").lower()
-            if alias:
-                alias_to_join[alias] = j
-            if j.get("joins"):
-                _index(j["joins"])
-    _index(root_joins)
-
-    dropped_aliases: set[str] = set()
-    # Try to nest each chained join under its parent
-    for j in chained:
-        on = j.get("on", "")
-        refs = {m.group(1).lower() for m in ref_pat.finditer(on)}
-        refs.discard("source")
-        own = j.get("name", "").lower()
-        parent_refs = refs & set(alias_to_join.keys()) - {own}
-        if parent_refs:
-            parent_alias = next(iter(parent_refs))
-            parent = alias_to_join[parent_alias]
-            parent.setdefault("joins", []).append(j)
-            alias_to_join[own] = j
-            logger.info(
-                "Nested join '%s' under parent '%s'",
-                j.get("name", "?"), parent_alias,
-            )
-        else:
-            logger.warning(
-                "Dropping unchainable join '%s': parent alias not found among root joins",
-                j.get("name", "?"),
-            )
-            dropped_aliases.add(own)
-
-    defn["joins"] = root_joins
-
-    if dropped_aliases:
-        for section in ("dimensions", "measures"):
-            items = defn.get(section, [])
-            cleaned = []
-            for item in items:
-                expr = item.get("expr", "")
-                expr_refs = {m.group(1).lower() for m in ref_pat.finditer(expr)}
-                if expr_refs & dropped_aliases:
-                    logger.warning(
-                        "Dropping %s '%s': references dropped join alias",
-                        section[:-1], item.get("name", "?"),
-                    )
-                else:
-                    cleaned.append(item)
-            defn[section] = cleaned
-
-    return defn
-
-
-def _qualify_nested_refs(defn: dict) -> dict:
-    """Rewrite dimension/measure expressions so nested join aliases use full dot-paths.
-
-    Databricks metric views require nested aliases to be referenced through
-    their parent chain: ``parent.child.column`` not ``child.column``.
-    Flat (top-level) joins can be referenced directly: ``alias.column``.
-    """
-    joins = defn.get("joins", [])
-    if not joins:
-        return defn
-
-    # Build alias -> dot-path and set of top-level aliases
-    top_aliases: set[str] = set()
-    alias_path: dict[str, str] = {}  # lowered alias -> dot-path prefix
-
-    def _walk(jlist: list[dict], prefix: str = "") -> None:
-        for j in jlist:
-            name = j.get("name", "")
-            if not name:
-                continue
-            path = f"{prefix}.{name}" if prefix else name
-            alias_path[name.lower()] = path
-            if not prefix:
-                top_aliases.add(name.lower())
-            if j.get("joins"):
-                _walk(j["joins"], path)
-
-    _walk(joins)
-
-    # Only rewrite aliases that are nested (not top-level)
-    nested = {a: p for a, p in alias_path.items() if a not in top_aliases}
-    if not nested:
-        return defn
-
-    ref_pat = re.compile(r"\b([A-Za-z_]\w*)\.(\w+)")
-
-    def _rewrite(expr: str) -> str:
-        def _sub(m):
-            alias_low = m.group(1).lower()
-            if alias_low in nested:
-                return f"{nested[alias_low]}.{m.group(2)}"
-            return m.group(0)
-        return ref_pat.sub(_sub, expr)
-
-    for section in ("dimensions", "measures"):
-        for item in defn.get(section, []):
-            if item.get("expr"):
-                item["expr"] = _rewrite(item["expr"])
-    if defn.get("filter"):
-        defn["filter"] = _rewrite(defn["filter"])
     return defn
 
 
@@ -8669,10 +8174,10 @@ def _inject_fk_joins(plan_views: list[dict], tables: list[str], cat: str, sch: s
     return plan_views, fk_rows
 
 
-def _yaml_dry_run(defn: dict, cat: str, sch: str) -> Optional[str]:
+def _yaml_dry_run(defn: dict, cat: str, sch: str, include_materialization: bool = False) -> Optional[str]:
     """Attempt CREATE VIEW WITH METRICS LANGUAGE YAML; return error string or None."""
     try:
-        yaml_body = _definition_to_yaml(defn)
+        yaml_body = _definition_to_yaml(defn, include_materialization=include_materialization)
         mv_name = defn.get("name", "dry_run_test")
         dry_name = f"`{cat}`.`{sch}`.`_mv_dryrun_{mv_name}`"
         execute_sql(
@@ -8701,6 +8206,8 @@ def _run_sl_generation(
     profile_id: str = None,
     generation_style: str = "comprehensive",
     max_views: int = None,
+    materialize: bool = False,
+    materialization_schedule: str = "every 6 hours",
 ):
     """Background thread for in-app metric view generation (two-phase)."""
     from datetime import datetime as _dt
@@ -8981,14 +8488,8 @@ def _run_sl_generation(
                 return errs
 
             _infer_format_specs(defn)
+            _fix_percentage_scaling(defn)
             errors = _validate_defn(defn)
-
-            # YAML dry-run: catches metric-YAML-specific failures that pass SELECT validation
-            if not errors and defn.get("source"):
-                yaml_err = _yaml_dry_run(defn, cat, sch)
-                if yaml_err:
-                    errors.append(yaml_err)
-                    logger.info("YAML dry-run failed for '%s': %s", mv_name, yaml_err[:200])
 
             # Phase 3: Self-repair -- up to 2 LLM retries for failed definitions
             for repair_round in range(1, 3):
@@ -9005,11 +8506,8 @@ def _run_sl_generation(
                 if repaired.get("filter"):
                     repaired["filter"] = _autofix_expr(repaired["filter"])
                 _infer_format_specs(repaired)
+                _fix_percentage_scaling(repaired)
                 repair_errors = _validate_defn(repaired)
-                if not repair_errors and repaired.get("source"):
-                    yaml_err = _yaml_dry_run(repaired, cat, sch)
-                    if yaml_err:
-                        repair_errors = [yaml_err]
                 if not repair_errors or len(repair_errors) < len(errors):
                     defn = repaired
                     errors = repair_errors
@@ -9037,10 +8535,6 @@ def _run_sl_generation(
                     swapped = _swap_source_and_join(defn, src_warning["suspected_fact"])
                     swap_errors = _validate_defn(swapped)
                     if not swap_errors:
-                        yaml_err = _yaml_dry_run(swapped, cat, sch)
-                        if yaml_err:
-                            swap_errors = [yaml_err]
-                    if not swap_errors:
                         logger.info("Tier 1 recovery (swap) succeeded for '%s'", mv_name)
                         defn = swapped
                         source = defn.get("source", source)
@@ -9055,10 +8549,6 @@ def _run_sl_generation(
                         ]
                         dim_errors = _validate_defn(dim_only)
                         if not dim_errors:
-                            yaml_err = _yaml_dry_run(dim_only, cat, sch)
-                            if yaml_err:
-                                dim_errors = [yaml_err]
-                        if not dim_errors:
                             logger.info("Tier 2 recovery (dim-only) succeeded for '%s'", mv_name)
                             defn = dim_only
                             errors = []
@@ -9069,11 +8559,25 @@ def _run_sl_generation(
             defn = _restructure_chained_to_nested(defn)
             defn = _qualify_nested_refs(defn)
             _infer_format_specs(defn)
+            _fix_percentage_scaling(defn)
             _backfill_agent_metadata(defn)
             _strip_kpi_references(defn)
             _drop_broken_measures(defn)
             _drop_placeholder_dimensions(defn)
             cx = _score_definition_complexity(defn)
+
+            if materialize:
+                defn["materialization"] = _build_materialization(defn, materialization_schedule)
+                errors = (errors or []) + _validate_materialization(defn)
+
+            if not errors and defn.get("source"):
+                yaml_err = _yaml_dry_run(
+                    defn, cat, sch,
+                    include_materialization=materialize or bool(defn.get("materialization")),
+                )
+                if yaml_err:
+                    errors.append(yaml_err)
+                    logger.info("YAML dry-run failed for '%s': %s", mv_name, yaml_err[:200])
 
             json_str = json.dumps(defn)
             status = "validated" if not errors else "failed"
@@ -9096,7 +8600,14 @@ def _run_sl_generation(
                 "validation_errors": errors if errors else None,
                 "complexity": cx.get("complexity_level"),
                 "quality": cx.get("quality_level"),
+                "has_materialization": bool(defn.get("materialization")),
             })
+
+        stats["materialize"] = materialize
+        stats["materialization_schedule"] = materialization_schedule if materialize else None
+        stats["materialized_count"] = sum(
+            1 for r in per_definition_results if r.get("has_materialization")
+        )
 
         # Flag duplicate-source views (same grain generated more than once)
         source_seen: dict[str, list[str]] = {}
@@ -9200,6 +8711,8 @@ def start_sl_generation(req: SemanticGenerateRequest):
             req.profile_id,
             req.generation_style,
             req.max_views,
+            req.materialize,
+            req.materialization_schedule,
         ),
     )
 
@@ -9259,6 +8772,7 @@ def _parse_single_json(text: str) -> dict:
 def _validate_definition(defn: dict, source: str) -> tuple[str, str]:
     """Two-tier validation: structural then expression. Returns (status, errors_str)."""
     _infer_format_specs(defn)
+    _fix_percentage_scaling(defn)
     for item_type in ("dimensions", "measures"):
         for item in defn.get(item_type, []):
             if item.get("expr"):
@@ -9311,6 +8825,7 @@ def _update_definition_row(definition_id: str, defn: dict, status: str, errors: 
     now = _dt.utcnow().isoformat()
     proj_val = f"'{proj_id}'" if proj_id else "NULL"
     _infer_format_specs(defn)
+    _fix_percentage_scaling(defn)
     _backfill_agent_metadata(defn)
     _strip_kpi_references(defn)
     _drop_broken_measures(defn)
@@ -9333,110 +8848,6 @@ def _yaml_esc(s: str) -> str:
     return s.replace("\\", "\\\\").replace('"', '\\"')
 
 
-def _infer_display_name(name: str) -> str:
-    """Convert snake_case/kebab-case measure/dimension names to Title Case."""
-    return name.replace("_", " ").replace("-", " ").title()
-
-
-def _infer_synonyms(name: str, comment: str | None) -> list[str]:
-    """Extract 2-3 keyword synonyms from the name and comment."""
-    synonyms = set()
-    clean = name.replace("_", " ").lower()
-    words = clean.split()
-    _STOP = {"the", "a", "an", "of", "for", "by", "in", "to", "and", "or", "is", "as", "per", "with", "from"}
-    if len(words) >= 2:
-        abbr = "".join(w[0] for w in words if w not in _STOP).upper()
-        if len(abbr) >= 2:
-            synonyms.add(abbr)
-    if comment:
-        for w in comment.lower().split():
-            w = w.strip(".,;:()")
-            if len(w) > 3 and w not in _STOP and w not in clean:
-                synonyms.add(w)
-                if len(synonyms) >= 3:
-                    break
-    return list(synonyms)[:5]
-
-
-def _backfill_agent_metadata(defn: dict) -> None:
-    """Backfill display_name and synonyms on measures/dimensions that lack them."""
-    for item in defn.get("measures", []) + defn.get("dimensions", []):
-        if not item.get("display_name"):
-            item["display_name"] = _infer_display_name(item.get("name", ""))
-        if not item.get("synonyms"):
-            item["synonyms"] = _infer_synonyms(item.get("name", ""), item.get("comment"))
-
-
-_KPI_REF_RE = re.compile(
-    r"\.?\s*(?:Implements|Supports|Addresses|Answers|Covers|Partially implements)"
-    r"\s+(?:KPI|question|Q)s?\s*(?::\s*[^.]*(?:\.\s*)?|[\d,\s\-and#()]+\.?)"
-    r"|\s*\(KPI:\s*[^)]+\)"
-    r"|\s*\bKPI\s*#\d+\b(?:\s*\([^)]*\))?\.?"
-    r"|\s*\(#\d+\)",
-    re.IGNORECASE,
-)
-
-
-def _strip_kpi_references(defn: dict) -> None:
-    """Remove KPI/question number references from comments."""
-    def _clean(text: str) -> str:
-        text = _KPI_REF_RE.sub("", text)
-        text = re.sub(r"  +", " ", text).strip().rstrip(".")
-        return (text + ".") if text else ""
-    for field in ("comment",):
-        if defn.get(field):
-            defn[field] = _clean(defn[field])
-    for item in defn.get("measures", []) + defn.get("dimensions", []):
-        if item.get("comment"):
-            item["comment"] = _clean(item["comment"])
-
-
-_ALIAS_DOT_PH_RE = re.compile(r"\b([A-Za-z_]\w*)\.\w+")
-
-
-def _drop_placeholder_dimensions(defn: dict) -> None:
-    """Drop dimensions whose name implies a join alias but whose expr uses a different alias."""
-    joins = defn.get("joins", [])
-    if not joins:
-        return
-
-    def _collect_aliases(jlist: list[dict]) -> set[str]:
-        out: set[str] = set()
-        for j in jlist:
-            alias = j.get("name", "").lower()
-            if alias:
-                out.add(alias)
-            if j.get("joins"):
-                out |= _collect_aliases(j["joins"])
-        return out
-
-    all_aliases = _collect_aliases(joins)
-    if not all_aliases:
-        return
-
-    cleaned: list[dict] = []
-    for d in defn.get("dimensions", []):
-        name_lower = d.get("name", "").lower().replace("_", " ")
-        expr = d.get("expr", "")
-        refs = {m.group(1).lower() for m in _ALIAS_DOT_PH_RE.finditer(expr)}
-
-        implied_alias = None
-        for alias in all_aliases:
-            if alias in name_lower:
-                implied_alias = alias
-                break
-
-        if implied_alias and implied_alias not in refs:
-            continue
-        cleaned.append(d)
-    defn["dimensions"] = cleaned
-
-
-_SELF_DIV_RE = re.compile(
-    r"^(SUM|COUNT|AVG|MIN|MAX)\s*\(([^)]+)\)\s*/\s*NULLIF\s*\(\s*\1\s*\(\2\)",
-    re.IGNORECASE,
-)
-
 _AGG_FN_RE = re.compile(
     r"\b(SUM|COUNT|AVG|MIN|MAX|STDDEV|VARIANCE|PERCENTILE|"
     r"COLLECT_LIST|COLLECT_SET|APPROX_COUNT_DISTINCT|"
@@ -9445,116 +8856,65 @@ _AGG_FN_RE = re.compile(
 )
 
 
-def _drop_broken_measures(defn: dict) -> None:
-    """Remove self-dividing share measures (always=1.0) and deduplicate identical exprs."""
-    measures = defn.get("measures", [])
-    if not measures:
-        return
-
-    cleaned: list[dict] = []
-    seen_exprs: set[str] = set()
-    for m in measures:
-        expr = re.sub(r"\s+", " ", m.get("expr", "").strip())
-        if _SELF_DIV_RE.search(expr):
-            continue
-        norm = expr.upper()
-        if norm in seen_exprs:
-            continue
-        seen_exprs.add(norm)
-        cleaned.append(m)
-    defn["measures"] = cleaned
+def _build_materialization(defn: dict, schedule: str = "every 6 hours") -> dict:
+    """Default materialization block: one unaggregated baseline MV (mode relaxed)."""
+    mv_name = defn.get("name") or "metric_view"
+    block: dict = {"mode": "relaxed"}
+    if schedule and schedule.strip():
+        block["schedule"] = schedule.strip()
+    block["materialized_views"] = [{"name": f"{mv_name}_baseline", "type": "unaggregated"}]
+    return block
 
 
-def _normalize_window_specs(w) -> list[dict]:
-    """Normalize window field to YAML 1.1 spec: array of {order, range/rows, semiadditive}."""
-    if w is None:
+def _validate_materialization(defn: dict) -> list[str]:
+    """Structurally validate a materialization block. Returns error strings (empty if valid/absent)."""
+    mat = defn.get("materialization")
+    if mat is None:
         return []
-    if isinstance(w, dict):
-        w = [w]
-    if not isinstance(w, list):
-        return []
-    result = []
-    for spec in w:
-        if not isinstance(spec, dict):
+    if not isinstance(mat, dict):
+        return ["materialization must be a mapping"]
+    errors: list[str] = []
+    if mat.get("mode") != "relaxed":
+        errors.append("materialization.mode must be 'relaxed'")
+    schedule = mat.get("schedule")
+    if schedule is not None:
+        if not isinstance(schedule, str):
+            errors.append("materialization.schedule must be a string")
+        elif "TRIGGER ON UPDATE" in schedule.upper():
+            errors.append("materialization.schedule does not support TRIGGER ON UPDATE")
+    mvs = mat.get("materialized_views")
+    if not isinstance(mvs, list) or not mvs:
+        errors.append("materialization.materialized_views must be a non-empty list")
+        return errors
+    dim_names = {d.get("name") for d in defn.get("dimensions", []) if d.get("name")}
+    measure_names = {m.get("name") for m in defn.get("measures", []) if m.get("name")}
+    seen: set[str] = set()
+    for entry in mvs:
+        if not isinstance(entry, dict):
+            errors.append("each materialized_views entry must be a mapping")
             continue
-        order = spec.get("order") or spec.get("order_by")
-        if not order:
-            continue
-        rng = spec.get("range", "")
-        if isinstance(rng, str) and "INTERVAL" in rng.upper():
-            import re as _re
-            m = _re.search(r"INTERVAL\s+(\d+)\s+(\w+)", rng, _re.IGNORECASE)
-            if m:
-                rng = f"trailing {m.group(1)} {m.group(2).lower().rstrip('s')}"
-        rows = spec.get("rows", "")
-        if isinstance(rows, str) and "UNBOUNDED" in rows.upper():
-            rng = "unbounded"
-            rows = ""
-        entry = {"order": order}
-        if rng:
-            entry["range"] = rng
-        if rows:
-            entry["rows"] = rows
-        entry["semiadditive"] = spec.get("semiadditive", "last")
-        result.append(entry)
-    return result
-
-
-class _IndentYamlDumper(yaml.Dumper):
-    """Dumper that always indents list items under their parent key.
-
-    Default yaml.Dumper uses compact style where list items sit at the same
-    indent as the parent mapping key.  Databricks' metric-view YAML parser
-    requires the indented style where list items are nested one level deeper
-    (matching the format shown in the official documentation).
-    """
-    def increase_indent(self, flow=False, indentless=False):
-        return super().increase_indent(flow, False)
-
-
-def _definition_to_yaml(defn: dict) -> str:
-    """Convert a JSON definition to the YAML body for CREATE VIEW WITH METRICS.
-
-    Uses yaml.dump with an indenting Dumper so nested join lists are
-    properly indented (Databricks' parser rejects the compact style for
-    nested joins).  Pre-processing backfills currency_code and normalises
-    window specs.
-    """
-    source = defn.get("source", "")
-    if not source:
-        raise ValueError("Metric view definition missing 'source' table")
-    mv: dict = {"version": "1.1", "source": source}
-    if defn.get("comment"):
-        mv["comment"] = defn["comment"]
-    if defn.get("filter"):
-        mv["filter"] = defn["filter"]
-    mv["dimensions"] = [
-        {k: v for k, v in ((k, d.get(k)) for k in ("name", "expr", "comment", "display_name", "synonyms")) if v}
-        for d in defn.get("dimensions", [])
-    ]
-    measures_out = []
-    for m in defn.get("measures", []):
-        entry = {k: v for k, v in ((k, m.get(k)) for k in ("name", "expr", "comment", "display_name", "synonyms")) if v}
-        if m.get("format") and isinstance(m["format"], dict):
-            fmt = dict(m["format"])
-            if fmt.get("type") == "currency" and not fmt.get("currency_code"):
-                fmt["currency_code"] = "USD"
-            entry["format"] = fmt
-        if m.get("window"):
-            w = m["window"]
-            if isinstance(w, str):
-                try:
-                    w = json.loads(w)
-                except (json.JSONDecodeError, TypeError):
-                    w = None
-            specs = _normalize_window_specs(w)
-            if specs:
-                entry["window"] = specs
-        measures_out.append(entry)
-    mv["measures"] = measures_out
-    if defn.get("joins"):
-        mv["joins"] = defn["joins"]
-    return yaml.dump(mv, Dumper=_IndentYamlDumper, default_flow_style=False, sort_keys=False)
+        name = entry.get("name")
+        if not name:
+            errors.append("materialized_views entry missing 'name'")
+        elif name in seen:
+            errors.append(f"duplicate materialized_views name '{name}'")
+        else:
+            seen.add(name)
+        mtype = entry.get("type")
+        if mtype not in ("aggregated", "unaggregated"):
+            errors.append(f"materialized_views '{name}': type must be aggregated or unaggregated")
+        if mtype == "aggregated":
+            dims = entry.get("dimensions") or []
+            meas = entry.get("measures") or []
+            if not dims and not meas:
+                errors.append(f"materialized_views '{name}': aggregated requires dimensions and/or measures")
+            for d in dims:
+                if d not in dim_names:
+                    errors.append(f"materialized_views '{name}': unknown dimension '{d}'")
+            for m in meas:
+                if m not in measure_names:
+                    errors.append(f"materialized_views '{name}': unknown measure '{m}'")
+    return errors
 
 
 _agent_ref_cache: dict[str, dict] = {}
@@ -9690,6 +9050,14 @@ class PutDefinitionRequest(BaseModel):
 class CreateDefinitionRequest(BaseModel):
     target_catalog: str
     target_schema: str
+    materialize: Optional[bool] = None
+    materialization_schedule: str = "every 6 hours"
+    strip_materialization: bool = False
+
+
+class MaterializationPatchRequest(BaseModel):
+    enabled: bool
+    schedule: str = "every 6 hours"
 
 
 class DropDefinitionRequest(BaseModel):
@@ -9723,6 +9091,17 @@ def update_definition(definition_id: str, req: PutDefinitionRequest):
     return {"definition_id": definition_id, "status": status, "validation_errors": errs}
 
 
+def _apply_materialization_override(defn: dict, req: CreateDefinitionRequest) -> list[str]:
+    """Apply create-time materialization flags. Returns validation errors."""
+    if req.strip_materialization or req.materialize is False:
+        defn.pop("materialization", None)
+    elif req.materialize is True and not defn.get("materialization"):
+        defn["materialization"] = _build_materialization(defn, req.materialization_schedule)
+    if defn.get("materialization"):
+        return _validate_materialization(defn)
+    return []
+
+
 @app.post("/api/semantic-layer/definitions/{definition_id}/create")
 def create_metric_view(definition_id: str, req: CreateDefinitionRequest):
     """Deploy a validated definition as a real UC metric view."""
@@ -9732,6 +9111,9 @@ def create_metric_view(definition_id: str, req: CreateDefinitionRequest):
     mv_name = defn.get("name") or row.get("metric_view_name", "")
     if not mv_name:
         raise HTTPException(400, detail="Definition has no metric view name")
+    mat_errors = _apply_materialization_override(defn, req)
+    if mat_errors:
+        raise HTTPException(400, detail="; ".join(mat_errors))
     fq_mv = f"`{req.target_catalog}`.`{req.target_schema}`.`{mv_name}`"
     for item_type in ("dimensions", "measures"):
         for item in defn.get(item_type, []):
@@ -9739,7 +9121,8 @@ def create_metric_view(definition_id: str, req: CreateDefinitionRequest):
                 item["expr"] = _autofix_expr(item["expr"])
     if defn.get("filter"):
         defn["filter"] = _autofix_expr(defn["filter"])
-    yaml_body = _definition_to_yaml(defn)
+    include_mat = bool(defn.get("materialization"))
+    yaml_body = _definition_to_yaml(defn, include_materialization=include_mat)
     sql = f"CREATE OR REPLACE VIEW {fq_mv}\nWITH METRICS LANGUAGE YAML AS $$\n{yaml_body}$$"
     try:
         execute_sql(sql, timeout=60)
@@ -9759,8 +9142,10 @@ def create_metric_view(definition_id: str, req: CreateDefinitionRequest):
     execute_sql(
         f"UPDATE {fq('metric_view_definitions')} "
         f"SET status = 'applied', applied_at = current_timestamp(), "
-        f"deployed_catalog = '{req.target_catalog}', deployed_schema = '{req.target_schema}' "
-        f"WHERE definition_id = '{definition_id}'"
+        f"deployed_catalog = '{req.target_catalog}', deployed_schema = '{req.target_schema}', "
+        f"json_definition = :json_def "
+        f"WHERE definition_id = '{definition_id}'",
+        parameters=[StatementParameterListItem(name="json_def", value=json.dumps(defn))],
     )
     # Supersede non-applied siblings with the same name (applied views are never auto-superseded)
     mv_esc = mv_name.replace("'", "''")
@@ -9777,6 +9162,39 @@ def create_metric_view(definition_id: str, req: CreateDefinitionRequest):
     except Exception:
         pass
     return {"definition_id": definition_id, "status": "applied", "metric_view": fq_mv}
+
+
+@app.patch("/api/semantic-layer/definitions/{definition_id}/materialization")
+def patch_definition_materialization(definition_id: str, req: MaterializationPatchRequest):
+    """Enable or disable materialization on a stored definition."""
+    _ensure_semantic_layer_tables()
+    row = _fetch_definition(definition_id)
+    if row.get("status") == "applied":
+        raise HTTPException(400, detail="Cannot change materialization on an applied view. Drop it first.")
+    defn = json.loads(row["json_definition"]) if isinstance(row["json_definition"], str) else row["json_definition"]
+    if req.enabled:
+        defn["materialization"] = _build_materialization(defn, req.schedule)
+    else:
+        defn.pop("materialization", None)
+    errors = _validate_materialization(defn) if defn.get("materialization") else []
+    struct_errors = _validate_definition_structure(defn)
+    errors = errors + struct_errors
+    status = "validated" if not errors else "failed"
+    error_str = "; ".join(errors).replace("'", "''") if errors else ""
+    json_str = json.dumps(defn)
+    execute_sql(
+        f"UPDATE {fq('metric_view_definitions')} "
+        f"SET json_definition = :json_def, status = '{status}', validation_errors = '{error_str}' "
+        f"WHERE definition_id = '{definition_id}'",
+        parameters=[StatementParameterListItem(name="json_def", value=json_str)],
+    )
+    return {
+        "definition_id": definition_id,
+        "status": status,
+        "has_materialization": bool(defn.get("materialization")),
+        "materialization_schedule": (defn.get("materialization") or {}).get("schedule"),
+        "validation_errors": errors or None,
+    }
 
 
 class CertifyRequest(BaseModel):
@@ -9858,7 +9276,7 @@ def export_metric_views_sql(catalog: Optional[str] = None, schema: Optional[str]
         mv_cat = row.get("deployed_catalog") or default_cat
         mv_sch = row.get("deployed_schema") or default_sch
         fq_mv = f"`{mv_cat}`.`{mv_sch}`.`{mv_name}`"
-        yaml_body = _definition_to_yaml(defn)
+        yaml_body = _definition_to_yaml(defn, include_materialization=True)
         statements.append(f"CREATE OR REPLACE VIEW {fq_mv}\nWITH METRICS LANGUAGE YAML AS $$\n{yaml_body}$$")
     if not statements:
         raise HTTPException(404, detail="No valid definitions to export")

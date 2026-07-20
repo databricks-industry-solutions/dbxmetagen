@@ -51,6 +51,10 @@ resources:
           default: "false"
         - name: federation_mode
           default: "false"
+        - name: metadata_companion_path
+          default: ""
+        - name: skip_ai_for_declared_fk
+          default: "false"
         - name: sweep_stale_edges
           default: "false"
         - name: sweep_stale_entities
@@ -122,6 +126,7 @@ resources:
               incremental: "{{job.parameters.incremental}}"
               table_names: "{{job.parameters.table_names}}"
               federation_mode: "{{job.parameters.federation_mode}}"
+              metadata_companion_path: "{{job.parameters.metadata_companion_path}}"
           libraries:
             - whl: ../../dist/*.whl
 
@@ -324,6 +329,7 @@ resources:
               sweep_stale_edges: "{{job.parameters.sweep_stale_edges}}"
               table_names: "{{job.parameters.table_names}}"
               federation_mode: "{{job.parameters.federation_mode}}"
+              skip_ai_for_declared_fk: "{{job.parameters.skip_ai_for_declared_fk}}"
           libraries:
             - whl: ../../dist/*.whl
 

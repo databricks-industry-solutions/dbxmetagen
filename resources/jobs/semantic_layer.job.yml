@@ -23,6 +23,10 @@ resources:
           default: ${var.warehouse_id}
         - name: genie_space_name
           default: ""
+        - name: materialize
+          default: "false"
+        - name: materialization_schedule
+          default: "every 6 hours"
 
       tasks:
         - task_key: generate_semantic_layer
@@ -36,6 +40,8 @@ resources:
               catalog_name: "{{job.parameters.catalog_name}}"
               schema_name: "{{job.parameters.schema_name}}"
               model_endpoint: "{{job.parameters.model_endpoint}}"
+              materialize: "{{job.parameters.materialize}}"
+              materialization_schedule: "{{job.parameters.materialization_schedule}}"
 
         - task_key: apply_metric_views
           max_retries: 1

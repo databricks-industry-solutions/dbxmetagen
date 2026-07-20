@@ -264,10 +264,8 @@ class FKPredictor:
         qmin = self.config.skip_ai_query_min_observations
         return df.withColumn(
             "skip_ai",
-            (
-                (F.col("source_rank") == F.lit(SR_DECLARED))
-                & F.lit(self.config.skip_ai_for_declared_fk)
-            )
+            (F.col("source_rank") == F.lit(SR_DECLARED))
+            | (F.col("source_rank") == F.lit(SR_COL_PROP))
             | (
                 (F.col("source_rank") == F.lit(SR_QUERY))
                 & (F.col("query_hit_count") >= F.lit(qmin))
@@ -280,11 +278,14 @@ class FKPredictor:
             df.withColumn("ai_is_fk", F.lit(True))
             .withColumn(
                 "ai_confidence",
-                F.when(F.col("source_rank") == F.lit(SR_DECLARED), F.lit(0.95)).otherwise(F.lit(0.88)),
+                F.when(F.col("source_rank") == F.lit(SR_DECLARED), F.lit(0.95))
+                .when(F.col("source_rank") == F.lit(SR_COL_PROP), F.lit(0.90))
+                .otherwise(F.lit(0.88)),
             )
             .withColumn(
                 "ai_reasoning",
                 F.when(F.col("source_rank") == F.lit(SR_DECLARED), F.lit("declared_foreign_key"))
+                .when(F.col("source_rank") == F.lit(SR_COL_PROP), F.lit("column_property_skip_ai"))
                 .when(F.col("source_rank") == F.lit(SR_QUERY), F.lit("query_history_skip_ai"))
                 .otherwise(F.lit("heuristic_skip_ai")),
             )
@@ -682,7 +683,6 @@ class FKPredictor:
             JOIN cols c ON c.parent_id = ep.primary_table
                         AND c.col_short = LOWER(op.column_name)
             WHERE op.table_name != ep.primary_table
-              AND (c.col_short RLIKE '(_id|_key|_code)$' OR c.col_short = 'id')
               AND NOT EXISTS (
                   SELECT 1 FROM pk_pairs pp
                   WHERE pp.table_a = op.table_name AND pp.src_col = op.column_name
@@ -744,12 +744,12 @@ class FKPredictor:
     # ------------------------------------------------------------------
     def get_declared_fk_candidates(self) -> DataFrame:
         """Emit candidates from declared FKs in extended_table_metadata.foreign_keys."""
-        ext = self.config.fq("extended_table_metadata")
-        empty_schema = (
-            "col_a STRING, col_b STRING, table_a STRING, table_b STRING, "
-            "dtype_a STRING, dtype_b STRING, col_similarity DOUBLE, table_similarity DOUBLE, "
-            "source_rank INT, query_hit_count INT"
+        empty = self.spark.createDataFrame(
+            [], "col_a STRING, col_b STRING, col_similarity DOUBLE, "
+            "table_a STRING, table_b STRING, dtype_a STRING, dtype_b STRING, "
+            "table_similarity DOUBLE, source_rank INT, query_hit_count INT"
         )
+        ext = self.config.fq("extended_table_metadata")
         try:
             df = self.spark.sql(f"""
                 WITH fk_exploded AS (
@@ -773,21 +773,27 @@ class FKPredictor:
                     1.0 AS col_similarity, 0.0 AS table_similarity
                 FROM parsed
                 WHERE SIZE(parts) >= 4
-                  AND CONCAT(parts[0], '.', parts[1], '.', parts[2]) != table_name
             """)
             df = df.withColumn("source_rank", F.lit(SR_DECLARED)).withColumn(
                 "query_hit_count", F.lit(0)
             )
-            if self._changed_tables:
-                from dbxmetagen.table_filter import table_names_col_filter
+            from dbxmetagen.table_filter import table_names_col_filter
+
+            if self.config.table_names:
+                df = df.filter(
+                    table_names_col_filter(F.col("table_a"), self.config.table_names)
+                    | table_names_col_filter(F.col("table_b"), self.config.table_names)
+                )
+            elif self._changed_tables:
                 ct_list = list(self._changed_tables)
                 df = df.filter(
                     table_names_col_filter(F.col("table_a"), ct_list)
                     | table_names_col_filter(F.col("table_b"), ct_list)
                 )
             return df
-        except Exception:
-            return self.spark.createDataFrame([], empty_schema)
+        except Exception as e:
+            logger.warning("Declared FK candidate generation failed: %s", e)
+            return empty
 
     # ------------------------------------------------------------------
     # Step 1c-post: Query history join candidates
@@ -1147,8 +1153,14 @@ class FKPredictor:
         sample_map: dict = {}
 
         def _fetch_table_samples(tbl_id, col_list):
+            # Multiple candidates may reference the same physical column; SELECT must
+            # not emit duplicate aliases (e.g. three `target_id` -> AMBIGUOUS_REFERENCE).
+            by_short: dict[str, str] = {}
+            for fq_id, short in col_list:
+                by_short.setdefault(short, fq_id)
+            unique_cols = [(fq, short) for short, fq in by_short.items()]
             selects = ", ".join(
-                f"CAST(`{short}` AS STRING) AS `{short}`" for _, short in col_list
+                f"CAST(`{short}` AS STRING) AS `{short}`" for _, short in unique_cols
             )
             result = {}
             try:
@@ -1353,7 +1365,11 @@ class FKPredictor:
                         f"FROM {table} TABLESAMPLE ({n} ROWS) REPEATABLE (42) "
                         f"WHERE `{col_short}` IS NOT NULL"
                     ).createOrReplaceTempView(view_name)
-            except Exception:
+            except Exception as e:
+                if self.config.federation_mode:
+                    raise RuntimeError(
+                        f"Federation sample fetch failed for {table}.{col_short}: {e}"
+                    ) from e
                 self.spark.createDataFrame([], "val STRING").createOrReplaceTempView(view_name)
             self._table_samples[view_key] = view_name
         return self._table_samples[view_key]
@@ -1377,17 +1393,15 @@ class FKPredictor:
         needed: dict[str, list[str]] = {}
         for tbl, col_short in pairs:
             if (tbl, col_short) not in self._table_samples:
-                needed.setdefault(tbl, []).append(col_short)
+                cols = needed.setdefault(tbl, [])
+                if col_short not in cols:
+                    cols.append(col_short)
 
         if not needed:
             return
 
-        from concurrent.futures import ThreadPoolExecutor, as_completed
-
-        def _fetch_and_register(tbl: str, cols: list[str]):
-            selects = ", ".join(
-                f"CAST(`{c}` AS STRING) AS `{c}`" for c in cols
-            )
+        for tbl, cols in needed.items():
+            selects = ", ".join(f"CAST(`{c}` AS STRING) AS `{c}`" for c in cols)
             where = " OR ".join(f"`{c}` IS NOT NULL" for c in cols)
             try:
                 df = self.spark.sql(
@@ -1396,31 +1410,16 @@ class FKPredictor:
                 )
                 _schema = df.schema
                 df = self.spark.createDataFrame(df.collect(), schema=_schema)
-                for c in cols:
-                    vn = f"_sample_{tbl.replace('.', '_')}_{c}"
-                    df.select(F.col(f"`{c}`").cast("string").alias("val")) \
-                      .filter(F.col("val").isNotNull()) \
-                      .createOrReplaceTempView(vn)
-                    with self._table_samples_lock:
-                        self._table_samples[(tbl, c)] = vn
-            except Exception:
-                for c in cols:
-                    vn = f"_sample_{tbl.replace('.', '_')}_{c}"
-                    self.spark.createDataFrame([], "val STRING") \
-                        .createOrReplaceTempView(vn)
-                    with self._table_samples_lock:
-                        self._table_samples[(tbl, c)] = vn
-
-        with ThreadPoolExecutor(max_workers=_FEDERATION_MAX_WORKERS) as pool:
-            futs = {
-                pool.submit(_fetch_and_register, tbl, cols): tbl
-                for tbl, cols in needed.items()
-            }
-            for f in as_completed(futs):
-                exc = f.exception()
-                if exc:
-                    logger.warning("_batch_ensure_table_samples failed for %s: %s",
-                                   futs[f], exc)
+            except Exception as e:
+                raise RuntimeError(
+                    f"Federation batch sample fetch failed for {tbl} columns {cols}: {e}"
+                ) from e
+            for c in cols:
+                vn = f"_sample_{tbl.replace('.', '_')}_{c}"
+                df.select(F.col(f"`{c}`").cast("string").alias("val")) \
+                    .filter(F.col("val").isNotNull()) \
+                    .createOrReplaceTempView(vn)
+                self._table_samples[(tbl, c)] = vn
 
     def referential_integrity(self, candidates: DataFrame) -> DataFrame:
         """Batch RI check using UNION ALL to minimize round-trips."""
@@ -1786,6 +1785,11 @@ class FKPredictor:
             )
 
         if not fragments:
+            if self.config.federation_mode:
+                raise RuntimeError(
+                    "join_validate: no federation sample views for "
+                    f"{len(rows)} candidate pair(s)"
+                )
             return judged.withColumn("join_rate", F.lit(0.0)).withColumn(
                 "join_matched", F.lit(0)
             )
@@ -1819,6 +1823,12 @@ class FKPredictor:
             "left",
         ).drop("_col_a", "_col_b")
 
+        trusted = F.lit(False)
+        if "skip_ai" in result.columns:
+            trusted = trusted | (F.col("skip_ai") == True)
+        if "source_rank" in result.columns:
+            trusted = trusted | (F.col("source_rank") == F.lit(SR_DECLARED))
+
         result = (
             result
             .withColumn("join_rate",
@@ -1827,7 +1837,12 @@ class FKPredictor:
             .withColumn("join_matched", F.coalesce(F.col("join_matched"), F.lit(0)))
             .withColumn(
                 "ai_confidence",
-                F.round(F.col("ai_confidence") * (0.6 + 0.4 * F.col("join_rate")), 4),
+                F.when(
+                    trusted,
+                    F.col("ai_confidence"),
+                ).otherwise(
+                    F.round(F.col("ai_confidence") * (0.6 + 0.4 * F.col("join_rate")), 4),
+                ),
             )
         )
         return result
@@ -1947,6 +1962,11 @@ class FKPredictor:
         ri = F.coalesce(F.col("ri_score"), F.lit(0.5))
         capped_join = F.least(F.lit(1.0), F.greatest(F.lit(0.0), F.col("join_rate")))
 
+        pair_ok = (F.col("table_a") != F.col("table_b")) & (F.col("col_a") != F.col("col_b"))
+        if "source_rank" in df.columns:
+            pair_ok = pair_ok | (F.col("source_rank") == F.lit(SR_DECLARED))
+        df = df.filter(pair_ok)
+
         out = df.select(
             F.col("col_a").alias("src_column"),
             F.col("col_b").alias("dst_column"),
@@ -1973,12 +1993,6 @@ class FKPredictor:
             F.current_timestamp().alias("updated_at"),
             F.col("ai_is_fk").alias("is_fk"),
         ).filter(F.col("ai_confidence") >= self.config.confidence_threshold)
-
-        # Safety net: never write same-table or same-column predictions
-        out = out.filter(
-            (F.col("src_table") != F.col("dst_table"))
-            & (F.col("src_column") != F.col("dst_column"))
-        )
 
         w = Window.partitionBy("src_column", "dst_column").orderBy(F.col("final_confidence").desc())
         out = out.withColumn("_rn", F.row_number().over(w)).filter(F.col("_rn") == 1).drop("_rn")
@@ -2241,7 +2255,9 @@ class FKPredictor:
             .unionByName(query_cands, allowMissingColumns=True)
         )
 
-        candidates = candidates.filter(F.col("table_a") != F.col("table_b"))
+        candidates = candidates.filter(
+            F.expr(f"table_a != table_b OR source_rank = {SR_DECLARED}")
+        )
 
         # Propagate max embedding similarities before source-rank dedup.
         # Name-based and other non-embedding sources hardcode col_similarity=0.0;
@@ -2371,6 +2387,8 @@ class FKPredictor:
         try:
             judged = self.join_validate(judged)
         except Exception as e:
+            if self.config.federation_mode:
+                raise
             logger.warning("join_validate failed, continuing with zero join_rate: %s", e)
             judged = judged.withColumn("join_rate", F.lit(0.0)).withColumn("join_matched", F.lit(0))
 
@@ -2382,7 +2400,15 @@ class FKPredictor:
 
         judged = self._enforce_direction(judged)
 
+        n_declared = 0
+        if "source_rank" in judged.columns:
+            n_declared = judged.filter(F.col("source_rank") == SR_DECLARED).count()
+
         n_preds = self.write_predictions(judged)
+        if n_declared > 0 and n_preds == 0:
+            raise RuntimeError(
+                f"FK prediction wrote 0 rows but {n_declared} OWL-declared candidates were judged"
+            )
         n_edges = self.write_graph_edges(sweep_stale=sweep_stale)
         ddl_df = self.generate_ddl()
         n_ddl = 0

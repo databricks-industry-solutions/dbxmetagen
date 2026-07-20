@@ -19,6 +19,12 @@
       "note": "Use EXTRACT(unit FROM col), not DATE_PART."
     },
     {
+      "rule": "Materialization (Public Preview) is an optional top-level block",
+      "correct": "materialization:\n  schedule: every 6 hours\n  mode: relaxed\n  materialized_views:\n    - name: sales_baseline\n      type: unaggregated",
+      "wrong": "materialization:\n  mode: incremental\n  materialized_views: []",
+      "note": "mode must be 'relaxed'. materialized_views is a non-empty list; each entry has a unique name and type 'unaggregated' or 'aggregated'. aggregated entries list 'dimensions'/'measures' by their defined names (use the 'dimensions' key even if the view uses 'fields'). schedule is optional (omit for manual refresh only); TRIGGER ON UPDATE is not supported. Do not emit materialization during dry-run validation."
+    },
+    {
       "rule": "DATEDIFF takes exactly two arguments and returns days",
       "correct": "DATEDIFF(end_date, start_date)",
       "wrong": "DATEDIFF(DAY, start_date, end_date)",
@@ -236,6 +242,7 @@
     "The 'source' field is a fully qualified three-part name (catalog.schema.table)",
     "FILTER clauses use the (WHERE ...) syntax with parentheses",
     "Every measure has a 'format' object: {\"type\": \"currency\"}, {\"type\": \"percentage\"}, or {\"type\": \"number\"}",
-    "Every measure and dimension has 'display_name' (human-readable label) and 'synonyms' (array of 2-5 alternative names)"
+    "Every measure and dimension has 'display_name' (human-readable label) and 'synonyms' (array of 2-5 alternative names)",
+    "If a 'materialization' block is present: mode is 'relaxed', materialized_views is non-empty, each entry has a unique name and type 'unaggregated'/'aggregated', aggregated entries reference only defined dimensions/measures, and schedule (if set) avoids TRIGGER ON UPDATE"
   ]
 }
