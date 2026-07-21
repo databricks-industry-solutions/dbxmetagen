@@ -10,8 +10,9 @@ Databricks CLI** (no local machine access, no CI runner, no web terminal).
 The notebooks use the Databricks Python SDK to create the app, jobs, and
 infrastructure directly.
 
-If you **can** run the CLI, use `deploy.sh` (recommended) or the manual
-instructions in `docs/MANUAL_DEPLOYMENT.md` instead.
+If you **can** run the CLI, use `databricks bundle deploy` +
+`scripts/grant_app_permissions.sh` (recommended) or the manual instructions in
+`docs/MANUAL_DEPLOYMENT.md` instead.
 
 ## Prerequisites
 
@@ -29,8 +30,9 @@ instructions in `docs/MANUAL_DEPLOYMENT.md` instead.
 
 1. **NB01 builds the wheel** from the Git folder source using
    `pip wheel` -- no pre-built artifacts or GitHub Release downloads needed.
-   The version is stamped with a deploy timestamp (same as `deploy.sh`)
-   so the app platform always reinstalls on each deploy. It then creates
+   The version is stamped with a deploy timestamp (same as the CLI's
+   `scripts/build_artifacts.sh` build hook) so the app platform always
+   reinstalls on each deploy. It then creates
    the 8 essential jobs and provisions a Vector Search endpoint.
 
 2. **NB01 loads `variables.yml`** from the repo and uses it as the source
@@ -82,7 +84,7 @@ with a new timestamp, so the app platform always picks up the latest code.
    - Deletes jobs, removes VS endpoint
    - Optionally drops the metadata schema (set `confirm_drop_schema=yes`)
 
-## Differences from `deploy.sh` / DABs
+## Differences from `bundle deploy` / DABs
 
 This pipeline is a simplified alternative. The following features from the
 full DABs deployment are **not replicated**:
@@ -108,8 +110,8 @@ The app will start and work for core features (metadata generation,
 review, analytics pipeline, MCP servers). Dashboard buttons for missing
 jobs will show errors or be unavailable.
 
-To add more jobs, deploy once via `deploy.sh` or bundle (which creates
-all 16+ jobs), then re-run NB02 to wire them to the app.
+To add more jobs, deploy once via `databricks bundle deploy` (which creates
+all jobs), then re-run NB02 to wire them to the app.
 
 ### No email notifications
 

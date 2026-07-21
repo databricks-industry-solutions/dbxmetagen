@@ -9,11 +9,11 @@ dbxmetagen uses two separate identities at runtime: the **app service principal*
 | Identity | Created by | Used for |
 |----------|-----------|----------|
 | **App Service Principal** | Auto-created by Databricks Apps on first deploy | Dashboard UI: browsing metadata, triggering jobs, SQL queries, Vector Search, agent chat |
-| **Job Owner / Deployer** | The user who ran `deploy.sh` or `databricks bundle deploy` | Job execution: metadata generation, DDL writes, `ALTER TABLE`, `SET TAGS`, `AI_QUERY` calls |
+| **Job Owner / Deployer** | The user (or `run_as` SP) who ran `databricks bundle deploy` | Job execution: metadata generation, DDL writes, `ALTER TABLE`, `SET TAGS`, `AI_QUERY` calls |
 
 The app SPN is a **read-heavy** identity -- it needs `SELECT` to browse and `MODIFY` / `CREATE TABLE` only because the UI writes to control tables (metric view definitions, agent state, semantic layer questions). The deployer identity is a **write-heavy** identity that creates and modifies tables in the target catalog during job runs.
 
-In `dev` / `demo` targets, jobs run as the **job owner** (whoever created the job via `bundle deploy`). The `prod` target adds an explicit `run_as` block in `databricks.yml.template` to pin job execution to a specific user.
+In `dev` / `demo` targets, jobs run as the **job owner** (whoever created the job via `bundle deploy`). Every target sets `run_as: ${var.run_as}` in `databricks.yml`; the `run_as` variable defaults to the deploying user and can be overridden to a service principal (e.g. in `variable-overrides.json`) to pin job execution.
 
 ---
 
@@ -37,15 +37,15 @@ GRANT WRITE VOLUME ON SCHEMA `<catalog>`.`<schema>` TO `<SPN_UUID>`;
 
 ### SQL Warehouse
 
-`CAN_USE` on the configured warehouse. This is declared in the DAB app resource (`dbxmetagen_app.yml.template`) and applied automatically by `bundle deploy`.
+`CAN_USE` on the configured warehouse. This is declared in the DAB app resource (`resources/apps/dbxmetagen_app.yml`) and applied automatically by `bundle deploy`.
 
 ### Job control
 
-`CAN_MANAGE_RUN` on all 15 bound jobs. This is declared in the DAB app resource and applied automatically. It allows the UI to trigger and monitor job runs.
+`CAN_MANAGE_RUN` on all 22 bound jobs. This is declared in the DAB app resource (both as app `resources:` entries and per-job `permissions:` blocks) and applied automatically in a single deploy pass. It allows the UI to trigger and monitor job runs.
 
 ### Vector Search endpoint
 
-`CAN_USE` on the `dbxmetagen-vs` endpoint. This is **not** managed by DAB (VS endpoints are not yet a supported DAB resource type). It must be granted separately -- see the "How each deploy method handles it" section below.
+`CAN_USE` on the `dbxmetagen-vs` endpoint. This is **not** managed by DAB (VS endpoints are not yet a supported DAB resource type). It is granted by `scripts/grant_app_permissions.sh` -- see the "How each deploy method handles it" section below.
 
 **What happens without this grant:** The app does not crash on startup. Failures are mostly silent:
 
@@ -58,12 +58,12 @@ Because most paths swallow VS errors gracefully, a missing `CAN_USE` grant can g
 
 ### How each deploy method handles it
 
-| Grant | `deploy.sh` | Notebook deploy (NB02) | Manual deploy |
-|-------|-------------|----------------------|---------------|
-| UC (7 grants above) | Automatic, every deploy | Automatic | You run the SQL (see `MANUAL_DEPLOYMENT.md`) |
+| Grant | `bundle deploy` + `grant_app_permissions.sh` | Notebook deploy (NB02) | Manual deploy |
+|-------|----------------------------------------------|----------------------|---------------|
+| UC (7 grants above) | Automatic (grants script) | Automatic | You run the SQL (see `MANUAL_DEPLOYMENT.md`) |
 | SQL warehouse `CAN_USE` | Via DAB resource | Via SDK `AppResource` | Via DAB resource |
-| Job `CAN_MANAGE_RUN` | Via DAB resource + second deploy pass | Via SDK `update_permissions` | Via DAB resource + second deploy pass |
-| VS endpoint `CAN_USE` | Automatic (Permissions API) | Automatic (Permissions API) | **You must grant manually** (see below) |
+| Job `CAN_MANAGE_RUN` | Via DAB resource, single deploy pass | Via SDK `update_permissions` | Via DAB resource |
+| VS endpoint `CAN_USE` | Automatic (grants script, Permissions API) | Automatic (Permissions API) | **You must grant manually** (see below) |
 
 To grant VS endpoint `CAN_USE` manually:
 
@@ -98,7 +98,7 @@ In most setups the deployer is a catalog admin on the metadata catalog, which co
 |--------|-------------|
 | `dev` | Job owner (the user who ran `bundle deploy`) |
 | `demo` | Job owner (the user who ran `bundle deploy`) |
-| `prod` | Explicit `run_as: user_name: ${var.current_user}` in `databricks.yml.template` |
+| `prod` | `run_as: ${var.run_as}` in `databricks.yml` (defaults to `${var.current_user}`; override to an SP) |
 
 ---
 
@@ -121,20 +121,20 @@ When `enable_obo=true`, the app passes the logged-in user's access token to SQL 
 ### Prerequisites
 
 1. A workspace admin enables the **"Databricks Apps - On-Behalf-Of User Authorization"** preview (Admin Console > Previews).
-2. Set `enable_obo=true` in your `<target>.env` file before running `deploy.sh`.
+2. Set `enable_obo=true` **and** override the `user_api_scopes` variable (e.g. in `variable-overrides.json`) before running `databricks bundle deploy`.
 
-If the preview is not enabled but `enable_obo=true` is set, the deploy will fail with: `Databricks Apps - user token passthrough feature is not enabled for organization`.
+If the preview is not enabled but scopes are declared, the deploy will fail with: `Databricks Apps - user token passthrough feature is not enabled for organization`.
 
-### User API scopes by deploy method
+### User API scopes
 
-When OBO is enabled, the app declares `user_api_scopes` that control which Databricks APIs can be called under the user's token:
+When OBO is enabled, the app declares `user_api_scopes` that control which Databricks APIs can be called under the user's token. Scopes are supplied via the `user_api_scopes` bundle variable (default: empty = OBO off):
 
 | Deploy method | Scopes declared |
 |--------------|----------------|
-| `deploy.sh` | `files.files`, `sql.statement-execution`, `dashboards.genie` |
+| `bundle deploy` (override `user_api_scopes`) | Whatever you set, e.g. `files.files`, `sql.statement-execution`, `dashboards.genie` |
 | Notebook deploy (NB02) | `files.files`, `serving.serving-endpoints`, `sql.statement-execution`, `dashboards.genie` |
 
-Both paths include `dashboards.genie` for Genie Space creation/update via the OBO token. NB02 additionally includes `serving.serving-endpoints` because it always sets `user_api_scopes` unconditionally. `deploy.sh` omits the serving scope since it's only needed if OBO-authenticated users call model serving endpoints directly from the app UI (not currently used).
+`dashboards.genie` is needed for Genie Space creation/update via the OBO token. `serving.serving-endpoints` is only needed if OBO-authenticated users call model serving endpoints directly from the app UI (not currently used), so it can be omitted from the bundle variable.
 
 ---
 

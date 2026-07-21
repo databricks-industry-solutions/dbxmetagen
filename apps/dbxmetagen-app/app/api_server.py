@@ -3177,8 +3177,8 @@ async def import_ontology(
                     "error": (
                         f"Ontology parsed successfully but could not be saved to the UC Volume "
                         f"({_volume_bundle_prefix()}): {e}. The app service principal likely lacks "
-                        f"WRITE VOLUME on {CATALOG}.{SCHEMA}. Re-run deploy.sh (it grants "
-                        f"READ/WRITE VOLUME) or grant it manually, then re-import."
+                        f"WRITE VOLUME on {CATALOG}.{SCHEMA}. Re-run scripts/grant_app_permissions.sh "
+                        f"(it grants READ/WRITE VOLUME) or grant it manually, then re-import."
                     ),
                     "running_as": _auth_identity_label(),
                 },
@@ -5085,7 +5085,7 @@ async def ontology_builder_save(request: Request):
             detail=(
                 f"Failed to save bundle to UC Volume ({_volume_bundle_prefix()}): {e}. "
                 f"The app service principal likely lacks WRITE VOLUME on {CATALOG}.{SCHEMA}. "
-                f"Re-run deploy.sh (grants READ/WRITE VOLUME) or grant it manually."
+                f"Re-run scripts/grant_app_permissions.sh (grants READ/WRITE VOLUME) or grant it manually."
             ),
         )
 

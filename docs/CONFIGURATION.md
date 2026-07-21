@@ -296,9 +296,9 @@ When `enable_obo=true` is set in your `.env` file, the app executes SQL queries 
 **Prerequisites:**
 
 1. A workspace admin must enable the **"Databricks Apps - On-Behalf-Of User Authorization"** preview (Admin Console > Previews)
-2. Set `enable_obo=true` in your `<target>.env` file before running `deploy.sh`
+2. Set `enable_obo=true` **and** override `user_api_scopes` (e.g. in `variable-overrides.json`) before `databricks bundle deploy`
 
-If the preview is not enabled and `enable_obo=true` is set, the deploy will fail with: `Databricks Apps - user token passthrough feature is not enabled for organization`. By default (`enable_obo` unset or `false`), user API scopes are not declared and this preview is not required.
+If the preview is not enabled and `enable_obo=true` is set with scopes declared, the deploy will fail with: `Databricks Apps - user token passthrough feature is not enabled for organization`. By default (`enable_obo` unset or `false`, `user_api_scopes` empty), user API scopes are not declared and this preview is not required.
 
 ## Community Summaries
 

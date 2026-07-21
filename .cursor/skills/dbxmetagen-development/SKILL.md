@@ -26,8 +26,9 @@ the essentials and hard-won pitfalls.
 | Schema | `metadata_results` |
 
 ```bash
-# Deploy
-./deploy.sh --profile DMVM --target demo --no-app
+# Deploy (bundle deploy + post-deploy grants; no deploy.sh)
+databricks bundle deploy -t demo -p DMVM
+scripts/grant_app_permissions.sh -t demo -p DMVM
 
 # Run jobs
 databricks bundle run <job_name> -t demo -p DMVM
@@ -205,23 +206,30 @@ Rules:
 ## Deployment
 
 ```bash
-# Standard deploy (builds wheel, syncs bundle, starts app)
-./deploy.sh --profile DMVM --target demo
+# Standard deploy: plain bundle deploy (builds wheel via artifacts.build hook,
+# syncs bundle, starts app) + post-deploy grants. There is NO deploy.sh.
+databricks bundle deploy -t demo -p DMVM
+scripts/grant_app_permissions.sh -t demo -p DMVM
 
-# Jobs only, skip app entirely
-./deploy.sh --profile DMVM --target demo --no-app
-
-# Grant UC permissions for app service principal
-./deploy.sh --profile DMVM --target demo --permissions
+# Rebuild frontend first if it changed (dist/ is committed):
+(cd apps/dbxmetagen-app/app/src && npm install && npm run build)
 ```
 
 **Key rules:**
-- `deploy.sh` generates `databricks.yml` from `databricks.yml.template` by stamping env vars.
-  **Never edit `databricks.yml` directly.**
-- Similarly, `app.yaml` is generated from `app.yaml.template`.
-- Requires `{target}.env` file (copy from `example.env`). Required vars:
-  `DATABRICKS_HOST`, `catalog_name`, `schema_name`, `warehouse_id`.
-- `configurations/` is copied into the app source dir temporarily for DAB sync (cleaned up after).
+- `databricks.yml`, `apps/dbxmetagen-app/app/app.yaml`, and
+  `resources/apps/dbxmetagen_app.yml` are **static committed files** -- edit them
+  directly. There are no more `.template` files (only `requirements.txt.template`,
+  a build-hook input).
+- `bundle deploy` runs `scripts/build_artifacts.sh` (the `artifacts.build` hook):
+  builds + version-stamps the wheel, copies it into the app dir, regenerates the
+  app `requirements.txt`. **Never edit those generated files.**
+- Per-workspace values (`catalog_name`, `schema_name`, `warehouse_id`,
+  `vs_endpoint_name`) come from bundle var overrides: a gitignored
+  `variable-overrides.json`, `--var`, or `BUNDLE_VAR_*`. Host comes from the CLI profile.
+- App env lives in `config.env` of `dbxmetagen_app.yml` (single source of truth;
+  overrides app.yaml on deploy). Job IDs use `value_from:` (snake_case).
+- `scripts/grant_app_permissions.sh` grants the app SP UC access + provisions the
+  VS endpoint (not expressible as DAB-native grants).
 
 ## Running the Eval Pipeline from CLI
 
@@ -234,8 +242,8 @@ comments, PII, domain, ontology, and FK predictions.
 ### Three-step workflow
 
 ```bash
-# 1. Deploy (builds wheel, syncs bundle -- skip the app)
-./deploy.sh --profile DMVM --target demo --no-app
+# 1. Deploy (builds wheel via artifacts.build hook, syncs bundle)
+databricks bundle deploy -t demo -p DMVM
 
 # 2. Run the full analytics pipeline with FHIR bundle + eval tables
 #    Pass ontology_bundle and table_names explicitly: ontology_bundle defaults to

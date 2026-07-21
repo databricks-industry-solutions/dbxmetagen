@@ -1,8 +1,8 @@
 # dbxmetagen Examples
 
-Standalone notebooks that show how to use dbxmetagen as a **pip-installable library** in your own projects. Each notebook installs dbxmetagen from GitHub -- no repo clone, no `deploy.sh`, no Asset Bundles needed.
+Standalone notebooks that show how to use dbxmetagen as a **pip-installable library** in your own projects. Each notebook installs dbxmetagen from GitHub -- no repo clone, no Asset Bundle deploy needed.
 
-> **Looking for the full experience?** The main repo's `deploy.sh` gives you a web dashboard, pre-configured jobs with concurrent processing, review/apply workflow, and more. See the [top-level README](../README.md#quickstart).
+> **Looking for the full experience?** Deploying the Asset Bundle (`databricks bundle deploy`) gives you a web dashboard, pre-configured jobs with concurrent processing, review/apply workflow, and more. See the [top-level README](../README.md#quickstart).
 
 ## How to use
 

@@ -1,0 +1,190 @@
+resources:
+  apps:
+    dbxmetagen_app:
+      name: "${var.app_name}"
+      description: "dbxmetagen dashboard: metadata review, profiling, ontology, and graph analytics"
+      source_code_path: ../../apps/dbxmetagen-app/app
+      # App runtime env. This is the single source of truth: on a bundle deploy,
+      # config.env is sent in the deploy API call and OVERRIDES the app's app.yaml,
+      # so app.yaml carries only the `command`. Job IDs use `value_from` (snake_case!)
+      # referencing the named entries in the `resources:` block below.
+      config:
+        env:
+          - name: CATALOG_NAME
+            value: "${var.catalog_name}"
+          - name: SCHEMA_NAME
+            value: "${var.schema_name}"
+          - name: WAREHOUSE_ID
+            value_from: sql_warehouse
+          - name: GRAPHRAG_MODEL
+            value: "databricks-claude-sonnet-4-6"
+          - name: NODE_TYPE
+            value: "i3.2xlarge"
+          - name: METADATA_GENERATOR_JOB_ID
+            value_from: metadata_generator_job
+          - name: METADATA_PARALLEL_MODES_JOB_ID
+            value_from: metadata_parallel_modes_job
+          - name: SYNC_DDL_JOB_ID
+            value_from: sync_ddl_job
+          - name: FULL_ANALYTICS_PIPELINE_JOB_ID
+            value_from: full_analytics_pipeline_job
+          - name: FULL_ANALYTICS_PIPELINE_SERVERLESS_JOB_ID
+            value_from: analytics_serverless_job
+          - name: FK_PREDICTION_JOB_ID
+            value_from: fk_prediction_job
+          - name: SYNC_GRAPH_LAKEBASE_JOB_ID
+            value_from: sync_graph_lakebase_job
+          - name: ONTOLOGY_PREDICTION_JOB_ID
+            value_from: ontology_prediction_job
+          - name: KNOWLEDGE_BASE_BUILDER_JOB_ID
+            value_from: knowledge_base_builder_job
+          - name: PROFILING_JOB_ID
+            value_from: profiling_job
+          - name: METAGEN_WITH_KB_JOB_ID
+            value_from: metagen_with_kb_job
+          - name: SEMANTIC_LAYER_JOB_ID
+            value_from: semantic_layer_job
+          - name: METADATA_KB_BUILD_JOB_ID
+            value_from: metadata_kb_build_job
+          - name: METADATA_PARALLEL_KB_BUILD_JOB_ID
+            value_from: parallel_kb_build_job
+          - name: METADATA_SERVERLESS_JOB_ID
+            value_from: metadata_serverless_job
+          - name: METADATA_PARALLEL_SERVERLESS_JOB_ID
+            value_from: parallel_serverless_job
+          - name: KB_ENRICHED_MODES_JOB_ID
+            value_from: kb_enriched_modes_job
+          - name: KB_ENRICHED_SERVERLESS_JOB_ID
+            value_from: kb_enriched_serverless_job
+          - name: IMPORT_COMMENTS_JOB_ID
+            value_from: import_comments_job
+          - name: SETUP_MCP_SERVERS_JOB_ID
+            value_from: setup_mcp_servers_job
+          - name: BUILD_VECTOR_INDEX_JOB_ID
+            value_from: build_vector_index_job
+          - name: BUILD_KNOWLEDGE_GRAPH_JOB_ID
+            value_from: build_knowledge_graph_job
+          - name: VECTOR_SEARCH_ENDPOINT
+            value: "${var.vs_endpoint_name}"
+          - name: VECTOR_SEARCH_INDEX
+            value: "metadata_vs_index"
+          - name: LLM_MODEL
+            value: "databricks-claude-sonnet-4-6"
+          - name: ENABLE_OBO
+            value: "${var.enable_obo}"
+          - name: APP_DISPLAY_NAME
+            value: "${var.app_display_name}"
+          - name: MLFLOW_TRACE_TIMEOUT_SECONDS
+            value: "120"
+          # MLFLOW_EXPERIMENT: optional override for trace experiment path.
+          # Default (unset): auto-resolves to /Users/{app_spn}/experiments/dbxmetagen_app_traces
+          # which is only visible to the app service principal and workspace admins.
+          # Uncomment to route traces to a custom path (e.g. /Shared/ for demos):
+          # - name: MLFLOW_EXPERIMENT
+          #   value: "/Shared/dbxmetagen/dbxmetagen_agent_traces"
+      resources:
+        - name: sql_warehouse
+          sql_warehouse:
+            id: ${var.warehouse_id}
+            permission: CAN_USE
+        # vector_search_index is not yet supported in DAB YAML (UI-only resource).
+        # VS endpoint CAN_USE is granted by scripts/grant_app_permissions.sh; index
+        # UC perms are covered by the schema grants in that same script.
+        - name: metadata_generator_job
+          job:
+            id: ${resources.jobs.metadata_generator_job.id}
+            permission: CAN_MANAGE_RUN
+        - name: metadata_parallel_modes_job
+          job:
+            id: ${resources.jobs.metadata_parallel_modes_job.id}
+            permission: CAN_MANAGE_RUN
+        - name: sync_ddl_job
+          job:
+            id: ${resources.jobs.sync_ddl_job.id}
+            permission: CAN_MANAGE_RUN
+        - name: full_analytics_pipeline_job
+          job:
+            id: ${resources.jobs.full_analytics_pipeline_job.id}
+            permission: CAN_MANAGE_RUN
+        - name: analytics_serverless_job
+          job:
+            id: ${resources.jobs.full_analytics_pipeline_serverless_job.id}
+            permission: CAN_MANAGE_RUN
+        - name: fk_prediction_job
+          job:
+            id: ${resources.jobs.fk_prediction_job.id}
+            permission: CAN_MANAGE_RUN
+        - name: sync_graph_lakebase_job
+          job:
+            id: ${resources.jobs.sync_graph_lakebase_job.id}
+            permission: CAN_MANAGE_RUN
+        - name: ontology_prediction_job
+          job:
+            id: ${resources.jobs.ontology_prediction_job.id}
+            permission: CAN_MANAGE_RUN
+        - name: knowledge_base_builder_job
+          job:
+            id: ${resources.jobs.knowledge_base_builder_job.id}
+            permission: CAN_MANAGE_RUN
+        - name: profiling_job
+          job:
+            id: ${resources.jobs.profiling_job.id}
+            permission: CAN_MANAGE_RUN
+        - name: metagen_with_kb_job
+          job:
+            id: ${resources.jobs.metadata_with_knowledge_base_job.id}
+            permission: CAN_MANAGE_RUN
+        - name: semantic_layer_job
+          job:
+            id: ${resources.jobs.semantic_layer_job.id}
+            permission: CAN_MANAGE_RUN
+        - name: metadata_kb_build_job
+          job:
+            id: ${resources.jobs.metadata_kb_build_job.id}
+            permission: CAN_MANAGE_RUN
+        - name: parallel_kb_build_job
+          job:
+            id: ${resources.jobs.metadata_parallel_kb_build_job.id}
+            permission: CAN_MANAGE_RUN
+        - name: metadata_serverless_job
+          job:
+            id: ${resources.jobs.metadata_serverless_job.id}
+            permission: CAN_MANAGE_RUN
+        - name: parallel_serverless_job
+          job:
+            id: ${resources.jobs.metadata_parallel_serverless_job.id}
+            permission: CAN_MANAGE_RUN
+        - name: kb_enriched_modes_job
+          job:
+            id: ${resources.jobs.metadata_kb_enriched_modes_job.id}
+            permission: CAN_MANAGE_RUN
+        - name: kb_enriched_serverless_job
+          job:
+            id: ${resources.jobs.metadata_kb_enriched_serverless_job.id}
+            permission: CAN_MANAGE_RUN
+        - name: import_comments_job
+          job:
+            id: ${resources.jobs.metadata_import_comments_job.id}
+            permission: CAN_MANAGE_RUN
+        - name: setup_mcp_servers_job
+          job:
+            id: ${resources.jobs.setup_mcp_servers_job.id}
+            permission: CAN_MANAGE_RUN
+        - name: build_vector_index_job
+          job:
+            id: ${resources.jobs.build_vector_index_job.id}
+            permission: CAN_MANAGE_RUN
+        - name: build_knowledge_graph_job
+          job:
+            id: ${resources.jobs.build_knowledge_graph_job.id}
+            permission: CAN_MANAGE_RUN
+      # OBO OAuth scopes. Empty by default (OBO off). To enable On-Behalf-Of user
+      # auth, set enable_obo=true AND override user_api_scopes, e.g. in
+      # variable-overrides.json:
+      #   {"user_api_scopes": ["files.files", "sql.statement-execution", "dashboards.genie"]}
+      user_api_scopes: ${var.user_api_scopes}
+      # Who can open the app UI (CAN_USE). Empty by default; the deploying user
+      # already has CAN_MANAGE via the target-level permissions block. Override
+      # to grant groups/users, e.g.:
+      #   {"app_permissions": [{"group_name": "account users", "level": "CAN_USE"}]}
+      permissions: ${var.app_permissions}

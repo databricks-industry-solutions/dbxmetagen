@@ -2,6 +2,18 @@ bundle:
   name: dbxmetagen
   databricks_cli_version: ">=0.283.0"
 
+# Deployment is a plain `databricks bundle deploy` -- there is no deploy.sh.
+# Per-workspace values (catalog, schema, warehouse, host) come from your CLI
+# profile plus bundle variable overrides. See README "Deployment" for the flow:
+#   1. databricks bundle deploy -t <target> -p <profile>   (builds wheel + deploys)
+#   2. scripts/grant_app_permissions.sh -t <target> -p <profile>   (UC grants + VS)
+#
+# Set the required variables (catalog_name, schema_name, warehouse_id) via any of:
+#   - a gitignored variable-overrides.json at the repo root, OR
+#   - --var "catalog_name=...,schema_name=...,warehouse_id=..." on the CLI, OR
+#   - BUNDLE_VAR_catalog_name / BUNDLE_VAR_schema_name / ... env vars
+# The workspace host comes from the CLI profile (-p) or the DATABRICKS_HOST env var.
+
 sync:
   include:
     - apps/dbxmetagen-app/app/configurations/**
@@ -24,8 +36,12 @@ include:
 artifacts:
   default:
     type: whl
-    build: "rm -rf dist/ && uv build"
-    dynamic_version: true
+    # build_artifacts.sh stamps the version with a deploy timestamp, builds the
+    # wheel, copies it into the app source dir, and regenerates the app's
+    # requirements.txt. It owns versioning, so dynamic_version is off (letting
+    # DAB also stamp would produce a double local-version segment / PEP 440 error).
+    build: "bash scripts/build_artifacts.sh"
+    dynamic_version: false
     path: .
 
 # --- spaCy model for PI detection ---
@@ -38,7 +54,7 @@ artifacts:
 # By default, no policies are applied (policy_id and budget_policy_id
 # default to empty in variables.yml). To set a policy:
 #
-# Option 1 - Raw ID (set via .env, --var, or BUNDLE_VAR_policy_id):
+# Option 1 - Raw ID (set via variable-overrides.json, --var, or BUNDLE_VAR_policy_id):
 #   policy_id=001DD81A49229D7C
 #
 # Option 2 - Name-based lookup (add to your target block below):
@@ -55,43 +71,23 @@ targets:
   dev:
     mode: development
     default: true
-    workspace:
-      host: __DATABRICKS_HOST__
-    variables:
-      catalog_name: __CATALOG_NAME__
-      schema_name: __SCHEMA_NAME__
-      warehouse_id: __WAREHOUSE_ID__
-      vs_endpoint_name: __VS_ENDPOINT_NAME__
+    run_as: ${var.run_as}
     permissions:
       - user_name: ${var.deploying_user}
         level: CAN_MANAGE
-__RUN_AS__
 
   demo:
     mode: development
-    workspace:
-      host: __DATABRICKS_HOST__
-    variables:
-      catalog_name: __CATALOG_NAME__
-      schema_name: __SCHEMA_NAME__
-      warehouse_id: __WAREHOUSE_ID__
-      vs_endpoint_name: __VS_ENDPOINT_NAME__
+    run_as: ${var.run_as}
     permissions:
       - user_name: ${var.deploying_user}
         level: CAN_MANAGE
-__RUN_AS__
 
   prod:
     mode: production
     workspace:
-      host: __DATABRICKS_HOST__
       root_path: ${var.current_working_directory}
-    variables:
-      catalog_name: __CATALOG_NAME__
-      schema_name: __SCHEMA_NAME__
-      warehouse_id: __WAREHOUSE_ID__
-      vs_endpoint_name: __VS_ENDPOINT_NAME__
+    run_as: ${var.run_as}
     permissions:
       - user_name: ${var.current_user}
         level: CAN_MANAGE
-__RUN_AS__

@@ -155,6 +155,17 @@ variables:
   current_user:
     description: User deploying the bundle. Can apply to service principals as well.
     default: ${workspace.current_user.userName}
+  run_as:
+    description: >-
+      Identity that jobs run as. Defaults to the deploying user. To run jobs as a
+      service principal instead, override this complex variable, e.g. in a gitignored
+      variable-overrides.json:
+        {"run_as": {"service_principal_name": "00000000-0000-0000-0000-000000000000"}}
+      Note: in development-mode targets (dev, demo), DAB requires run_as to be the
+      deploying user; SP run_as is intended for the prod target.
+    type: complex
+    default:
+      user_name: ${workspace.current_user.userName}
   current_working_directory:
     description: Working directory or bundle root.
     default: /Users/${var.current_user}/.bundle/${bundle.name}/${bundle.target}
@@ -183,7 +194,7 @@ variables:
     description: "Node type for job clusters. Must match your cloud provider. AWS: i3.2xlarge (default), Azure: Standard_DS4_v2, GCP: n2-highmem-8."
     default: i3.2xlarge
   policy_id:
-    description: "Cluster policy ID for classic job clusters. Leave empty for no policy. To resolve by name, override with lookup in your target (see databricks.yml.template)."
+    description: "Cluster policy ID for classic job clusters. Leave empty for no policy. To resolve by name, override with a lookup block in your target (see the commented pattern in databricks.yml)."
     default: ""
   budget_policy_id:
     description: "Serverless budget policy ID for cost attribution on serverless jobs. Get the ID from Settings > Compute > Serverless usage policies. Leave empty for no policy."

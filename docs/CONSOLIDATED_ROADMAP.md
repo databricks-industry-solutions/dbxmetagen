@@ -451,7 +451,7 @@ Hardening of multi-bundle coexistence and sweep cleanup. Canonical invariants in
 | PK-4 | Package metadata in `pyproject.toml` | OPEN | P3 | S | PI Ph4 |
 | PK-5 | Distribution strategy (PyPI / private / git) | OPEN | P3 | S | PI Ph5 |
 | PK-6 | CI/CD wheel build + test | OPEN | P3 | M | PI Ph6 |
-| PK-7 | Remove dead `app_service_principal_application_id` var and double-deploy from `deploy.sh` | OPEN | P2 | S | deploy analysis |
+| PK-7 | Remove dead `app_service_principal_application_id` var and double-deploy from `deploy.sh` | DONE | P2 | S | deploy analysis — deploy.sh removed; collapsed to `bundle deploy` + `scripts/grant_app_permissions.sh` (static bundle YAML, single-pass, build hook) |
 
 ### PK-2: Dual-mode notebooks
 

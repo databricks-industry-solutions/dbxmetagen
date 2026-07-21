@@ -28,27 +28,40 @@ The core value of dbxmetagen is **metadata generation and a governed knowledge g
 
 **Prerequisites:** Databricks CLI (>=0.283.0), Python 3.10+, [uv](https://docs.astral.sh/uv/) (for dependency management), Node.js (for frontend build), a Databricks workspace with Unity Catalog enabled, and a Foundation Model endpoint (e.g. `databricks-claude-sonnet-4-6`).
 
-1. Clone the repo and configure:
+1. Clone the repo and set your per-workspace bundle variables. `databricks.yml`
+   is static and committed — supply `catalog_name`, `schema_name`, and
+   `warehouse_id` (and optionally `vs_endpoint_name`) via a gitignored
+   `variable-overrides.json` at the repo root:
    ```bash
    git clone https://github.com/databricks-industry-solutions/dbxmetagen
    cd dbxmetagen
-   cp example.env dev.env   # Edit with your workspace URL, catalog, schema, warehouse_id
+   cat > variable-overrides.json <<'JSON'
+   { "catalog_name": "my_catalog",
+     "schema_name": "metadata_results",
+     "warehouse_id": "<your-warehouse-id>" }
+   JSON
    ```
+   (Alternatively pass them with `--var "catalog_name=...,schema_name=...,warehouse_id=..."`
+   or `BUNDLE_VAR_*` env vars. The workspace host comes from your CLI profile.
+   `example.env` documents every available variable.)
 
-2. **Azure / GCP users:** The default job cluster node type is `i3.2xlarge` (AWS). Update `node_type` in `variables.yml` before deploying:
+2. **Azure / GCP users:** The default job cluster node type is `i3.2xlarge` (AWS). Update `node_type` in `variables.yml` (or set it in `variable-overrides.json`) before deploying:
    - **Azure:** `Standard_D8s_v3`
    - **GCP:** `n2-highmem-8`
 
-3. Deploy:
+3. Build the frontend, deploy, and grant the app service principal UC access:
    ```bash
-   ./deploy.sh --profile <your-profile> --target dev
+   (cd apps/dbxmetagen-app/app/src && npm install && npm run build)   # compile React dashboard
+   databricks bundle deploy -t dev -p <your-profile>                  # builds wheel + deploys jobs & app
+   scripts/grant_app_permissions.sh -t dev -p <your-profile>          # UC grants + Vector Search endpoint
    ```
-   This builds the wheel, compiles the React frontend, deploys jobs + app via Asset Bundles, and starts the dashboard.
+   `bundle deploy` runs `scripts/build_artifacts.sh` automatically (via the
+   bundle's `artifacts.build` hook) to build and stage the wheel — there is no
+   `deploy.sh`. The grants script is separate because DAB cannot grant an app's
+   own service principal UC access or provision a Vector Search endpoint natively.
 
-   To deploy jobs only (skip app build, SP detection, and app start):
-   ```bash
-   ./deploy.sh --profile <your-profile> --target dev --no-app
-   ```
+   To deploy jobs only (skip the app), deploy just the job resources or omit the
+   grants step; the app is started automatically by `bundle deploy` when present.
 
 4. Access the app at **Workspace > Apps > dbxmetagen-app** and follow the instructions there.
 
@@ -383,7 +396,7 @@ The app is in `apps/dbxmetagen-app/` and provides a FastAPI backend with a React
 - **Agent** -- Deep analysis chat with GraphRAG, graph explorer, semantic search, and MLflow trace links
 - **Entity Browser** -- Entity-first navigation with conformance view
 
-**Permissions model:** The app uses two separate identities. The **app service principal** (SPN) controls what the app UI can *read* -- it needs SELECT on your catalog to browse tables, coverage, metadata, and graph data. The **deployer's identity** (the user who ran `deploy.sh`) controls what jobs can *write* -- jobs run as the deployer and need CREATE TABLE, ALTER TABLE, and SET TAGS on the target catalog. This means a user can see metadata in the app even if they don't have permission to generate or apply it, and conversely, the app SPN doesn't need write access to your tables. UC grants for the app SPN are applied automatically on every deploy. See [docs/PERMISSIONS.md](docs/PERMISSIONS.md) for the full permissions reference including OBO mode, Vector Search, and end-user access.
+**Permissions model:** The app uses two separate identities. The **app service principal** (SPN) controls what the app UI can *read* -- it needs SELECT on your catalog to browse tables, coverage, metadata, and graph data. The **deployer's identity** (the user who ran `databricks bundle deploy`) controls what jobs can *write* -- jobs run as the deployer and need CREATE TABLE, ALTER TABLE, and SET TAGS on the target catalog. This means a user can see metadata in the app even if they don't have permission to generate or apply it, and conversely, the app SPN doesn't need write access to your tables. UC grants for the app SPN are applied by `scripts/grant_app_permissions.sh` (run after each deploy). See [docs/PERMISSIONS.md](docs/PERMISSIONS.md) for the full permissions reference including OBO mode, Vector Search, and end-user access.
 
 **Deep Analysis Agent:** Natural-language queries using a LangGraph GraphRAG pipeline that combines Vector Search retrieval, multi-hop graph traversal via Lakebase, FK/KB lookups, and LLM-generated data queries. Results include MLflow trace links for observability.
 
@@ -417,7 +430,7 @@ dbxmetagen exposes its knowledge base, knowledge graph, and vector index as [Dat
 |-------|-------------|
 | [Configuration](docs/CONFIGURATION.md) | All runtime parameters, ontology bundles, Vector Search, Lakebase, OBO, and community summaries |
 | [Permissions](docs/PERMISSIONS.md) | Two-identity model (app SPN vs job owner), UC grants, OBO mode, and end-user access |
-| [Manual Deployment](docs/MANUAL_DEPLOYMENT.md) | Step-by-step deployment without `deploy.sh` (CLI-only or CI/CD) |
+| [Manual Deployment](docs/MANUAL_DEPLOYMENT.md) | Step-by-step deployment from the workspace UI (no local CLI) |
 | [Domain & Ontology Architecture](docs/DOMAIN_ONTOLOGY_ARCHITECTURE.md) | Formal vs custom ontology bundles, domain YAML, and how they interact |
 | [MCP Servers](docs/MCP_SERVERS.md) | Managed MCP server setup, tool reference, and agent integration |
 | [QA Checklist](docs/QA_CHECKLIST.md) | Pre-release validation checklist |
@@ -460,11 +473,11 @@ export UV_INDEX_URL=https://pypi-proxy.dev.databricks.com/simple
 export UV_NATIVE_TLS=1
 ```
 
-Use that for `uv sync`, `uv lock`, `./deploy.sh`, and `./publish.sh`. Local `uv.lock` is gitignored; never commit it (it may contain internal proxy URLs). When bumping deps, export `requirements.txt` with `bash scripts/export_requirements.sh` and commit that file.
+Use that for `uv sync`, `uv lock`, `databricks bundle deploy`, and `./publish.sh`. Local `uv.lock` is gitignored; never commit it (it may contain internal proxy URLs). When bumping deps, export `requirements.txt` with `bash scripts/export_requirements.sh` and commit that file.
 
-**External customers** need no special config — `uv` defaults to public PyPI. `./deploy.sh` only runs `uv build` (hatchling) and does not use `uv.lock`.
+**External customers** need no special config — `uv` defaults to public PyPI. The deploy build hook (`scripts/build_artifacts.sh`) only runs `uv build` (hatchling) and does not use `uv.lock`.
 
-### `deploy.sh` fails downloading from `pypi-proxy.dev.databricks.com`
+### `bundle deploy` fails downloading from `pypi-proxy.dev.databricks.com`
 
 This URL is only reachable on Databricks internal networks. If you are **not** on a corp laptop, unset any internal proxy:
 
@@ -493,21 +506,19 @@ export UV_NATIVE_TLS=1
 
 Add this to your shell profile (`~/.zshrc`, `~/.bashrc`, etc.) to make it permanent.
 
-### `deploy.sh` hangs or fails at "Building frontend"
+### Frontend build (`npm run build`) hangs or fails
 
-The deploy script runs `npm install` and `npm run build` to compile the React frontend. Common issues:
+Building the React frontend runs `npm install` and `npm run build`. Common issues:
 
 - **npm not installed:** Install Node.js (which includes npm) from https://nodejs.org/ or via `brew install node`.
 - **npm registry unreachable:** Corporate firewalls or VPNs may block `registry.npmjs.org`. Check your network/proxy settings.
 - **npm crashes ("Exit handler never called"):** This is a [known npm 11.x bug](https://github.com/npm/cli/issues). Fix by clearing the cache and retrying.
   If that doesn't help, downgrade npm: `npm install -g npm@10`
 
-Then redeploy with `./deploy.sh`.
-
-**Workaround:** The pre-built frontend (`apps/dbxmetagen-app/app/src/dist/`) is committed to the repo, so you can skip the build entirely if you haven't changed any frontend code:
+**Workaround:** The pre-built frontend (`apps/dbxmetagen-app/app/src/dist/`) is committed to the repo, so if you haven't changed any frontend code you can skip the `npm run build` step entirely and deploy the committed `dist/` directly:
 
 ```bash
-./deploy.sh --profile <your-profile> --target dev --no-frontend
+databricks bundle deploy -t dev -p <your-profile>
 ```
 
 ### Jobs fail with "Instance type not supported" or "NODE_TYPE_NOT_SUPPORTED"

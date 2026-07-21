@@ -6,10 +6,10 @@ Use this checklist when validating a new release before merging to `main`. Copy 
 
 ## 1. Deployment
 
-- [ ] Fresh `./deploy.sh --profile <PROFILE> --target <TARGET>` succeeds
-- [ ] Redeploy (second run) succeeds without errors
-- [ ] `--permissions` flag grants Unity Catalog permissions for the app service principal
-- [ ] `--no-app` flag skips app deployment
+- [ ] Fresh `databricks bundle deploy -t <TARGET> -p <PROFILE>` succeeds (builds wheel via artifacts.build hook)
+- [ ] `scripts/grant_app_permissions.sh -t <TARGET> -p <PROFILE>` grants UC + Vector Search access to the app SP
+- [ ] Redeploy (second run) succeeds without errors and the app reinstalls a fresh wheel (version bumped)
+- [ ] Jobs show `CAN_MANAGE_RUN` for the app SP after a single deploy pass
 - [ ] App starts and is accessible at the deployed URL
 - [ ] Version in the app header matches the release version
 - [ ] `.whl` artifact uploads correctly and job definitions reference the matching build path
