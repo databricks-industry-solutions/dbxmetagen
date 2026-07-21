@@ -77,6 +77,14 @@ sed "s|__WHL_NAME__|${WHL_NAME}|" \
     "${APP_DIR}/requirements.txt.template" \
     > "${APP_DIR}/requirements.txt"
 
+# --- Stage the configurations dir into the app source ---
+# The app resolves ontology bundles / domain configs from a `configurations/`
+# dir next to api_server.py (see _CONFIG_DIR_CANDIDATES). That dir is gitignored
+# and exists only as a deploy-time copy; sync.include ships it to the workspace.
+rm -rf "${APP_DIR}/configurations"
+cp -r configurations "${APP_DIR}/configurations"
+
 echo "  App wheel: ${APP_DIR}/${WHL_NAME}"
 echo "  App requirements.txt regenerated"
+echo "  App configurations/ staged"
 echo "=== build_artifacts: done ==="
