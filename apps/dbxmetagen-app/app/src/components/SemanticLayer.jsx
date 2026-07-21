@@ -1,5 +1,5 @@
 import React, { useState, useEffect, useRef } from 'react'
-import { ErrorBanner, PrereqBanner } from '../App'
+import { ErrorBanner } from '../App'
 import { cachedFetch, cachedFetchObj, invalidateCache, TTL } from '../apiCache'
 import { PageHeader, EmptyState, Skeleton, Section } from './ui'
 import { useCatalogSchemaTables } from '../hooks/useCatalogSchemaTables'
@@ -231,6 +231,112 @@ function kpiMatchesTables(k, selectedTables) {
     const tl = t.toLowerCase()
     return sel.includes(tl) || sel.some(s => s.endsWith('.' + tl) || s === tl)
   })
+}
+
+/**
+ * Derive the state of the two non-optional prerequisites for metric-view
+ * generation from the holistic coverage stats. Metric views build on core
+ * metadata (descriptions) AND the analytics pipeline (ontology / FK / vector
+ * index), so both must be complete before generation is allowed.
+ *
+ * Returns null while stats are still loading (so the rail can stay quiet
+ * rather than flash a false "not run" state).
+ */
+function deriveFoundation(pipelineStats) {
+  if (!pipelineStats) return null
+  const s = pipelineStats
+  const metadataDone = (s.profiled || 0) > 0 && (s.with_comments || 0) > 0
+  // The analytics pipeline's outputs: ontology entities, FK predictions, or a
+  // populated vector index. Any one present means it has run for this scope.
+  const analyticsDone =
+    (s.entity_type_count || 0) > 0 ||
+    (s.fk_count || 0) > 0 ||
+    (s.vs_documents || 0) > 0
+  return { metadataDone, analyticsDone, ready: metadataDone && analyticsDone, stats: s }
+}
+
+/**
+ * Three-step readiness rail pinned above the Metric Views workflow. Shows the
+ * fixed foundation → generate order (core metadata → analytics pipeline →
+ * metric views) and deep-links to the Generate Metadata tab to resolve any
+ * unmet prerequisite. Collapses to a thin confirmation once ready.
+ */
+function FoundationRail({ foundation, onNavigate }) {
+  if (!foundation) return null
+  const { metadataDone, analyticsDone, ready, stats } = foundation
+
+  if (ready) {
+    return (
+      <div className="rounded-lg border border-emerald-200 dark:border-emerald-800/40 bg-emerald-50/60 dark:bg-emerald-900/15 px-4 py-2 text-sm flex items-center gap-2">
+        <svg className="w-4 h-4 text-emerald-500 shrink-0" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+          <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M5 13l4 4L19 7" />
+        </svg>
+        <span className="text-slate-600 dark:text-slate-300">
+          Foundation ready &mdash; core metadata and the analytics pipeline are in place. Generate metric views below.
+        </span>
+      </div>
+    )
+  }
+
+  const Step = ({ n, title, done, detail, actionLabel, current }) => (
+    <div className="flex-1 min-w-[200px]">
+      <div className="flex items-center gap-2">
+        <span className={`inline-flex items-center justify-center w-6 h-6 rounded-full text-xs font-semibold shrink-0 ${
+          done ? 'bg-emerald-500 text-white'
+            : current ? 'bg-dbx-lava text-white'
+            : 'bg-slate-200 dark:bg-dbx-navy-500 text-slate-500 dark:text-slate-400'}`}>
+          {done ? '✓' : n}
+        </span>
+        <span className={`text-sm font-medium ${done ? 'text-slate-700 dark:text-slate-200' : current ? 'text-dbx-lava' : 'text-slate-500 dark:text-slate-400'}`}>{title}</span>
+      </div>
+      <div className="pl-8 mt-0.5">
+        <p className={`text-xs ${done ? 'text-emerald-600 dark:text-emerald-400' : 'text-amber-600 dark:text-amber-400'}`}>{detail}</p>
+        {!done && actionLabel && (
+          <button onClick={() => onNavigate?.('jobs')} className="mt-1 text-xs font-semibold text-dbx-lava hover:underline">
+            {actionLabel} &rarr;
+          </button>
+        )}
+      </div>
+    </div>
+  )
+
+  const total = stats.total_tables || 0
+  const profiled = stats.profiled || 0
+
+  return (
+    <div className="rounded-xl border border-amber-200 dark:border-amber-700/40 bg-amber-50/60 dark:bg-amber-900/10 px-4 py-3">
+      <p className="text-xs font-semibold uppercase tracking-wider text-slate-400 dark:text-slate-500 mb-2">
+        Metric views build on this foundation
+      </p>
+      <div className="flex flex-wrap gap-4 items-start">
+        <Step
+          n={1}
+          title="Core metadata"
+          done={metadataDone}
+          current={!metadataDone}
+          detail={metadataDone ? `${profiled}${total ? `/${total}` : ''} tables described` : 'Not generated yet'}
+          actionLabel="Generate metadata"
+        />
+        <div className="hidden sm:flex items-center text-slate-300 dark:text-slate-600 self-center">&rarr;</div>
+        <Step
+          n={2}
+          title="Analytics pipeline"
+          done={analyticsDone}
+          current={metadataDone && !analyticsDone}
+          detail={analyticsDone ? 'Ontology, FKs & index built' : 'Not run yet'}
+          actionLabel="Run analytics pipeline"
+        />
+        <div className="hidden sm:flex items-center text-slate-300 dark:text-slate-600 self-center">&rarr;</div>
+        <Step
+          n={3}
+          title="Metric views"
+          done={false}
+          current={metadataDone && analyticsDone}
+          detail={metadataDone && analyticsDone ? 'Ready to generate' : 'Unlocks when 1 & 2 are done'}
+        />
+      </div>
+    </div>
+  )
 }
 
 export default function SemanticLayer({ onNavigate, pipelineStats }) {
@@ -768,6 +874,10 @@ export default function SemanticLayer({ onNavigate, pipelineStats }) {
   const startGeneration = async (mode = 'replace') => {
     const lines = questionsText.split('\n').filter(l => l.trim())
     if (!selectedTables.length || !lines.length) return
+    if (!foundationReady) {
+      setError('Generate core metadata and run the analytics pipeline before creating metric views.')
+      return
+    }
     setLoading(true); setError(null); setTaskId(null); setTaskStatus(null)
     try {
       const fqTables = selectedTables.map(t => t.includes('.') ? t : `${selectedCatalog}.${selectedSchema}.${t}`)
@@ -1251,6 +1361,11 @@ export default function SemanticLayer({ onNavigate, pipelineStats }) {
   const input = "input-base"
   const btnPrimary = "px-4 py-2 bg-dbx-lava text-white rounded-md text-sm hover:bg-red-700 disabled:opacity-50"
 
+  // Non-optional foundation gate: metric-view generation requires both core
+  // metadata and the analytics pipeline to be complete (in that order).
+  const foundation = deriveFoundation(pipelineStats)
+  const foundationReady = !foundation || foundation.ready  // null (loading) is permissive
+
   return (
     <div className="space-y-6">
       <div className="flex items-center justify-between">
@@ -1266,12 +1381,7 @@ export default function SemanticLayer({ onNavigate, pipelineStats }) {
           Export SQL
         </button>
       </div>
-      <PrereqBanner
-        show={pipelineStats && pipelineStats.profiled === 0}
-        message="Generate metadata first so metric views can reference table and column descriptions. This page works best after Step 1 (Generate) and Step 2 (Review)."
-        actionLabel="Go to Generate Metadata"
-        onAction={() => onNavigate?.('jobs')}
-      />
+      <FoundationRail foundation={foundation} onNavigate={onNavigate} />
       {cst.error && (
         <div className="rounded-lg border border-red-200 dark:border-red-800/40 bg-red-50 dark:bg-red-900/20 px-4 py-3 text-sm text-red-700 dark:text-red-300">
           Could not load catalogs or tables. Check that the SQL warehouse is running and the app service principal has USE permissions on the target catalog. <span className="font-mono text-red-500 dark:text-red-400">{cst.error}</span>
@@ -1771,17 +1881,27 @@ export default function SemanticLayer({ onNavigate, pipelineStats }) {
         <p className="text-xs text-slate-500 dark:text-slate-400 mb-4">
           Materialization: <strong>{materialize ? `ON (${materializationSchedule || 'manual refresh'})` : 'OFF'}</strong>
         </p>
+        {!foundationReady && (
+          <div className="rounded-lg border border-amber-200 dark:border-amber-700/40 bg-amber-50/80 dark:bg-amber-900/15 px-4 py-3 text-sm text-slate-600 dark:text-slate-300 mb-3">
+            {foundation && !foundation.metadataDone
+              ? 'Generate core metadata first — metric views reference table and column descriptions. '
+              : 'Run the analytics pipeline first — metric views build on the ontology, foreign keys, and vector index it produces. '}
+            <button onClick={() => onNavigate?.('jobs')} className="font-semibold text-dbx-lava hover:underline">
+              Go to Generate Metadata &rarr;
+            </button>
+          </div>
+        )}
         <div className="flex gap-3 flex-wrap">
           <button onClick={() => startGeneration('replace')}
-            disabled={loading || isGenerating || !selectedTables.length || !questionLines.length}
-            title="Create new metric view definitions (replaces any pending ones)"
+            disabled={loading || isGenerating || !selectedTables.length || !questionLines.length || !foundationReady}
+            title={!foundationReady ? 'Complete core metadata and the analytics pipeline first' : 'Create new metric view definitions (replaces any pending ones)'}
             className={btnPrimary}>
             {isGenerating ? 'Generating...' : 'Generate'}
           </button>
           {selectedProjectId && (
             <button onClick={() => { if (!confirm('Regenerate all definitions in this project? Applied metric views are preserved.')) return; startGeneration('replace_all') }}
-              disabled={loading || isGenerating || !selectedTables.length || !questionLines.length}
-              title="Replace all draft, validated, and failed definitions in this project and regenerate. Applied metric views are preserved."
+              disabled={loading || isGenerating || !selectedTables.length || !questionLines.length || !foundationReady}
+              title={!foundationReady ? 'Complete core metadata and the analytics pipeline first' : 'Replace all draft, validated, and failed definitions in this project and regenerate. Applied metric views are preserved.'}
               className="px-4 py-2 bg-dbx-lava text-white rounded-md text-sm hover:bg-red-700 disabled:opacity-50">
               Regenerate All
             </button>
