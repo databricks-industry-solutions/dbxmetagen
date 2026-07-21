@@ -239,7 +239,7 @@ export default function GettingStarted({ onNavigate, onStartTour }) {
         </p>
         <div className="flex gap-2">
           <button onClick={() => onNavigate('metadata')} className="btn-primary btn-sm">Review Metadata</button>
-          <button onClick={() => onNavigate('coverage')} className="btn-ghost btn-sm">View Coverage</button>
+          <button onClick={() => onNavigate('metadata')} className="btn-ghost btn-sm">View Coverage</button>
         </div>
       </div>
 
@@ -280,8 +280,8 @@ export default function GettingStarted({ onNavigate, onStartTour }) {
           <OutcomeCard
             title="Query Directly"
             description="All outputs live in your metadata schema as Delta tables. Run SQL against graph_nodes, graph_edges, ontology_entities, or column_knowledge_base from any notebook, dashboard, or downstream pipeline."
-            onClick={() => onNavigate('coverage')}
-            linkLabel="View Coverage"
+            onClick={() => onNavigate('metadata')}
+            linkLabel="Review & Coverage"
           />
         </div>
       </div>

@@ -25,7 +25,6 @@ import { Joyride, STATUS } from 'react-joyride'
 import AgentChat from './components/AgentChat'
 import BatchJobs from './components/BatchJobs'
 import MetadataReview from './components/MetadataReview'
-import Coverage from './components/Coverage'
 import EntityBrowser from './components/EntityBrowser'
 import SemanticLayer from './components/SemanticLayer'
 import GenieBuilder from './components/GenieBuilder'
@@ -33,9 +32,11 @@ import AnalystChat from './components/AnalystChat'
 import CustomerContext from './components/CustomerContext'
 import OntologyBuilder from './components/OntologyBuilder'
 import GettingStarted from './components/GettingStarted'
+import Home from './components/Home'
 const COMPONENTS = {
+  home: Home,
   guide: GettingStarted,
-  agent: AgentChat, coverage: Coverage, jobs: BatchJobs, metadata: MetadataReview,
+  agent: AgentChat, jobs: BatchJobs, metadata: MetadataReview,
   entities: EntityBrowser, semantic: SemanticLayer, genie: GenieBuilder,
   analyst: AnalystChat, context: CustomerContext, ontologyBuilder: OntologyBuilder,
 }
@@ -49,36 +50,31 @@ const NAV_CAT_COLORS = {
 const TAB_ACCENT = {
   guide: 'border-t-dbx-lava',
   jobs: 'border-t-dbx-lava', semantic: 'border-t-dbx-lava', genie: 'border-t-dbx-lava', context: 'border-t-dbx-lava', ontologyBuilder: 'border-t-dbx-lava',
-  metadata: 'border-t-dbx-sky', coverage: 'border-t-dbx-sky', entities: 'border-t-dbx-sky',
+  metadata: 'border-t-dbx-sky', entities: 'border-t-dbx-sky',
   agent: 'border-t-dbx-teal',
 }
 
-const NAV_STRUCTURE = [
-  {
-    category: 'Design',
-    items: [
-      { id: 'jobs',     label: 'Generate Metadata', desc: 'Descriptions, sensitivity, domains, ontology, FK predictions, and metrics' },
-      { id: 'semantic', label: 'Define Metrics', desc: 'Define metric views and KPIs' },
-      { id: 'genie',   label: 'Build Genie Space', desc: 'Build natural-language SQL spaces' },
-      { id: 'ontologyBuilder', label: 'Build Ontology', desc: 'Visual entity, relationship, and property editor' },
-    ],
-  },
-  {
-    category: 'Review',
-    items: [
-      { id: 'metadata', label: 'Review & Apply', desc: 'Review, edit, and apply AI-generated metadata' },
-      { id: 'coverage', label: 'Coverage', desc: 'Catalog health and metadata completeness' },
-    ],
-  },
-  {
-    category: 'Explore',
-    items: [
-      { id: 'agent',      label: 'Agent',           desc: 'Chat, graph explorer, and semantic search' },
-      { id: 'entities', label: 'Entity Browser', desc: 'Entity-first navigation with conformance view' },
-      // { id: 'analyst',    label: 'SQL Analyst Comparison', desc: 'Demonstrate semantic layer value with side-by-side agents' },
-    ],
-  },
+// Primary nav mirrors the two-door landing: Home + the two outcomes.
+const PRIMARY_NAV = [
+  { id: 'home',     label: 'Home' },
+  { id: 'jobs',     label: 'Generate Metadata' },
+  { id: 'semantic', label: 'Semantic Layer' },
 ]
+
+// Everything else — review, exploration, and the deeper build tools — lives
+// under one "More" menu so it doesn't compete with the two primary paths.
+// Coverage is folded into Review & Apply (not a standalone destination).
+const MORE_NAV = {
+  category: 'More',
+  items: [
+    { id: 'metadata', label: 'Review & Apply', desc: 'Review, edit, and apply AI-generated metadata' },
+    { id: 'agent', label: 'Explore / Agent', desc: 'Chat, graph explorer, and semantic search' },
+    { id: 'genie', label: 'Build Genie Space', desc: 'Build natural-language SQL spaces' },
+    { id: 'entities', label: 'Entity Browser', desc: 'Entity-first navigation with conformance view' },
+    { id: 'ontologyBuilder', label: 'Build Ontology', desc: 'Visual entity, relationship, and property editor' },
+    { id: 'guide', label: 'Guide', desc: 'Full walkthrough and workflow help' },
+  ],
+}
 
 export async function safeFetch(url, options) {
   try {
@@ -142,138 +138,14 @@ const TOUR_STEPS = [
     disableBeacon: true,
   },
   {
-    target: '[data-tour="stepper"]',
-    content: 'This workflow bar tracks your progress. Green checks appear as each step gets data. Click any step to jump there.',
-  },
-  {
-    target: '[data-tour="nav-design"]',
-    content: 'Start here. Run Core Metadata first (descriptions + sensitivity + domains), then Advanced Metadata to build the knowledge graph. Start with a few tables to verify results before scaling up.',
-  },
-  {
-    target: '[data-tour="nav-review"]',
-    content: 'Review every AI-generated result before applying. Pay special attention to PI/PHI classifications (compliance risk) and FK predictions (structural impact).',
-  },
-  {
-    target: '[data-tour="nav-explore"]',
-    content: 'Once metadata is generated and reviewed, explore it here. The agent, entity browser, and graph are powered by the same Delta tables you can also query directly.',
+    target: '[data-tour="nav-more"]',
+    content: 'Every other tool -- Review & Apply, the agent, Genie, entity browser, and ontology builder -- lives under "More". The two main paths (Generate Metadata, Semantic Layer) are always one click to the left.',
   },
   {
     target: '[data-tour="header-guide"]',
-    content: 'Come back to the Getting Started page any time from here.',
+    content: 'Come back to this Getting Started page any time from here.',
   },
 ]
-
-const PIPELINE_STEPS = [
-  { id: 'jobs', label: 'Generate Metadata', short: 'Generate',
-    desc: 'Run core (descriptions, sensitivity, domain) and advanced (ontology, FK, graph) jobs',
-    countKey: 'profiled', totalKey: 'total_tables', unit: 'tables described' },
-  { id: 'metadata', label: 'Review & Apply', short: 'Review',
-    desc: 'Inspect AI-generated metadata, edit, and apply to Unity Catalog',
-    countKey: 'with_comments', totalKey: 'total_tables', unit: 'with comments' },
-  { id: 'semantic', label: 'Define Metrics', short: 'Metrics',
-    desc: 'Create reusable KPI definitions as metric views',
-    countKey: 'metric_views', unit: 'metric views' },
-  { id: 'genie', label: 'Build Genie Space', short: 'Genie',
-    desc: 'Create natural-language SQL spaces for end users',
-    countKey: null, unit: null },
-  { id: 'agent', label: 'Explore', short: 'Explore',
-    desc: 'Chat with the metadata agent, graph explorer, and semantic search',
-    countKey: 'vs_documents', unit: 'indexed docs' },
-]
-
-function PipelineStepper({ activeTab, onSelect, stats }) {
-  const [dismissed, setDismissed] = useState(() => {
-    try { return localStorage.getItem('dbxmetagen_stepperDismissed') === 'true' } catch { return false }
-  })
-
-  const dismiss = () => {
-    setDismissed(true)
-    try { localStorage.setItem('dbxmetagen_stepperDismissed', 'true') } catch {}
-  }
-  const show = () => {
-    setDismissed(false)
-    try { localStorage.removeItem('dbxmetagen_stepperDismissed') } catch {}
-  }
-
-  if (dismissed) {
-    return (
-      <button onClick={show} className="text-xs text-slate-400 dark:text-slate-500 hover:text-dbx-lava dark:hover:text-dbx-lava transition-colors flex items-center gap-1 mb-2">
-        <svg className="w-3 h-3" fill="none" viewBox="0 0 24 24" stroke="currentColor"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M9 5l7 7-7 7" /></svg>
-        Show workflow guide
-      </button>
-    )
-  }
-
-  const activeIdx = PIPELINE_STEPS.findIndex(s => s.id === activeTab)
-
-  return (
-    <div className="mb-4 animate-slide-up" data-tour="stepper">
-      <div className="flex items-center justify-between mb-2">
-        <span className="text-xs font-semibold uppercase tracking-wider text-slate-500 dark:text-slate-400">Workflow</span>
-        <button onClick={dismiss} className="text-xs text-slate-400 hover:text-slate-600 dark:hover:text-slate-300 transition-colors">Hide</button>
-      </div>
-      <div className="flex items-stretch gap-0">
-        {PIPELINE_STEPS.map((step, i) => {
-          const count = step.countKey && stats ? (stats[step.countKey] || 0) : null
-          const total = step.totalKey && stats ? (stats[step.totalKey] || 0) : null
-          const isActive = step.id === activeTab
-          const isDone = count !== null && count > 0
-          const isReachable = i === 0 || (stats && (stats.profiled || 0) > 0)
-
-          let ringColor = 'border-slate-300 dark:border-slate-600 text-slate-400 dark:text-slate-500'
-          let bgColor = 'bg-white dark:bg-dbx-navy-600'
-          if (isActive) {
-            ringColor = 'border-dbx-lava text-dbx-lava'
-            bgColor = 'bg-red-50/50 dark:bg-dbx-lava/10'
-          } else if (isDone) {
-            ringColor = 'border-emerald-400 text-emerald-500'
-            bgColor = 'bg-emerald-50/50 dark:bg-emerald-900/10'
-          }
-
-          return (
-            <React.Fragment key={step.id}>
-              {i > 0 && (
-                <div className="flex items-center px-0.5 shrink-0">
-                  <div className={`w-6 h-0.5 ${isDone || isActive ? 'bg-emerald-300 dark:bg-emerald-600' : 'bg-slate-200 dark:bg-slate-700'}`} />
-                </div>
-              )}
-              <button
-                onClick={() => onSelect(step.id)}
-                title={step.desc}
-                className={`flex-1 min-w-0 rounded-xl border-2 ${ringColor} ${bgColor} px-3 py-2.5 text-left transition-all hover:shadow-sm group ${
-                  !isReachable && !isActive ? 'opacity-50' : ''
-                }`}
-              >
-                <div className="flex items-center gap-2 mb-0.5">
-                  <span className={`flex items-center justify-center w-5 h-5 rounded-full text-[10px] font-bold shrink-0 ${
-                    isActive ? 'bg-dbx-lava text-white'
-                    : isDone ? 'bg-emerald-500 text-white'
-                    : 'bg-slate-200 dark:bg-slate-700 text-slate-500 dark:text-slate-400'
-                  }`}>
-                    {isDone && !isActive ? (
-                      <svg className="w-3 h-3" fill="none" viewBox="0 0 24 24" stroke="currentColor"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth={3} d="M5 13l4 4L19 7" /></svg>
-                    ) : (i + 1)}
-                  </span>
-                  <span className={`text-xs font-semibold truncate ${isActive ? 'text-dbx-lava' : 'text-slate-700 dark:text-slate-200'}`}>
-                    {step.short}
-                  </span>
-                </div>
-                {count !== null && (
-                  <p className="text-[10px] text-slate-500 dark:text-slate-400 mt-0.5 truncate pl-7">
-                    {total !== null ? `${count}/${total}` : count} {step.unit}
-                  </p>
-                )}
-                {count === null && step.unit === null && stats && (stats.profiled || 0) > 0 && (
-                  <p className="text-[10px] text-slate-500 dark:text-slate-400 mt-0.5 truncate pl-7">Ready</p>
-                )}
-              </button>
-            </React.Fragment>
-          )
-        })}
-      </div>
-    </div>
-  )
-}
 
 function NavDropdown({ cat, activeTab, onSelect, dataTour }) {
   const [open, setOpen] = useState(false)
@@ -352,7 +224,7 @@ class TabErrorBoundary extends React.Component {
 }
 
 const VALID_TABS = new Set(Object.keys(COMPONENTS))
-const readHash = () => { const h = window.location.hash.replace('#', ''); return VALID_TABS.has(h) ? h : 'jobs' }
+const readHash = () => { const h = window.location.hash.replace('#', ''); return VALID_TABS.has(h) ? h : 'home' }
 
 function AuthStatusBadge() {
   const [auth, setAuth] = useState(null)
@@ -395,13 +267,7 @@ function AuthStatusBadge() {
 }
 
 export default function App() {
-  const [activeTab, setActiveTab] = useState(() => {
-    const h = readHash()
-    if (h === 'jobs') {
-      try { if (!localStorage.getItem('dbxmetagen_tourSeen')) return 'guide' } catch {}
-    }
-    return h
-  })
+  const [activeTab, setActiveTab] = useState(() => readHash())
   const [visitedTabs, setVisitedTabs] = useState(new Set([activeTab]))
   const [runTour, setRunTour] = useState(false)
   const [sessionExpired, setSessionExpired] = useState(false)
@@ -465,7 +331,10 @@ export default function App() {
       {/* Header */}
       <header className="bg-gradient-to-r from-dbx-navy via-dbx-navy-700 to-dbx-navy-600 px-6 py-4 shadow-md">
         <div className="flex items-center justify-between max-w-[90rem] mx-auto">
-          <div className="flex items-center gap-3">
+          <button
+            onClick={() => setActiveTab('home')}
+            className="flex items-center gap-3 text-left transition-opacity hover:opacity-80"
+            title="Home" aria-label="Go to home">
             <div className="relative">
               <img src="/logo.png" alt="dbxmetagen" className="h-9 w-9" />
               <div className="absolute -bottom-0.5 left-0 right-0 h-0.5 bg-dbx-lava rounded-full" />
@@ -477,7 +346,7 @@ export default function App() {
               </h1>
               <p className="text-dbx-oat/60 text-xs mt-0.5">Automated metadata, knowledge graph, and semantic layer for Unity Catalog</p>
             </div>
-          </div>
+          </button>
           <div className="flex items-center gap-1.5">
             <AuthStatusBadge />
             <button onClick={() => setActiveTab('guide')} data-tour="header-guide"
@@ -519,29 +388,30 @@ export default function App() {
       />
 
       {/* Navigation */}
+      {/* On the home screen the two outcome cards ARE the navigation, so the nav
+          bar is hidden to avoid duplicating them. It returns once inside a flow. */}
+      {activeTab !== 'home' && (
       <nav className="bg-white/80 dark:bg-dbx-navy-700/90 backdrop-blur-sm border-b border-dbx-oat-dark/50 dark:border-dbx-navy-400/20 shadow-nav sticky top-0 z-40">
-        <div className="flex items-center gap-2 px-6 py-2 max-w-[90rem] mx-auto">
-          <button
-            onClick={() => setActiveTab('guide')}
-            className={`px-3.5 py-1.5 rounded-lg text-sm font-medium transition-all duration-200 whitespace-nowrap ${
-              activeTab === 'guide'
-                ? 'bg-white dark:bg-dbx-navy-500 text-dbx-lava shadow-sm'
-                : 'text-slate-600 dark:text-slate-400 hover:text-dbx-navy dark:hover:text-slate-200 hover:bg-white/60 dark:hover:bg-dbx-navy-500/50'
-            }`}>
-            Guide
-          </button>
-          <div className="w-px h-6 bg-slate-200 dark:bg-dbx-navy-400/40 mx-0.5 flex-shrink-0" />
-          {NAV_STRUCTURE.map((cat, ci) => (
-            <React.Fragment key={cat.category}>
-              {ci > 0 && <div className="w-px h-6 bg-slate-200 dark:bg-dbx-navy-400/40 mx-0.5 flex-shrink-0" />}
-              <NavDropdown cat={cat} activeTab={activeTab} onSelect={setActiveTab} dataTour={`nav-${cat.category.toLowerCase()}`} />
-            </React.Fragment>
+        <div className="flex items-center gap-1.5 px-6 py-2 max-w-[90rem] mx-auto">
+          {PRIMARY_NAV.map(item => (
+            <button
+              key={item.id}
+              onClick={() => setActiveTab(item.id)}
+              className={`px-3.5 py-1.5 rounded-lg text-sm font-medium transition-all duration-200 whitespace-nowrap ${
+                activeTab === item.id
+                  ? 'bg-white dark:bg-dbx-navy-500 text-dbx-lava shadow-sm'
+                  : 'text-slate-600 dark:text-slate-400 hover:text-dbx-navy dark:hover:text-slate-200 hover:bg-white/60 dark:hover:bg-dbx-navy-500/50'
+              }`}>
+              {item.label}
+            </button>
           ))}
+          <div className="w-px h-6 bg-slate-200 dark:bg-dbx-navy-400/40 mx-0.5 flex-shrink-0" />
+          <NavDropdown cat={MORE_NAV} activeTab={activeTab} onSelect={setActiveTab} dataTour="nav-more" />
         </div>
       </nav>
+      )}
 
       <main className="p-6 max-w-[90rem] mx-auto">
-        <PipelineStepper activeTab={activeTab} onSelect={setActiveTab} stats={pipelineStats} />
         {Object.entries(COMPONENTS).map(([tabId, Comp]) => {
           if (!visitedTabs.has(tabId)) return null
           const isActive = tabId === activeTab

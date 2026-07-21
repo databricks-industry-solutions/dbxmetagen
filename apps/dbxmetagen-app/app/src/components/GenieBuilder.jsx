@@ -448,7 +448,7 @@ export default function GenieBuilder({ onNavigate, pipelineStats }) {
           <EmptyState
             title="No tables or metric views in this catalog"
             description="Run the metadata pipeline on tables, or apply metric views in the Semantic Layer tab."
-            action={onNavigate ? { label: 'Open Coverage', onClick: () => onNavigate('coverage') } : undefined}
+            action={onNavigate ? { label: 'Generate Metadata', onClick: () => onNavigate('jobs') } : undefined}
           />
         )}
         {!tables.length && !tablesLoading && schemas.length > 0 && (

@@ -1,6 +1,7 @@
 import React, { useState, useEffect, useCallback, useMemo } from 'react'
 import { safeFetch, ErrorBanner, PrereqBanner } from '../App'
 import { FKApplyPanel } from './ForeignKeyGeneration'
+import { CoveragePanel } from './Coverage'
 import { PageHeader, EmptyState, SkeletonTable } from './ui'
 import { useCatalogSchemaTables } from '../hooks/useCatalogSchemaTables'
 
@@ -491,6 +492,10 @@ function ReviewEditor() {
           <button onClick={() => setInfo(null)} className="text-slate-400 hover:text-slate-600 ml-2">&times;</button>
         </div>
       )}
+
+      {/* Catalog coverage & review-status summary (folded in from the old
+          standalone Coverage tab -- collapsed by default). */}
+      <CoveragePanel />
 
       {/* Workflow guide -- shown when no data is loaded yet */}
       {reviewData.length === 0 && !loading && (

@@ -4,7 +4,9 @@ import react from '@vitejs/plugin-react'
 export default defineConfig({
   plugins: [react()],
   server: {
-    proxy: { '/api': 'http://localhost:8000' }
+    // Scope to '/api/' so the proxy doesn't swallow local source modules like
+    // '/apiCache.js' during dev. All real backend calls use '/api/...'.
+    proxy: { '/api/': 'http://localhost:8000' }
   },
   build: {
     outDir: 'dist',
