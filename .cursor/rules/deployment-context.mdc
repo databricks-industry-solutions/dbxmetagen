@@ -5,7 +5,7 @@
 - **Host**: `fe-vm-vdm-classic-q6xfh3.cloud.databricks.com` (FEVM workspace)
 - **Profile**: `DMVM`
 - **Target**: `demo`
-- **Deploy command**: `databricks bundle deploy -t demo -p DMVM` then `scripts/grant_app_permissions.sh -t demo -p DMVM` (no deploy.sh)
+- **Deploy command**: `databricks bundle deploy -t demo -p DMVM`, then `databricks bundle run -t demo -p DMVM dbxmetagen_app` (deploy app source + start), then `scripts/grant_app_permissions.sh -t demo -p DMVM` (no deploy.sh; bundle deploy does NOT start the app)
 - **Run command**: `databricks bundle run <job> -t demo -p DMVM`
 
 ## Available Model Endpoints

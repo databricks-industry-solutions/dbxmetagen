@@ -26,8 +26,9 @@ the essentials and hard-won pitfalls.
 | Schema | `metadata_results` |
 
 ```bash
-# Deploy (bundle deploy + post-deploy grants; no deploy.sh)
+# Deploy (bundle deploy + bundle run to start the app + post-deploy grants; no deploy.sh)
 databricks bundle deploy -t demo -p DMVM
+databricks bundle run -t demo -p DMVM dbxmetagen_app   # bundle deploy does NOT start the app
 scripts/grant_app_permissions.sh -t demo -p DMVM
 
 # Run jobs
@@ -206,9 +207,10 @@ Rules:
 ## Deployment
 
 ```bash
-# Standard deploy: plain bundle deploy (builds wheel via artifacts.build hook,
-# syncs bundle, starts app) + post-deploy grants. There is NO deploy.sh.
+# Standard deploy: bundle deploy (builds wheel via artifacts.build hook, syncs
+# bundle) + bundle run (deploy app source + start) + post-deploy grants. No deploy.sh.
 databricks bundle deploy -t demo -p DMVM
+databricks bundle run -t demo -p DMVM dbxmetagen_app   # deploy app source + START
 scripts/grant_app_permissions.sh -t demo -p DMVM
 
 # Rebuild frontend first if it changed (dist/ is committed):
@@ -223,13 +225,17 @@ scripts/grant_app_permissions.sh -t demo -p DMVM
 - `bundle deploy` runs `scripts/build_artifacts.sh` (the `artifacts.build` hook):
   builds + version-stamps the wheel, copies it into the app dir, regenerates the
   app `requirements.txt`. **Never edit those generated files.**
+- **`bundle deploy` registers the app but does NOT start it.** `bundle run
+  dbxmetagen_app` deploys the source to the app compute and starts it (takes a few
+  minutes to install the wheel).
 - Per-workspace values (`catalog_name`, `schema_name`, `warehouse_id`,
   `vs_endpoint_name`) come from bundle var overrides: a gitignored
   `variable-overrides.json`, `--var`, or `BUNDLE_VAR_*`. Host comes from the CLI profile.
 - App env lives in `config.env` of `dbxmetagen_app.yml` (single source of truth;
-  overrides app.yaml on deploy). Job IDs use `value_from:` (snake_case).
-- `scripts/grant_app_permissions.sh` grants the app SP UC access + provisions the
-  VS endpoint (not expressible as DAB-native grants).
+  overrides app.yaml on deploy). Job IDs use `value_from:` (snake_case). **config.env
+  cannot carry an optionally-empty value** -- the SDK strips empty strings via
+  omitempty and the Apps deploy then rejects the entry ("must specify value or
+  valueFrom"); keep only always-populated env vars there.
 
 ## Running the Eval Pipeline from CLI
 

@@ -211,7 +211,9 @@ add the app service principal with **CAN_USE** access.
 
 1. Go to **Workspace > Apps** in the left sidebar
 2. Click `dbxmetagen-app`
-3. Click **Start** (or the app may auto-start after deploy)
+3. Click **Deploy** on the app (the workspace UI's app Deploy button), then
+   **Start**. A bundle deploy registers the app but does not deploy its source
+   or start it -- from the CLI this is `databricks bundle run dbxmetagen_app`.
 
 The app is now accessible at the URL shown on the Apps page.
 

@@ -76,6 +76,30 @@ def test_config_env_job_ids_map_to_declared_resources():
     assert not unresolved, f"config.env value_from with no matching resource: {unresolved}"
 
 
+def test_config_env_entries_have_a_source():
+    """Every config.env entry must have a non-empty `value` or a `value_from`.
+
+    DAB config.env cannot carry an optionally-empty value: the Go SDK strips
+    empty strings via omitempty, and the Apps deploy then rejects the entry with
+    "Must specify environment variable source using either value or valueFrom",
+    aborting `bundle run`. So a `value: "${var.x}"` whose var defaults to "" is a
+    latent deploy failure. Guard against committing one.
+    """
+    env = _app_block()["config"]["env"]
+    # An entry is safe if it has a value_from, or a value that is a non-empty
+    # literal OR a ${var.*} reference whose resolved value we can't check here but
+    # which must itself be non-empty at deploy time. We flag only literal-empty
+    # values, which are the ones that reproducibly break the deploy.
+    bad = [
+        e["name"] for e in env
+        if "value_from" not in e and str(e.get("value", "")).strip() == ""
+    ]
+    assert not bad, (
+        f"config.env entries with an empty literal value (break `bundle run`): {bad}. "
+        "Omit the entry entirely if it can be empty; the app should read it with a default."
+    )
+
+
 def test_app_resource_count_under_cap():
     """Databricks Apps allow at most 20 resources per app. Exceeding it fails the
     deploy with 'Number of app resources must be less than or equal to 20'.

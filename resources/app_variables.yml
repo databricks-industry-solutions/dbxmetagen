@@ -10,11 +10,6 @@ variables:
       of DAB development mode. In development mode, DAB already
       prefixes with the deploying user's name.
     default: "dbxmetagen-app"
-  app_display_name:
-    description: >-
-      Optional display name shown in the app header alongside "dbxmetagen"
-      (e.g. team, project, or customer name). Purely cosmetic; empty = none.
-    default: ""
   user_api_scopes:
     description: >-
       OBO OAuth scopes granted to the app for On-Behalf-Of user auth. Empty by

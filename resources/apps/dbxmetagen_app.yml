@@ -62,8 +62,12 @@ resources:
             value: "databricks-claude-sonnet-4-6"
           - name: ENABLE_OBO
             value: "${var.enable_obo}"
-          - name: APP_DISPLAY_NAME
-            value: "${var.app_display_name}"
+          # APP_DISPLAY_NAME is intentionally omitted: DAB config.env cannot carry an
+          # optionally-empty value (the SDK strips empty strings via omitempty, which
+          # the Apps deploy then rejects with "must specify value or valueFrom"). The
+          # app reads it as os.environ.get("APP_DISPLAY_NAME", "") so absence is fine.
+          # To set a display name, add a static `- name: APP_DISPLAY_NAME` / `value:`
+          # entry here with a non-empty literal.
           - name: MLFLOW_TRACE_TIMEOUT_SECONDS
             value: "120"
           # MLFLOW_EXPERIMENT: optional override for trace experiment path.

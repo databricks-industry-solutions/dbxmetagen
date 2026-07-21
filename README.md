@@ -49,19 +49,22 @@ The core value of dbxmetagen is **metadata generation and a governed knowledge g
    - **Azure:** `Standard_D8s_v3`
    - **GCP:** `n2-highmem-8`
 
-3. Build the frontend, deploy, and grant the app service principal UC access:
+3. Build the frontend, deploy, start the app, and grant the app service principal UC access:
    ```bash
    (cd apps/dbxmetagen-app/app/src && npm install && npm run build)   # compile React dashboard
-   databricks bundle deploy -t dev -p <your-profile>                  # builds wheel + deploys jobs & app
+   databricks bundle deploy -t dev -p <your-profile>                  # builds wheel + registers jobs & app
+   databricks bundle run -t dev -p <your-profile> dbxmetagen_app      # deploy source to the app + start it
    scripts/grant_app_permissions.sh -t dev -p <your-profile>          # UC grants + Vector Search endpoint
    ```
    `bundle deploy` runs `scripts/build_artifacts.sh` automatically (via the
    bundle's `artifacts.build` hook) to build and stage the wheel — there is no
-   `deploy.sh`. The grants script is separate because DAB cannot grant an app's
-   own service principal UC access or provision a Vector Search endpoint natively.
+   `deploy.sh`. **`bundle deploy` registers the app but does not start it**;
+   `bundle run dbxmetagen_app` deploys the source to the app's compute and starts
+   it (this can take a few minutes as it installs the wheel). The grants script is
+   separate because DAB cannot grant an app's own service principal UC access or
+   provision a Vector Search endpoint natively.
 
-   To deploy jobs only (skip the app), deploy just the job resources or omit the
-   grants step; the app is started automatically by `bundle deploy` when present.
+   To deploy jobs only, skip the `bundle run` and grants steps.
 
 4. Access the app at **Workspace > Apps > dbxmetagen-app** and follow the instructions there.
 
