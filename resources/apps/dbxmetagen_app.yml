@@ -24,8 +24,6 @@ resources:
             value_from: metadata_generator_job
           - name: METADATA_PARALLEL_MODES_JOB_ID
             value_from: metadata_parallel_modes_job
-          - name: SYNC_DDL_JOB_ID
-            value_from: sync_ddl_job
           - name: FULL_ANALYTICS_PIPELINE_JOB_ID
             value_from: full_analytics_pipeline_job
           - name: FULL_ANALYTICS_PIPELINE_SERVERLESS_JOB_ID
@@ -34,16 +32,8 @@ resources:
             value_from: fk_prediction_job
           - name: SYNC_GRAPH_LAKEBASE_JOB_ID
             value_from: sync_graph_lakebase_job
-          - name: ONTOLOGY_PREDICTION_JOB_ID
-            value_from: ontology_prediction_job
-          - name: KNOWLEDGE_BASE_BUILDER_JOB_ID
-            value_from: knowledge_base_builder_job
           - name: PROFILING_JOB_ID
             value_from: profiling_job
-          - name: METAGEN_WITH_KB_JOB_ID
-            value_from: metagen_with_kb_job
-          - name: SEMANTIC_LAYER_JOB_ID
-            value_from: semantic_layer_job
           - name: METADATA_KB_BUILD_JOB_ID
             value_from: metadata_kb_build_job
           - name: METADATA_PARALLEL_KB_BUILD_JOB_ID
@@ -98,10 +88,6 @@ resources:
           job:
             id: ${resources.jobs.metadata_parallel_modes_job.id}
             permission: CAN_MANAGE_RUN
-        - name: sync_ddl_job
-          job:
-            id: ${resources.jobs.sync_ddl_job.id}
-            permission: CAN_MANAGE_RUN
         - name: full_analytics_pipeline_job
           job:
             id: ${resources.jobs.full_analytics_pipeline_job.id}
@@ -118,25 +104,9 @@ resources:
           job:
             id: ${resources.jobs.sync_graph_lakebase_job.id}
             permission: CAN_MANAGE_RUN
-        - name: ontology_prediction_job
-          job:
-            id: ${resources.jobs.ontology_prediction_job.id}
-            permission: CAN_MANAGE_RUN
-        - name: knowledge_base_builder_job
-          job:
-            id: ${resources.jobs.knowledge_base_builder_job.id}
-            permission: CAN_MANAGE_RUN
         - name: profiling_job
           job:
             id: ${resources.jobs.profiling_job.id}
-            permission: CAN_MANAGE_RUN
-        - name: metagen_with_kb_job
-          job:
-            id: ${resources.jobs.metadata_with_knowledge_base_job.id}
-            permission: CAN_MANAGE_RUN
-        - name: semantic_layer_job
-          job:
-            id: ${resources.jobs.semantic_layer_job.id}
             permission: CAN_MANAGE_RUN
         - name: metadata_kb_build_job
           job:

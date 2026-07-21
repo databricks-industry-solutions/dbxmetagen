@@ -49,12 +49,22 @@ def test_all_job_resources_wired_in_config_env():
     assert not missing, f"Job resources not wired in config.env: {missing}"
 
 
-def test_job_env_map_matches_config_env():
-    """Every *_JOB_ID env var the app reads must be present in config.env."""
+def test_config_env_job_ids_are_read_by_app():
+    """Every *_JOB_ID env var wired in config.env must actually be read by the app.
+
+    Note the direction: config.env is a SUBSET of _JOB_ENV_MAP, not equal to it.
+    The app wires only its primary-launch jobs via value_from (to stay under the
+    Databricks Apps 20-resource cap); the rest are resolved at runtime by the
+    ws.jobs.list() name-match fallback in run_job(). So we assert every wired var
+    is read, not that every read var is wired.
+    """
     env_vars = set(re.findall(r'"([A-Z_]+_JOB_ID)"', API_SERVER.read_text()))
-    env_names = {e["name"] for e in _app_block()["config"]["env"]}
-    missing = env_vars - env_names
-    assert not missing, f"_JOB_ENV_MAP vars missing from config.env: {missing}"
+    wired_job_id_names = {
+        e["name"] for e in _app_block()["config"]["env"]
+        if e["name"].endswith("_JOB_ID")
+    }
+    unread = wired_job_id_names - env_vars
+    assert not unread, f"config.env wires job-ID vars the app never reads: {unread}"
 
 
 def test_config_env_job_ids_map_to_declared_resources():
@@ -64,3 +74,13 @@ def test_config_env_job_ids_map_to_declared_resources():
     referenced = {e["value_from"] for e in app["config"]["env"] if "value_from" in e}
     unresolved = referenced - res_names
     assert not unresolved, f"config.env value_from with no matching resource: {unresolved}"
+
+
+def test_app_resource_count_under_cap():
+    """Databricks Apps allow at most 20 resources per app. Exceeding it fails the
+    deploy with 'Number of app resources must be less than or equal to 20'.
+    This guard catches an over-wired app resource block before deploy time.
+    """
+    app = _app_block()
+    n = len(app["resources"])
+    assert n <= 20, f"App declares {n} resources; the Databricks Apps cap is 20"
