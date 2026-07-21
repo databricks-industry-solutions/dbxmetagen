@@ -1,5 +1,5 @@
 import React, { useState, useEffect, useRef, useCallback, Component } from 'react'
-import { ErrorBanner, PrereqBanner } from '../App'
+import { ErrorBanner } from '../App'
 import { cachedFetchObj, TTL } from '../apiCache'
 import { PageHeader, EmptyState, Skeleton } from './ui'
 import { useCatalogSchemaTables } from '../hooks/useCatalogSchemaTables'
@@ -40,7 +40,6 @@ const TERMINAL_STATES = new Set(['TERMINATED', 'SKIPPED', 'INTERNAL_ERROR'])
 const TABS = [
   { id: 'core', label: 'Generate Core Metadata', sub: 'Descriptions \u00b7 Sensitivity \u00b7 Domain', color: 'bg-dbx-lava' },
   { id: 'advanced', label: 'Generate Advanced Metadata', sub: 'Ontology \u00b7 Foreign Keys \u00b7 Knowledge Graph', color: 'bg-dbx-amber' },
-  { id: 'assets', label: 'Semantic Layer Assets', sub: 'Metric Views', color: 'bg-dbx-teal' },
 ]
 
 const STATUS_LABELS = {
@@ -154,7 +153,6 @@ function HealthWarnings({ health }) {
 export default function BatchJobs({ onNavigate, pipelineStats }) {
   const [jobs, setJobs] = useState([])
   const [tableNames, setTableNames] = useState('')
-  const [mode, setMode] = useState('comment')
   const [applyDdl, setApplyDdl] = useState(false)
   const [federationMode, setFederationMode] = useState(false)
   const [catalogName, setCatalogName] = useState('')
@@ -177,7 +175,12 @@ export default function BatchJobs({ onNavigate, pipelineStats }) {
   const [similarityThreshold, setSimilarityThreshold] = useState(0.8)
   const [incremental, setIncremental] = useState(true)
   const [sweepStale, setSweepStale] = useState(false)
-  const [serverless, setServerless] = useState(true)
+  // Core-metadata run scope: 'all3' runs descriptions + sensitivity + domain;
+  // 'comment' / 'pi' / 'domain' run a single mode. Serverless is unified into
+  // settings.use_serverless (used by both the core and advanced tabs).
+  const [genMenuOpen, setGenMenuOpen] = useState(false)
+  const [skipKbEnrich, setSkipKbEnrich] = useState(false)
+  const genMenuRef = useRef(null)
   const [clusterMinK, setClusterMinK] = useState(2)
   const [clusterMaxK, setClusterMaxK] = useState(15)
   const [lakebaseCatalog, setLakebaseCatalog] = useState('')
@@ -216,6 +219,38 @@ export default function BatchJobs({ onNavigate, pipelineStats }) {
     return isParallel ? '_parallel_modes_job' : '_metadata_job'
   }
 
+  // Single entry point for core-metadata generation. `scope` is 'all3' (runs
+  // descriptions + sensitivity + domain together) or a single mode
+  // ('comment' | 'pi' | 'domain'). By default the all-3 path is KB-enriched
+  // (comments -> KB build -> PI/domain with KB context); "skip KB enrich"
+  // flips it to the faster non-enriched parallel job. Serverless is read from
+  // the unified settings.use_serverless.
+  const runGenerate = (scope) => {
+    setGenMenuOpen(false)
+    const common = {
+      table_names: tableNames,
+      apply_ddl: applyDdl,
+      federation_mode: federationMode,
+      ontology_bundle: ontologyBundle,
+      use_customer_context: settings.use_customer_context,
+      include_lineage: settings.include_lineage,
+      ...(domainConfig ? { domain_config: domainConfig } : {}),
+      extra_params: buildExtraParams(),
+    }
+    if (scope === 'all3') {
+      if (skipKbEnrich) {
+        // All 3 modes in parallel, no KB enrichment between passes.
+        runJob(getJobSuffix(true), { ...common, use_kb_comments: settings.use_kb_comments }, 'all3')
+      } else {
+        // Comments -> KB build -> PI + domain enriched with KB descriptions.
+        runJob(settings.use_serverless ? '_kb_enriched_serverless_job' : '_kb_enriched_modes_job', common, 'kb_enriched')
+      }
+      return
+    }
+    // Single mode (comment, PI, or domain).
+    runJob(getJobSuffix(false), { ...common, mode: scope, use_kb_comments: settings.use_kb_comments }, 'single')
+  }
+
   const [pickerOpen, setPickerOpen] = useState(false)
   const picker = useCatalogSchemaTables()
   const { catalogs: pickerCatalogs, schemas: pickerSchemas, filtered: filteredPickerTables, catalog: pickerCatalog, schema: pickerSchema, filter: pickerFilter, setCatalog: setPickerCatalog, setSchema: setPickerSchema, setFilter: setPickerFilter } = picker
@@ -228,6 +263,13 @@ export default function BatchJobs({ onNavigate, pipelineStats }) {
     columns_per_call: String(settings.columns_per_call),
     comment_style: settings.comment_style,
   })
+
+  useEffect(() => {
+    if (!genMenuOpen) return
+    const handler = e => { if (genMenuRef.current && !genMenuRef.current.contains(e.target)) setGenMenuOpen(false) }
+    document.addEventListener('mousedown', handler)
+    return () => document.removeEventListener('mousedown', handler)
+  }, [genMenuOpen])
 
   const loadBundles = useCallback(() => {
     setBundlesLoadError(null)
@@ -334,7 +376,6 @@ export default function BatchJobs({ onNavigate, pipelineStats }) {
   const findJob = (suffix) => jobs.find(j => j.name?.endsWith(suffix))
 
   const hasDomainSource = !!(ontologyBundle || domainConfig)
-  const needsDomain = mode === 'domain'
 
   const [runError, setRunError] = useState(null)
 
@@ -732,15 +773,7 @@ export default function BatchJobs({ onNavigate, pipelineStats }) {
                 )}
               </div>
               <div className="space-y-3">
-                <div>
-                  <label className="text-sm font-medium text-slate-700 dark:text-slate-200 mb-1.5 block">Generation Mode</label>
-                  <select value={mode} onChange={e => setMode(e.target.value)} className="select-base">
-                    <option value="comment">Table &amp; Column Descriptions</option>
-                    <option value="pi">Sensitive Data (PII / PHI / PCI)</option>
-                    <option value="domain" disabled={!hasDomainSource}>Business Domain{!hasDomainSource ? ' (select ontology or domain list first)' : ''}</option>
-                  </select>
-                  {needsDomain && !hasDomainSource && <p className="text-xs text-amber-600 dark:text-amber-400 mt-1">Domain classification requires an ontology bundle or domain list. Select one above, or switch to Descriptions or Sensitivity mode.</p>}
-                </div>
+                <p className="text-sm font-medium text-slate-700 dark:text-slate-200">Options</p>
                 <label className="flex items-center gap-2.5 text-sm text-slate-600 dark:text-slate-300 cursor-pointer"
                   title="Applies SQL comments directly to your tables. Disable this to review results first in the Review tab.">
                   <input type="checkbox" checked={applyDdl} disabled={federationMode} onChange={e => setApplyDdl(e.target.checked)} />
@@ -826,26 +859,71 @@ export default function BatchJobs({ onNavigate, pipelineStats }) {
               Ontology: {ontologyBundle ? bundles.find(b => b.key === ontologyBundle)?.name || ontologyBundle : <em>None</em>}
               {' | '}Domains: {domainConfig ? domainConfigs.find(d => d.key === domainConfig)?.name || domainConfig : (ontologyBundle ? 'from selected ontology' : <em>none</em>)}
             </p>
-            <div className="flex flex-wrap gap-3 mt-2">
-              <button onClick={() => runJob(settings.use_serverless ? '_kb_enriched_serverless_job' : '_kb_enriched_modes_job', { table_names: tableNames, apply_ddl: applyDdl, federation_mode: federationMode, ontology_bundle: ontologyBundle, include_lineage: settings.include_lineage, use_customer_context: settings.use_customer_context, ...(domainConfig ? { domain_config: domainConfig } : {}), extra_params: buildExtraParams() }, 'kb_enriched')}
-                disabled={!!runningAction || !tableNames.trim()}
-                title="Generates comments first, builds table + column knowledge bases, then runs PI and domain classification with KB enrichment. PI/domain prompts see the generated descriptions even if DDL hasn't been applied to the tables yet."
-                className="btn-primary btn-md">{runningAction === 'kb_enriched' ? 'Starting...' : `All 3 Modes (KB-Enriched)${settings.use_serverless ? ' (Serverless)' : ''}`}</button>
-              <button onClick={() => runJob(getJobSuffix(true), { table_names: tableNames, apply_ddl: applyDdl, federation_mode: federationMode, ontology_bundle: ontologyBundle, use_kb_comments: settings.use_kb_comments, use_customer_context: settings.use_customer_context, include_lineage: settings.include_lineage, ...(domainConfig ? { domain_config: domainConfig } : {}), extra_params: buildExtraParams() }, 'all3')}
-                disabled={!!runningAction || !tableNames.trim()}
-                title="Runs comments first, then PI + domain in parallel without building the knowledge base in between. PI/domain prompts will only see table descriptions if DDL was already applied. Best option when tables already have good comments."
-                className="btn-secondary btn-md">{runningAction === 'all3' ? 'Starting...' : `All 3 Modes${settings.use_serverless ? ' (Serverless)' : ''}`}</button>
-              <button onClick={() => runJob(getJobSuffix(false), { table_names: tableNames, mode, apply_ddl: applyDdl, federation_mode: federationMode, ontology_bundle: ontologyBundle, use_kb_comments: settings.use_kb_comments, use_customer_context: settings.use_customer_context, include_lineage: settings.include_lineage, ...(domainConfig ? { domain_config: domainConfig } : {}), extra_params: buildExtraParams() }, 'single')}
-                disabled={!!runningAction || !tableNames.trim() || (needsDomain && !hasDomainSource)}
-                title={(needsDomain && !hasDomainSource) ? 'Select an ontology bundle or domain list to run domain classification' : 'Run only the selected mode (comment, PI, or domain) as a single generation pass. Use for targeted re-runs on specific tables or when you only need one metadata type.'}
-                className="btn-md bg-slate-100 text-slate-700 rounded-lg hover:bg-slate-200 dark:bg-dbx-navy-400/30 dark:text-slate-300 dark:hover:bg-dbx-navy-400/50 disabled:opacity-50 transition-all">{runningAction === 'single' ? 'Starting...' : `Run Selected Mode${settings.build_kb_after ? ' + KB' : ''}${settings.use_serverless ? ' (Serverless)' : ''}`}</button>
+            {/* Primary generate: main click runs all 3 modes (KB-enriched by
+                default); the caret dropdown picks all-3 or a single mode. */}
+            <div className="flex flex-wrap items-center gap-3 mt-2">
+              <div className="relative inline-flex" ref={genMenuRef}>
+                <button onClick={() => runGenerate('all3')}
+                  disabled={!!runningAction || !tableNames.trim()}
+                  title="Generate all three metadata types (descriptions, sensitivity, and domain). By default, descriptions are generated first and used to enrich sensitivity and domain classification."
+                  className="btn-primary btn-md rounded-r-none">
+                  {(runningAction === 'kb_enriched' || runningAction === 'all3') ? 'Starting...' : 'Generate Metadata'}
+                </button>
+                <button onClick={() => setGenMenuOpen(o => !o)}
+                  disabled={!!runningAction || !tableNames.trim()}
+                  aria-label="Choose what to generate"
+                  className="btn-primary btn-md rounded-l-none border-l border-white/25 px-2">
+                  <svg className={`w-4 h-4 transition-transform ${genMenuOpen ? 'rotate-180' : ''}`} fill="none" viewBox="0 0 24 24" stroke="currentColor">
+                    <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M19 9l-7 7-7-7" />
+                  </svg>
+                </button>
+                {genMenuOpen && (
+                  <div className="absolute top-full left-0 mt-1 w-64 z-20 card p-1.5 shadow-elevated animate-slide-up">
+                    <p className="text-[10px] font-semibold uppercase tracking-wider text-slate-400 px-2 py-1">Run</p>
+                    <button onClick={() => runGenerate('all3')} disabled={!!runningAction || !tableNames.trim()}
+                      className="w-full text-left px-2 py-1.5 rounded-md text-sm text-slate-700 dark:text-slate-200 hover:bg-dbx-oat/60 dark:hover:bg-dbx-navy-500 disabled:opacity-50">
+                      All three <span className="text-xs text-slate-400">· descriptions · sensitivity · domain</span>
+                    </button>
+                    <div className="border-t border-dbx-oat-dark/30 dark:border-dbx-navy-400/20 my-1" />
+                    <p className="text-[10px] font-semibold uppercase tracking-wider text-slate-400 px-2 py-1">Just one</p>
+                    <button onClick={() => runGenerate('comment')} disabled={!!runningAction || !tableNames.trim()}
+                      className="w-full text-left px-2 py-1.5 rounded-md text-sm text-slate-700 dark:text-slate-200 hover:bg-dbx-oat/60 dark:hover:bg-dbx-navy-500 disabled:opacity-50">
+                      Descriptions
+                    </button>
+                    <button onClick={() => runGenerate('pi')} disabled={!!runningAction || !tableNames.trim()}
+                      className="w-full text-left px-2 py-1.5 rounded-md text-sm text-slate-700 dark:text-slate-200 hover:bg-dbx-oat/60 dark:hover:bg-dbx-navy-500 disabled:opacity-50">
+                      Sensitivity (PII / PHI / PCI)
+                    </button>
+                    <button onClick={() => runGenerate('domain')} disabled={!!runningAction || !tableNames.trim() || !hasDomainSource}
+                      title={!hasDomainSource ? 'Select an ontology bundle or domain list first' : ''}
+                      className="w-full text-left px-2 py-1.5 rounded-md text-sm text-slate-700 dark:text-slate-200 hover:bg-dbx-oat/60 dark:hover:bg-dbx-navy-500 disabled:opacity-50">
+                      Business Domain{!hasDomainSource ? ' (needs ontology/domain)' : ''}
+                    </button>
+                  </div>
+                )}
+              </div>
+              <span className="text-xs text-slate-400 dark:text-slate-500">
+                Runs on {settings.use_serverless ? 'serverless' : 'classic'} compute · {skipKbEnrich ? 'no KB enrichment' : 'KB-enriched'}
+              </span>
             </div>
-            <div className="text-xs text-slate-400 space-y-1 mt-1">
-              <p><strong className="text-slate-500">All 3 Modes (KB-Enriched)</strong>: Comments, then KB build, then PI + domain enriched with KB descriptions. PI/domain see generated comments even before DDL is applied. Most useful when tables don't already have good comments.</p>
-              <p><strong className="text-slate-500">All 3 Modes</strong>: Comments first, then PI + domain in parallel without KB enrichment. Faster but PI/domain won't see generated comments unless DDL was applied.</p>
-              <p><strong className="text-slate-500">Run Selected Mode</strong>: Run a single mode (comment, PI, or domain) on the listed tables. Best for quick, targeted runs.</p>
-              {settings.build_kb_after && <p><strong className="text-slate-500">+ KB</strong>: Builds the table + column knowledge base after generation so the Review tab is populated.</p>}
-            </div>
+
+            <details className="group mt-1">
+              <summary className="text-xs text-slate-500 dark:text-slate-400 cursor-pointer select-none inline-flex items-center gap-1.5">
+                <svg className="w-3 h-3 transition-transform group-open:rotate-90" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+                  <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M9 5l7 7-7 7" />
+                </svg>
+                Other run options
+              </summary>
+              <div className="mt-2 text-xs text-slate-500 dark:text-slate-400 space-y-2 animate-slide-up pl-1">
+                <label className="flex items-start gap-2 cursor-pointer" title="Run all three modes in parallel without building the knowledge base between passes. Faster, but sensitivity/domain prompts won't see the generated descriptions unless DDL was already applied. Best when tables already have good comments.">
+                  <input type="checkbox" checked={skipKbEnrich} onChange={e => setSkipKbEnrich(e.target.checked)} className="mt-0.5" />
+                  <span>Skip knowledge-base enrichment <span className="text-slate-400">(faster; sensitivity/domain won't see fresh descriptions)</span></span>
+                </label>
+                <p className="text-slate-400">
+                  <strong className="text-slate-500">Default (KB-enriched):</strong> descriptions first, then a knowledge-base build, then sensitivity + domain enriched with those descriptions &mdash; so they benefit from the new comments even before DDL is applied.
+                </p>
+              </div>
+            </details>
 
             <div className="border-t border-slate-200/80 dark:border-dbx-navy-400/20 pt-4 mt-2">
               <button onClick={() => onNavigate?.('context')} className="btn-ghost btn-sm text-slate-600 dark:text-slate-300">
@@ -949,10 +1027,10 @@ export default function BatchJobs({ onNavigate, pipelineStats }) {
               </div>
               <div className="pb-1 flex items-center gap-1.5">
                 <label className="flex items-center gap-2 text-xs text-slate-600 dark:text-slate-300 cursor-pointer">
-                  <input type="checkbox" checked={serverless} onChange={e => setServerless(e.target.checked)} />
+                  <input type="checkbox" checked={settings.use_serverless} onChange={e => setSetting('use_serverless', e.target.checked)} />
                   Serverless compute
                 </label>
-                <InfoTip text="Run the pipeline on serverless compute instead of classic ML clusters. Faster cold-start, no cluster management." />
+                <InfoTip text="Run the pipeline on serverless compute instead of classic ML clusters. Faster cold-start, no cluster management. This is the same serverless setting used for core metadata generation." />
               </div>
             </div>
 
@@ -964,7 +1042,7 @@ export default function BatchJobs({ onNavigate, pipelineStats }) {
             </div>
 
             {!ontologyBundle && <p className="text-xs text-amber-600 dark:text-amber-400">An ontology bundle must be selected in the Generate Metadata section to run the full analytics pipeline.</p>}
-            <button onClick={() => runJob(serverless ? '_full_analytics_pipeline_serverless' : '_full_analytics_pipeline', {
+            <button onClick={() => runJob(settings.use_serverless ? '_full_analytics_pipeline_serverless' : '_full_analytics_pipeline', {
               catalog_name: catalogName, schema_name: schemaName,
               ontology_bundle: ontologyBundle,
               apply_ddl: applyDdl,
@@ -1100,19 +1178,6 @@ export default function BatchJobs({ onNavigate, pipelineStats }) {
         </section>
       )}
 
-      {/* Tab 3: Create Semantic Layer Assets */}
-      {activeTab === 'assets' && (
-        <section className="card border-l-4 border-l-dbx-teal overflow-hidden">
-          <div className="p-6 space-y-4">
-            <p className="text-sm text-slate-600 dark:text-slate-300">
-              Create <strong className="text-slate-700 dark:text-slate-200">metric views</strong>, manage question profiles, and generate reusable KPI definitions from the <strong className="text-slate-700 dark:text-slate-200">Define Metrics</strong> page.
-            </p>
-            <button onClick={() => onNavigate?.('semantic')} className="btn-primary btn-md">
-              Go to Define Metrics
-            </button>
-          </div>
-        </section>
-      )}
       </TabErrorBoundary>
 
       {/* Active Runs */}
