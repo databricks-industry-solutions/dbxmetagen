@@ -1,8 +1,32 @@
-# Manual Deployment Guide (Workspace UI)
+# Workspace UI Deployment (Databricks Asset Bundles)
 
-Deploy dbxmetagen entirely from within the Databricks workspace using
-Git Folders and the built-in Deploy button. No local CLI, `uv`, or
-shell scripting required.
+Deploy dbxmetagen from within the Databricks workspace using a Git Folder and
+the bundle editor's built-in **Deploy** button. This is a **first-class
+deployment path**, a peer to the CLI `databricks bundle deploy` -- it runs the
+same DAB engine and the same `artifacts.build` hook (so the wheel, app
+`requirements.txt`, and `configurations/` are built for you; see Section 4).
+Nothing here is a downgraded fallback: no local machine, `uv`, or shell tooling
+is required, because the build runs in the workspace.
+
+Use whichever path fits: the **CLI** for scripting/CI and repeatable
+multi-workspace deploys, the **Workspace UI** for a self-contained in-workspace
+workflow. They target the same bundle and are interchangeable per deploy.
+
+> **Known rough edges (as of this writing).** This path is still being
+> hardened alongside the CLI path. Two things to be aware of:
+> - **The app is not started by the bundle deploy.** `bundle deploy` (CLI or UI)
+>   registers/updates the app but does not deploy its source or start it. After
+>   deploying, open **Workspace > Apps > dbxmetagen-app** and click **Deploy**
+>   then **Start** (Section 9). Until you do, the running app reflects a previous
+>   deploy -- including its old job IDs and OBO consent.
+> - **Pick one target per workspace.** The bundle has `dev`, `demo`, and `prod`
+>   targets, and there is a single app (`${var.app_name}`) whose `config.env`
+>   job IDs are rewritten by whichever target you deploy last. Deploying more
+>   than one target to the same workspace makes the app point at one target's
+>   jobs while the app service principal may be granted `CAN_MANAGE_RUN` on
+>   another's -- surfacing as "job unreachable" errors in the app. Standardize
+>   on one target (`dev` is the bundle default) unless you deliberately want
+>   parallel deployments.
 
 ---
 
@@ -78,8 +102,13 @@ cp variable-overrides.example.json .databricks/bundle/dev/variable-overrides.jso
 ```
 
 Optional keys you may add: `vs_endpoint_name`, `enable_obo`, `node_type`,
-`policy_id`, `budget_policy_id`. For a service-principal run identity or OBO
-scopes, add the complex variables (see `example.env` for all keys):
+`budget_policy_id`. To apply a **cluster policy**, override the whole
+`metadata_job_cluster` (and/or `lakebase_job_cluster`) complex variable and add
+`policy_id` + `apply_policy_default_values` -- see the example in `databricks.yml`
+(a bare `policy_id` string is intentionally not a variable: the v1.8.0+ direct
+deploy engine rejects an empty `policy_id`, so the whole cluster block is
+substituted instead). For a service-principal run identity or OBO scopes, add the
+complex variables (see `example.env` for all keys):
 
 ```json
 {
@@ -95,46 +124,24 @@ workspace you're in.
 
 ---
 
-## 4. Stage the App Wheel and Configurations
+## 4. The App Wheel and Configurations (built automatically)
 
-When you deploy with the CLI, the `artifacts.build` hook
+**No manual staging is required.** The `artifacts.build` hook
 (`scripts/build_artifacts.sh`) builds the wheel, copies it into the app source
-dir, and regenerates `requirements.txt` automatically. **A pure workspace-UI
-deploy does not run that hook**, so for the Deploy-button path you must stage the
-wheel yourself. Run this in a **notebook** attached to any cluster (the cells use
-`%sh` to operate on workspace files):
+dir, regenerates `requirements.txt`, and stages `configurations/` -- and it runs
+on **both** the CLI (`databricks bundle deploy`) **and** the workspace Deploy
+button. (The workspace bundle editor's Deploy runs the same bundle engine and
+executes the build hook; a fresh, timestamp-stamped wheel appears under `dist/`
+in your Git Folder on each deploy.) So there is nothing to download from GitHub
+Releases and no notebook to run first -- just deploy (Section 6).
 
-**Cell 1 -- Download the wheel from GitHub Releases:**
+If you ever need to verify the build produced its outputs, check that these
+exist in your Git Folder after a deploy:
 
-```
-%sh
-# Replace X.Y.Z with the release version
-cd /Workspace/Users/$USER/dbxmetagen
-curl -L -o "apps/dbxmetagen-app/app/dbxmetagen-X.Y.Z-py3-none-any.whl" \
-  "https://github.com/<org>/dbxmetagen/releases/download/vX.Y.Z/dbxmetagen-X.Y.Z-py3-none-any.whl"
-```
-
-**Cell 2 -- Copy configurations:**
-
-```
-%sh
-cd /Workspace/Users/$USER/dbxmetagen
-cp -r configurations apps/dbxmetagen-app/app/configurations
-```
-
-**Cell 3 -- Generate requirements.txt:**
-
-```
-%sh
-cd /Workspace/Users/$USER/dbxmetagen
-WHL_NAME=$(basename apps/dbxmetagen-app/app/dbxmetagen-*.whl)
-sed "s|__WHL_NAME__|${WHL_NAME}|" \
-    apps/dbxmetagen-app/app/requirements.txt.template \
-    > apps/dbxmetagen-app/app/requirements.txt
-```
-
-Verify that `apps/dbxmetagen-app/app/requirements.txt` ends with
-`./<your-wheel-filename>.whl`.
+- `dist/dbxmetagen-<version>+<timestamp>-py3-none-any.whl`
+- `apps/dbxmetagen-app/app/dbxmetagen-<version>+<timestamp>-py3-none-any.whl`
+- `apps/dbxmetagen-app/app/requirements.txt` (its last line pins that wheel)
+- `apps/dbxmetagen-app/app/configurations/`
 
 ---
 

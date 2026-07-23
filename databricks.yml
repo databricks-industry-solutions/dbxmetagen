@@ -1,6 +1,13 @@
 bundle:
   name: dbxmetagen
   databricks_cli_version: ">=0.283.0"
+  # Pin the deployment engine to terraform (the CLI default today, but pinned so
+  # future CLI versions or the workspace UI Deploy button cannot silently switch
+  # to the newer "direct" engine). The direct engine does not strip empty scalar
+  # fields (it sent policy_id: "" -> Jobs API rejected '') and did not reliably
+  # apply the app service principal's CAN_MANAGE_RUN job grant; terraform handles
+  # both correctly. Valid values: terraform | direct.
+  engine: terraform
 
 # Deployment is a plain `databricks bundle deploy` -- there is no deploy.sh.
 # Per-workspace values (catalog, schema, warehouse, host) come from your CLI
@@ -57,21 +64,35 @@ artifacts:
 # notebook installs the selected model at runtime via a widget.
 
 # --- Optional: Cluster policy / serverless budget policy ---
-# By default, no policies are applied (policy_id and budget_policy_id
-# default to empty in variables.yml). To set a policy:
+# By default, NO policies are applied and a bare deploy works out of the box.
 #
-# Option 1 - Raw ID (set via variable-overrides.json, --var, or BUNDLE_VAR_policy_id):
-#   policy_id=001DD81A49229D7C
+# Classic job clusters: the cluster spec is a complex variable
+# (metadata_job_cluster for the ML-runtime metadata jobs, lakebase_job_cluster
+# for the graph->Lakebase sync). To apply a CLUSTER POLICY, override the whole
+# cluster variable in variable-overrides.json and add policy_id +
+# apply_policy_default_values -- copy the default from variables.yml and add
+# those two keys, e.g.:
+#   {
+#     "metadata_job_cluster": {
+#       "spark_version": "17.3.x-cpu-ml-scala2.13",
+#       "node_type_id": "i3.2xlarge",
+#       "data_security_mode": "SINGLE_USER",
+#       "policy_id": "001DD81A49229D7C",
+#       "apply_policy_default_values": true,
+#       "autoscale": {"min_workers": 2, "max_workers": 4},
+#       "custom_tags": {"project": "dbxmetagen"}
+#     }
+#   }
+# Why a whole-cluster variable and not a standalone policy_id: the v1.8.0+
+# direct deploy engine does not strip an empty policy_id ("") and the Jobs API
+# rejects '' as an invalid policy ID; DAB cannot conditionally omit a scalar
+# field, so substituting the entire cluster block is the only pattern that
+# supports both with-policy and without-policy deploys.
 #
-# Option 2 - Name-based lookup (add to your target block below):
-#   targets:
-#     dev:
-#       variables:
-#         policy_id:
-#           lookup:
-#             cluster_policy: "your-policy-name"
-#
-# budget_policy_id is set the same way (raw ID only; no lookup support yet).
+# Serverless budget policy: budget_policy_id IS still a plain string variable
+# (empty is accepted by the Jobs API at job level, unlike cluster policy_id).
+# Set it via variable-overrides.json, --var, or BUNDLE_VAR_budget_policy_id:
+#   budget_policy_id=001DD81A49229D7C
 
 targets:
   dev:

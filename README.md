@@ -45,11 +45,14 @@ The core value of dbxmetagen is **metadata generation and a governed knowledge g
    or `BUNDLE_VAR_*` env vars. The workspace host comes from your CLI profile.
    `example.env` documents every available variable.)
 
-   > **Deploying from the workspace UI instead of the CLI?** See
-   > [`docs/MANUAL_DEPLOYMENT.md`](docs/MANUAL_DEPLOYMENT.md) — same
+   > **Prefer the workspace UI?** The Databricks bundle editor's **Deploy**
+   > button is a first-class alternative to the CLI (same DAB engine, same
+   > `artifacts.build` hook — the wheel is built for you in the workspace). See
+   > [`docs/MANUAL_DEPLOYMENT.md`](docs/MANUAL_DEPLOYMENT.md). Same
    > `variable-overrides.json`, just created inside the workspace bundle root
    > (`.databricks/` is gitignored, so it isn't part of the Git Folder clone).
-   > `--var` / `BUNDLE_VAR_*` are CLI-only.
+   > `--var` / `BUNDLE_VAR_*` are CLI-only, so use the override file for the UI
+   > path.
 
 2. **Azure / GCP users:** The default job cluster node type is `i3.2xlarge` (AWS). Update `node_type` in `variables.yml` (or set it in `variable-overrides.json`) before deploying:
    - **Azure:** `Standard_D8s_v3`
@@ -439,7 +442,7 @@ dbxmetagen exposes its knowledge base, knowledge graph, and vector index as [Dat
 |-------|-------------|
 | [Configuration](docs/CONFIGURATION.md) | All runtime parameters, ontology bundles, Vector Search, Lakebase, OBO, and community summaries |
 | [Permissions](docs/PERMISSIONS.md) | Two-identity model (app SPN vs job owner), UC grants, OBO mode, and end-user access |
-| [Manual Deployment](docs/MANUAL_DEPLOYMENT.md) | Step-by-step deployment from the workspace UI (no local CLI) |
+| [Workspace UI Deployment](docs/MANUAL_DEPLOYMENT.md) | First-class Databricks Asset Bundles deploy from the workspace UI (peer to the CLI path; the wheel is built in-workspace) |
 | [Domain & Ontology Architecture](docs/DOMAIN_ONTOLOGY_ARCHITECTURE.md) | Formal vs custom ontology bundles, domain YAML, and how they interact |
 | [MCP Servers](docs/MCP_SERVERS.md) | Managed MCP server setup, tool reference, and agent integration |
 | [QA Checklist](docs/QA_CHECKLIST.md) | Pre-release validation checklist |
