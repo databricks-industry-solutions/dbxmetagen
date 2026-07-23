@@ -1,13 +1,6 @@
 bundle:
   name: dbxmetagen
   databricks_cli_version: ">=0.283.0"
-  # Pin the deployment engine to terraform (the CLI default today, but pinned so
-  # future CLI versions or the workspace UI Deploy button cannot silently switch
-  # to the newer "direct" engine). The direct engine does not strip empty scalar
-  # fields (it sent policy_id: "" -> Jobs API rejected '') and did not reliably
-  # apply the app service principal's CAN_MANAGE_RUN job grant; terraform handles
-  # both correctly. Valid values: terraform | direct.
-  engine: terraform
 
 # Deployment is a plain `databricks bundle deploy` -- there is no deploy.sh.
 # Per-workspace values (catalog, schema, warehouse, host) come from your CLI
