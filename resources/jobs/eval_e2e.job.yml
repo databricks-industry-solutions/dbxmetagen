@@ -1,7 +1,7 @@
 resources:
   jobs:
     eval_e2e_job:
-      name: "${var.app_name}_eval_e2e"
+      name: "${var.app_name}${var.app_name_suffix}_eval_e2e"
       budget_policy_id: ${var.budget_policy_id}
 
       permissions:

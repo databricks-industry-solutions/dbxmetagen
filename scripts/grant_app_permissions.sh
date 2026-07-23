@@ -77,8 +77,13 @@ CATALOG=$(resolve_var catalog_name "${catalog_name:-}")
 SCHEMA=$(resolve_var schema_name "${schema_name:-}")
 WAREHOUSE_ID=$(resolve_var warehouse_id "${warehouse_id:-}")
 APP_NAME=$(resolve_var app_name "${app_name:-}")
+APP_NAME_SUFFIX=$(resolve_var app_name_suffix "${app_name_suffix:-}")
 VS_ENDPOINT=$(resolve_var vs_endpoint_name "${vs_endpoint_name:-}")
 APP_NAME="${APP_NAME:-dbxmetagen-app}"
+# The app resource name is app_name + optional app_name_suffix (see
+# resources/apps/dbxmetagen_app.yml). Match it so `apps get` resolves the right
+# app when a suffix is used to run multiple instances in one workspace.
+APP_NAME="${APP_NAME}${APP_NAME_SUFFIX}"
 VS_ENDPOINT="${VS_ENDPOINT:-dbxmetagen-vs}"
 
 for pair in "catalog_name=${CATALOG}" "schema_name=${SCHEMA}" "warehouse_id=${WAREHOUSE_ID}"; do

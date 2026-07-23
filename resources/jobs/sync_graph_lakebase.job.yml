@@ -1,7 +1,7 @@
 resources:
   jobs:
     sync_graph_lakebase_job:
-      name: "${var.app_name}_sync_graph_lakebase"
+      name: "${var.app_name}${var.app_name_suffix}_sync_graph_lakebase"
 
       permissions:
         - service_principal_name: ${resources.apps.dbxmetagen_app.service_principal_client_id}

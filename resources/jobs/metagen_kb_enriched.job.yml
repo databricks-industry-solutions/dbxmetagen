@@ -8,7 +8,7 @@
 resources:
   jobs:
     metadata_kb_enriched_modes_job:
-      name: "${var.app_name}_kb_enriched_modes_job"
+      name: "${var.app_name}${var.app_name_suffix}_kb_enriched_modes_job"
       budget_policy_id: ${var.budget_policy_id}
       max_concurrent_runs: 5
 

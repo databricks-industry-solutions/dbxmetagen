@@ -1,7 +1,7 @@
 resources:
   jobs:
     eval_setup_job:
-      name: "${var.app_name}_eval_setup"
+      name: "${var.app_name}${var.app_name_suffix}_eval_setup"
       budget_policy_id: ${var.budget_policy_id}
 
       permissions:

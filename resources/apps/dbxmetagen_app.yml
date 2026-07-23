@@ -1,7 +1,7 @@
 resources:
   apps:
     dbxmetagen_app:
-      name: "${var.app_name}"
+      name: "${var.app_name}${var.app_name_suffix}"
       description: "dbxmetagen dashboard: metadata review, profiling, ontology, and graph analytics"
       source_code_path: ../../apps/dbxmetagen-app/app
       # App runtime env. This is the single source of truth: on a bundle deploy,

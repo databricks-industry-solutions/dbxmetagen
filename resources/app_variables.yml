@@ -10,6 +10,14 @@ variables:
       of DAB development mode. In development mode, DAB already
       prefixes with the deploying user's name.
     default: "dbxmetagen-app"
+  app_name_suffix:
+    description: >-
+      Optional suffix appended to the app name and job-name prefix (e.g.
+      "-dev", "-team1"). Empty by default so the app is named exactly
+      app_name. Set this to deploy multiple independent instances to ONE
+      workspace (e.g. different targets or teams) without them overwriting
+      each other's single app resource.
+    default: ""
   user_api_scopes:
     description: >-
       OBO OAuth scopes granted to the app for On-Behalf-Of user auth. Empty by

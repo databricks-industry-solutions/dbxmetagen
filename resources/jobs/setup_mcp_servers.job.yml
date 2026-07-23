@@ -1,7 +1,7 @@
 resources:
   jobs:
     setup_mcp_servers_job:
-      name: "${var.app_name}_setup_mcp_servers"
+      name: "${var.app_name}${var.app_name_suffix}_setup_mcp_servers"
       budget_policy_id: ${var.budget_policy_id}
 
       permissions:

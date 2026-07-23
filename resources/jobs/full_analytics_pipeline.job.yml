@@ -1,7 +1,7 @@
 resources:
   jobs:
     full_analytics_pipeline_job:
-      name: "${var.app_name}_full_analytics_pipeline"
+      name: "${var.app_name}${var.app_name_suffix}_full_analytics_pipeline"
       budget_policy_id: ${var.budget_policy_id}
 
       permissions:

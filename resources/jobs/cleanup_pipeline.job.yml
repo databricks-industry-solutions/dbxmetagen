@@ -1,7 +1,7 @@
 resources:
   jobs:
     cleanup_pipeline_job:
-      name: "${var.app_name}_cleanup_pipeline"
+      name: "${var.app_name}${var.app_name_suffix}_cleanup_pipeline"
       budget_policy_id: ${var.budget_policy_id}
 
       permissions:

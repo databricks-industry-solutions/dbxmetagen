@@ -1,7 +1,7 @@
 resources:
   jobs:
     build_knowledge_graph_job:
-      name: "${var.app_name}_build_knowledge_graph"
+      name: "${var.app_name}${var.app_name_suffix}_build_knowledge_graph"
       budget_policy_id: ${var.budget_policy_id}
 
       permissions:

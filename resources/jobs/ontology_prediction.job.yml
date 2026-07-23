@@ -1,7 +1,7 @@
 resources:
   jobs:
     ontology_prediction_job:
-      name: "${var.app_name}_ontology_prediction"
+      name: "${var.app_name}${var.app_name_suffix}_ontology_prediction"
       budget_policy_id: ${var.budget_policy_id}
 
       permissions:
