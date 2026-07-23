@@ -58,22 +58,45 @@ The core value of dbxmetagen is **metadata generation and a governed knowledge g
    - **Azure:** `Standard_D8s_v3`
    - **GCP:** `n2-highmem-8`
 
-3. Build the frontend, deploy, start the app, and grant the app service principal UC access:
-   ```bash
-   (cd apps/dbxmetagen-app/app/src && npm install && npm run build)   # compile React dashboard
-   databricks bundle deploy -t dev -p <your-profile>                  # builds wheel + registers jobs & app
-   databricks bundle run -t dev -p <your-profile> dbxmetagen_app      # deploy source to the app + start it
-   scripts/grant_app_permissions.sh -t dev -p <your-profile>          # UC grants + Vector Search endpoint
-   ```
-   `bundle deploy` runs `scripts/build_artifacts.sh` automatically (via the
-   bundle's `artifacts.build` hook) to build and stage the wheel — there is no
-   `deploy.sh`. **`bundle deploy` registers the app but does not start it**;
-   `bundle run dbxmetagen_app` deploys the source to the app's compute and starts
-   it (this can take a few minutes as it installs the wheel). The grants script is
-   separate because DAB cannot grant an app's own service principal UC access or
-   provision a Vector Search endpoint natively.
+3. Deploy. There are two supported paths — the **CLI** and the **workspace UI** —
+   and they are equivalent (both run the same bundle, build the wheel via the
+   `artifacts.build` hook, and register jobs + the app). Databricks Asset Bundles
+   deliberately separate *deploying* an app from *starting* it (starting consumes
+   app compute), so **both paths are two steps: deploy, then deploy-source-and-start
+   the app.** There is no `deploy.sh` and no single-command shortcut — this is a
+   platform behavior, not a project choice.
 
-   To deploy jobs only, skip the `bundle run` and grants steps.
+   **Option A — CLI** (scriptable, best for CI):
+   ```bash
+   databricks bundle deploy -t dev -p <your-profile>                  # builds wheel + registers jobs & app
+   databricks bundle run   -t dev -p <your-profile> dbxmetagen_app    # deploys app source to compute + starts it
+   scripts/grant_app_permissions.sh -t dev -p <your-profile>          # UC grants + Vector Search endpoint (only needed for OBO / app-SP catalog access)
+   ```
+
+   **Option B — Workspace UI** (no local machine required):
+   1. Clone the repo as a **Git Folder** and set variables (see step 1's note).
+   2. Open `databricks.yml`, click the **Deployments** (rocket) icon, pick your
+      target, and click **Deploy**. This builds the wheel and registers jobs + the
+      app — but does **not** start the app.
+   3. Go to **Workspace > Apps > dbxmetagen-app**, click **Deploy** (deploys the
+      app source), then **Start** (brings up compute). This is the UI equivalent
+      of `bundle run dbxmetagen_app`. Takes a few minutes as it installs the wheel.
+   4. For OBO / app-SP catalog access, run `scripts/grant_app_permissions.sh` (or
+      grant the app service principal UC access manually — see
+      [`docs/MANUAL_DEPLOYMENT.md`](docs/MANUAL_DEPLOYMENT.md)).
+
+   Notes:
+   - The React frontend is **prebuilt and committed** (`apps/dbxmetagen-app/app/src/dist/`).
+     You do NOT run `npm` to deploy — only contributors who change the frontend rebuild it
+     (`cd apps/dbxmetagen-app/app/src && npm install && npm run build`).
+   - The grants script is separate because DAB cannot grant an app's own service
+     principal UC access or provision a Vector Search endpoint natively. If you are
+     not using OBO and the app SP already has catalog access, you can skip it.
+   - **To deploy jobs only**, do just the `bundle deploy` (CLI) or the bundle Deploy
+     (UI) and skip the app start + grants.
+   - **One workspace, one instance:** the app is a singleton by name. If you deploy
+     more than one target/instance to the same workspace, set `app_name_suffix`
+     (e.g. `-dev`) in your overrides so they don't overwrite each other's app.
 
 4. Access the app at **Workspace > Apps > dbxmetagen-app** and follow the instructions there.
 
@@ -443,6 +466,7 @@ dbxmetagen exposes its knowledge base, knowledge graph, and vector index as [Dat
 | [Configuration](docs/CONFIGURATION.md) | All runtime parameters, ontology bundles, Vector Search, Lakebase, OBO, and community summaries |
 | [Permissions](docs/PERMISSIONS.md) | Two-identity model (app SPN vs job owner), UC grants, OBO mode, and end-user access |
 | [Workspace UI Deployment](docs/MANUAL_DEPLOYMENT.md) | First-class Databricks Asset Bundles deploy from the workspace UI (peer to the CLI path; the wheel is built in-workspace) |
+| [Migration Guide](docs/MIGRATION.md) | Upgrading a workspace deployed with the old `deploy.sh` -- one-time cleanup of stale synced files, and what's safe (your generated data is untouched) |
 | [Domain & Ontology Architecture](docs/DOMAIN_ONTOLOGY_ARCHITECTURE.md) | Formal vs custom ontology bundles, domain YAML, and how they interact |
 | [MCP Servers](docs/MCP_SERVERS.md) | Managed MCP server setup, tool reference, and agent integration |
 | [QA Checklist](docs/QA_CHECKLIST.md) | Pre-release validation checklist |
