@@ -30,20 +30,26 @@ The core value of dbxmetagen is **metadata generation and a governed knowledge g
 
 1. Clone the repo and set your per-workspace bundle variables. `databricks.yml`
    is static and committed — supply `catalog_name`, `schema_name`, and
-   `warehouse_id` (and optionally `vs_endpoint_name`) via a gitignored
-   `variable-overrides.json` at the repo root:
+   `warehouse_id` (and optionally `vs_endpoint_name`) in a gitignored
+   `variable-overrides.json`. **DAB auto-loads it from
+   `.databricks/bundle/<target>/variable-overrides.json`** (a repo-root file is
+   NOT picked up). Copy the committed example into place for your target:
    ```bash
    git clone https://github.com/databricks-industry-solutions/dbxmetagen
    cd dbxmetagen
-   cat > variable-overrides.json <<'JSON'
-   { "catalog_name": "my_catalog",
-     "schema_name": "metadata_results",
-     "warehouse_id": "<your-warehouse-id>" }
-   JSON
+   mkdir -p .databricks/bundle/dev          # match your deploy target (-t)
+   cp variable-overrides.example.json .databricks/bundle/dev/variable-overrides.json
+   # then edit that file with your catalog / schema / warehouse ID
    ```
    (Alternatively pass them with `--var "catalog_name=...,schema_name=...,warehouse_id=..."`
    or `BUNDLE_VAR_*` env vars. The workspace host comes from your CLI profile.
    `example.env` documents every available variable.)
+
+   > **Deploying from the workspace UI instead of the CLI?** See
+   > [`docs/MANUAL_DEPLOYMENT.md`](docs/MANUAL_DEPLOYMENT.md) — same
+   > `variable-overrides.json`, just created inside the workspace bundle root
+   > (`.databricks/` is gitignored, so it isn't part of the Git Folder clone).
+   > `--var` / `BUNDLE_VAR_*` are CLI-only.
 
 2. **Azure / GCP users:** The default job cluster node type is `i3.2xlarge` (AWS). Update `node_type` in `variables.yml` (or set it in `variable-overrides.json`) before deploying:
    - **Azure:** `Standard_D8s_v3`

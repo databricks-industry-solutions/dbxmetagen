@@ -1,0 +1,7 @@
+{
+  "catalog_name": "my_catalog",
+  "schema_name": "metadata_results",
+  "warehouse_id": "0123456789abcdef",
+  "vs_endpoint_name": "dbxmetagen-vs",
+  "enable_obo": false
+}

@@ -154,8 +154,12 @@ apps/dbxmetagen-app/app/dbxmetagen-*.whl
 apps/dbxmetagen-app/app/configurations/
 databricks_final.yml
 databricks_final.yml.tmp
-# Optional local overrides for per-workspace bundle variables (never commit)
+# Per-workspace bundle variable values (never commit). DAB auto-loads
+# .databricks/bundle/<target>/variable-overrides.json (the .databricks/ dir is
+# already ignored above); a repo-root variable-overrides.json is also ignored
+# for the legacy layout. variable-overrides.example.json IS committed (placeholders).
 variable-overrides.json
+!variable-overrides.example.json
 pyproject.toml.build_bak
 
 # backup files

@@ -37,11 +37,6 @@ function InfoTip({ text }) {
 
 const TERMINAL_STATES = new Set(['TERMINATED', 'SKIPPED', 'INTERNAL_ERROR'])
 
-const TABS = [
-  { id: 'core', label: 'Generate Core Metadata', sub: 'Descriptions \u00b7 Sensitivity \u00b7 Domain', color: 'bg-dbx-lava' },
-  { id: 'advanced', label: 'Generate Advanced Metadata', sub: 'Ontology \u00b7 Foreign Keys \u00b7 Knowledge Graph', color: 'bg-dbx-amber' },
-]
-
 const STATUS_LABELS = {
   'RUNNING': 'Running', 'PENDING': 'Queued', 'SKIPPED': 'Skipped', 'INTERNAL_ERROR': 'Internal Error',
   'SUCCESS': 'Succeeded', 'FAILED': 'Failed', 'TIMEDOUT': 'Timed Out', 'CANCELLED': 'Cancelled',
@@ -171,7 +166,9 @@ export default function BatchJobs({ onNavigate, pipelineStats }) {
   const [runHistory, setRunHistory] = useState([])
   const [historyPage, setHistoryPage] = useState(0)
   const [health, setHealth] = useState(null)
-  const [activeTab, setActiveTab] = useState('core')
+  // Step 2 (advanced pipeline) is optional and hidden by default so the first
+  // screen behind the Home "Generate metadata" door stays a single guided step.
+  const [advancedOpen, setAdvancedOpen] = useState(false)
   const [similarityThreshold, setSimilarityThreshold] = useState(0.8)
   const [incremental, setIncremental] = useState(true)
   const [sweepStale, setSweepStale] = useState(false)
@@ -457,12 +454,15 @@ export default function BatchJobs({ onNavigate, pipelineStats }) {
           <p className="text-xs text-gray-400 col-span-2">Set before deployment in the project settings.</p>
         </div>
 
-        <details className="mt-4 group" open>
+        <details className="mt-4 group">
           <summary className="section-title cursor-pointer select-none flex items-center gap-1.5 py-2 border-t border-dbx-oat-dark/30 dark:border-dbx-navy-400/20 mt-3 pt-3">
             <svg className="w-3 h-3 transition-transform group-open:rotate-90" fill="none" viewBox="0 0 24 24" stroke="currentColor">
               <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M9 5l7 7-7 7" />
             </svg>
             Ontology &amp; Business Domain
+            <span className="text-xs font-normal text-slate-400 dark:text-slate-500 ml-1">
+              — optional for descriptions &amp; sensitivity; required for domain classification and the advanced pipeline
+            </span>
           </summary>
           <div className="grid grid-cols-1 md:grid-cols-2 gap-4 mt-3 animate-slide-up">
             <div>
@@ -666,24 +666,17 @@ export default function BatchJobs({ onNavigate, pipelineStats }) {
         </details>
       </div>
 
-      {/* Tab bar */}
-      <div className="flex gap-1 bg-dbx-oat dark:bg-dbx-navy-500/50 rounded-xl p-1">
-        {TABS.map(tab => (
-          <button key={tab.id} onClick={() => setActiveTab(tab.id)}
-            className={`flex-1 py-2.5 px-4 rounded-lg text-sm font-medium transition-all ${
-              activeTab === tab.id
-                ? 'bg-white dark:bg-dbx-navy text-slate-800 dark:text-slate-100 shadow-sm'
-                : 'text-slate-500 dark:text-slate-400 hover:text-slate-700 dark:hover:text-slate-200'
-            }`}>
-            {tab.label}
-            {tab.sub && <span className="block text-[10px] font-normal opacity-60 mt-0.5">{tab.sub}</span>}
-          </button>
-        ))}
+      {/* Step 1: Generate Core Metadata — always visible, the primary action */}
+      <div className="flex items-center gap-2.5 pt-1">
+        <span className="flex items-center justify-center w-6 h-6 rounded-full bg-dbx-lava text-white text-xs font-bold shrink-0">1</span>
+        <div>
+          <h2 className="text-base font-semibold text-slate-800 dark:text-slate-100">Generate core metadata</h2>
+          <p className="text-xs text-slate-500 dark:text-slate-400">Descriptions · Sensitivity · Domain</p>
+        </div>
       </div>
 
-      <TabErrorBoundary key={activeTab}>
-      {/* Tab 1: Generate Core Metadata */}
-      {activeTab === 'core' && (
+      <TabErrorBoundary key="core">
+      {(
         <section className="card border-l-4 border-l-dbx-lava overflow-hidden">
           <div className="p-6 space-y-4">
             <details className="group">
@@ -699,8 +692,8 @@ export default function BatchJobs({ onNavigate, pipelineStats }) {
             </details>
 
             <p className="text-sm text-slate-500 dark:text-slate-400">
-              <strong className="text-slate-700 dark:text-slate-200">Generate All</strong> runs descriptions, sensitivity, and domain classification together.{' '}
-              <strong className="text-slate-700 dark:text-slate-200">Run Selected Mode</strong> lets you run one analysis type at a time for targeted re-runs.
+              Pick the tables to process, then <strong className="text-slate-700 dark:text-slate-200">Generate Metadata</strong> — it runs
+              descriptions, sensitivity, and domain together. Use the dropdown beside the button to run just one type for targeted re-runs.
             </p>
 
             <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
@@ -937,10 +930,29 @@ export default function BatchJobs({ onNavigate, pipelineStats }) {
           </div>
         </section>
       )}
+      </TabErrorBoundary>
 
-      {/* Tab 2: Generate Advanced Metadata */}
-      {activeTab === 'advanced' && (
-        <section className="card border-l-4 border-l-dbx-amber overflow-hidden">
+      {/* Step 2: Advanced pipeline — optional, collapsed by default. */}
+      <div className="pt-1">
+        <button onClick={() => setAdvancedOpen(o => !o)}
+          className="w-full flex items-center gap-2.5 text-left group">
+          <span className="flex items-center justify-center w-6 h-6 rounded-full bg-dbx-amber text-white text-xs font-bold shrink-0">2</span>
+          <div className="flex-1">
+            <div className="flex items-center gap-2">
+              <h2 className="text-base font-semibold text-slate-800 dark:text-slate-100">Advanced pipeline</h2>
+              <span className="badge bg-slate-100 text-slate-500 dark:bg-dbx-navy-500 dark:text-slate-400 text-[10px]">Optional</span>
+            </div>
+            <p className="text-xs text-slate-500 dark:text-slate-400">Ontology · Foreign keys · Knowledge graph · Vector index — run after Step 1</p>
+          </div>
+          <svg className={`w-4 h-4 text-slate-400 transition-transform ${advancedOpen ? 'rotate-180' : ''}`} fill="none" viewBox="0 0 24 24" stroke="currentColor">
+            <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M19 9l-7 7-7-7" />
+          </svg>
+        </button>
+      </div>
+
+      <TabErrorBoundary key="advanced">
+      {advancedOpen && (
+        <section className="card border-l-4 border-l-dbx-amber overflow-hidden animate-slide-up">
           <div className="p-6 space-y-5">
             <div className={`flex items-start gap-2 px-3 py-2 rounded-md border text-xs ${
               pipelineStats && pipelineStats.profiled > 0

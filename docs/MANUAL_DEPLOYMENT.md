@@ -34,19 +34,52 @@ Your repo is now at `/Workspace/Users/<you>/dbxmetagen`.
 nothing to generate from a template. You only supply per-workspace values as
 **bundle variables**.
 
-Create a file named `variable-overrides.json` at the repo root:
+The bundle reads per-workspace values from a `variable-overrides.json` at the
+path `.databricks/bundle/<target>/variable-overrides.json` (where `<target>` is
+`dev`, `demo`, or `prod`). A committed `variable-overrides.example.json` at the
+repo root holds the placeholder keys to copy. It contains:
 
 ```json
 {
   "catalog_name": "my_catalog",
   "schema_name": "metadata_results",
-  "warehouse_id": "abc123def456"
+  "warehouse_id": "abc123def456",
+  "vs_endpoint_name": "dbxmetagen-vs",
+  "enable_obo": false
 }
 ```
 
-Optional keys you may add: `vs_endpoint_name`, `app_display_name`, `enable_obo`,
-`node_type`, `policy_id`, `budget_policy_id`. For a service-principal run identity
-or OBO scopes, add the complex variables (see `example.env` for all keys):
+> **Why this path (important for the workspace UI):** the bundle engine — whether
+> driven by the CLI or the workspace Deploy button — only loads the override file
+> from `.databricks/bundle/<target>/`. A plain **repo-root**
+> `variable-overrides.json` is silently ignored. The `.databricks/` directory is
+> git-ignored, so it is **not** part of your Git Folder clone; you create the file
+> in place after cloning (steps below).
+
+**In the workspace UI (Git Folder):** `--var` and `BUNDLE_VAR_*` are CLI-only, so
+the override file is your mechanism. After cloning the Git Folder:
+
+1. In the workspace file browser, open your bundle root
+   (`/Workspace/Users/<you>/dbxmetagen`).
+2. Create the folder path `.databricks/bundle/<target>/` (e.g.
+   `.databricks/bundle/dev/`) if it does not exist. Use **Create > File** and
+   type the full relative path `.databricks/bundle/dev/variable-overrides.json`
+   — the editor creates the intermediate folders.
+3. Paste the JSON above (copy it from `variable-overrides.example.json` at the
+   repo root) and fill in your real `catalog_name`, `schema_name`, and
+   `warehouse_id`. Save.
+
+**From the CLI:** copy the example into place instead:
+
+```bash
+mkdir -p .databricks/bundle/dev
+cp variable-overrides.example.json .databricks/bundle/dev/variable-overrides.json
+# then edit that file with your values
+```
+
+Optional keys you may add: `vs_endpoint_name`, `enable_obo`, `node_type`,
+`policy_id`, `budget_policy_id`. For a service-principal run identity or OBO
+scopes, add the complex variables (see `example.env` for all keys):
 
 ```json
 {

@@ -230,7 +230,10 @@ scripts/grant_app_permissions.sh -t demo -p DMVM
   minutes to install the wheel).
 - Per-workspace values (`catalog_name`, `schema_name`, `warehouse_id`,
   `vs_endpoint_name`) come from bundle var overrides: a gitignored
-  `variable-overrides.json`, `--var`, or `BUNDLE_VAR_*`. Host comes from the CLI profile.
+  `variable-overrides.json` **auto-loaded from `.databricks/bundle/<target>/`**
+  (a repo-root file is NOT picked up by DAB), `--var`, or `BUNDLE_VAR_*`. Host
+  comes from the CLI profile. Copy `variable-overrides.example.json` into the
+  target path to start.
 - App env lives in `config.env` of `dbxmetagen_app.yml` (single source of truth;
   overrides app.yaml on deploy). Job IDs use `value_from:` (snake_case). **config.env
   cannot carry an optionally-empty value** -- the SDK strips empty strings via

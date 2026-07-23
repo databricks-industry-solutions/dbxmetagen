@@ -23,15 +23,7 @@ resources:
 
       job_clusters:
         - job_cluster_key: lakebase_cluster
-          new_cluster:
-            apply_policy_default_values: true
-            policy_id: ${var.policy_id}
-            spark_version: 16.3.x-scala2.12
-            node_type_id: ${var.node_type}
-            data_security_mode: SINGLE_USER
-            num_workers: 1
-            custom_tags:
-              project: dbxmetagen
+          new_cluster: ${var.lakebase_job_cluster}
       tasks:
         - task_key: sync_to_lakebase
           job_cluster_key: lakebase_cluster

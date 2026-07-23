@@ -193,11 +193,44 @@ variables:
   node_type:
     description: "Node type for job clusters. Must match your cloud provider. AWS: i3.2xlarge (default), Azure: Standard_DS4_v2, GCP: n2-highmem-8."
     default: i3.2xlarge
-  policy_id:
-    description: "Cluster policy ID for classic job clusters. Leave empty for no policy. To resolve by name, override with a lookup block in your target (see the commented pattern in databricks.yml)."
-    default: ""
+  metadata_job_cluster:
+    description: >-
+      Full new_cluster spec shared by the classic (ML-runtime) metadata jobs.
+      Policy-FREE by default so a bare deploy works with no cluster policy.
+      To deploy WITH a cluster policy, override this ONE variable in
+      variable-overrides.json (or --var / BUNDLE_VAR) and add policy_id +
+      apply_policy_default_values -- copy the default below and add those two
+      keys. This is a complex variable because the v1.8.0+ direct deploy engine
+      does not strip an empty policy_id set to "" (the Jobs API rejects '' as an
+      invalid policy ID), and DAB has no way to conditionally omit a scalar
+      policy_id field wired to a variable. Substituting the whole cluster block
+      is the one pattern that supports both with-policy and without-policy deploys.
+    type: complex
+    default:
+      spark_version: 17.3.x-cpu-ml-scala2.13
+      node_type_id: ${var.node_type}
+      data_security_mode: SINGLE_USER
+      autoscale:
+        min_workers: 2
+        max_workers: 4
+      custom_tags:
+        project: dbxmetagen
+  lakebase_job_cluster:
+    description: >-
+      Full new_cluster spec for the graph->Lakebase sync job (non-ML runtime,
+      single worker -- deliberately smaller than metadata_job_cluster). Same
+      policy-free-by-default / override-to-add-policy pattern as
+      metadata_job_cluster.
+    type: complex
+    default:
+      spark_version: 16.3.x-scala2.12
+      node_type_id: ${var.node_type}
+      data_security_mode: SINGLE_USER
+      num_workers: 1
+      custom_tags:
+        project: dbxmetagen
   budget_policy_id:
-    description: "Serverless budget policy ID for cost attribution on serverless jobs. Get the ID from Settings > Compute > Serverless usage policies. Leave empty for no policy."
+    description: "Serverless budget policy ID for cost attribution on serverless jobs. Empty (default) = no budget policy (accepted by the Jobs API at job level, unlike cluster policy_id). Set the ID from Settings > Compute > Serverless usage policies here (or via variable-overrides.json / --var / BUNDLE_VAR_budget_policy_id) to attribute serverless cost."
     default: ""
   permission_groups:
     description: Comma-separated list of groups to grant read permissions to (e.g., "data_analysts,data_scientists"). Set to "none" to skip group permissions.

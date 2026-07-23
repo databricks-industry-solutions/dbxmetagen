@@ -7,6 +7,7 @@ regressions where a new job is added to one file but not wired through the
 others, or where hardcoded per-workspace values leak into the committed bundle.
 """
 
+import json
 import re
 from pathlib import Path
 
@@ -16,6 +17,7 @@ ROOT = Path(__file__).resolve().parents[1]
 APP_RESOURCES = ROOT / "resources" / "apps" / "dbxmetagen_app.yml"
 APP_YAML = ROOT / "apps" / "dbxmetagen-app" / "app" / "app.yaml"
 API_SERVER = ROOT / "apps" / "dbxmetagen-app" / "app" / "api_server.py"
+OVERRIDES_EXAMPLE = ROOT / "variable-overrides.example.json"
 
 
 def _app_block():
@@ -98,6 +100,32 @@ def test_config_env_entries_have_a_source():
         f"config.env entries with an empty literal value (break `bundle run`): {bad}. "
         "Omit the entry entirely if it can be empty; the app should read it with a default."
     )
+
+
+def test_overrides_example_is_valid_and_declared():
+    """variable-overrides.example.json must be valid JSON and every key it
+    documents must be a declared bundle variable, so copying it to
+    .databricks/bundle/<target>/variable-overrides.json actually resolves.
+
+    The example is the committed template users copy into the DAB auto-load path;
+    a repo-root variable-overrides.json is NOT auto-loaded, so the example must
+    stay in sync with variables.yml (+ app_variables.yml) to be useful.
+    """
+    assert OVERRIDES_EXAMPLE.exists(), "variable-overrides.example.json is missing"
+    example = json.loads(OVERRIDES_EXAMPLE.read_text())
+    assert isinstance(example, dict) and example, "example must be a non-empty JSON object"
+
+    declared = set()
+    for vf in ("variables.yml", "variables.advanced.yml", "resources/app_variables.yml"):
+        doc = yaml.safe_load((ROOT / vf).read_text()) or {}
+        declared |= set((doc.get("variables") or {}).keys())
+
+    unknown = set(example) - declared
+    assert not unknown, (
+        f"variable-overrides.example.json has keys not declared as bundle variables: {unknown}"
+    )
+    # Must not carry real per-workspace values (public repo).
+    assert example.get("catalog_name") != "eswanson_demo", "example leaks a real catalog name"
 
 
 def test_app_resource_count_under_cap():

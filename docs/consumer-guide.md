@@ -116,10 +116,11 @@ Clone the repo and run the standard deployment:
 git clone https://github.com/<org>/dbxmetagen.git
 cd dbxmetagen
 # Set per-workspace values (catalog, schema, warehouse) as bundle variables in a
-# gitignored variable-overrides.json (see example.env for all keys):
-cat > variable-overrides.json <<'JSON'
-{ "catalog_name": "my_catalog", "schema_name": "metadata_results", "warehouse_id": "<id>" }
-JSON
+# gitignored variable-overrides.json. DAB auto-loads it from
+# .databricks/bundle/<target>/variable-overrides.json (see example.env for all keys):
+mkdir -p .databricks/bundle/dev          # match your deploy target (-t below)
+cp variable-overrides.example.json .databricks/bundle/dev/variable-overrides.json
+# edit that file with your catalog / schema / warehouse ID
 databricks bundle deploy -t dev -p MY_PROFILE          # builds wheel + deploys jobs & app
 scripts/grant_app_permissions.sh -t dev -p MY_PROFILE  # UC grants + Vector Search endpoint
 ```

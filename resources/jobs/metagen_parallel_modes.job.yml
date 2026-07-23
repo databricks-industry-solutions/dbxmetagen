@@ -163,14 +163,4 @@ resources:
 
       job_clusters:
         - job_cluster_key: metadata_cluster
-          new_cluster:
-            apply_policy_default_values: true
-            policy_id: ${var.policy_id}
-            spark_version: 17.3.x-cpu-ml-scala2.13
-            node_type_id: ${var.node_type}
-            data_security_mode: SINGLE_USER
-            autoscale:
-              min_workers: 2
-              max_workers: 4
-            custom_tags:
-              project: dbxmetagen
+          new_cluster: ${var.metadata_job_cluster}

@@ -9,9 +9,15 @@ bundle:
 #   2. scripts/grant_app_permissions.sh -t <target> -p <profile>   (UC grants + VS)
 #
 # Set the required variables (catalog_name, schema_name, warehouse_id) via any of:
-#   - a gitignored variable-overrides.json at the repo root, OR
+#   - a gitignored .databricks/bundle/<target>/variable-overrides.json  <-- easiest;
+#     DAB auto-loads this exact path for the matching target, no flags needed.
+#     Copy variable-overrides.example.json there and fill in your values:
+#       mkdir -p .databricks/bundle/dev
+#       cp variable-overrides.example.json .databricks/bundle/dev/variable-overrides.json
 #   - --var "catalog_name=...,schema_name=...,warehouse_id=..." on the CLI, OR
 #   - BUNDLE_VAR_catalog_name / BUNDLE_VAR_schema_name / ... env vars
+# NOTE: a plain repo-root variable-overrides.json is NOT auto-loaded by DAB --
+# it must live under .databricks/bundle/<target>/variable-overrides.json.
 # The workspace host comes from the CLI profile (-p) or the DATABRICKS_HOST env var.
 
 sync:
