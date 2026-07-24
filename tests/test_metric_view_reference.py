@@ -62,6 +62,17 @@ def test_guiding_principles_cover_fact_sourcing():
     assert "source" in gps  # "source from facts, join to dimensions"
 
 
+def test_dimensional_model_premise_is_stated():
+    """Metric views target a fact+dimension (or fact-like) structure -- this
+    premise must reach the agents, so pin it in principles + fact_dimension_model."""
+    gps = " ".join(_ref()["guiding_principles"]).lower()
+    assert "fact + dimension" in gps or "fact+dimension" in gps
+    assert "shaped like" in gps  # tables shaped like fact+dim also work
+    fdm = _ref()["fact_dimension_model"]
+    assert "fact_like_tables" in fdm and fdm["fact_like_tables"]
+    assert "poor_fit" in fdm and fdm["poor_fit"]
+
+
 def test_anti_patterns_include_fact_to_fact():
     aps = " ".join(_ref()["anti_patterns"]).lower()
     assert "fact" in aps and ("fan-out" in aps or "fan out" in aps)

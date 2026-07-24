@@ -203,6 +203,7 @@
   },
 
   "guiding_principles": [
+    "DIMENSIONAL MODEL IS THE FOUNDATION: Metric views are a dimensional-model construct. They work most easily and correctly against a FACT + DIMENSION structure -- a central fact/transactional table (the measures + grain) surrounded by dimension/lookup tables joined by foreign keys -- OR against any table that is SHAPED LIKE that (a wide denormalized/OBT 'one big table' with measure columns plus descriptive attribute columns, a pre-aggregated mart, an event/transaction log). Before generating, decide how the in-scope tables map onto this shape: pick the fact (measures + grain), treat descriptive tables/columns as dimensions. If the data does not resemble fact + dimension at all (e.g. a pure key-value store, a narrow bridge with no measures, unstructured blobs), a metric view is a poor fit -- prefer a single simple aggregate or skip it rather than forcing joins.",
     "GRAIN FIRST, THEME SECOND: Each metric view declares its grain via its source table (one row = one encounter, one order line, one prescription fill). All measures must be valid at that grain. Do NOT mix measures implying different grains in one view. Within a single grain, create separate views for different analytical themes.",
     "STAR + SNOWFLAKE: Star-schema joins are the default (source -> dim). For dimension hierarchies (customer -> nation -> region), use nested joins with the child 'on' referencing the parent alias. Limit nesting to 2 levels.",
     "ANALYTICAL RICHNESS: Every view should have at least one ratio measure, one computed dimension, and one filtered or conditional aggregate. Simple COUNT(*)-only views are insufficient.",
@@ -213,10 +214,12 @@
   ],
 
   "fact_dimension_model": {
-    "description": "How to classify tables so views are sourced and joined correctly. Mirrors the roles dbxmetagen's ERD recommender assigns; the metadata context may already state a table's role.",
+    "description": "Metric views target a fact + dimension (dimensional) model. Classify the in-scope tables against these roles so views are sourced and joined correctly. Mirrors the roles dbxmetagen's ERD recommender assigns; the metadata context may already state a table's role.",
     "fact": "Grain-defining transactional table: many numeric measure columns, typically several outbound foreign keys to dimensions, named fct_/fact_/f_ or flagged as a 'primary'/'fact' entity. Metric views are SOURCED from facts.",
     "dimension": "Descriptive lookup table: a near-unique low-null natural key, few or no numeric measures, referenced by facts (inbound FKs, no outbound), named dim_/d_ or flagged 'referenced'/'dimension'/'contextual'. Dimensions are JOINED to and used for grouping; never SUM/AVG their numeric columns from a fact-sourced view.",
     "bridge": "A table that is both an FK source and destination (appears in a snowflake chain, e.g. store -> region). Reach it via nested joins, not flat siblings.",
+    "fact_like_tables": "Many real tables are not labeled fact/dim but ARE shaped like a fact and work well as a view source: a wide denormalized / OBT ('one big table') that carries both measure columns and descriptive attribute columns (treat the measures as the fact, the attribute columns as inline dimensions -- no joins needed); a pre-aggregated summary/mart table (direct aggregations, usually no joins); an event or transaction log (one row per event = the grain). Map these onto the fact role rather than skipping them.",
+    "poor_fit": "If a table is NOT fact-like at all -- a pure key-value/EAV store, a narrow join/bridge table with no measures, a reference code list with nothing to aggregate, or unstructured blob columns -- a metric view adds little value. Prefer a single simple aggregate, fold it in as a dimension of a real fact, or skip it. Do not fabricate a fact grain that the data does not have.",
     "measurable_column": "Numeric, low-null, and NOT a near-unique key. IDs and codes are dimensions/keys, not measures, even when numeric.",
     "grain_column": "The unique, low-null natural key that defines one row of the table -- used for COUNT(DISTINCT ...) denominators and to reason about grain."
   },
