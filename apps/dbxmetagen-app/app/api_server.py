@@ -947,50 +947,79 @@ def _get_job_with_retry(ws, job_id: int, retries: int = 3):
 
 
 def _list_dbxmetagen_jobs(ws):
-    """Return project jobs using known IDs (env var), falling back to list(). Cached 30s."""
+    """Return project jobs. Cached 30s.
+
+    Merges two discovery sources so every deployed job is reachable:
+      1. Jobs wired into the app via `valueFrom` (fast, resolved by ID).
+      2. Name-keyword-matched jobs from `ws.jobs.list()`.
+
+    The app can only carry ~20 resources, so several standalone jobs (e.g.
+    sync_ddl, ontology_prediction, knowledge_base, metagen_with_kb,
+    semantic_layer) are deployed and granted the app SP CAN_MANAGE_RUN but are
+    NOT wired as `valueFrom` env IDs. Discovering by ID alone hid them; adding
+    the name-match sweep (deduped by job_id) makes them runnable by name. The
+    list() sweep is best-effort -- if it fails but we resolved jobs by ID, we
+    degrade to the ID set rather than erroring.
+    """
     with _job_list_lock:
         if "jobs" in _job_list_cache:
             return _job_list_cache["jobs"]
+
+    jobs = []
+    seen_ids = set()
+    for name, job_id in _KNOWN_JOB_IDS.items():
+        try:
+            j = _get_job_with_retry(ws, job_id)
+            jobs.append(j)
+            seen_ids.add(j.job_id)
+        except Exception as e:
+            logger.warning("ws.jobs.get(%s=%d) failed: %s", name, job_id, e)
     if _KNOWN_JOB_IDS:
-        jobs = []
-        for name, job_id in _KNOWN_JOB_IDS.items():
-            try:
-                j = _get_job_with_retry(ws, job_id)
-                jobs.append(j)
-            except Exception as e:
-                logger.warning("ws.jobs.get(%s=%d) failed: %s", name, job_id, e)
         logger.info(
             "Job discovery via valueFrom: %d/%d reachable",
             len(jobs),
             len(_KNOWN_JOB_IDS),
         )
-        with _job_list_lock:
-            _job_list_cache["jobs"] = jobs
-        return jobs
 
-    logger.info("No job IDs via valueFrom; falling back to ws.jobs.list()")
+    # Name-match sweep to pick up jobs not wired as valueFrom env IDs (deduped).
     try:
         all_jobs = list(ws.jobs.list())
     except Exception as e:
+        if jobs:
+            logger.warning(
+                "ws.jobs.list() failed (%s); using %d valueFrom jobs only",
+                e,
+                len(jobs),
+            )
+            with _job_list_lock:
+                _job_list_cache["jobs"] = jobs
+            return jobs
         logger.error("ws.jobs.list() failed: %s", e)
         raise HTTPException(
             503,
             detail=f"Failed to list jobs from Databricks API: {e}. "
             "Check app SPN permissions and workspace connectivity.",
         )
-    matched = [
-        j
-        for j in all_jobs
-        if j.settings
-        and j.settings.name
-        and any(kw in j.settings.name.lower() for kw in _JOB_NAME_KEYWORDS)
-    ]
+    added = 0
+    for j in all_jobs:
+        if (
+            j.job_id not in seen_ids
+            and j.settings
+            and j.settings.name
+            and any(kw in j.settings.name.lower() for kw in _JOB_NAME_KEYWORDS)
+        ):
+            jobs.append(j)
+            seen_ids.add(j.job_id)
+            added += 1
     logger.info(
-        "Job discovery via list(): %d total, %d matched", len(all_jobs), len(matched)
+        "Job discovery: %d via valueFrom + %d via list() name-match = %d total",
+        len(jobs) - added,
+        added,
+        len(jobs),
     )
     with _job_list_lock:
-        _job_list_cache["jobs"] = matched
-    return matched
+        _job_list_cache["jobs"] = jobs
+    return jobs
 
 
 # ---------------------------------------------------------------------------

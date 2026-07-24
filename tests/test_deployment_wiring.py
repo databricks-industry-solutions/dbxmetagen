@@ -17,12 +17,45 @@ ROOT = Path(__file__).resolve().parents[1]
 APP_RESOURCES = ROOT / "resources" / "apps" / "dbxmetagen_app.yml"
 APP_YAML = ROOT / "apps" / "dbxmetagen-app" / "app" / "app.yaml"
 API_SERVER = ROOT / "apps" / "dbxmetagen-app" / "app" / "api_server.py"
+JOBS_DIR = ROOT / "resources" / "jobs"
 OVERRIDES_EXAMPLE = ROOT / "variable-overrides.example.json"
 
 
 def _app_block():
     res = yaml.safe_load(APP_RESOURCES.read_text())
     return res["resources"]["apps"]["dbxmetagen_app"]
+
+
+def _job_name_keywords():
+    """The _JOB_NAME_KEYWORDS set literal from api_server.py."""
+    text = API_SERVER.read_text()
+    block = re.search(r"_JOB_NAME_KEYWORDS\s*=\s*\{(.*?)\}", text, re.DOTALL)
+    assert block, "could not find _JOB_NAME_KEYWORDS in api_server.py"
+    return set(re.findall(r'"([^"]+)"', block.group(1)))
+
+
+def _default_app_name():
+    """The default app_name literal from resources/app_variables.yml."""
+    doc = yaml.safe_load((ROOT / "resources" / "app_variables.yml").read_text()) or {}
+    return (doc.get("variables") or {}).get("app_name", {}).get("default", "")
+
+
+def _all_job_names():
+    """Deployed settings.name of every job, with the ${var.app_name} prefix
+    resolved to its default and the (default-empty) suffix dropped -- i.e. the
+    exact string the app's name-match fallback sees on a bare deploy."""
+    app_name = _default_app_name()
+    names = {}
+    for f in JOBS_DIR.glob("*.job.yml"):
+        doc = yaml.safe_load(f.read_text()) or {}
+        for job in (doc.get("resources", {}).get("jobs") or {}).values():
+            name = job.get("name", "")
+            resolved = (
+                name.replace("${var.app_name}", app_name)
+                .replace("${var.app_name_suffix}", "")
+            )
+            names[f.name] = resolved
+    return names
 
 
 def test_config_env_uses_variables_not_hardcoded():
@@ -136,3 +169,25 @@ def test_app_resource_count_under_cap():
     app = _app_block()
     n = len(app["resources"])
     assert n <= 20, f"App declares {n} resources; the Databricks Apps cap is 20"
+
+
+def test_every_job_name_is_keyword_discoverable():
+    """Every deployed job must be findable by the app's name-match fallback.
+
+    Because of the 20-resource cap, several standalone jobs (sync_ddl,
+    ontology_prediction, knowledge_base, metagen_with_kb, semantic_layer) are
+    NOT wired as value_from env IDs; the app resolves them at runtime by matching
+    their name against _JOB_NAME_KEYWORDS in _list_dbxmetagen_jobs(). If a job's
+    name shares no keyword, it becomes silently unrunnable from the app. This
+    guards that invariant so a future job rename can't reintroduce the tripwire.
+    """
+    keywords = _job_name_keywords()
+    undiscoverable = {
+        f: name
+        for f, name in _all_job_names().items()
+        if name and not any(kw in name.lower() for kw in keywords)
+    }
+    assert not undiscoverable, (
+        "job names share no _JOB_NAME_KEYWORDS term, so the app cannot resolve "
+        f"them by name: {undiscoverable}. Add a keyword or rename the job."
+    )
