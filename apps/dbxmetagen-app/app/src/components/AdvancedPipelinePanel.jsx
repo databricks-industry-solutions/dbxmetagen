@@ -190,8 +190,13 @@ export default function AdvancedPipelinePanel({
         <select value={ontologyBundle} onChange={e => chooseBundle(e.target.value)} className="input-base !text-xs" disabled={bundlesLoading}>
           <option value="">{bundlesLoading ? 'Loading bundles…' : 'Select an ontology bundle…'}</option>
           {bundles.map(b => {
-            const name = typeof b === 'string' ? b : (b.name || b.id || '')
-            return <option key={name} value={name}>{name}</option>
+            // The value MUST be the bundle KEY (file stem, e.g. "fhir_r4") --
+            // that's what resolve_bundle_path() expects. b.name is the friendly
+            // display label (e.g. "FHIR R4"); sending it as the value makes the
+            // pipeline look for "FHIR R4.yaml" and fail.
+            const key = typeof b === 'string' ? b : (b.key || b.name || b.id || '')
+            const label = typeof b === 'string' ? b : (b.name || b.key || b.id || '')
+            return <option key={key} value={key}>{label}</option>
           })}
         </select>
         {!ontologyBundle && (

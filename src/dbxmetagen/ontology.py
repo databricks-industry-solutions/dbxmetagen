@@ -786,20 +786,34 @@ def resolve_bundle_path(
     wheel. ``catalog_name``/``schema_name`` are required to search the Volume;
     ``volume_name`` defaults to ``$VOLUME_NAME`` or ``generated_metadata``.
     """
-    filename = (
-        f"{bundle_name}.yaml" if not bundle_name.endswith(".yaml") else bundle_name
-    )
-    candidates = [
-        os.path.join(BUNDLE_DIR, filename),
-        os.path.join("..", BUNDLE_DIR, filename),
-        os.path.join(os.path.dirname(__file__), "..", "..", BUNDLE_DIR, filename),
-    ]
-    try:
-        cwd = os.getcwd()
-        candidates.append(os.path.join(cwd, BUNDLE_DIR, filename))
-        candidates.append(os.path.join(cwd, "..", BUNDLE_DIR, filename))
-    except Exception:
-        pass
+    stem = bundle_name[:-len(".yaml")] if bundle_name.endswith(".yaml") else bundle_name
+    filename = f"{stem}.yaml"
+    # Defense-in-depth: a display label ("FHIR R4", "OMOP CDM") may reach here
+    # instead of the file stem ("fhir_r4", "omop_cdm") -- e.g. from a stale
+    # localStorage value or a hand-typed --params. Try the verbatim name first,
+    # then a slugified fallback (lowercased, non-alphanumerics -> underscore) so
+    # curated bundles resolve either way. The verbatim path is always tried first
+    # so a real file whose stem contains spaces/caps still wins.
+    slug = re.sub(r"[^a-z0-9]+", "_", stem.lower()).strip("_")
+    stems = [stem] if slug == stem else [stem, slug]
+
+    def _paths_for(fn: str) -> list:
+        out = [
+            os.path.join(BUNDLE_DIR, fn),
+            os.path.join("..", BUNDLE_DIR, fn),
+            os.path.join(os.path.dirname(__file__), "..", "..", BUNDLE_DIR, fn),
+        ]
+        try:
+            cwd = os.getcwd()
+            out.append(os.path.join(cwd, BUNDLE_DIR, fn))
+            out.append(os.path.join(cwd, "..", BUNDLE_DIR, fn))
+        except Exception:
+            pass
+        return out
+
+    candidates = []
+    for s in stems:
+        candidates.extend(_paths_for(f"{s}.yaml"))
 
     vol_path = None
     if catalog_name and schema_name:
