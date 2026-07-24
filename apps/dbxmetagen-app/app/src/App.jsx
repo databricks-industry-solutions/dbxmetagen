@@ -20,7 +20,7 @@ window.fetch = async (...args) => {
   return res
 }
 
-import { cachedFetchObj, TTL } from './apiCache'
+import { cachedFetchObj, invalidateCache, TTL } from './apiCache'
 import { Joyride, STATUS } from 'react-joyride'
 import AgentChat from './components/AgentChat'
 import BatchJobs from './components/BatchJobs'
@@ -320,6 +320,15 @@ export default function App() {
       .then(({ data }) => { if (data) setPipelineStats(data) })
   }, [activeTab])
 
+  // Force-refresh the foundation stats (bypassing the cache). Used after the
+  // analytics pipeline finishes in the Semantic Layer gate so it unlocks metric
+  // view generation without waiting for a tab change or the cache TTL.
+  const refreshPipelineStats = React.useCallback(() => {
+    invalidateCache('/api/coverage/holistic')
+    return cachedFetchObj('/api/coverage/holistic', {}, TTL.DASHBOARD)
+      .then(({ data }) => { if (data) setPipelineStats(data) })
+  }, [])
+
   useEffect(() => {
     const h = () => setSessionExpired(true)
     window.addEventListener('session-expired', h)
@@ -421,6 +430,7 @@ export default function App() {
               style={{ display: isActive ? 'block' : 'none' }}>
               <TabErrorBoundary>
                 <Comp onNavigate={setActiveTab} pipelineStats={pipelineStats}
+                  onRefreshPipelineStats={refreshPipelineStats}
                   {...(tabId === 'guide' ? { onStartTour: () => setRunTour(true) } : {})} />
               </TabErrorBoundary>
             </div>

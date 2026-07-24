@@ -3,6 +3,8 @@ import { ErrorBanner } from '../App'
 import { cachedFetch, cachedFetchObj, invalidateCache, TTL } from '../apiCache'
 import { PageHeader, EmptyState, Skeleton, Section } from './ui'
 import { useCatalogSchemaTables } from '../hooks/useCatalogSchemaTables'
+import { useJobRunner } from '../hooks/useJobRunner'
+import AdvancedPipelinePanel from './AdvancedPipelinePanel'
 
 const STAGES = {
   starting: 'Starting...',
@@ -261,7 +263,7 @@ function deriveFoundation(pipelineStats) {
  * metric views) and deep-links to the Generate Metadata tab to resolve any
  * unmet prerequisite. Collapses to a thin confirmation once ready.
  */
-function FoundationRail({ foundation, onNavigate }) {
+function FoundationRail({ foundation, onNavigate, step2Runner }) {
   if (!foundation) return null
   const { metadataDone, analyticsDone, ready, stats } = foundation
 
@@ -278,7 +280,7 @@ function FoundationRail({ foundation, onNavigate }) {
     )
   }
 
-  const Step = ({ n, title, done, detail, actionLabel, current }) => (
+  const Step = ({ n, title, done, detail, actionLabel, actionTab, current }) => (
     <div className="flex-1 min-w-[200px]">
       <div className="flex items-center gap-2">
         <span className={`inline-flex items-center justify-center w-6 h-6 rounded-full text-xs font-semibold shrink-0 ${
@@ -291,8 +293,8 @@ function FoundationRail({ foundation, onNavigate }) {
       </div>
       <div className="pl-8 mt-0.5">
         <p className={`text-xs ${done ? 'text-emerald-600 dark:text-emerald-400' : 'text-amber-600 dark:text-amber-400'}`}>{detail}</p>
-        {!done && actionLabel && (
-          <button onClick={() => onNavigate?.('jobs')} className="mt-1 text-xs font-semibold text-dbx-lava hover:underline">
+        {!done && actionLabel && actionTab && (
+          <button onClick={() => onNavigate?.(actionTab)} className="mt-1 text-xs font-semibold text-dbx-lava hover:underline">
             {actionLabel} &rarr;
           </button>
         )}
@@ -316,6 +318,7 @@ function FoundationRail({ foundation, onNavigate }) {
           current={!metadataDone}
           detail={metadataDone ? `${profiled}${total ? `/${total}` : ''} tables described` : 'Not generated yet'}
           actionLabel="Generate metadata"
+          actionTab="jobs"
         />
         <div className="hidden sm:flex items-center text-slate-300 dark:text-slate-600 self-center">&rarr;</div>
         <Step
@@ -323,8 +326,7 @@ function FoundationRail({ foundation, onNavigate }) {
           title="Analytics pipeline"
           done={analyticsDone}
           current={metadataDone && !analyticsDone}
-          detail={analyticsDone ? 'Ontology, FKs & index built' : 'Not run yet'}
-          actionLabel="Run analytics pipeline"
+          detail={analyticsDone ? 'Ontology, FKs & index built' : (metadataDone ? 'Run it below' : 'Unlocks after core metadata')}
         />
         <div className="hidden sm:flex items-center text-slate-300 dark:text-slate-600 self-center">&rarr;</div>
         <Step
@@ -335,11 +337,23 @@ function FoundationRail({ foundation, onNavigate }) {
           detail={metadataDone && analyticsDone ? 'Ready to generate' : 'Unlocks when 1 & 2 are done'}
         />
       </div>
+      {/* Inline analytics-pipeline runner — appears once core metadata is present
+          and the pipeline hasn't produced its outputs yet, so the user never
+          leaves the Semantic Layer to satisfy step 2. */}
+      {metadataDone && !analyticsDone && step2Runner && (
+        <div className="mt-3 pt-3 border-t border-amber-200/70 dark:border-amber-700/30">
+          {step2Runner}
+        </div>
+      )}
     </div>
   )
 }
 
-export default function SemanticLayer({ onNavigate, pipelineStats }) {
+export default function SemanticLayer({ onNavigate, pipelineStats, onRefreshPipelineStats }) {
+  // Shared job runner — lets the foundation gate start + track the analytics
+  // pipeline inline (see AdvancedPipelinePanel below).
+  const jobRunner = useJobRunner()
+  const [pipelineServerless, setPipelineServerless] = useState(true)
   // Projects
   const [projects, setProjects] = useState([])
   const [selectedProjectId, setSelectedProjectId] = useState('')
@@ -1381,7 +1395,27 @@ export default function SemanticLayer({ onNavigate, pipelineStats }) {
           Export SQL
         </button>
       </div>
-      <FoundationRail foundation={foundation} onNavigate={onNavigate} />
+      <FoundationRail
+        foundation={foundation}
+        onNavigate={onNavigate}
+        step2Runner={
+          <AdvancedPipelinePanel
+            variant="gate"
+            catalogName={selectedCatalog}
+            schemaName={selectedSchema}
+            tableNames={selectedTables.join(', ')}
+            runJob={jobRunner.runJob}
+            runningAction={jobRunner.runningAction}
+            runError={jobRunner.runError}
+            runHistory={jobRunner.runHistory}
+            pipelineStats={pipelineStats}
+            useServerless={pipelineServerless}
+            onServerlessChange={setPipelineServerless}
+            onCompleted={() => onRefreshPipelineStats?.()}
+            onNavigate={onNavigate}
+          />
+        }
+      />
       {cst.error && (
         <div className="rounded-lg border border-red-200 dark:border-red-800/40 bg-red-50 dark:bg-red-900/20 px-4 py-3 text-sm text-red-700 dark:text-red-300">
           Could not load catalogs or tables. Check that the SQL warehouse is running and the app service principal has USE permissions on the target catalog. <span className="font-mono text-red-500 dark:text-red-400">{cst.error}</span>

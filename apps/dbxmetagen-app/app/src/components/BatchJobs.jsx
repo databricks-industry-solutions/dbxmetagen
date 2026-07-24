@@ -1,8 +1,9 @@
 import React, { useState, useEffect, useRef, useCallback, Component } from 'react'
 import { ErrorBanner } from '../App'
 import { cachedFetchObj, TTL } from '../apiCache'
-import { PageHeader, EmptyState, Skeleton } from './ui'
+import { PageHeader, EmptyState, Skeleton, InfoTip } from './ui'
 import { useCatalogSchemaTables } from '../hooks/useCatalogSchemaTables'
+import { useJobRunner, TERMINAL_STATES } from '../hooks/useJobRunner'
 
 class TabErrorBoundary extends Component {
   state = { error: null }
@@ -21,21 +22,6 @@ class TabErrorBoundary extends Component {
     return this.props.children
   }
 }
-
-function InfoTip({ text }) {
-  return (
-    <span className="relative group/tip cursor-help inline-flex flex-shrink-0">
-      <svg xmlns="http://www.w3.org/2000/svg" className="h-3.5 w-3.5 text-slate-400 group-hover/tip:text-slate-600 dark:group-hover/tip:text-slate-300 transition-colors" viewBox="0 0 20 20" fill="currentColor">
-        <path fillRule="evenodd" d="M18 10a8 8 0 11-16 0 8 8 0 0116 0zm-7-4a1 1 0 11-2 0 1 1 0 012 0zM9 9a1 1 0 000 2v3a1 1 0 001 1h1a1 1 0 100-2v-3a1 1 0 00-1-1H9z" clipRule="evenodd" />
-      </svg>
-      <span className="absolute bottom-full left-1/2 -translate-x-1/2 mb-2 w-72 p-2 text-xs font-normal normal-case text-left text-slate-200 bg-slate-800 rounded-lg shadow-lg opacity-0 group-hover/tip:opacity-100 pointer-events-none transition-opacity z-10">
-        {text}
-      </span>
-    </span>
-  )
-}
-
-const TERMINAL_STATES = new Set(['TERMINATED', 'SKIPPED', 'INTERNAL_ERROR'])
 
 const STATUS_LABELS = {
   'RUNNING': 'Running', 'PENDING': 'Queued', 'SKIPPED': 'Skipped', 'INTERNAL_ERROR': 'Internal Error',
@@ -146,40 +132,31 @@ function HealthWarnings({ health }) {
 }
 
 export default function BatchJobs({ onNavigate, pipelineStats }) {
-  const [jobs, setJobs] = useState([])
+  const { jobs, runHistory, runningAction, runError, runJob } =
+    useJobRunner({ onJobsError: (msg) => setError(prev => prev ? `${prev} | ${msg}` : msg) })
   const [tableNames, setTableNames] = useState('')
   const [applyDdl, setApplyDdl] = useState(false)
   const [federationMode, setFederationMode] = useState(false)
   const [catalogName, setCatalogName] = useState('')
   const [schemaName, setSchemaName] = useState('')
-  const [runningAction, setRunningAction] = useState(null)
   const [error, setError] = useState(null)
   const [ontologyBundle, setOntologyBundle] = useState(() => {
     try { return localStorage.getItem('dbxmetagen_ontologyBundle') || '' } catch { return '' }
   })
-  const [entityTagKey, setEntityTagKey] = useState('entity_type')
   const [bundles, setBundles] = useState([])
   const [bundlesLoading, setBundlesLoading] = useState(false)
   const [bundlesLoadError, setBundlesLoadError] = useState(null)
   const [domainConfig, setDomainConfig] = useState('')
   const [domainConfigs, setDomainConfigs] = useState([])
-  const [runHistory, setRunHistory] = useState([])
   const [historyPage, setHistoryPage] = useState(0)
   const [health, setHealth] = useState(null)
-  // Step 2 (advanced pipeline) is optional and hidden by default so the first
-  // screen behind the Home "Generate metadata" door stays a single guided step.
-  const [advancedOpen, setAdvancedOpen] = useState(false)
-  const [similarityThreshold, setSimilarityThreshold] = useState(0.8)
-  const [incremental, setIncremental] = useState(true)
-  const [sweepStale, setSweepStale] = useState(false)
   // Core-metadata run scope: 'all3' runs descriptions + sensitivity + domain;
   // 'comment' / 'pi' / 'domain' run a single mode. Serverless is unified into
-  // settings.use_serverless (used by both the core and advanced tabs).
+  // settings.use_serverless. (The advanced analytics pipeline now lives in the
+  // Semantic Layer's foundation gate, not here.)
   const [genMenuOpen, setGenMenuOpen] = useState(false)
   const [skipKbEnrich, setSkipKbEnrich] = useState(false)
   const genMenuRef = useRef(null)
-  const [clusterMinK, setClusterMinK] = useState(2)
-  const [clusterMaxK, setClusterMaxK] = useState(15)
   const [lakebaseCatalog, setLakebaseCatalog] = useState('')
   const [lakebaseError, setLakebaseError] = useState(null)
   const [lakebaseConfigured, setLakebaseConfigured] = useState(false)
@@ -187,7 +164,6 @@ export default function BatchJobs({ onNavigate, pipelineStats }) {
   const [mcpError, setMcpError] = useState(null)
   const [importStatus, setImportStatus] = useState(null)
   const [availableModels, setAvailableModels] = useState(['databricks-claude-sonnet-4-6', 'databricks-gpt-oss-120b'])
-  const pollRef = useRef(null)
 
   const [settings, setSettings] = useState({
     model: 'databricks-claude-sonnet-4-6',
@@ -289,12 +265,7 @@ export default function BatchJobs({ onNavigate, pipelineStats }) {
 
   useEffect(() => {
     setError(null)
-    fetch('/api/jobs').then(r => {
-      if (!r.ok) throw new Error(`${r.status} ${r.statusText}`)
-      return r.json()
-    }).then(setJobs)
-      .catch(e => setError(`Failed to load jobs: ${e.message}`))
-
+    // Job list + run history are loaded/polled by useJobRunner.
     cachedFetchObj('/api/config', {}, TTL.CONFIG).then(({ data: cfg, error: cfgErr }) => {
       if (cfgErr) setError(prev => prev ? `${prev} | Config: ${cfgErr}` : `Config load failed: ${cfgErr}`)
       if (cfg) {
@@ -319,9 +290,6 @@ export default function BatchJobs({ onNavigate, pipelineStats }) {
     fetch('/api/domain-configs').then(r => r.ok ? r.json() : []).then(setDomainConfigs)
       .catch(() => setError(prev => prev ? `${prev} | Domain configs could not be loaded` : 'Domain configs could not be loaded'))
     fetch('/api/jobs/health').then(r => r.ok ? r.json() : null).then(setHealth).catch(() => {})
-    fetch('/api/jobs/runs').then(r => r.ok ? r.json() : []).then(runs => {
-      setRunHistory(runs.map(r => ({ ...r, _polling: false })))
-    }).catch(() => setError(prev => prev ? `${prev} | Run history could not be loaded` : 'Run history could not be loaded'))
   }, [loadBundles])
 
   useEffect(() => { setPickerSelected([]) }, [pickerCatalog, pickerSchema])
@@ -340,67 +308,7 @@ export default function BatchJobs({ onNavigate, pipelineStats }) {
     setPickerSelected(prev => prev.includes(t) ? prev.filter(x => x !== t) : [...prev, t])
   }
 
-  const runHistoryRef = useRef(runHistory)
-  useEffect(() => { runHistoryRef.current = runHistory }, [runHistory])
-
-  const pollActiveRuns = useCallback(async () => {
-    const active = runHistoryRef.current.filter(r => !TERMINAL_STATES.has(r.state))
-    if (active.length === 0) return
-    const updates = await Promise.all(active.map(async (r) => {
-      try {
-        const res = await fetch(`/api/jobs/${r.run_id}/status`)
-        if (!res.ok) return null
-        return await res.json()
-      } catch { return null }
-    }))
-    setRunHistory(prev => prev.map(r => {
-      const upd = updates.find(u => u && u.run_id === r.run_id)
-      return upd ? { ...r, ...upd } : r
-    }))
-  }, [])
-
-  useEffect(() => {
-    const hasActive = runHistory.some(r => !TERMINAL_STATES.has(r.state))
-    if (hasActive && !pollRef.current) {
-      pollRef.current = setInterval(pollActiveRuns, 5000)
-    } else if (!hasActive && pollRef.current) {
-      clearInterval(pollRef.current)
-      pollRef.current = null
-    }
-    return () => { if (pollRef.current) { clearInterval(pollRef.current); pollRef.current = null } }
-  }, [runHistory, pollActiveRuns])
-
-  const findJob = (suffix) => jobs.find(j => j.name?.endsWith(suffix))
-
   const hasDomainSource = !!(ontologyBundle || domainConfig)
-
-  const [runError, setRunError] = useState(null)
-
-  const runJob = async (jobNameSuffix, params = {}, actionKey = 'default') => {
-    setRunningAction(actionKey)
-    setRunError(null)
-    try {
-      const match = findJob(jobNameSuffix)
-      const body = match
-        ? { job_id: match.job_id, ...params }
-        : { job_name: jobNameSuffix, ...params }
-      const res = await fetch('/api/jobs/run', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify(body),
-      })
-      const data = await res.json().catch(() => ({}))
-      if (!res.ok) { setRunError(data.detail || `Failed to start job (${res.status})`); setRunningAction(null); return }
-      const newRun = {
-        ...data,
-        job_name: match?.name || jobNameSuffix,
-        state: 'PENDING', result: null, tasks: [],
-        run_page_url: null, state_message: null,
-      }
-      setRunHistory(prev => [newRun, ...prev])
-    } catch (e) { setRunError(e.message) }
-    setRunningAction(null)
-  }
 
   const syncLakebase = async () => {
     setLakebaseError(null)
@@ -932,155 +840,24 @@ export default function BatchJobs({ onNavigate, pipelineStats }) {
       )}
       </TabErrorBoundary>
 
-      {/* Step 2: Advanced pipeline — optional, collapsed by default. */}
+      {/* The advanced analytics pipeline now lives in the Semantic Layer's
+          foundation gate (it is the prerequisite for metric views). Point users there. */}
       <div className="pt-1">
-        <button onClick={() => setAdvancedOpen(o => !o)}
-          className="w-full flex items-center gap-2.5 text-left group">
-          <span className="flex items-center justify-center w-6 h-6 rounded-full bg-dbx-amber text-white text-xs font-bold shrink-0">2</span>
+        <div className="card border-l-4 border-l-dbx-amber p-4 flex items-start gap-3">
+          <span className="flex items-center justify-center w-6 h-6 rounded-full bg-dbx-amber text-white text-xs font-bold shrink-0 mt-0.5">2</span>
           <div className="flex-1">
-            <div className="flex items-center gap-2">
-              <h2 className="text-base font-semibold text-slate-800 dark:text-slate-100">Advanced pipeline</h2>
-              <span className="badge bg-slate-100 text-slate-500 dark:bg-dbx-navy-500 dark:text-slate-400 text-[10px]">Optional</span>
-            </div>
-            <p className="text-xs text-slate-500 dark:text-slate-400">Ontology · Foreign keys · Knowledge graph · Vector index — run after Step 1</p>
+            <h2 className="text-base font-semibold text-slate-800 dark:text-slate-100">Advanced analytics pipeline</h2>
+            <p className="text-xs text-slate-500 dark:text-slate-400 mt-0.5">Ontology · Foreign keys · Knowledge graph · Vector index. This builds the foundation for metric views and now runs in the <strong>Semantic Layer</strong>.</p>
+            <button onClick={() => onNavigate?.('semantic')} className="mt-2 text-xs font-semibold text-dbx-lava hover:underline">
+              Run the analytics pipeline in Semantic Layer &rarr;
+            </button>
           </div>
-          <svg className={`w-4 h-4 text-slate-400 transition-transform ${advancedOpen ? 'rotate-180' : ''}`} fill="none" viewBox="0 0 24 24" stroke="currentColor">
-            <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M19 9l-7 7-7-7" />
-          </svg>
-        </button>
+        </div>
       </div>
 
-      <TabErrorBoundary key="advanced">
-      {advancedOpen && (
-        <section className="card border-l-4 border-l-dbx-amber overflow-hidden animate-slide-up">
+      <TabErrorBoundary key="sync">
+        <section className="card border-l-4 border-l-dbx-teal overflow-hidden animate-slide-up">
           <div className="p-6 space-y-5">
-            <div className={`flex items-start gap-2 px-3 py-2 rounded-md border text-xs ${
-              pipelineStats && pipelineStats.profiled > 0
-                ? 'bg-emerald-50 dark:bg-emerald-900/15 border-emerald-200 dark:border-emerald-800/40 text-emerald-700 dark:text-emerald-300'
-                : 'bg-amber-50 dark:bg-amber-900/20 border-amber-200 dark:border-amber-800 text-amber-700 dark:text-amber-300'
-            }`}>
-              <svg className="w-4 h-4 flex-shrink-0 mt-0.5" fill="none" viewBox="0 0 24 24" stroke="currentColor"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M12 9v2m0 4h.01M21 12a9 9 0 11-18 0 9 9 0 0118 0z" /></svg>
-              {pipelineStats && pipelineStats.profiled > 0 ? (
-                <span><strong>{pipelineStats.profiled}</strong> of {pipelineStats.total_tables} tables have core metadata. Advanced analytics will build on these results.</span>
-              ) : (
-                <span>Run <strong>Generate Core Metadata</strong> first (Step 1 above). The advanced pipeline reads from the knowledge base tables produced by core metadata &mdash; tables without core metadata will be skipped or produce incomplete results.</span>
-              )}
-            </div>
-            <details className="group">
-              <summary className="text-sm font-medium text-slate-600 dark:text-slate-300 cursor-pointer select-none flex items-center gap-1.5">
-                <svg className="w-3 h-3 transition-transform group-open:rotate-90" fill="none" viewBox="0 0 24 24" stroke="currentColor">
-                  <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M9 5l7 7-7 7" />
-                </svg>
-                What is advanced metadata?
-              </summary>
-              <div className="mt-2 text-sm text-slate-500 dark:text-slate-400 bg-dbx-oat-light dark:bg-dbx-navy-500/30 rounded-lg p-4 animate-slide-up">
-                The advanced pipeline builds on your core metadata to produce the full semantic layer: <strong className="text-slate-700 dark:text-slate-200">knowledge bases</strong>, a <strong className="text-slate-700 dark:text-slate-200">knowledge graph</strong>, <strong className="text-slate-700 dark:text-slate-200">embeddings</strong> and similarity edges, <strong className="text-slate-700 dark:text-slate-200">ontology</strong> entity discovery, <strong className="text-slate-700 dark:text-slate-200">profiling</strong> and data quality scores, <strong className="text-slate-700 dark:text-slate-200">foreign key prediction</strong>, <strong className="text-slate-700 dark:text-slate-200">table clustering</strong>, and a <strong className="text-slate-700 dark:text-slate-200">vector search index</strong>. This runs as a single Databricks job with 15 orchestrated tasks. <em className="text-slate-400">Requires core metadata to be generated first.</em>
-              </div>
-            </details>
-            <p className="text-[11px] text-slate-400 dark:text-slate-500 italic">No row-level data is sent to LLMs during this step. All prompts use only metadata (table/column names, comments, types, and computed statistics).</p>
-
-            <div className="grid grid-cols-2 md:grid-cols-5 gap-4">
-              <div>
-                <label className="text-xs text-slate-500 dark:text-slate-400 mb-1 block" title="Minimum embedding similarity score (0–1) for creating edges between columns. Higher values mean fewer, stronger connections.">Similarity Threshold</label>
-                <input type="number" step="0.05" min="0" max="1" value={similarityThreshold}
-                  onChange={e => setSimilarityThreshold(parseFloat(e.target.value) || 0.8)}
-                  title="Minimum embedding similarity for edge creation (0–1)"
-                  className="input-base !text-xs" />
-              </div>
-              <div>
-                <label className="text-xs text-slate-500 dark:text-slate-400 mb-1 block" title="Minimum number of table groups for clustering analysis">Cluster Min Groups</label>
-                <input type="number" min="1" max="50" value={clusterMinK}
-                  onChange={e => setClusterMinK(parseInt(e.target.value) || 2)}
-                  className="input-base !text-xs" />
-              </div>
-              <div>
-                <label className="text-xs text-slate-500 dark:text-slate-400 mb-1 block" title="Maximum number of table groups for clustering analysis">Cluster Max Groups</label>
-                <input type="number" min="2" max="100" value={clusterMaxK}
-                  onChange={e => setClusterMaxK(parseInt(e.target.value) || 15)}
-                  className="input-base !text-xs" />
-              </div>
-              <div>
-                <label className="text-xs text-slate-500 dark:text-slate-400 mb-1 block" title="Unity Catalog tag key where entity type classifications are stored">Entity Type Tag Key</label>
-                <input value={entityTagKey} onChange={e => setEntityTagKey(e.target.value)}
-                  placeholder="entity_type" title="Unity Catalog tag key for entity type classifications"
-                  className="input-base !text-xs" />
-              </div>
-              <div className="pb-1 flex items-center gap-1.5">
-                <label className="flex items-center gap-2 text-xs text-slate-600 dark:text-slate-300 cursor-pointer">
-                  <input type="checkbox" checked={incremental} onChange={e => setIncremental(e.target.checked)} />
-                  Incremental mode (skip already-processed tables)
-                </label>
-                <InfoTip text="When checked, each analytics task early-exits if its inputs haven't changed since the last run, so only new or modified tables are reprocessed (fast, cheap). Uncheck for a full run that reprocesses every table in scope — needed after code or ontology changes, and whenever you want the sweep below to take effect." />
-              </div>
-              <div className="pb-1 flex items-center gap-1.5">
-                <label className="flex items-center gap-2 text-xs text-slate-600 dark:text-slate-300 cursor-pointer">
-                  <input type="checkbox" checked={applyDdl} disabled={federationMode} onChange={e => setApplyDdl(e.target.checked)} />
-                  Apply DDL (tags &amp; FK constraints)
-                </label>
-                <InfoTip text="Apply ontology tags and FK constraints directly to Unity Catalog tables. Disable to review results first. When enabled, this writes ontology tags (entity_type, property_role) and FK constraints directly to your tables; existing tags will be updated." />
-                {applyDdl && !federationMode && <span className="text-[10px] text-amber-600 dark:text-amber-400 font-medium">writes to tables</span>}
-              </div>
-              <div className="pb-1 flex items-center gap-1.5">
-                <label className="flex items-center gap-2 text-xs text-slate-600 dark:text-slate-300 cursor-pointer">
-                  <input type="checkbox" checked={federationMode} onChange={e => {
-                    setFederationMode(e.target.checked)
-                    if (e.target.checked) setApplyDdl(false)
-                  }} />
-                  Federation mode (external catalogs)
-                </label>
-                <InfoTip text="Enable for external/federated catalogs. Disables DDL apply and skips DESCRIBE EXTENDED." />
-              </div>
-              <div className="pb-1 flex items-center gap-1.5">
-                <label className="flex items-center gap-2 text-xs text-slate-600 dark:text-slate-300 cursor-pointer">
-                  <input type="checkbox" checked={sweepStale} onChange={e => setSweepStale(e.target.checked)} />
-                  Sweep stale artifacts (refresh entities, edges &amp; docs in scope)
-                </label>
-                <InfoTip text={'Clean rebuild of derived data for the tables in scope: deletes ontology entities, relationships, graph nodes/edges, and vector-index docs that this run no longer reproduces, then regenerates them from the current bundle. Use it to clear leftovers after switching ontology bundles, changing metadata, or upgrading the pipeline. Tables not in scope and steward-overridden entities are never touched. Only takes effect on a full run, so leave "Incremental mode" unchecked when using it.'} />
-              </div>
-              <div className="pb-1 flex items-center gap-1.5">
-                <label className="flex items-center gap-2 text-xs text-slate-600 dark:text-slate-300 cursor-pointer">
-                  <input type="checkbox" checked={settings.use_serverless} onChange={e => setSetting('use_serverless', e.target.checked)} />
-                  Serverless compute
-                </label>
-                <InfoTip text="Run the pipeline on serverless compute instead of classic ML clusters. Faster cold-start, no cluster management. This is the same serverless setting used for core metadata generation." />
-              </div>
-            </div>
-
-            <div>
-              <label className="text-xs text-slate-500 dark:text-slate-400 mb-1 block">Table Filter <span className="text-slate-400 dark:text-slate-500">(comma-separated; leave blank to include all tables in the knowledge base)</span></label>
-              <textarea value={tableNames} onChange={e => setTableNames(e.target.value)}
-                placeholder="catalog.schema.table1, catalog.schema.table2"
-                className="textarea-base h-16 !text-xs" />
-            </div>
-
-            {!ontologyBundle && <p className="text-xs text-amber-600 dark:text-amber-400">An ontology bundle must be selected in the Generate Metadata section to run the full analytics pipeline.</p>}
-            <button onClick={() => runJob(settings.use_serverless ? '_full_analytics_pipeline_serverless' : '_full_analytics_pipeline', {
-              catalog_name: catalogName, schema_name: schemaName,
-              ontology_bundle: ontologyBundle,
-              apply_ddl: applyDdl,
-              federation_mode: federationMode,
-              sweep_stale_docs: sweepStale,
-              sweep_stale_edges: sweepStale,
-              sweep_stale_entities: sweepStale,
-              use_kb_comments: settings.use_kb_comments,
-              use_customer_context: settings.use_customer_context,
-              include_lineage: settings.include_lineage,
-              ...(tableNames.trim() ? { table_names: tableNames } : {}),
-              ...(domainConfig ? { domain_config: domainConfig } : {}),
-              extra_params: {
-                model: settings.model,
-                sample_size: String(settings.sample_size),
-                similarity_threshold: String(similarityThreshold),
-                incremental: String(incremental),
-                cluster_min_k: String(clusterMinK),
-                cluster_max_k: String(clusterMaxK),
-                ...(entityTagKey !== 'entity_type' ? { entity_tag_key: entityTagKey } : {}),
-              },
-            }, 'pipeline')} disabled={!!runningAction || !catalogName.trim() || !schemaName.trim() || !ontologyBundle} title={!ontologyBundle ? 'Select an ontology bundle in the Generate Metadata tab to run the full analytics pipeline' : ''} className="btn-primary btn-md">
-              {runningAction === 'pipeline' ? 'Starting...' : (tableNames.trim() ? `Run Pipeline (${tableNames.split(',').filter(t => t.trim()).length} tables)` : 'Run Full Pipeline')}
-            </button>
-            <p className="text-xs text-slate-400 mt-1">Runs the full 15-task analytics pipeline: knowledge bases, knowledge graph, embeddings, ontology, profiling, FK prediction, clustering, and vector index. Run after core metadata has been generated.</p>
-
             {/* Post-review sync card */}
             <div className="mt-2 card p-4 border border-dbx-oat-dark/30 dark:border-dbx-navy-400/20 bg-dbx-oat-light/50 dark:bg-dbx-navy/30 space-y-3">
               <div className="flex items-center gap-2">
@@ -1188,8 +965,6 @@ export default function BatchJobs({ onNavigate, pipelineStats }) {
             </div>
           </div>
         </section>
-      )}
-
       </TabErrorBoundary>
 
       {/* Active Runs */}
