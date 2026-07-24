@@ -5,6 +5,7 @@ import { PageHeader, EmptyState, Skeleton, Section } from './ui'
 import { useCatalogSchemaTables } from '../hooks/useCatalogSchemaTables'
 import { useJobRunner } from '../hooks/useJobRunner'
 import AdvancedPipelinePanel from './AdvancedPipelinePanel'
+import ErdDesigner from './ErdDesigner'
 
 const STAGES = {
   starting: 'Starting...',
@@ -374,6 +375,7 @@ export default function SemanticLayer({ onNavigate, pipelineStats, onRefreshPipe
   const [businessContext, setBusinessContext] = useState('')
   const [generationStyle, setGenerationStyle] = useState('comprehensive')
   const [maxViews, setMaxViews] = useState(null)
+  const [erdSufficiency, setErdSufficiency] = useState(null)  // {metric_views_recommended, reasons, ...}
   const [materialize, setMaterialize] = useState(false)
   const [materializationSchedule, setMaterializationSchedule] = useState('every 6 hours')
   const [matSchedulePreset, setMatSchedulePreset] = useState('6h')
@@ -640,6 +642,18 @@ export default function SemanticLayer({ onNavigate, pipelineStats, onRefreshPipe
       if (data?.kpi_coverage?.total) setKpiCoverage(data.kpi_coverage)
       else setKpiCoverage(null)
     })
+    // Coverage-aware "how many views" recommendation (drives the Generate banner
+    // + maxViews default). Cheap + server-cached; keyed on the current scope.
+    if (selectedTables.length) {
+      const recParams = new URLSearchParams({ tables: selectedTables.join(',') })
+      if (selectedProjectId) recParams.set('project_id', selectedProjectId)
+      if (activeProfileId) recParams.set('profile_id', activeProfileId)
+      cachedFetchObj(`/api/semantic-layer/erd-recommendation?${recParams}`, {}, TTL.CONFIG)
+        .then(({ data }) => setErdSufficiency(data?.sufficiency || null))
+        .catch(() => setErdSufficiency(null))
+    } else {
+      setErdSufficiency(null)
+    }
   }
 
   const createNewProject = async () => {
@@ -1435,7 +1449,7 @@ export default function SemanticLayer({ onNavigate, pipelineStats, onRefreshPipe
 
       {/* Tab Bar */}
       <div className="inline-flex bg-dbx-oat/60 dark:bg-dbx-navy-600 rounded-xl p-1 shadow-inner-soft">
-        {[['setup', 'Setup'], ['questions', 'Questions & KPIs'], ['generate', 'Generate'], ['definitions', 'Definitions']].map(([k, l]) => {
+        {[['setup', 'Setup'], ['questions', 'Questions & KPIs'], ['model', 'Model'], ['generate', 'Generate'], ['definitions', 'Definitions']].map(([k, l]) => {
           const count = k === 'setup' && selectedTables.length ? `${selectedTables.length} tables`
             : k === 'questions' ? [questionLines.length && `${questionLines.length}q`, kpis.length && `${kpis.length} KPIs`].filter(Boolean).join(', ') || ''
             : k === 'definitions' && definitions.length ? `${definitions.length}` : ''
@@ -1457,8 +1471,9 @@ export default function SemanticLayer({ onNavigate, pipelineStats, onRefreshPipe
         <span className="font-semibold text-slate-600 dark:text-slate-300">How it works:</span>{' '}
         <span className={activeTab === 'setup' ? 'font-semibold text-dbx-lava' : ''}>1. Setup</span> &mdash; pick a project and select tables &rarr;{' '}
         <span className={activeTab === 'questions' ? 'font-semibold text-dbx-lava' : ''}>2. Questions</span> &mdash; define business questions and KPIs &rarr;{' '}
-        <span className={activeTab === 'generate' ? 'font-semibold text-dbx-lava' : ''}>3. Generate</span> &mdash; AI creates metric view definitions &rarr;{' '}
-        <span className={activeTab === 'definitions' ? 'font-semibold text-dbx-lava' : ''}>4. Definitions</span> &mdash; review, validate, and deploy as UC views.
+        <span className={activeTab === 'model' ? 'font-semibold text-dbx-lava' : ''}>3. Model</span> &mdash; review the recommended ERD (facts, joins) &rarr;{' '}
+        <span className={activeTab === 'generate' ? 'font-semibold text-dbx-lava' : ''}>4. Generate</span> &mdash; AI creates metric view definitions &rarr;{' '}
+        <span className={activeTab === 'definitions' ? 'font-semibold text-dbx-lava' : ''}>5. Definitions</span> &mdash; review, validate, and deploy as UC views.
         Then query them in <span className="font-medium text-amber-600 dark:text-amber-400">Explore &rarr; Metric View Agent</span>
       </div>
 
@@ -1768,6 +1783,28 @@ export default function SemanticLayer({ onNavigate, pipelineStats, onRefreshPipe
 
       </>}
 
+      {/* === Model Tab (recommended, editable ERD) === */}
+      {activeTab === 'model' && (
+        <section className={section}>
+          <div className="flex items-center gap-2 mb-1">
+            <h2 className="text-lg font-semibold dark:text-gray-100">Data model</h2>
+            <span className="text-xs text-slate-400">recommended from your metadata</span>
+          </div>
+          <p className="text-xs text-slate-500 dark:text-slate-400 mb-3 leading-relaxed">
+            dbxmetagen inferred this star schema from FK predictions, ontology, and column profiling.
+            Confirm which tables are <span className="font-medium">facts</span>, adjust the joins, and save &mdash;
+            the model seeds metric-view generation (facts become view sources; confirmed joins are used directly).
+          </p>
+          <ErdDesigner
+            tables={selectedTables}
+            projectId={selectedProjectId}
+            profileId={activeProfileId}
+            businessContext={businessContext}
+            onSaved={() => { refreshDefinitions(); onRefreshPipelineStats?.() }}
+          />
+        </section>
+      )}
+
       {/* === Generate Tab === */}
       {activeTab === 'generate' && (() => {
         const profileFiltered = activeProfileId ? kpis.filter(k => k.profile_id === activeProfileId) : kpis
@@ -1846,20 +1883,37 @@ export default function SemanticLayer({ onNavigate, pipelineStats, onRefreshPipe
               : 'Best practice: one comprehensive view per fact-table grain'}
           </span>
         </label>
-        <div className="flex items-center gap-2 mb-4">
+        {(() => {
+          const recommended = erdSufficiency?.metric_views_recommended
+            || Math.min(Math.max(Math.floor(selectedTables.length / 3), 2), 15)
+          return <>
+        <div className="flex items-center gap-2 mb-2">
           <label className="text-sm font-medium text-slate-700 dark:text-slate-200 whitespace-nowrap">Max views</label>
           <input type="number" min={1}
             max={Math.max(Math.floor(selectedTables.length / 2), 2)}
-            placeholder={String(Math.min(Math.max(Math.floor(selectedTables.length / 3), 2), 15))}
+            placeholder={String(recommended)}
             value={maxViews ?? ''}
             onChange={e => setMaxViews(e.target.value ? parseInt(e.target.value) : null)}
             className="w-16 px-2 py-1 border rounded text-sm dark:bg-slate-700 dark:border-slate-600 dark:text-white" />
           <span className="text-xs text-slate-400 dark:text-slate-500"
-            title="Each metric view costs 1-2 AI_QUERY calls. More views = more cost and generation time. Recommended: ~1/3 the number of tables.">
-            of {selectedTables.length} tables
-            {selectedTables.length > 0 && ` (recommended: ${Math.min(Math.max(Math.floor(selectedTables.length / 3), 2), 15)})`}
+            title="Each metric view costs 1-2 AI_QUERY calls. More views = more cost and generation time.">
+            of {selectedTables.length} tables (recommended: {recommended})
           </span>
+          {maxViews == null && (
+            <button onClick={() => setMaxViews(recommended)}
+              className="text-xs text-dbx-lava hover:underline">use {recommended}</button>
+          )}
         </div>
+        {erdSufficiency && (erdSufficiency.reasons?.length > 0 || erdSufficiency.missing_kpis?.length > 0) && (
+          <div className="mb-4 px-3 py-2 rounded-md bg-amber-50 dark:bg-amber-900/20 border border-amber-200 dark:border-amber-700/50 text-xs text-amber-800 dark:text-amber-300 leading-relaxed">
+            <span className="font-semibold">Coverage recommendation:</span>{' '}
+            {erdSufficiency.reasons?.join(' · ')}
+            {erdSufficiency.missing_kpis?.length > 0 && <> — {erdSufficiency.missing_kpis.length} KPI(s) not yet covered by a measure.</>}
+            {onNavigate && <> Refine the data model in <button onClick={() => setActiveTab('model')} className="font-semibold underline">Model</button>.</>}
+          </div>
+        )}
+          </>
+        })()}
         <div className="mb-4 p-4 rounded-lg border border-slate-200 dark:border-slate-700 bg-slate-50/50 dark:bg-slate-900/30">
           <div className="flex items-center gap-2 mb-2">
             <h3 className="text-sm font-semibold text-slate-800 dark:text-slate-100">Query acceleration (Materialization)</h3>

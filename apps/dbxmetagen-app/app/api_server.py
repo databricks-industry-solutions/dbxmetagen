@@ -5994,6 +5994,12 @@ def _ensure_semantic_layer_tables():
         execute_sql(f"ALTER TABLE {fq('semantic_layer_projects')} ADD COLUMNS (selected_tables STRING)")
     except Exception:
         pass
+    # erd_json: the user's confirmed ERD (fact/dim roles + layout) for a project,
+    # produced by the ERD designer. Seeds ERD-aware metric-view generation.
+    try:
+        execute_sql(f"ALTER TABLE {fq('semantic_layer_projects')} ADD COLUMNS (erd_json STRING)")
+    except Exception:
+        pass
     try:
         execute_sql(f"ALTER TABLE {fq('semantic_layer_profiles')} ADD COLUMNS (business_context STRING)")
     except Exception:
@@ -6368,7 +6374,7 @@ def list_projects():
     _ensure_semantic_layer_tables()
     try:
         return execute_sql(
-            f"SELECT project_id, project_name, description, created_at, selected_tables "
+            f"SELECT project_id, project_name, description, created_at, selected_tables, erd_json "
             f"FROM {fq('semantic_layer_projects')} ORDER BY created_at DESC"
         )
     except HTTPException as e:
@@ -6457,8 +6463,10 @@ def create_project(req: SemanticProjectRequest):
     now = _dt.utcnow().isoformat()
     name_esc = req.project_name.replace("'", "''")
     desc_esc = req.description.replace("'", "''")
+    # Column-explicit INSERT so adding columns (e.g. erd_json) never shifts values.
     execute_sql(
-        f"INSERT INTO {fq('semantic_layer_projects')} VALUES "
+        f"INSERT INTO {fq('semantic_layer_projects')} "
+        f"(project_id, project_name, description, created_at, selected_tables) VALUES "
         f"('{pid}', '{name_esc}', '{desc_esc}', '{now}', NULL)"
     )
     return {"project_id": pid, "project_name": req.project_name}
@@ -6490,6 +6498,28 @@ def update_project_tables(project_id: str, req: ProjectTablesUpdate):
         f"WHERE project_id = '{project_id}'"
     )
     return {"project_id": project_id, "selected_tables": req.selected_tables}
+
+
+class ProjectErdUpdate(BaseModel):
+    erd_json: dict
+
+
+@app.patch("/api/semantic-layer/projects/{project_id}/erd")
+def update_project_erd(project_id: str, req: ProjectErdUpdate):
+    """Persist the user's confirmed ERD (fact/dim roles + layout) for a project.
+
+    Join edits are persisted separately through the FK endpoints
+    (/api/analytics/fk-add, /fk-review) so they feed the analytics pipeline and
+    lock against re-runs; this stores only the node designations + layout that
+    have no other home.
+    """
+    _ensure_semantic_layer_tables()
+    erd_str = json.dumps(req.erd_json).replace("'", "''")
+    execute_sql(
+        f"UPDATE {fq('semantic_layer_projects')} SET erd_json = '{erd_str}' "
+        f"WHERE project_id = '{project_id}'"
+    )
+    return {"project_id": project_id, "saved": True}
 
 
 # --- In-app metric view generation ---
@@ -7019,7 +7049,14 @@ def _select_few_shot(context: str) -> str:
 
 
 def _load_reference_rules() -> str:
-    """Load anti-patterns and validation checklist from metric_view_reference.json."""
+    """Load metric-view quality guidance from metric_view_reference.json.
+
+    Injected into the plan/generate prompts. Pulls the modeling principles and
+    fact/dimension model (so the agent sources from facts and joins to dims)
+    plus the anti-patterns and self-check list. This JSON is the single source
+    of truth for metric-view quality -- edit it (not the prompt strings) to
+    change generation behavior.
+    """
     ref_path = os.path.join(os.path.dirname(__file__), "..", "..", "..", "configurations", "agent_references", "metric_view_reference.json")
     try:
         with open(ref_path) as f:
@@ -7027,6 +7064,17 @@ def _load_reference_rules() -> str:
     except Exception:
         return ""
     parts = []
+    if ref.get("guiding_principles"):
+        parts.append("MODELING PRINCIPLES:")
+        for gp in ref["guiding_principles"]:
+            parts.append(f"  - {gp}")
+    fdm = ref.get("fact_dimension_model")
+    if isinstance(fdm, dict):
+        parts.append("FACT/DIMENSION MODEL:")
+        for k, v in fdm.items():
+            if k == "description":
+                continue
+            parts.append(f"  - {k}: {v}")
     if ref.get("anti_patterns"):
         parts.append("ANTI-PATTERNS (NEVER do these):")
         for ap in ref["anti_patterns"]:
@@ -7036,6 +7084,42 @@ def _load_reference_rules() -> str:
         for vc in ref["validation_checklist"]:
             parts.append(f"  - {vc}")
     return "\n".join(parts)
+
+
+def _load_plan_rules() -> str:
+    """Lean modeling guidance for the PLAN prompt (no SQL-expression detail).
+
+    The plan has no SQL, so it pulls only the modeling principles, fact/dimension
+    model, and anti-patterns from metric_view_reference.json -- keeping the plan
+    prompt focused on structure while staying single-sourced with the generate
+    prompt's fuller rules.
+    """
+    ref_path = os.path.join(os.path.dirname(__file__), "..", "..", "..", "configurations", "agent_references", "metric_view_reference.json")
+    try:
+        with open(ref_path) as f:
+            ref = json.load(f)
+    except Exception:
+        return ""
+    parts = []
+    if ref.get("guiding_principles"):
+        parts.append("MODELING PRINCIPLES:")
+        for gp in ref["guiding_principles"]:
+            parts.append(f"  - {gp}")
+    fdm = ref.get("fact_dimension_model")
+    if isinstance(fdm, dict):
+        parts.append("FACT/DIMENSION MODEL:")
+        for k, v in fdm.items():
+            if k == "description":
+                continue
+            parts.append(f"  - {k}: {v}")
+    if ref.get("anti_patterns"):
+        parts.append("PLANNING ANTI-PATTERNS (NEVER do these):")
+        for ap in ref["anti_patterns"]:
+            parts.append(f"  - {ap}")
+    return "\n".join(parts)
+
+
+_PLAN_RULES_BLOCK = _load_plan_rules()
 
 
 _REFERENCE_RULES_BLOCK = _load_reference_rules()
@@ -7653,6 +7737,185 @@ def _compute_kpi_coverage(definitions: list[dict], tables: list[str], profile_id
     }
 
 
+_erd_cache = TTLCache(maxsize=16, ttl=120)
+
+
+def _resolve_project_tables(project_id: Optional[str]) -> list[str]:
+    """selected_tables JSON for a project, else []."""
+    if not project_id:
+        return []
+    try:
+        rows = execute_sql(
+            f"SELECT selected_tables FROM {fq('semantic_layer_projects')} "
+            f"WHERE project_id = '{project_id}'"
+        )
+    except Exception:
+        return []
+    if not rows:
+        return []
+    raw = rows[0].get("selected_tables")
+    if not raw:
+        return []
+    try:
+        val = json.loads(raw) if isinstance(raw, str) else raw
+        return val if isinstance(val, list) else []
+    except Exception:
+        return []
+
+
+def _fetch_erd_inputs(tables: list[str]) -> tuple[list, list, dict, list]:
+    """Fetch (fk_rows, ontology_rows, profiling_by_table, existing_defs) for the
+    ERD recommender. Each source is best-effort -- a missing table degrades to []
+    so the recommender still runs on whatever metadata exists."""
+    safe = [_safe_sql_str(t) for t in tables if _SAFE_IDENT_RE.match(t)]
+    in_clause = ", ".join(safe) if safe else "''"
+
+    fk_rows = []
+    try:
+        fk_rows = execute_sql(
+            f"SELECT src_table, src_column, dst_table, dst_column, final_confidence, "
+            f"is_fk, join_rate, pk_uniqueness FROM {fq('fk_predictions')} "
+            f"WHERE src_table != dst_table AND (src_table IN ({in_clause}) OR dst_table IN ({in_clause}))"
+        ) or []
+    except Exception as e:
+        logger.warning("erd: fk_predictions fetch failed: %s", e)
+
+    ontology_rows = []
+    try:
+        ontology_rows = execute_sql(
+            f"SELECT entity_type, entity_role, source_tables FROM {fq('ontology_entities')}"
+        ) or []
+    except Exception as e:
+        logger.warning("erd: ontology_entities fetch failed: %s", e)
+
+    profiling_by_table: dict[str, list] = {}
+    try:
+        prof_rows = execute_sql(
+            f"SELECT table_name, column_name, data_type, null_rate, cardinality_ratio, "
+            f"is_unique_candidate, has_numeric_stats FROM {CATALOG}.{SCHEMA}.column_profiling_stats "
+            f"WHERE table_name IN ({in_clause})"
+        ) or []
+        for r in prof_rows:
+            profiling_by_table.setdefault(r.get("table_name"), []).append(r)
+    except Exception as e:
+        logger.warning("erd: column_profiling_stats fetch failed: %s", e)
+
+    existing_defs = []
+    try:
+        existing_defs = execute_sql(
+            f"SELECT source_table, status, json_definition FROM {fq('metric_view_definitions')} "
+            f"WHERE status NOT IN ('superseded', 'deleted')"
+        ) or []
+    except Exception as e:
+        logger.warning("erd: metric_view_definitions fetch failed: %s", e)
+
+    return fk_rows, ontology_rows, profiling_by_table, existing_defs
+
+
+@app.get("/api/semantic-layer/erd-recommendation")
+def get_erd_recommendation(
+    tables: Optional[str] = None,
+    project_id: Optional[str] = None,
+    profile_id: Optional[str] = None,
+):
+    """Recommend a star-schema ERD + sufficiency for a project (or explicit tables).
+
+    Reuses the structural metadata dbxmetagen already produced (FK predictions,
+    ontology roles, column profiling, existing definitions, KPI coverage) via the
+    pure erd_recommender.recommend_erd(). Cached 120s per (tables, profile).
+    """
+    from dbxmetagen.erd_recommender import recommend_erd
+
+    _ensure_semantic_layer_tables()
+    table_list = [t.strip() for t in tables.split(",") if t.strip()] if tables else []
+    if not table_list:
+        table_list = _resolve_project_tables(project_id)
+    if not table_list:
+        return {"nodes": [], "edges": [], "sufficiency": {}, "schema_type": "SIMPLE",
+                "message": "No tables in scope. Select tables or a project first."}
+
+    cache_key = (tuple(sorted(table_list)), profile_id or project_id or "")
+    if cache_key in _erd_cache:
+        return _erd_cache[cache_key]
+
+    fk_rows, ontology_rows, profiling_by_table, existing_defs = _fetch_erd_inputs(table_list)
+
+    # KPI coverage reuses the existing computation (missing KPIs drive the target).
+    kpi_cov = {}
+    try:
+        defs_json = []
+        for d in existing_defs:
+            jd = d.get("json_definition")
+            if jd:
+                defs_json.append(json.loads(jd) if isinstance(jd, str) else jd)
+        kpi_cov = _compute_kpi_coverage(defs_json, table_list, profile_id or project_id)
+    except Exception as e:
+        logger.warning("erd: kpi coverage failed: %s", e)
+
+    rec = recommend_erd(
+        tables=table_list,
+        fk_rows=fk_rows,
+        ontology_rows=ontology_rows,
+        profiling_by_table=profiling_by_table,
+        existing_defs=existing_defs,
+        kpi_coverage=kpi_cov,
+    )
+    result = rec.to_dict()
+    _erd_cache[cache_key] = result
+    return result
+
+
+class ErdExplainRequest(BaseModel):
+    erd: dict                              # the heuristic recommendation (nodes/edges/sufficiency)
+    business_context: Optional[str] = None
+    model_endpoint: Optional[str] = None
+
+
+@app.post("/api/semantic-layer/erd-recommendation/explain")
+def explain_erd_recommendation(req: ErdExplainRequest):
+    """Optional LLM enrichment: prioritize + explain the heuristic ERD in prose.
+
+    Costs one AI_QUERY. The heuristic recommendation works without this; the UI
+    gates it behind a button. Returns {explanation, suggested_view_themes[]}.
+    """
+    model = req.model_endpoint or _LLM_MODEL
+    nodes = req.erd.get("nodes", [])
+    edges = req.erd.get("edges", [])
+    suff = req.erd.get("sufficiency", {})
+    facts = [n["table"] for n in nodes if n.get("role") == "fact"]
+    dims = [n["table"] for n in nodes if n.get("role") == "dimension"]
+    ctx = (req.business_context or "").strip()
+
+    prompt = (
+        "You are a Databricks metric-view architect. Given a recommended ERD, explain "
+        "concisely (a) which tables to build metric views on and why, and (b) what analytical "
+        "themes the views should cover. Be specific and prioritize by business value.\n\n"
+        f"Fact/source tables: {', '.join(facts) or 'none clearly identified'}\n"
+        f"Dimension tables: {', '.join(dims) or 'none'}\n"
+        f"Confirmed/predicted joins: {len(edges)}\n"
+        f"Recommended views: {suff.get('metric_views_recommended', 0)} "
+        f"(current {suff.get('metric_views_current', 0)}); "
+        f"uncovered: {', '.join(suff.get('uncovered_tables', []) or []) or 'none'}; "
+        f"missing KPIs: {', '.join(suff.get('missing_kpis', []) or []) or 'none'}\n"
+        + (f"Business context: {ctx}\n" if ctx else "")
+        + '\nReturn JSON: {"explanation": "...", "suggested_view_themes": ["...", "..."]}'
+    )
+    try:
+        rows = execute_sql(
+            f"SELECT AI_QUERY('{model}', :prompt) as response", timeout=120,
+            parameters=[StatementParameterListItem(name="prompt", value=prompt)],
+        )
+        raw = rows[0]["response"] if rows else ""
+        parsed = _parse_single_json_safe(raw) if raw else {}
+        return {
+            "explanation": parsed.get("explanation", raw),
+            "suggested_view_themes": parsed.get("suggested_view_themes", []),
+        }
+    except Exception as e:
+        logger.error("erd explain failed: %s", e)
+        raise HTTPException(500, detail=f"ERD explanation failed: {e}")
+
+
 def _count_joins(joins: list[dict] | None) -> tuple[int, int]:
     """Count (flat, nested) joins recursively."""
     if not joins:
@@ -7927,7 +8190,8 @@ def _fix_join_alias_refs(defn: dict) -> dict:
 
 
 def _build_plan_prompt(questions: list[str], context: str, generation_style: str = "comprehensive",
-                       max_views: int = None, num_eligible: int = None) -> str:
+                       max_views: int = None, num_eligible: int = None,
+                       fact_hint: list[str] = None) -> str:
     q_block = "\n".join(f"  {i+1}. {q}" for i, q in enumerate(questions))
     if generation_style == "targeted":
         org_block = (
@@ -7959,6 +8223,15 @@ def _build_plan_prompt(questions: list[str], context: str, generation_style: str
             "and foreign key relationships. Not every table needs its own view; focus on the views that answer the "
             "most business questions."
         )
+    # A user-confirmed ERD names the fact/source tables -- prefer them as view sources.
+    fact_hint_block = ""
+    if fact_hint:
+        fact_hint_block = (
+            f"\nCONFIRMED FACT/SOURCE TABLES (from the user's reviewed data model): "
+            f"{', '.join(fact_hint)}. Source your metric views from THESE tables; treat other "
+            "tables as dimensions to join to, not as view sources, unless a question clearly "
+            "requires a standalone view elsewhere."
+        )
 
     return f"""You are a data modeler planning a semantic layer for Databricks Unity Catalog.
 
@@ -7974,8 +8247,7 @@ For each metric view in "views", include:
   Include joins supported by high-confidence FK relationships to maximize dimension reach. Use nested joins for dimension hierarchies (e.g. orders -> customers -> regions):
   {{ "name": "customer", ..., "joins": [{{ "name": "nation", ..., "on": "customer.nation_id = nation.id" }}] }}
   Do NOT join the same physical table via multiple paths unless each join serves a genuinely different FK role (e.g. ship_to_address vs bill_to_address). If the source table already has a direct FK to a dimension, do NOT also reach that dimension through a nested join chain.
-  FACT-TO-FACT JOIN PROHIBITION: Do NOT join from a fact source to another fact table (tables prefixed with fact_, fct_, f_ or those with high row counts). Fact-to-fact joins create one-to-many fan-out that inflates ALL aggregates. If you need columns from another fact table, create a SEPARATE metric view sourced from that table.
-  JOIN USAGE REQUIREMENT: Only include joins whose columns you intend to use in dimensions or measures. Do NOT include joins "for completeness."
+  (Join rules -- including the fact-to-fact prohibition and the "no joins for completeness" rule -- are in MODELING PRINCIPLES / ANTI-PATTERNS below.)
 - "dimensions": array of {{ "name": "Display Name", "comment": "what it is" }} (no expr)
 - "measures": array of {{ "name": "Display Name", "comment": "what it measures" }} (no expr)
 - "question_indices": array of 0-based question indices this view answers
@@ -7984,6 +8256,9 @@ Create measures that match the business questions (ratios, rates, KPIs); avoid g
 
 COVERAGE RULE: Plan at least one metric view for every fact or transactional table in the catalog metadata. If a table is marked as "ALREADY COVERED", do NOT create a new view sourced from it, but you MAY join to it. Do not skip tables just because they seem less relevant to the questions -- every data asset deserves coverage.
 {view_limit_block}
+{fact_hint_block}
+
+{_PLAN_RULES_BLOCK}
 
 CATALOG METADATA:
 {context}
@@ -8245,6 +8520,22 @@ def _run_sl_generation(
     try:
         _ensure_semantic_layer_tables()
 
+        # Load the project's confirmed ERD (if the user built one in the designer).
+        # It seeds two things below: the recommended view count and preferred fact
+        # sources. Absent -> behavior is unchanged (full backward-compat).
+        erd = None
+        if project_id:
+            try:
+                erd_rows = execute_sql(
+                    f"SELECT erd_json FROM {fq('semantic_layer_projects')} "
+                    f"WHERE project_id = '{project_id}'"
+                )
+                raw_erd = erd_rows[0].get("erd_json") if erd_rows else None
+                if raw_erd:
+                    erd = json.loads(raw_erd) if isinstance(raw_erd, str) else raw_erd
+            except Exception as exc:
+                logger.warning("Failed to load project ERD: %s", exc)
+
         # Persist questions for traceability
         if questions:
             now_ts = _dt.utcnow().isoformat()
@@ -8325,13 +8616,19 @@ def _run_sl_generation(
                     ", ".join(n for _, n in covered),
                 )
 
-        # Compute effective max_views cap based on eligible (uncovered) tables
+        # Compute effective max_views cap based on eligible (uncovered) tables.
+        # When a confirmed ERD exists, its coverage-aware sufficiency count is the
+        # default recommendation (still clamped by the same hard_cap).
         num_eligible = len(uncovered) if (existing_mvs and mode != "replace_all" and uncovered) else len(tables)
         hard_cap = max(num_eligible // 2, 2)
         recommended = min(max(num_eligible // 3, 2), 15)
+        if erd:
+            erd_recommended = (erd.get("sufficiency") or {}).get("metric_views_recommended")
+            if isinstance(erd_recommended, int) and erd_recommended > 0:
+                recommended = min(erd_recommended, 15)
         effective_max = min(max(max_views or recommended, 1), hard_cap)
-        logger.info("max_views cap: user=%s recommended=%d hard_cap=%d effective=%d (eligible=%d)",
-                     max_views, recommended, hard_cap, effective_max, num_eligible)
+        logger.info("max_views cap: user=%s recommended=%d hard_cap=%d effective=%d (eligible=%d, erd=%s)",
+                     max_views, recommended, hard_cap, effective_max, num_eligible, bool(erd))
         task["effective_max"] = effective_max
 
         task["stage"] = "building_context"
@@ -8345,8 +8642,15 @@ def _run_sl_generation(
 
         # Phase 1: Plan
         task["stage"] = "planning"
+        erd_fact_hint = None
+        if erd:
+            erd_fact_hint = [
+                n.get("table") for n in (erd.get("nodes") or [])
+                if n.get("role") in ("fact", "source") and n.get("table")
+            ] or None
         plan_prompt = _build_plan_prompt(questions, context, generation_style=generation_style,
-                                         max_views=effective_max, num_eligible=num_eligible)
+                                         max_views=effective_max, num_eligible=num_eligible,
+                                         fact_hint=erd_fact_hint)
         rows = execute_sql(f"SELECT AI_QUERY('{model}', :prompt) as response", timeout=180,
                            parameters=[StatementParameterListItem(name="prompt", value=plan_prompt)])
         plan_response = rows[0]["response"] if rows else ""

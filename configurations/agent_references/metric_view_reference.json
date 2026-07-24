@@ -205,8 +205,21 @@
   "guiding_principles": [
     "GRAIN FIRST, THEME SECOND: Each metric view declares its grain via its source table (one row = one encounter, one order line, one prescription fill). All measures must be valid at that grain. Do NOT mix measures implying different grains in one view. Within a single grain, create separate views for different analytical themes.",
     "STAR + SNOWFLAKE: Star-schema joins are the default (source -> dim). For dimension hierarchies (customer -> nation -> region), use nested joins with the child 'on' referencing the parent alias. Limit nesting to 2 levels.",
-    "ANALYTICAL RICHNESS: Every view should have at least one ratio measure, one computed dimension, and one filtered or conditional aggregate. Simple COUNT(*)-only views are insufficient."
+    "ANALYTICAL RICHNESS: Every view should have at least one ratio measure, one computed dimension, and one filtered or conditional aggregate. Simple COUNT(*)-only views are insufficient.",
+    "SOURCE FROM FACTS, JOIN TO DIMENSIONS: A metric view's source table should be a FACT/transactional table (the grain-defining table with the numeric measures). Dimension tables are reached via joins and used for grouping, not as view sources -- unless a question is purely about a dimension entity (e.g. customer counts by region), in which case a dimension-only view with no joins is correct.",
+    "ONE BROAD VIEW PER FACT GRAIN (comprehensive default): Prefer a single rich view per fact grain with all relevant measures and dimensions; the consumer (Genie, agents, SQL) selects what it needs per query. Split into multiple views from the same source ONLY when the persistent filter, join path, or grain genuinely changes -- not merely for different 'themes'.",
+    "RESPECT THE CONFIRMED DATA MODEL: When the context names confirmed fact/source tables (from the user's reviewed ERD), source your views from THOSE tables and use the confirmed joins; treat other tables as dimensions to join to, not as additional view sources.",
+    "SIMPLE SCHEMAS ARE FINE: When there are no FK relationships or join paths, create single-table metric views with direct aggregations. Do NOT fabricate joins to manufacture richness."
   ],
+
+  "fact_dimension_model": {
+    "description": "How to classify tables so views are sourced and joined correctly. Mirrors the roles dbxmetagen's ERD recommender assigns; the metadata context may already state a table's role.",
+    "fact": "Grain-defining transactional table: many numeric measure columns, typically several outbound foreign keys to dimensions, named fct_/fact_/f_ or flagged as a 'primary'/'fact' entity. Metric views are SOURCED from facts.",
+    "dimension": "Descriptive lookup table: a near-unique low-null natural key, few or no numeric measures, referenced by facts (inbound FKs, no outbound), named dim_/d_ or flagged 'referenced'/'dimension'/'contextual'. Dimensions are JOINED to and used for grouping; never SUM/AVG their numeric columns from a fact-sourced view.",
+    "bridge": "A table that is both an FK source and destination (appears in a snowflake chain, e.g. store -> region). Reach it via nested joins, not flat siblings.",
+    "measurable_column": "Numeric, low-null, and NOT a near-unique key. IDs and codes are dimensions/keys, not measures, even when numeric.",
+    "grain_column": "The unique, low-null natural key that defines one row of the table -- used for COUNT(DISTINCT ...) denominators and to reason about grain."
+  },
 
   "anti_patterns": [
     "NEVER produce a metric view whose only measure is COUNT(*) or COUNT(1). Always add at least one ratio, rate, or filtered aggregate.",
@@ -224,7 +237,10 @@
     "NEVER use SQL window functions (OVER, PARTITION BY, ROW_NUMBER, LAG, LEAD) in measure expressions. Metric views do not support window functions in SQL. For rolling/trailing calculations, use the 'window' property on the measure definition instead.",
     "NEVER place chained joins as flat siblings (e.g. customer and nation both at root level with nation.on referencing customer). Use nested joins instead.",
     "NEVER aggregate dimension-table numeric columns (SUM, AVG) from a fact-sourced metric view with joins. SUM(accounts.bed_count) from a prescriptions-sourced view counts bed_count once per prescription, not once per account. Use dimension columns only as grouping dimensions, or create a SEPARATE dimension-only metric view with NO fact-table joins.",
-    "NEVER create share-of-total measures like SUM(x)/SUM(x) or SUM(x)/SUM(total). The denominator is grouped identically to the numerator, always producing 1.0. Metric views cannot use OVER() for ungrouped totals. Use conditional aggregates (FILTER) or within-grain rates instead."
+    "NEVER create share-of-total measures like SUM(x)/SUM(x) or SUM(x)/SUM(total). The denominator is grouped identically to the numerator, always producing 1.0. Metric views cannot use OVER() for ungrouped totals. Use conditional aggregates (FILTER) or within-grain rates instead.",
+    "NEVER join a fact source to another fact table (tables prefixed fact_/fct_/f_ or with high row counts). Fact-to-fact joins create one-to-many fan-out that inflates ALL aggregates in the view. If you need another fact's columns, create a SEPARATE metric view sourced from that table.",
+    "NEVER include a join whose columns you do not actually use in a dimension or measure. Joins 'for completeness' or 'in case they are needed' waste query resources and risk fan-out inflation. Every join must be referenced by at least one dimension/measure expression via its alias.",
+    "NEVER reach the same physical dimension table via multiple join paths unless each path is a genuinely different FK role (e.g. ship_to_address vs bill_to_address). If the source already has a direct FK to a dimension, do NOT also reach it through a nested chain."
   ],
 
   "validation_checklist": [

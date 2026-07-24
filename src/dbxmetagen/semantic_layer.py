@@ -836,7 +836,7 @@ class SemanticLayerGenerator:
         # Inject metric view best-practices reference (loaded from JSON)
         ref = _load_reference("metric_view_reference.json")
         if ref:
-            ref_text = _format_reference_section(ref, ["yaml_syntax_rules", "measure_patterns", "join_templates", "anti_patterns", "validation_checklist"])
+            ref_text = _format_reference_section(ref, ["guiding_principles", "fact_dimension_model", "yaml_syntax_rules", "measure_patterns", "join_templates", "anti_patterns", "validation_checklist"])
             if ref_text:
                 parts.append("\nREFERENCE: METRIC VIEW BEST PRACTICES (follow these rules strictly)")
                 parts.append(ref_text)
@@ -1214,8 +1214,7 @@ For each metric view in "views", include:
 - "question_indices": array of 0-based question indices this view answers
 
 STAR SCHEMA SOURCE RULE: When joins are present, the source MUST be the fact table (the table at the grain of the analysis, typically the one with the most rows and multiple foreign keys to dimension tables). The join relationship from source to join should be many-to-one. If you need metrics about a dimension entity itself with no fact-table aggregation, source from the dimension with NO fact-table joins. NEVER source from a dimension table and join to a fact table -- this fans out rows and produces incorrect aggregates.
-FACT-TO-FACT JOIN PROHIBITION: Do NOT join from a fact source to another fact table (tables prefixed with fact_, fct_, f_ or those with high row counts). Fact-to-fact joins create one-to-many fan-out that inflates ALL aggregates. If you need columns from another fact table, create a SEPARATE metric view sourced from that table.
-JOIN USAGE REQUIREMENT: Only include joins whose columns you intend to use in dimensions or measures. Do NOT include joins "for completeness."
+(The fact-to-fact prohibition and "no joins for completeness" rule are in the MODELING PRINCIPLES / ANTI-PATTERNS reference in the catalog metadata below.)
 
 Create measures that match the business questions (ratios, rates, KPIs); avoid generic row count unless a question explicitly asks for it. Each view must have at least one dimension and one measure. Cross-table breakdowns using joined dimension tables are strongly preferred.
 
