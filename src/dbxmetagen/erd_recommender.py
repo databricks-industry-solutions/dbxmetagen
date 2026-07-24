@@ -48,6 +48,14 @@ VIEWS_PER_FACT = 1
 KPIS_PER_VIEW = 3                 # a metric view's measures can satisfy several KPIs
 MAX_RECOMMENDED_VIEWS = 15        # mirror the existing UI cap
 
+# Questions/KPIs sufficiency: a fact grain warrants a few analytical questions;
+# each business domain warrants at least one KPI.
+QUESTIONS_PER_FACT = 3            # analytical questions a fact table typically supports
+QUESTIONS_PER_DOMAIN = 1         # + breadth across distinct business domains
+MAX_RECOMMENDED_QUESTIONS = 25
+KPIS_PER_FACT = 2                 # a fact table usually anchors ~2 headline KPIs
+MAX_RECOMMENDED_KPIS = 20
+
 
 @dataclass
 class ErdNode:
@@ -77,6 +85,21 @@ class Sufficiency:
     reasons: list[str] = field(default_factory=list)
     uncovered_tables: list[str] = field(default_factory=list)
     missing_kpis: list[str] = field(default_factory=list)
+
+
+@dataclass
+class GenSufficiency:
+    """Coverage-aware 'generate more?' recommendation for one generator
+    (questions or KPIs) over a profile+project scope."""
+    kind: str = ""                   # "questions" | "kpis"
+    current: int = 0
+    recommended: int = 0
+    gap: int = 0
+    should_generate_more: bool = False
+    reasons: list[str] = field(default_factory=list)
+
+    def to_dict(self) -> dict:
+        return asdict(self)
 
 
 @dataclass
@@ -433,3 +456,89 @@ def recommend_erd(
         sufficiency=sufficiency,
         schema_type=schema_type,
     )
+
+
+def _distinct_domains(ontology_rows: list[dict], tables: list[str]) -> set[str]:
+    """Distinct entity_types attributed to the in-scope tables (proxy for the
+    number of business domains a question/KPI set should span)."""
+    lower_tables = {t.lower() for t in tables}
+    domains: set[str] = set()
+    for row in ontology_rows or []:
+        et = row.get("entity_type")
+        if not et:
+            continue
+        if any(st.lower() in lower_tables for st in _coerce_list(row.get("source_tables"))):
+            domains.add(et)
+    return domains
+
+
+def recommend_questions_kpis(
+    tables: list[str],
+    current_questions: int = 0,
+    current_kpis: int = 0,
+    kpi_coverage: Optional[dict] = None,
+    fk_rows: Optional[list[dict]] = None,
+    ontology_rows: Optional[list[dict]] = None,
+    profiling_by_table: Optional[dict[str, list[dict]]] = None,
+    existing_defs: Optional[list[dict]] = None,
+) -> dict[str, GenSufficiency]:
+    """Coverage-aware 'generate more?' recommendations for questions and KPIs.
+
+    Reuses recommend_erd() to identify fact tables + join structure, and ontology
+    entity_types as a proxy for business-domain breadth. Targets:
+      - questions: QUESTIONS_PER_FACT per fact + QUESTIONS_PER_DOMAIN per domain,
+        capped; recommend more when below target.
+      - kpis: KPIS_PER_FACT per fact, plus any KPIs currently missing an
+        implementing measure (from kpi_coverage), capped.
+
+    Returns {"questions": GenSufficiency, "kpis": GenSufficiency}. Pure; the API
+    layer supplies the current counts + already-fetched rows.
+    """
+    kpi_coverage = kpi_coverage or {}
+    rec = recommend_erd(
+        tables=tables, fk_rows=fk_rows, ontology_rows=ontology_rows,
+        profiling_by_table=profiling_by_table, existing_defs=existing_defs,
+        kpi_coverage=kpi_coverage,
+    )
+    facts = [n.table for n in rec.nodes if n.role == "fact"] \
+        or [n.table for n in rec.nodes if n.role in ("source", "bridge")] or tables
+    n_facts = len(facts)
+    domains = _distinct_domains(ontology_rows or [], tables)
+    n_domains = len(domains)
+
+    # --- Questions ---
+    q_target = min(
+        n_facts * QUESTIONS_PER_FACT + n_domains * QUESTIONS_PER_DOMAIN,
+        MAX_RECOMMENDED_QUESTIONS,
+    )
+    q_target = max(q_target, QUESTIONS_PER_FACT)  # always at least a few
+    q_reasons = [f"{n_facts} fact table(s) x {QUESTIONS_PER_FACT} questions"]
+    if n_domains:
+        q_reasons.append(f"+{n_domains} business domain(s)")
+    q = GenSufficiency(
+        kind="questions",
+        current=current_questions,
+        recommended=q_target,
+        gap=max(q_target - current_questions, 0),
+        should_generate_more=current_questions < q_target,
+        reasons=q_reasons,
+    )
+
+    # --- KPIs ---
+    missing_kpis = list(kpi_coverage.get("missing") or [])
+    k_target = min(n_facts * KPIS_PER_FACT, MAX_RECOMMENDED_KPIS)
+    k_target = max(k_target, current_kpis + len(missing_kpis))  # never below what's already needed
+    k_target = min(k_target, MAX_RECOMMENDED_KPIS)
+    k_reasons = [f"{n_facts} fact table(s) x {KPIS_PER_FACT} KPIs"]
+    if missing_kpis:
+        k_reasons.append(f"{len(missing_kpis)} defined KPI(s) not yet implemented by a measure")
+    k = GenSufficiency(
+        kind="kpis",
+        current=current_kpis,
+        recommended=k_target,
+        gap=max(k_target - current_kpis, 0),
+        should_generate_more=(current_kpis < k_target) or bool(missing_kpis),
+        reasons=k_reasons,
+    )
+
+    return {"questions": q, "kpis": k}

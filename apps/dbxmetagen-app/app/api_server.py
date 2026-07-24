@@ -7916,6 +7916,70 @@ def explain_erd_recommendation(req: ErdExplainRequest):
         raise HTTPException(500, detail=f"ERD explanation failed: {e}")
 
 
+@app.get("/api/semantic-layer/generation-sufficiency")
+def get_generation_sufficiency(
+    tables: Optional[str] = None,
+    project_id: Optional[str] = None,
+    profile_id: Optional[str] = None,
+):
+    """Coverage-aware 'generate more?' recommendation for questions and KPIs.
+
+    Reuses the ERD recommender's structural analysis (fact tables, domains) plus
+    current question/KPI counts + KPI coverage. Returns
+    {"questions": {...}, "kpis": {...}} where each carries current/recommended/gap
+    and should_generate_more with reasons.
+    """
+    from dbxmetagen.erd_recommender import recommend_questions_kpis
+
+    _ensure_semantic_layer_tables()
+    table_list = [t.strip() for t in tables.split(",") if t.strip()] if tables else []
+    if not table_list:
+        table_list = _resolve_project_tables(project_id)
+    if not table_list:
+        return {"questions": {}, "kpis": {}, "message": "No tables in scope."}
+
+    fk_rows, ontology_rows, profiling_by_table, existing_defs = _fetch_erd_inputs(table_list)
+
+    # Current counts. Questions are global; KPIs are profile-scoped when a profile
+    # is active (mirrors the KPI-coverage endpoint's scoping).
+    current_questions = 0
+    try:
+        r = execute_sql(f"SELECT COUNT(*) AS c FROM {fq('semantic_layer_questions')}")
+        current_questions = int(r[0]["c"]) if r else 0
+    except Exception:
+        pass
+    current_kpis = 0
+    kpi_where = f" WHERE profile_id = '{profile_id.replace(chr(39), chr(39) * 2)}'" if profile_id else ""
+    try:
+        r = execute_sql(f"SELECT COUNT(*) AS c FROM {fq('kpi_definitions')}{kpi_where}")
+        current_kpis = int(r[0]["c"]) if r else 0
+    except Exception:
+        pass
+
+    kpi_cov = {}
+    try:
+        defs_json = []
+        for d in existing_defs:
+            jd = d.get("json_definition")
+            if jd:
+                defs_json.append(json.loads(jd) if isinstance(jd, str) else jd)
+        kpi_cov = _compute_kpi_coverage(defs_json, table_list, profile_id or project_id)
+    except Exception as e:
+        logger.warning("generation-sufficiency: kpi coverage failed: %s", e)
+
+    out = recommend_questions_kpis(
+        tables=table_list,
+        current_questions=current_questions,
+        current_kpis=current_kpis,
+        kpi_coverage=kpi_cov,
+        fk_rows=fk_rows,
+        ontology_rows=ontology_rows,
+        profiling_by_table=profiling_by_table,
+        existing_defs=existing_defs,
+    )
+    return {k: v.to_dict() for k, v in out.items()}
+
+
 def _count_joins(joins: list[dict] | None) -> tuple[int, int]:
     """Count (flat, nested) joins recursively."""
     if not joins:

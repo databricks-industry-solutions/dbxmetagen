@@ -376,6 +376,7 @@ export default function SemanticLayer({ onNavigate, pipelineStats, onRefreshPipe
   const [generationStyle, setGenerationStyle] = useState('comprehensive')
   const [maxViews, setMaxViews] = useState(null)
   const [erdSufficiency, setErdSufficiency] = useState(null)  // {metric_views_recommended, reasons, ...}
+  const [genSufficiency, setGenSufficiency] = useState(null)  // {questions:{...}, kpis:{...}}
   const [materialize, setMaterialize] = useState(false)
   const [materializationSchedule, setMaterializationSchedule] = useState('every 6 hours')
   const [matSchedulePreset, setMatSchedulePreset] = useState('6h')
@@ -651,8 +652,13 @@ export default function SemanticLayer({ onNavigate, pipelineStats, onRefreshPipe
       cachedFetchObj(`/api/semantic-layer/erd-recommendation?${recParams}`, {}, TTL.CONFIG)
         .then(({ data }) => setErdSufficiency(data?.sufficiency || null))
         .catch(() => setErdSufficiency(null))
+      // Questions/KPIs "generate more?" recommendation (Questions & KPIs tab).
+      cachedFetchObj(`/api/semantic-layer/generation-sufficiency?${recParams}`, {}, TTL.CONFIG)
+        .then(({ data }) => setGenSufficiency(data && (data.questions || data.kpis) ? data : null))
+        .catch(() => setGenSufficiency(null))
     } else {
       setErdSufficiency(null)
+      setGenSufficiency(null)
     }
   }
 
@@ -1669,6 +1675,13 @@ export default function SemanticLayer({ onNavigate, pipelineStats, onRefreshPipe
           )}
         </div>
         <p className="text-xs text-gray-400 dark:text-gray-500 mt-2">Click multiple times to expand coverage -- each run generates new questions that complement the existing ones.</p>
+        {genSufficiency?.questions?.should_generate_more && (
+          <div className="mt-2 px-3 py-2 rounded-md bg-amber-50 dark:bg-amber-900/20 border border-amber-200 dark:border-amber-700/50 text-xs text-amber-800 dark:text-amber-300 leading-relaxed">
+            <span className="font-semibold">Recommendation:</span>{' '}
+            generate more questions &mdash; {genSufficiency.questions.current} of ~{genSufficiency.questions.recommended} suggested
+            {genSufficiency.questions.reasons?.length > 0 && <> ({genSufficiency.questions.reasons.join(', ')})</>}.
+          </div>
+        )}
       </section>
 
       {/* KPI Library */}
@@ -1677,7 +1690,14 @@ export default function SemanticLayer({ onNavigate, pipelineStats, onRefreshPipe
           <div>
             <h2 className="text-lg font-semibold dark:text-gray-100">KPI Library</h2>
             <p className="text-xs text-gray-500 dark:text-gray-400 mt-0.5">Define or auto-suggest business KPIs from your selected tables. KPIs feed into metric view generation and Genie space configuration. Run multiple times for broader coverage -- each pass generates different KPIs.</p>
-            <p className="text-xs text-amber-600 dark:text-amber-400 mt-1">Aim for at least 2-3 KPIs per fact table to ensure adequate metric view coverage across your schema.</p>
+            {genSufficiency?.kpis?.should_generate_more ? (
+              <p className="text-xs text-amber-600 dark:text-amber-400 mt-1">
+                Recommendation: generate more KPIs &mdash; {genSufficiency.kpis.current} of ~{genSufficiency.kpis.recommended}
+                {genSufficiency.kpis.reasons?.length > 0 && <> ({genSufficiency.kpis.reasons.join(', ')})</>}.
+              </p>
+            ) : (
+              <p className="text-xs text-amber-600 dark:text-amber-400 mt-1">Aim for at least 2-3 KPIs per fact table to ensure adequate metric view coverage across your schema.</p>
+            )}
           </div>
           <div className="flex gap-2">
             <button onClick={suggestKpis} disabled={kpiSuggesting || !selectedTables.length}

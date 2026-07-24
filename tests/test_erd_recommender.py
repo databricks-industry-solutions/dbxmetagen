@@ -11,9 +11,12 @@ import pytest
 
 from dbxmetagen.erd_recommender import (
     recommend_erd,
+    recommend_questions_kpis,
     _build_edges,
     ErdRecommendation,
+    GenSufficiency,
     FK_CONFIRMED_MIN,
+    QUESTIONS_PER_FACT,
 )
 
 
@@ -194,3 +197,60 @@ class TestSerialization:
                             fk_rows=[_fk("c.s.fct_orders", "cid", "c.s.dim_customer", "id")])
         assert isinstance(rec, ErdRecommendation)
         json.dumps(rec.to_dict())  # must not raise
+
+
+class TestQuestionsKpisSufficiency:
+    def _star(self):
+        return {
+            "tables": ["c.s.fct_orders", "c.s.dim_customer", "c.s.dim_product"],
+            "fk_rows": [
+                _fk("c.s.fct_orders", "customer_id", "c.s.dim_customer", "id"),
+                _fk("c.s.fct_orders", "product_id", "c.s.dim_product", "id"),
+            ],
+        }
+
+    def test_returns_both_generators(self):
+        out = recommend_questions_kpis(**self._star())
+        assert set(out) == {"questions", "kpis"}
+        assert isinstance(out["questions"], GenSufficiency)
+        assert out["questions"].kind == "questions"
+        assert out["kpis"].kind == "kpis"
+
+    def test_empty_scope_still_recommends_a_few_questions(self):
+        out = recommend_questions_kpis(**self._star(), current_questions=0)
+        assert out["questions"].recommended >= QUESTIONS_PER_FACT
+        assert out["questions"].should_generate_more is True
+
+    def test_enough_questions_stops_recommending(self):
+        out = recommend_questions_kpis(**self._star(), current_questions=100)
+        assert out["questions"].should_generate_more is False
+        assert out["questions"].gap == 0
+
+    def test_domains_raise_question_target(self):
+        base = recommend_questions_kpis(**self._star())
+        with_domains = recommend_questions_kpis(
+            **self._star(),
+            ontology_rows=[
+                {"entity_type": "Order", "source_tables": ["c.s.fct_orders"]},
+                {"entity_type": "Customer", "source_tables": ["c.s.dim_customer"]},
+            ],
+        )
+        assert with_domains["questions"].recommended >= base["questions"].recommended
+
+    def test_missing_kpis_force_more_even_when_count_met(self):
+        out = recommend_questions_kpis(
+            **self._star(), current_kpis=100,
+            kpi_coverage={"implemented": [], "missing": ["Revenue"], "total": 1},
+        )
+        # count target is met, but an unimplemented KPI still flags "generate more"
+        assert out["kpis"].should_generate_more is True
+
+    def test_kpi_target_scales_with_facts(self):
+        out = recommend_questions_kpis(**self._star())
+        # one fact * KPIS_PER_FACT
+        assert out["kpis"].recommended >= 2
+
+    def test_serializable(self):
+        import json
+        out = recommend_questions_kpis(**self._star())
+        json.dumps({k: v.to_dict() for k, v in out.items()})
