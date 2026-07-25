@@ -2,6 +2,7 @@ import React, { useState, useEffect, useRef } from 'react'
 import { InfoTip } from './ui'
 import { cachedFetchObj, TTL } from '../apiCache'
 import { TERMINAL_STATES } from '../hooks/useJobRunner'
+import TableScopePicker, { scopeToTableNames } from './TableScopePicker'
 
 const BUNDLE_LS_KEY = 'dbxmetagen_ontologyBundle'
 
@@ -47,6 +48,13 @@ export default function AdvancedPipelinePanel({
   })
   const [bundles, setBundles] = useState([])
   const [bundlesLoading, setBundlesLoading] = useState(false)
+
+  // Table scope: explicit All / Selected. Seed from the tables carried over from
+  // the Semantic Layer selection (if any); the user can change it here for a
+  // targeted (e.g. incremental) re-run without touching the metric-view set.
+  const seedTables = (tableNames || '').split(',').map(t => t.trim()).filter(Boolean)
+  const [scope, setScope] = useState(() =>
+    seedTables.length ? { mode: 'selected', tables: seedTables } : { mode: 'all', tables: [] })
 
   // Pipeline knobs (defaults identical to the previous BatchJobs form, so a bare
   // "Run" click sends the same payload as before).
@@ -129,12 +137,15 @@ export default function AdvancedPipelinePanel({
   const isRunning = runningAction === 'pipeline' ||
     (ourRunState != null && !TERMINAL_STATES.has(ourRunState.state))
 
+  // Scope is valid unless the user chose "Selected" but picked nothing.
   const scopeReady = !!(catalogName && catalogName.trim() && schemaName && schemaName.trim())
+    && !(scope.mode === 'selected' && scope.tables.length === 0)
 
   const launch = async () => {
     firedRef.current = false
     setRunFailure(null)
     setOurRunState(null)
+    const tableNamesParam = scopeToTableNames(scope)
     const params = {
       catalog_name: catalogName,
       schema_name: schemaName,
@@ -149,7 +160,7 @@ export default function AdvancedPipelinePanel({
       use_kb_comments: config.use_kb_comments,
       use_customer_context: config.use_customer_context,
       include_lineage: config.include_lineage,
-      ...(tableNames && tableNames.trim() ? { table_names: tableNames } : {}),
+      ...(tableNamesParam ? { table_names: tableNamesParam } : {}),
       extra_params: {
         model: config.model,
         sample_size: String(config.sample_size),
@@ -168,8 +179,7 @@ export default function AdvancedPipelinePanel({
     }
   }
 
-  const tableCount = tableNames && tableNames.trim()
-    ? tableNames.split(',').filter(t => t.trim()).length : 0
+  const tableCount = scope.mode === 'selected' ? scope.tables.length : 0
 
   return (
     <div className="space-y-3">
@@ -206,10 +216,20 @@ export default function AdvancedPipelinePanel({
         )}
       </div>
 
-      {/* Table-scope summary */}
-      <p className="text-xs text-slate-500 dark:text-slate-400">
-        Scope: {catalogName || '—'}.{schemaName || '—'} · {tableCount > 0 ? `${tableCount} selected table${tableCount === 1 ? '' : 's'}` : 'all knowledge-base tables'}
-      </p>
+      {/* Table scope — explicit All / Selected (no "blank = all" guessing) */}
+      <div>
+        <label className="text-xs text-slate-500 dark:text-slate-400 mb-1 block">Tables to process</label>
+        <TableScopePicker value={scope} onChange={setScope} kbOnly seedTables={seedTables} />
+      </div>
+
+      {/* Incremental — the headline reason to re-run, kept visible */}
+      <div className="flex items-center gap-1.5">
+        <label className="flex items-center gap-2 text-xs text-slate-600 dark:text-slate-300 cursor-pointer">
+          <input type="checkbox" checked={incremental} onChange={e => setIncremental(e.target.checked)} />
+          Incremental (skip unchanged tables)
+        </label>
+        <InfoTip text="Each analytics task early-exits if its inputs haven't changed since the last run (fast, cheap). Uncheck for a full run — needed after code/ontology changes, and for the sweep to take effect." />
+      </div>
 
       {/* Advanced options — collapsed by default; defaults match the prior form */}
       <details className="group">
@@ -221,30 +241,23 @@ export default function AdvancedPipelinePanel({
         </summary>
         <div className="mt-2 grid grid-cols-2 md:grid-cols-4 gap-3">
           <div>
-            <label className="text-xs text-slate-500 dark:text-slate-400 mb-1 block" title="Minimum embedding similarity (0–1) for edges between columns.">Similarity threshold</label>
+            <label className="text-xs text-slate-500 dark:text-slate-400 mb-1 flex items-center gap-1">Similarity threshold <InfoTip text="Minimum embedding similarity (0–1) for edges between columns." /></label>
             <input type="number" step="0.05" min="0" max="1" value={similarityThreshold}
               onChange={e => setSimilarityThreshold(parseFloat(e.target.value) || 0.8)} className="input-base !text-xs" />
           </div>
           <div>
-            <label className="text-xs text-slate-500 dark:text-slate-400 mb-1 block" title="Minimum number of table groups for clustering.">Cluster min groups</label>
+            <label className="text-xs text-slate-500 dark:text-slate-400 mb-1 flex items-center gap-1">Cluster min groups <InfoTip text="Minimum number of table groups for clustering." /></label>
             <input type="number" min="1" max="50" value={clusterMinK}
               onChange={e => setClusterMinK(parseInt(e.target.value) || 2)} className="input-base !text-xs" />
           </div>
           <div>
-            <label className="text-xs text-slate-500 dark:text-slate-400 mb-1 block" title="Maximum number of table groups for clustering.">Cluster max groups</label>
+            <label className="text-xs text-slate-500 dark:text-slate-400 mb-1 flex items-center gap-1">Cluster max groups <InfoTip text="Maximum number of table groups for clustering." /></label>
             <input type="number" min="2" max="100" value={clusterMaxK}
               onChange={e => setClusterMaxK(parseInt(e.target.value) || 15)} className="input-base !text-xs" />
           </div>
           <div>
-            <label className="text-xs text-slate-500 dark:text-slate-400 mb-1 block" title="Unity Catalog tag key for entity-type classifications.">Entity type tag key</label>
+            <label className="text-xs text-slate-500 dark:text-slate-400 mb-1 flex items-center gap-1">Entity type tag key <InfoTip text="Unity Catalog tag key for entity-type classifications." /></label>
             <input value={entityTagKey} onChange={e => setEntityTagKey(e.target.value)} placeholder="entity_type" className="input-base !text-xs" />
-          </div>
-          <div className="pb-1 flex items-center gap-1.5">
-            <label className="flex items-center gap-2 text-xs text-slate-600 dark:text-slate-300 cursor-pointer">
-              <input type="checkbox" checked={incremental} onChange={e => setIncremental(e.target.checked)} />
-              Incremental mode
-            </label>
-            <InfoTip text="When checked, each analytics task early-exits if its inputs haven't changed since the last run (fast, cheap). Uncheck for a full run — needed after code/ontology changes, and whenever you want the sweep to take effect." />
           </div>
           <div className="pb-1 flex items-center gap-1.5">
             <label className="flex items-center gap-2 text-xs text-slate-600 dark:text-slate-300 cursor-pointer">

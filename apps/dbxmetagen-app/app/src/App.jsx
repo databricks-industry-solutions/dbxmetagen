@@ -31,6 +31,7 @@ import GenieBuilder from './components/GenieBuilder'
 import AnalystChat from './components/AnalystChat'
 import CustomerContext from './components/CustomerContext'
 import OntologyBuilder from './components/OntologyBuilder'
+import SyncOps from './components/SyncOps'
 import GettingStarted from './components/GettingStarted'
 import Home from './components/Home'
 const COMPONENTS = {
@@ -39,6 +40,7 @@ const COMPONENTS = {
   agent: AgentChat, jobs: BatchJobs, metadata: MetadataReview,
   entities: EntityBrowser, semantic: SemanticLayer, genie: GenieBuilder,
   analyst: AnalystChat, context: CustomerContext, ontologyBuilder: OntologyBuilder,
+  syncops: SyncOps,
 }
 
 const NAV_CAT_COLORS = {
@@ -72,6 +74,7 @@ const MORE_NAV = {
     { id: 'genie', label: 'Build Genie Space', desc: 'Build natural-language SQL spaces' },
     { id: 'entities', label: 'Entity Browser', desc: 'Entity-first navigation with conformance view' },
     { id: 'ontologyBuilder', label: 'Build Ontology', desc: 'Visual entity, relationship, and property editor' },
+    { id: 'syncops', label: 'Sync & Ops', desc: 'Rebuild graph/index, sync to Lakebase, set up MCP' },
     { id: 'guide', label: 'Guide', desc: 'Full walkthrough and workflow help' },
   ],
 }
