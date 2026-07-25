@@ -53,3 +53,18 @@ def test_unknown_bundle_falls_back_to_bare_path():
     and does not raise inside the resolver."""
     p = resolve_bundle_path("definitely_not_a_bundle_xyz")
     assert p.endswith("definitely_not_a_bundle_xyz.yaml")
+
+
+def test_display_name_when_slug_differs_from_stem():
+    """Curated bundles whose metadata.name does NOT slugify to the stem must
+    still resolve via the metadata.name scan (the slug fallback can't rescue
+    these). 'General Cross-Industry' -> general.yaml, not general_cross_industry."""
+    p = resolve_bundle_path("General Cross-Industry")
+    assert p.endswith("general.yaml")
+    assert os.path.exists(p)
+
+
+def test_healthcare_display_name_resolves():
+    p = resolve_bundle_path("Healthcare & Life Sciences")
+    assert p.endswith("healthcare.yaml")
+    assert os.path.exists(p)

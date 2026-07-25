@@ -237,12 +237,14 @@ def _infer_role(
     reasons: list[str] = []
     score = {"fact": 0.0, "dimension": 0.0, "source": 0.0, "bridge": 0.0}
 
-    # 1. Naming conventions (cheap, strong signal when present).
+    # 1. Naming conventions. A strong hint WHEN PRESENT, but many real schemas
+    #    (marts, denormalized/OBT tables) aren't named fct_/dim_ -- so naming is
+    #    weighted comparably to the structural signals below, not above them.
     if _looks_like_fact(short):
-        score["fact"] += 0.4
+        score["fact"] += 0.35
         reasons.append("fact naming prefix")
     if _looks_like_dim(short):
-        score["dimension"] += 0.4
+        score["dimension"] += 0.35
         reasons.append("dimension naming prefix")
     if _looks_like_mart(short):
         score["source"] += 0.3
@@ -260,16 +262,29 @@ def _infer_role(
         score["dimension"] += 0.35
         reasons.append(f"referenced by {inbound_fk_count} table(s), no outbound FKs")
 
-    # 3. Profiling: a near-unique low-null key with few numeric measures reads
-    #    like a dimension; many numeric measures reads like a fact.
+    # 3. Profiling shape (naming-independent -- this is what lets an unlabeled
+    #    mart / wide table be classified sensibly).
     grain = _grain_column(profiling_rows)
-    n_measures = len(_measurable_columns(profiling_rows))
+    measures = _measurable_columns(profiling_rows)
+    n_measures = len(measures)
+    n_cols = len(profiling_rows)
     if grain and n_measures <= 1:
         score["dimension"] += 0.2
         reasons.append(f"unique key '{grain}', few measures")
     if n_measures >= 3:
-        score["fact"] += 0.2
+        score["fact"] += 0.3
         reasons.append(f"{n_measures} numeric measure-like columns")
+    elif n_measures == 2:
+        score["fact"] += 0.15
+        reasons.append("2 numeric measure-like columns")
+    # Wide denormalized / "one big table": many columns AND several measures,
+    # with no outbound FKs (attributes are inline, not joined out). This reads
+    # like a self-contained fact/source you single-source a view from -- NOT a
+    # dimension, even though it has a key. Give it a distinct nudge so it isn't
+    # mislabeled a dimension just because it has a unique key.
+    if n_cols >= 12 and n_measures >= 3 and outbound_fk_count == 0:
+        score["fact"] += 0.25
+        reasons.append(f"wide denormalized table ({n_cols} cols, {n_measures} measures, inline attributes)")
 
     # 4. Ontology entity_role (steward/AI attribution) is a trusted nudge.
     if ontology_role:
@@ -412,8 +427,11 @@ def recommend_erd(
     fk_count = len(edges)
     n_tables = len(tables)
     mart_tables = [t for t in tables if _looks_like_mart(_short(t))]
-    fact_naming = [t for t in tables if _looks_like_fact(_short(t))]
-    if mart_tables and not fact_naming and fk_count == 0:
+    # A schema is "mart-dominated" when mart/summary tables are the majority of
+    # what's in scope -- regardless of whether some are also fact-named. Such
+    # tables are pre-joined/aggregated: usually one view each, few or no joins.
+    mart_dominated = len(mart_tables) >= max(1, (n_tables + 1) // 2)
+    if mart_dominated and fk_count == 0:
         schema_type = "DATA_MART"
     elif fk_count == 0 or (fk_count <= 1 and n_tables <= 3):
         schema_type = "SIMPLE"

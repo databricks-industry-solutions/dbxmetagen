@@ -5299,6 +5299,43 @@ def get_fk_predictions(limit: int = 200):
     return execute_sql(q)
 
 
+@app.get("/api/analytics/fk-candidates")
+def get_fk_candidates(src_table: str, dst_table: str, limit: int = 8):
+    """Ranked join-column candidates for a specific table pair.
+
+    Powers the ERD designer's join editor: shows suggested (src_column ->
+    dst_column) pairs ordered by confidence so the user can one-click a join
+    instead of hand-picking columns. Matches the pair in EITHER direction
+    (src/dst may be swapped in the predictions table).
+    """
+    s = _safe_sql_str(src_table)
+    d = _safe_sql_str(dst_table)
+    try:
+        rows = execute_sql(
+            f"SELECT src_table, src_column, dst_table, dst_column, final_confidence "
+            f"FROM {fq('fk_predictions')} "
+            f"WHERE (src_table = {s} AND dst_table = {d}) "
+            f"   OR (src_table = {d} AND dst_table = {s}) "
+            f"ORDER BY final_confidence DESC LIMIT {int(limit)}"
+        ) or []
+    except Exception as e:
+        logger.warning("fk-candidates query failed: %s", e)
+        return {"candidates": []}
+    # Normalize so src_column always belongs to the requested src_table.
+    out = []
+    for r in rows:
+        if (r.get("src_table") or "").lower() == src_table.lower():
+            sc, dc = r.get("src_column"), r.get("dst_column")
+        else:
+            sc, dc = r.get("dst_column"), r.get("src_column")
+        out.append({
+            "src_column": (sc or "").split(".")[-1],
+            "dst_column": (dc or "").split(".")[-1],
+            "confidence": round(float(r.get("final_confidence") or 0.0), 3),
+        })
+    return {"candidates": out}
+
+
 @app.get("/api/analytics/fk-ddl")
 def get_fk_ddl():
     """Return generated FK DDL statements."""

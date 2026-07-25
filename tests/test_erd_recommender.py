@@ -42,6 +42,13 @@ def _key_col(name):
             "cardinality_ratio": 1.0}
 
 
+def _attr_col(name):
+    """A descriptive (non-numeric, non-unique) attribute column."""
+    return {"column_name": name, "has_numeric_stats": False,
+            "null_rate": 0.0, "is_unique_candidate": False,
+            "cardinality_ratio": 0.2}
+
+
 class TestStarSchema:
     """One fact referencing several dimensions."""
 
@@ -188,6 +195,51 @@ class TestOntologyRole:
             profiling_by_table={"c.s.transactions": [_num_col("amt"), _num_col("qty"), _num_col("fee")]},
         )
         assert rec.nodes[0].role == "fact"
+
+
+class TestNonStarAndMart:
+    """Tables that aren't fact_/dim_-named: marts, wide denormalized tables."""
+
+    def test_unlabeled_wide_fact_like_table_is_fact_not_dimension(self):
+        # No fact naming, but a wide table with many measures + inline attributes
+        # and no outbound FKs. Should read as fact/source, NOT dimension.
+        cols = ([_num_col(f"m{i}") for i in range(5)]
+                + [_attr_col(f"a{i}") for i in range(8)]
+                + [_key_col("row_id")])
+        rec = recommend_erd(["c.s.sales_wide"], fk_rows=[],
+                            profiling_by_table={"c.s.sales_wide": cols})
+        assert rec.nodes[0].role in ("fact", "source")
+        assert rec.nodes[0].role != "dimension"
+
+    def test_mart_tables_that_join_get_edges(self):
+        # Two mart-named tables with an FK between them -> edge exists, they join.
+        tables = ["c.s.sales_summary", "c.s.region_rollup"]
+        fks = [_fk("c.s.sales_summary", "region_id", "c.s.region_rollup", "region_id", conf=0.9)]
+        rec = recommend_erd(tables, fk_rows=fks)
+        assert len(rec.edges) == 1
+
+    def test_mart_dominated_no_fks_is_data_mart(self):
+        tables = ["c.s.sales_summary", "c.s.revenue_rollup", "c.s.kpi_snapshot"]
+        rec = recommend_erd(tables, fk_rows=[])
+        assert rec.schema_type == "DATA_MART"
+
+    def test_data_mart_coexists_with_a_fact_name(self):
+        # A mart-dominated scope that also contains a fact-named table, no FKs:
+        # still DATA_MART (the old logic required zero fact names).
+        tables = ["c.s.sales_summary", "c.s.revenue_rollup", "c.s.fct_leftover"]
+        rec = recommend_erd(tables, fk_rows=[])
+        assert rec.schema_type == "DATA_MART"
+
+    def test_star_still_wins_when_facts_and_fks_present(self):
+        # Regression: a real star must NOT be reclassified as DATA_MART just
+        # because one table happens to contain a mart keyword.
+        tables = ["c.s.fct_orders", "c.s.dim_customer", "c.s.dim_product"]
+        fks = [
+            _fk("c.s.fct_orders", "customer_id", "c.s.dim_customer", "id"),
+            _fk("c.s.fct_orders", "product_id", "c.s.dim_product", "id"),
+        ]
+        rec = recommend_erd(tables, fk_rows=fks)
+        assert rec.schema_type == "STAR"
 
 
 class TestSerialization:

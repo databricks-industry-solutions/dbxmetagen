@@ -767,6 +767,45 @@ class EntityDefinition:
 BUNDLE_DIR = "configurations/ontology_bundles"
 
 
+def _match_bundle_by_display_name(display_name: str) -> Optional[str]:
+    """Scan the local bundle dir for a *.yaml whose metadata.name matches
+    display_name (case-insensitive). Returns the file path or None.
+
+    Rescues curated bundles whose display label != slugified stem
+    (e.g. "General Cross-Industry" -> general.yaml). Reads only the small
+    metadata header of each file, and only the first bundle dir that exists.
+    """
+    want = display_name.strip().lower()
+    if not want:
+        return None
+    dirs = [
+        BUNDLE_DIR,
+        os.path.join(os.path.dirname(__file__), "..", "..", BUNDLE_DIR),
+    ]
+    try:
+        dirs.append(os.path.join(os.getcwd(), BUNDLE_DIR))
+    except Exception:
+        pass
+    for d in dirs:
+        d = os.path.normpath(d)
+        if not os.path.isdir(d):
+            continue
+        for fn in sorted(os.listdir(d)):
+            if not fn.endswith(".yaml"):
+                continue
+            fpath = os.path.join(d, fn)
+            try:
+                with open(fpath) as f:
+                    raw = yaml.safe_load(f) or {}
+                name = (raw.get("metadata") or {}).get("name")
+            except Exception:
+                continue
+            if name and str(name).strip().lower() == want:
+                return fpath
+        return None  # first existing dir is authoritative; don't scan further
+    return None
+
+
 def resolve_bundle_path(
     bundle_name: str,
     catalog_name: Optional[str] = None,
@@ -825,6 +864,17 @@ def resolve_bundle_path(
         if os.path.exists(path):
             logger.info("Resolved bundle '%s' -> %s", bundle_name, path)
             return path
+
+    # Neither the verbatim stem nor the slug matched a file. A curated bundle's
+    # display label (metadata.name, e.g. "General Cross-Industry" -> general.yaml,
+    # "Healthcare & Life Sciences" -> healthcare.yaml) may have leaked in where a
+    # stem was expected -- slugifying those does NOT yield the stem, so scan the
+    # bundle dir and match on metadata.name (case-insensitive). Local dir only;
+    # runs only on a miss.
+    matched = _match_bundle_by_display_name(bundle_name)
+    if matched:
+        logger.info("Resolved bundle '%s' via metadata.name -> %s", bundle_name, matched)
+        return matched
 
     # FUSE may not expose /Volumes on serverless job compute; fall back to an
     # SDK download (same mechanism the app uses to read imported bundles).
