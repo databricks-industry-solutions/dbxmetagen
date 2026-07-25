@@ -2,7 +2,7 @@ import React, { useState, useEffect, useRef, useCallback, Component } from 'reac
 import { ErrorBanner } from '../App'
 import { cachedFetchObj, TTL } from '../apiCache'
 import { PageHeader, EmptyState, Skeleton, InfoTip } from './ui'
-import { useJobRunner, TERMINAL_STATES } from '../hooks/useJobRunner'
+import { useSharedJobRunner, TERMINAL_STATES } from '../hooks/useJobRunner'
 import TableScopePicker, { scopeToTableNames } from './TableScopePicker'
 
 class TabErrorBoundary extends Component {
@@ -132,8 +132,7 @@ function HealthWarnings({ health }) {
 }
 
 export default function BatchJobs({ onNavigate, pipelineStats }) {
-  const { jobs, runHistory, runningAction, runError, runJob } =
-    useJobRunner({ onJobsError: (msg) => setError(prev => prev ? `${prev} | ${msg}` : msg) })
+  const { jobs, runHistory, runningAction, runError, runJob, jobsError } = useSharedJobRunner()
   const [tableNames, setTableNames] = useState('')
   const [applyDdl, setApplyDdl] = useState(false)
   const [federationMode, setFederationMode] = useState(false)
@@ -304,6 +303,7 @@ export default function BatchJobs({ onNavigate, pipelineStats }) {
     <div className="space-y-5">
       <PageHeader title="Generate Metadata" subtitle="Generate descriptions, sensitivity labels, domains, and advanced analytics from your Unity Catalog tables" badge={catalogName && schemaName ? `${catalogName}.${schemaName}` : undefined} />
       <ErrorBanner error={error} />
+      <ErrorBanner error={jobsError} />
       <ErrorBanner error={runError} />
       <HealthWarnings health={health} />
 

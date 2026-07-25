@@ -2,7 +2,7 @@ import React, { useState, useEffect } from 'react'
 import { ErrorBanner } from '../App'
 import { cachedFetchObj, TTL } from '../apiCache'
 import { PageHeader, InfoTip } from './ui'
-import { useJobRunner } from '../hooks/useJobRunner'
+import { useSharedJobRunner } from '../hooks/useJobRunner'
 import TableScopePicker, { scopeToTableNames } from './TableScopePicker'
 
 /**
@@ -14,7 +14,7 @@ import TableScopePicker, { scopeToTableNames } from './TableScopePicker'
  *   - MCP setup: expose the metadata as MCP tools.
  */
 export default function SyncOps({ onNavigate }) {
-  const { runningAction, runError, runJob } = useJobRunner()
+  const { runningAction, runError, runJob } = useSharedJobRunner()
   const [catalogName, setCatalogName] = useState('')
   const [schemaName, setSchemaName] = useState('')
   const [lakebaseConfigured, setLakebaseConfigured] = useState(false)

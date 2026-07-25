@@ -1,4 +1,4 @@
-import { useState, useEffect, useRef, useCallback } from 'react'
+import { useState, useEffect, useRef, useCallback, createContext, useContext, createElement } from 'react'
 
 // Terminal Databricks run lifecycle states — a run in one of these is finished
 // (success or otherwise) and no longer polled.
@@ -26,6 +26,7 @@ export function useJobRunner({ onJobsError } = {}) {
   const [runHistory, setRunHistory] = useState([])
   const [runningAction, setRunningAction] = useState(null)
   const [runError, setRunError] = useState(null)
+  const [jobsError, setJobsError] = useState(null)
   const pollRef = useRef(null)
   const runHistoryRef = useRef(runHistory)
   const onJobsErrorRef = useRef(onJobsError)
@@ -38,7 +39,7 @@ export function useJobRunner({ onJobsError } = {}) {
     fetch('/api/jobs')
       .then(r => { if (!r.ok) throw new Error(`${r.status} ${r.statusText}`); return r.json() })
       .then(setJobs)
-      .catch(e => { onJobsErrorRef.current?.(`Failed to load jobs: ${e.message}`) })
+      .catch(e => { const m = `Failed to load jobs: ${e.message}`; setJobsError(m); onJobsErrorRef.current?.(m) })
     fetch('/api/jobs/runs')
       .then(r => r.ok ? r.json() : [])
       .then(runs => setRunHistory(runs.map(r => ({ ...r, _polling: false }))))
@@ -115,7 +116,30 @@ export function useJobRunner({ onJobsError } = {}) {
 
   return {
     jobs, runHistory, activeRuns, completedRuns,
-    runningAction, runError, setRunError,
+    runningAction, runError, setRunError, jobsError,
     findJob, runJob, refreshRuns, setRunHistory,
   }
 }
+
+const JobRunnerContext = createContext(null)
+
+/**
+ * App-level provider so every screen shares ONE job runner instance: one
+ * /api/jobs + /api/jobs/runs load, one 5s poll, and a single run-history list
+ * (a run launched anywhere shows up everywhere). Wrap the app once.
+ * (createElement, not JSX, because this is a .js module.)
+ */
+export function JobRunnerProvider({ children }) {
+  const runner = useJobRunner()
+  return createElement(JobRunnerContext.Provider, { value: runner }, children)
+}
+
+/** Consume the shared runner. Requires <JobRunnerProvider> above it (mounted
+ *  once in main.jsx); throws a clear error otherwise instead of a cryptic
+ *  destructure-of-null. */
+export function useSharedJobRunner() {
+  const ctx = useContext(JobRunnerContext)
+  if (!ctx) throw new Error('useSharedJobRunner must be used within <JobRunnerProvider>')
+  return ctx
+}
+

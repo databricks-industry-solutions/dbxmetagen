@@ -3,7 +3,7 @@ import { ErrorBanner } from '../App'
 import { cachedFetch, cachedFetchObj, invalidateCache, TTL } from '../apiCache'
 import { PageHeader, EmptyState, Skeleton, Section } from './ui'
 import { useCatalogSchemaTables } from '../hooks/useCatalogSchemaTables'
-import { useJobRunner } from '../hooks/useJobRunner'
+import { useSharedJobRunner } from '../hooks/useJobRunner'
 import AdvancedPipelinePanel from './AdvancedPipelinePanel'
 import ErdDesigner from './ErdDesigner'
 
@@ -353,7 +353,7 @@ function FoundationRail({ foundation, onNavigate, step2Runner }) {
 export default function SemanticLayer({ onNavigate, pipelineStats, onRefreshPipelineStats }) {
   // Shared job runner — lets the foundation gate start + track the analytics
   // pipeline inline (see AdvancedPipelinePanel below).
-  const jobRunner = useJobRunner()
+  const jobRunner = useSharedJobRunner()
   const [pipelineServerless, setPipelineServerless] = useState(true)
   // Projects
   const [projects, setProjects] = useState([])
