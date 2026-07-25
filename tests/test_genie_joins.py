@@ -464,3 +464,35 @@ class TestBuildAppliedMvSnippets:
         assert len(sn["measures"]) == 0
 
 
+
+
+class TestBuildJoinSpecsComposite:
+    """Phase 3: FK rows with a composite join_condition emit the full multi-column
+    predicate (source. rewritten to the real short table name); single-column rows
+    keep the simple equality."""
+
+    def _asm(self):
+        return GenieContextAssembler(MagicMock(), "wh", "c", "s")
+
+    def test_single_column_spec(self):
+        asm = self._asm()
+        specs = asm._build_join_specs([{
+            "src_table": "c.s.orders", "dst_table": "c.s.customers",
+            "src_column": "c.s.orders.cust_id", "dst_column": "c.s.customers.id",
+            "is_composite": False, "join_condition": None,
+        }])
+        assert specs[0]["sql"] == ["orders.cust_id = customers.id"]
+
+    def test_composite_spec_uses_condition(self):
+        asm = self._asm()
+        specs = asm._build_join_specs([{
+            "src_table": "c.s.orders", "dst_table": "c.s.lines",
+            "src_column": "c.s.orders.order_id", "dst_column": "c.s.lines.order_id",
+            "is_composite": True,
+            "join_condition": "source.order_id = lines.order_id AND source.line_no = lines.line_no",
+        }])
+        assert specs[0]["sql"] == [
+            "orders.order_id = lines.order_id AND orders.line_no = lines.line_no"
+        ]
+        assert specs[0]["left"]["identifier"] == "c.s.orders"
+        assert specs[0]["right"]["identifier"] == "c.s.lines"

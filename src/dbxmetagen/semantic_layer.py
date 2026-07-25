@@ -171,6 +171,27 @@ def check_dim_source_pattern(defn: dict, fk_rows: list[dict]) -> Optional[dict]:
         if as_dst >= 2 and as_src == 0:
             signals.append(("fk_fanout", f"source {src_short} appears as FK target {as_dst}x, never as FK source"))
 
+    # Signal 4: measured cardinality (authoritative when available). If the source
+    # is the PK PARENT (dst_table) of an FK whose join column on the source side is
+    # highly unique (high pk_uniqueness), the source is the "one" side (a dimension)
+    # while the joined child is the "many" side (the fact) -- exactly the inverted
+    # anti-pattern. Uses the predictor's real probe, not just naming/topology.
+    # Absent on rows that predate the column (falls back to signals 1-3).
+    for fk in fk_rows:
+        pk_uniq = fk.get("pk_uniqueness")
+        if pk_uniq is None:
+            continue
+        try:
+            pk_uniq = float(pk_uniq)
+        except (TypeError, ValueError):
+            continue
+        fk_dst = fk.get("dst_table", "").split(".")[-1].lower()
+        fk_src = fk.get("src_table", "").split(".")[-1].lower()
+        if fk_dst == src_short and fk_src in join_shorts and pk_uniq >= 0.9:
+            signals.append(("measured_cardinality",
+                            f"source {src_short} is the unique-key parent (pk_uniqueness={pk_uniq:.2f}) of joined {fk_src} -- {fk_src} is the many/fact side"))
+            break
+
     if not signals:
         return None
 
@@ -609,8 +630,16 @@ class SemanticLayerGenerator:
             for c in batch_cols:
                 col_by_table.setdefault(c["table_name"], []).append(c)
 
-        # FK predictions (optional; stash on self for source validation reuse)
+        # FK predictions (optional; stash on self for source validation reuse).
+        # pk_uniqueness feeds the measured-cardinality signal in
+        # check_dim_source_pattern; tolerate its absence on older tables.
         fk_rows = self._safe_collect(
+            f"SELECT src_table, dst_table, src_column, dst_column, final_confidence, "
+            f"       pk_uniqueness "
+            f"FROM {fq('fk_predictions')} "
+            f"WHERE final_confidence >= {self.config.fk_confidence_threshold}"
+            f" AND (is_fk IS NULL OR is_fk = TRUE)"
+        ) or self._safe_collect(
             f"SELECT src_table, dst_table, src_column, dst_column, final_confidence "
             f"FROM {fq('fk_predictions')} "
             f"WHERE final_confidence >= {self.config.fk_confidence_threshold}"
@@ -1347,7 +1376,15 @@ OUTPUT (one JSON object only, no array, no explanation):"""
         if max_hops is None:
             max_hops = self.config.max_join_hops
         fq = self.config.fq
+        # join_condition/is_composite are backfilled columns (Phase 3); tolerate
+        # their absence on older tables via a fallback query.
         fk_rows = self._safe_collect(
+            f"SELECT src_table, dst_table, src_column, dst_column, final_confidence, "
+            f"       join_condition, is_composite "
+            f"FROM {fq('fk_predictions')} "
+            f"WHERE final_confidence >= {self.config.fk_confidence_threshold}"
+            f" AND (is_fk IS NULL OR is_fk = TRUE)"
+        ) or self._safe_collect(
             f"SELECT src_table, dst_table, src_column, dst_column, final_confidence "
             f"FROM {fq('fk_predictions')} "
             f"WHERE final_confidence >= {self.config.fk_confidence_threshold}"
@@ -1356,20 +1393,23 @@ OUTPUT (one JSON object only, no array, no explanation):"""
         if not fk_rows:
             return []
 
-        # Build undirected adjacency: table -> [(neighbor, fk_col, pk_col)]
-        adj: dict[str, list[tuple[str, str, str]]] = {}
+        # Build undirected adjacency. Each edge carries the single-column fk/pk
+        # AND an optional composite join_condition (multi-column ON) that, when
+        # present, is used verbatim instead of the single-column equality.
+        adj: dict[str, list[tuple[str, str, str, str]]] = {}
         for fk in fk_rows:
             src_t, dst_t = fk["src_table"], fk["dst_table"]
             src_c = fk["src_column"].split(".")[-1]
             dst_c = fk["dst_column"].split(".")[-1]
-            adj.setdefault(src_t, []).append((dst_t, src_c, dst_c))
-            adj.setdefault(dst_t, []).append((src_t, dst_c, src_c))
+            jc = fk.get("join_condition") if fk.get("is_composite") else None
+            adj.setdefault(src_t, []).append((dst_t, src_c, dst_c, jc))
+            adj.setdefault(dst_t, []).append((src_t, dst_c, src_c, jc))
 
         def _walk(table: str, depth: int, visited: set) -> list[dict]:
             if depth >= max_hops:
                 return []
             joins: list[dict] = []
-            for neighbor, fk_col, pk_col in adj.get(table, []):
+            for neighbor, fk_col, pk_col, composite_on in adj.get(table, []):
                 if neighbor in visited:
                     continue
                 visited.add(neighbor)
@@ -1379,7 +1419,12 @@ OUTPUT (one JSON object only, no array, no explanation):"""
                 entry: dict = {
                     "name": alias,
                     "source": neighbor,
-                    "on": f"{parent_alias}.{fk_col} = {alias}.{pk_col}",
+                    # A composite join_condition is authored parent->child as
+                    # "source.a = alias.x AND source.b = alias.y"; rewrite the
+                    # generic "source." prefix to the actual parent alias.
+                    "on": (composite_on.replace("source.", f"{parent_alias}.")
+                           if composite_on
+                           else f"{parent_alias}.{fk_col} = {alias}.{pk_col}"),
                 }
                 if child_joins:
                     entry["joins"] = child_joins

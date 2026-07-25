@@ -857,6 +857,86 @@ class TestCheckDimSourcePattern:
         ]
         assert check_dim_source_pattern(defn, fk_rows) is None
 
+    def test_measured_cardinality_signal(self):
+        """Phase 3: pk_uniqueness on the source (parent) side of an FK to a joined
+        child is an authoritative dim-source signal, even without naming hints."""
+        defn = {
+            "source": "cat.sch.customer",   # not dim_-prefixed
+            "joins": [{"source": "cat.sch.orders", "on": "source.id = orders.cust_id"}],
+        }
+        fk_rows = [{
+            "src_table": "cat.sch.orders", "dst_table": "cat.sch.customer",
+            "src_column": "cust_id", "dst_column": "id", "pk_uniqueness": 0.99,
+        }]
+        result = check_dim_source_pattern(defn, fk_rows)
+        assert result is not None
+        assert "measured_cardinality" in [s[0] for s in result["signals"]]
+
+    def test_low_pk_uniqueness_no_cardinality_signal(self):
+        # A non-unique source key must NOT fire the measured-cardinality signal.
+        defn = {
+            "source": "cat.sch.customer",
+            "joins": [{"source": "cat.sch.orders", "on": "source.id = orders.cust_id"}],
+        }
+        fk_rows = [{
+            "src_table": "cat.sch.orders", "dst_table": "cat.sch.customer",
+            "src_column": "cust_id", "dst_column": "id", "pk_uniqueness": 0.4,
+        }]
+        result = check_dim_source_pattern(defn, fk_rows)
+        assert result is None or "measured_cardinality" not in [s[0] for s in result["signals"]]
+
+    def test_missing_pk_uniqueness_tolerated(self):
+        # Rows predating the pk_uniqueness column must not raise (falls back to 1-3).
+        defn = {
+            "source": "cat.sch.dim_customer",
+            "joins": [{"source": "cat.sch.orders", "on": "source.id = orders.cust_id"}],
+        }
+        fk_rows = [{"src_table": "cat.sch.orders", "dst_table": "cat.sch.dim_customer",
+                    "src_column": "cust_id", "dst_column": "id"}]
+        result = check_dim_source_pattern(defn, fk_rows)   # must not raise
+        assert result is not None  # still fires via fk_direction/name_prefix
+
+
+class TestDiscoverJoinPathsComposite:
+    """Phase 3: _discover_join_paths uses a stored composite join_condition
+    verbatim (rewriting the generic source. prefix), else the single-column ON."""
+
+    def test_single_column_join(self, gen):
+        gen._safe_collect = lambda sql: [{
+            "src_table": "cat.sch.orders", "dst_table": "cat.sch.customer",
+            "src_column": "cat.sch.orders.cust_id", "dst_column": "cat.sch.customer.id",
+            "final_confidence": 0.9, "join_condition": None, "is_composite": False,
+        }]
+        joins = gen._discover_join_paths("cat.sch.orders")
+        assert joins[0]["on"] == "source.cust_id = customer.id"
+
+    def test_composite_join_condition_used(self, gen):
+        gen._safe_collect = lambda sql: [{
+            "src_table": "cat.sch.orders", "dst_table": "cat.sch.lines",
+            "src_column": "cat.sch.orders.order_id", "dst_column": "cat.sch.lines.order_id",
+            "final_confidence": 0.9, "is_composite": True,
+            "join_condition": "source.order_id = lines.order_id AND source.line_no = lines.line_no",
+        }]
+        joins = gen._discover_join_paths("cat.sch.orders")
+        assert joins[0]["on"] == "source.order_id = lines.order_id AND source.line_no = lines.line_no"
+
+    def test_missing_columns_fall_back(self, gen):
+        # Primary query returns [] (missing column), fallback returns single-col row.
+        calls = {"n": 0}
+        def _fake(sql):
+            calls["n"] += 1
+            if "join_condition" in sql:
+                return []   # simulate column-missing -> empty
+            return [{
+                "src_table": "cat.sch.orders", "dst_table": "cat.sch.customer",
+                "src_column": "cat.sch.orders.cust_id", "dst_column": "cat.sch.customer.id",
+                "final_confidence": 0.9,
+            }]
+        gen._safe_collect = _fake
+        joins = gen._discover_join_paths("cat.sch.orders")
+        assert calls["n"] == 2                       # primary + fallback
+        assert joins[0]["on"] == "source.cust_id = customer.id"
+
 
 class TestSwapSourceAndJoin:
     def test_swap_reverses_source_and_join(self):

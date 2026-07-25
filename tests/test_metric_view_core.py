@@ -23,6 +23,7 @@ from dbxmetagen.metric_view_core import (
     _restructure_chained_to_nested,
     _qualify_nested_refs,
     _definition_to_yaml,
+    _clean_joins_for_yaml,
 )
 
 
@@ -443,3 +444,49 @@ class TestDefinitionToYaml:
             {"name": "M", "expr": "SUM(x)", "window": _json.dumps([{"order": "dt"}])}]}
         y = _definition_to_yaml(defn)
         assert "window" in y
+
+
+class TestCleanJoinsForYaml:
+    """Phase 3: join dicts are whitelisted to spec-valid keys before YAML dump,
+    internal keys are stripped, default cardinality is omitted, non-default kept."""
+
+    def test_strips_internal_keys(self):
+        joins = [{"name": "cust", "source": "c.s.customers",
+                  "on": "source.cid = cust.id",
+                  "is_composite": True, "extra_pairs": [{"src": "a", "dst": "b"}],
+                  "kind": "join_key", "src_column": "cid"}]
+        out = _clean_joins_for_yaml(joins)
+        assert out == [{"name": "cust", "source": "c.s.customers", "on": "source.cid = cust.id"}]
+
+    def test_omits_default_cardinality(self):
+        joins = [{"name": "c", "source": "c.s.c", "on": "source.x = c.y",
+                  "cardinality": "many_to_one"}]
+        assert "cardinality" not in _clean_joins_for_yaml(joins)[0]
+
+    def test_keeps_one_to_many_cardinality(self):
+        joins = [{"name": "c", "source": "c.s.c", "on": "source.x = c.y",
+                  "cardinality": "one_to_many"}]
+        assert _clean_joins_for_yaml(joins)[0]["cardinality"] == "one_to_many"
+
+    def test_keeps_using_and_rely(self):
+        joins = [{"name": "c", "source": "c.s.c", "using": ["x", "y"], "rely": True}]
+        out = _clean_joins_for_yaml(joins)[0]
+        assert out["using"] == ["x", "y"] and out["rely"] is True
+
+    def test_recurses_nested_and_strips(self):
+        joins = [{"name": "c", "source": "c.s.c", "on": "source.x = c.y",
+                  "is_composite": False,
+                  "joins": [{"name": "g", "source": "c.s.g", "on": "c.gid = g.id", "kind": "x"}]}]
+        out = _clean_joins_for_yaml(joins)[0]
+        assert "is_composite" not in out
+        assert out["joins"][0] == {"name": "g", "source": "c.s.g", "on": "c.gid = g.id"}
+
+    def test_composite_on_survives_yaml(self):
+        # A multi-column composite ON must pass through _definition_to_yaml intact.
+        defn = {"source": "c.s.orders", "measures": [{"name": "M", "expr": "SUM(x)"}],
+                "joins": [{"name": "lines", "source": "c.s.lines",
+                           "on": "source.order_id = lines.order_id AND source.line_no = lines.line_no",
+                           "is_composite": True}]}
+        y = _definition_to_yaml(defn)
+        assert "source.order_id = lines.order_id AND source.line_no = lines.line_no" in y
+        assert "is_composite" not in y   # internal key stripped

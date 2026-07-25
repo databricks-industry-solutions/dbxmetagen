@@ -37,12 +37,25 @@ def _run_sql(ws: WorkspaceClient, warehouse_id: str, query: str) -> list[dict]:
     return []
 
 
-def _safe_sql(ws: WorkspaceClient, warehouse_id: str, query: str) -> list[dict]:
-    """Like _run_sql but returns [] on any exception."""
+def _safe_sql(ws: WorkspaceClient, warehouse_id: str, query: str,
+              fallback: str | None = None) -> list[dict]:
+    """Like _run_sql but returns [] on any exception.
+
+    ``fallback`` (optional) is retried once when the primary query fails on a
+    missing column -- e.g. selecting Phase-3 columns (join_condition/is_composite)
+    against a table that predates them.
+    """
     try:
         return _run_sql(ws, warehouse_id, query)
     except Exception as e:
         err = str(e)
+        if fallback and ("UNRESOLVED_COLUMN" in err or "cannot be resolved" in err
+                         or "COLUMN_NOT_FOUND" in err or "UNRESOLVED_ROUTINE" in err):
+            try:
+                return _run_sql(ws, warehouse_id, fallback)
+            except Exception as e2:
+                logger.warning("SQL fallback also failed: %s — %s", fallback[:80], e2)
+                return []
         if "TABLE_OR_VIEW_NOT_FOUND" in err or "SCHEMA_NOT_FOUND" in err:
             logger.info("Table not found (expected before pipeline runs): %s", query[:80])
         else:
@@ -392,6 +405,14 @@ class GenieContextAssembler:
             self.ws,
             self.wh,
             f"""
+            SELECT src_table, dst_table, src_column, dst_column, final_confidence,
+                   join_condition, is_composite
+            FROM {self._fq('fk_predictions')}
+            WHERE final_confidence >= 0.7
+              AND (is_fk IS NULL OR is_fk = TRUE)
+              AND src_table IN ({table_list}) AND dst_table IN ({table_list})
+        """,
+            fallback=f"""
             SELECT src_table, dst_table, src_column, dst_column, final_confidence
             FROM {self._fq('fk_predictions')}
             WHERE final_confidence >= 0.7
@@ -926,17 +947,25 @@ class GenieContextAssembler:
         """
         specs = []
         for fk in fk_rows:
-            src_col = fk['src_column'].split('.')[-1]
-            dst_col = fk['dst_column'].split('.')[-1]
+            src_short = fk["src_table"].split(".")[-1]
+            dst_short = fk["dst_table"].split(".")[-1]
+            # Composite key: the stored join_condition is authored as
+            # "source.a = <dst_short>.x AND source.b = <dst_short>.y" (the ERD uses
+            # the dst table's short name as the alias). Only the generic "source."
+            # prefix needs rewriting to the real src short name for Genie.
+            composite = fk.get("join_condition") if fk.get("is_composite") else None
+            if composite:
+                sql = composite.replace("source.", f"{src_short}.")
+            else:
+                src_col = fk["src_column"].split(".")[-1]
+                dst_col = fk["dst_column"].split(".")[-1]
+                sql = f"{src_short}.{src_col} = {dst_short}.{dst_col}"
             specs.append(
                 {
                     "id": uuid.uuid4().hex[:32],
                     "left": {"identifier": fk["src_table"]},
                     "right": {"identifier": fk["dst_table"]},
-                    "sql": [
-                        f"{fk['src_table'].split('.')[-1]}.{src_col} = "
-                        f"{fk['dst_table'].split('.')[-1]}.{dst_col}"
-                    ],
+                    "sql": [sql],
                 }
             )
         return specs

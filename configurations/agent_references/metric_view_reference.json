@@ -179,8 +179,14 @@
       "Using fully qualified names in 'on' clause: on: catalog.schema.orders.customer_id = catalog.schema.customers.id -- WRONG",
       "Using 'using' instead of 'on' for non-trivial joins -- 'using' only works for same-named columns",
       "Forgetting to reference joined columns with alias prefix in dimensions/measures",
-      "Using the same alias name as a column name in the source table"
-    ]
+      "Using the same alias name as a column name in the source table",
+      "Emitting a join 'type'/'join_type' key -- metric-view joins have NO such key; they are always LEFT OUTER JOIN by spec"
+    ],
+    "join_semantics": {
+      "join_type": "Metric-view joins are ALWAYS a LEFT OUTER JOIN from the source (fact) to each joined (dimension) table -- there is no join-type key and you must not emit one. Fact rows are preserved even when a dimension row is missing, so a join never drops or reduces the fact grain.",
+      "composite_key": "For a multi-column join, put the full condition in 'on' ANDed together: on: source.order_id = lines.order_id AND source.line_no = lines.line_no. (Alternatively 'using: [col1, col2]' when the columns are identically named on both sides -- never both 'on' and 'using'.)",
+      "cardinality": "Each join accepts an optional 'cardinality' key. It defaults to 'many_to_one' (many fact rows -> one dimension row); OMIT it in that normal case. Set 'cardinality: one_to_many' ONLY when the joined table has multiple rows per source row and you intend to aggregate it as a separate fact source. Never set one_to_many just to reach extra columns -- that fans out and inflates the source's own measures."
+    }
   },
 
   "format_patterns": {

@@ -8656,9 +8656,11 @@ def _inject_fk_joins(plan_views: list[dict], tables: list[str], cat: str, sch: s
     """
     fq_tables = [t if "." in t else f"{cat}.{sch}.{t}" for t in tables]
     in_clause = ", ".join(f"'{t}'" for t in fq_tables)
+    _ensure_fk_relationship_columns()
     try:
         fk_rows = execute_sql(
-            f"SELECT src_table, dst_table, src_column, dst_column "
+            f"SELECT src_table, dst_table, src_column, dst_column, "
+            f"       pk_uniqueness, join_condition, is_composite "
             f"FROM {fq('fk_predictions')} WHERE is_fk = 'true' AND final_confidence >= 0.85 "
             f"AND (src_table IN ({in_clause}) OR dst_table IN ({in_clause}))"
         )
@@ -8693,10 +8695,16 @@ def _inject_fk_joins(plan_views: list[dict], tables: list[str], cat: str, sch: s
             alias = join_table.split(".")[-1]
             fk_col = fk_col.split(".")[-1]
             pk_col = pk_col.split(".")[-1]
+            # Composite key: use the stored multi-column condition verbatim (its
+            # authored alias is the joined table's short name) instead of the
+            # single-column equality. Only valid when source is the FK child side.
+            composite_on = fk.get("join_condition") if fk.get("is_composite") else None
+            on_clause = (composite_on if (composite_on and fk["src_table"] == src)
+                         else f"source.{fk_col} = {alias}.{pk_col}")
             pv.setdefault("joins", []).append({
                 "name": alias,
                 "source": join_table,
-                "on": f"source.{fk_col} = {alias}.{pk_col}",
+                "on": on_clause,
             })
             existing_join_sources.add(join_table)
             added += 1

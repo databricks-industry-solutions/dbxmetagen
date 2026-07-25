@@ -46,6 +46,26 @@ const FK_RI_SCORE_FLOOR = 0.99
 
 function _short(t) { return (t || '').split('.').pop() }
 
+// Rebuild a join edge's `on` clause (and composite metadata) from its primary
+// column pair plus any additional composite pairs. Single pair -> simple `on`,
+// is_composite=false. Multiple complete pairs -> AND-joined `on` mirrored into
+// `join_condition`, is_composite=true. Incomplete extra pairs are ignored.
+function _withJoinCondition(data, targetTable) {
+  const alias = _short(targetTable)
+  const primary = (data.src_column && data.dst_column)
+    ? [{ src: data.src_column, dst: data.dst_column }] : []
+  const extras = (data.extra_pairs || []).filter(p => p.src && p.dst)
+  const pairs = [...primary, ...extras]
+  const on = pairs.map(p => `source.${p.src} = ${alias}.${p.dst}`).join(' AND ')
+  const is_composite = pairs.length > 1
+  return {
+    ...data,
+    on,
+    is_composite,
+    join_condition: is_composite ? on : null,
+  }
+}
+
 // Parse "src.col = alias.col" -> {src_column, dst_column}
 function _parseOn(on) {
   const m = /(\w+)\.(\w+)\s*=\s*(\w+)\.(\w+)/.exec(on || '')
@@ -213,12 +233,35 @@ export default function ErdDesigner({ tables, projectId, profileId, businessCont
   }, [setEdges])
 
   // Set a join's columns (from a suggestion click or a dropdown change).
+  // Rebuilds the `on` clause from the primary pair plus any additional composite
+  // pairs, and records is_composite + join_condition when there is more than one.
   const setJoinColumns = useCallback((edgeId, srcCol, dstCol) => {
     setEdges(eds => eds.map(e => {
       if (e.id !== edgeId) return e
-      const on = (srcCol && dstCol) ? `source.${srcCol} = ${_short(e.target)}.${dstCol}` : ''
-      return { ...e, data: { ...e.data, on, src_column: srcCol, dst_column: dstCol, source: 'confirmed' },
+      return { ...e, data: _withJoinCondition({ ...e.data, src_column: srcCol, dst_column: dstCol, source: 'confirmed' }, e.target),
                style: _edgeStyle('confirmed') }
+    }))
+  }, [setEdges])
+
+  // Composite keys: manage the additional column pairs beyond the primary one.
+  const addJoinPair = useCallback((edgeId) => {
+    setEdges(eds => eds.map(e => e.id === edgeId
+      ? { ...e, data: _withJoinCondition({ ...e.data, extra_pairs: [...(e.data?.extra_pairs || []), { src: '', dst: '' }] }, e.target) }
+      : e))
+  }, [setEdges])
+  const setJoinPair = useCallback((edgeId, idx, src, dst) => {
+    setEdges(eds => eds.map(e => {
+      if (e.id !== edgeId) return e
+      const pairs = [...(e.data?.extra_pairs || [])]
+      pairs[idx] = { src, dst }
+      return { ...e, data: _withJoinCondition({ ...e.data, extra_pairs: pairs, source: 'confirmed' }, e.target), style: _edgeStyle('confirmed') }
+    }))
+  }, [setEdges])
+  const removeJoinPair = useCallback((edgeId, idx) => {
+    setEdges(eds => eds.map(e => {
+      if (e.id !== edgeId) return e
+      const pairs = (e.data?.extra_pairs || []).filter((_, i) => i !== idx)
+      return { ...e, data: _withJoinCondition({ ...e.data, extra_pairs: pairs }, e.target) }
     }))
   }, [setEdges])
 
@@ -286,6 +329,10 @@ export default function ErdDesigner({ tables, projectId, profileId, businessCont
               src_table: e.source, src_column: e.data.src_column,
               dst_table: e.target, dst_column: e.data.dst_column,
               kind,
+              // Composite (multi-column) joins send the full ON condition; the
+              // backend records is_composite and generation consumes it verbatim.
+              ...(e.data?.is_composite && e.data?.join_condition
+                ? { join_condition: e.data.join_condition } : {}),
               reasoning: kind === 'foreign_key'
                 ? 'Confirmed as foreign key in ERD designer'
                 : 'Confirmed as join key in ERD designer',
@@ -454,6 +501,9 @@ export default function ErdDesigner({ tables, projectId, profileId, businessCont
           onPick={(sc, dc) => setJoinColumns(selectedEdge.id, sc, dc)}
           onKind={(k) => setJoinKind(selectedEdge.id, k)}
           onFlip={() => flipJoinDirection(selectedEdge.id)}
+          onAddPair={() => addJoinPair(selectedEdge.id)}
+          onSetPair={(idx, s, d) => setJoinPair(selectedEdge.id, idx, s, d)}
+          onRemovePair={(idx) => removeJoinPair(selectedEdge.id, idx)}
           onRemove={() => removeEdge(selectedEdge.id)}
           onClose={() => setSelectedEdgeId(null)}
         />
@@ -491,9 +541,10 @@ function EvidenceChip({ label, value, title, tone }) {
 }
 
 // --- Join column editor -------------------------------------------------------
-function JoinEditor({ edge, srcCols, dstCols, candidates, onPick, onKind, onFlip, onRemove, onClose }) {
+function JoinEditor({ edge, srcCols, dstCols, candidates, onPick, onKind, onFlip, onAddPair, onSetPair, onRemovePair, onRemove, onClose }) {
   const src = edge.source, dst = edge.target
   const cur = { src_column: edge.data?.src_column || '', dst_column: edge.data?.dst_column || '' }
+  const extraPairs = edge.data?.extra_pairs || []
   const colName = c => (typeof c === 'string' ? c : c.column_name)
   const isFk = edge.data?.kind === 'foreign_key'
   const bothCols = !!(cur.src_column && cur.dst_column)
@@ -561,6 +612,37 @@ function JoinEditor({ edge, srcCols, dstCols, candidates, onPick, onKind, onFlip
       </div>
       {!bothCols && (
         <p className="text-[11px] text-amber-600 dark:text-amber-400">Pick both columns to confirm this join (unconfirmed joins are not saved).</p>
+      )}
+
+      {/* Composite (multi-column) key: additional column pairs ANDed onto the
+          join. Use when a single column isn't unique enough to join on (e.g.
+          (order_id, line_no) or (date, store_id)). */}
+      {bothCols && (
+        <div className="space-y-1">
+          {extraPairs.map((p, i) => (
+            <div key={i} className="flex items-center gap-2 flex-wrap">
+              <span className="text-slate-400 font-mono">AND</span>
+              <select value={p.src} onChange={e => onSetPair(i, e.target.value, p.dst)}
+                className="input-base !text-xs !py-1 max-w-[160px]">
+                <option value="">column…</option>
+                {(srcCols || []).map(c => <option key={colName(c)} value={colName(c)}>{colName(c)}</option>)}
+              </select>
+              <span className="text-slate-400 font-mono">=</span>
+              <select value={p.dst} onChange={e => onSetPair(i, p.src, e.target.value)}
+                className="input-base !text-xs !py-1 max-w-[160px]">
+                <option value="">column…</option>
+                {(dstCols || []).map(c => <option key={colName(c)} value={colName(c)}>{colName(c)}</option>)}
+              </select>
+              <button onClick={() => onRemovePair(i)} className="text-red-400 hover:text-red-600" aria-label="Remove column pair">✕</button>
+            </div>
+          ))}
+          <button onClick={onAddPair} className="text-[11px] text-dbx-lava hover:underline">
+            + Add column pair (composite key)
+          </button>
+          {edge.data?.is_composite && (
+            <p className="text-[10px] text-slate-400 font-mono break-all">on: {edge.data.on}</p>
+          )}
+        </div>
       )}
 
       {/* Evidence for the chosen columns: the signals the predictor already

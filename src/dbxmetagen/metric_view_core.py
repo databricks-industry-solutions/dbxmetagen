@@ -848,6 +848,35 @@ class _IndentYamlDumper(yaml.Dumper):
         return super().increase_indent(flow, False)
 
 
+# Keys the Databricks metric-view join spec accepts (per
+# docs.databricks.com/aws/en/uc-semantics/metric-views/yaml-reference). Anything
+# else on a join dict (our internal is_composite / extra_pairs / kind / etc.) must
+# be stripped before serialization or the CREATE VIEW dry-run rejects the YAML.
+_JOIN_SPEC_KEYS = ("name", "source", "on", "using", "cardinality", "rely")
+
+
+def _clean_joins_for_yaml(joins: list) -> list:
+    """Whitelist join dicts to spec-valid keys and recurse into nested joins.
+
+    Drops the default cardinality ('many_to_one') so we only emit it when it is
+    the non-default 'one_to_many' (a fan-out fact source). Joins are LEFT OUTER by
+    spec; there is no join-type key to emit.
+    """
+    out = []
+    for j in joins or []:
+        if not isinstance(j, dict):
+            continue
+        clean = {k: j[k] for k in _JOIN_SPEC_KEYS if j.get(k) not in (None, "")}
+        if clean.get("cardinality") == "many_to_one":
+            del clean["cardinality"]  # default; omit for a cleaner spec
+        if j.get("joins"):
+            nested = _clean_joins_for_yaml(j["joins"])
+            if nested:
+                clean["joins"] = nested
+        out.append(clean)
+    return out
+
+
 def _definition_to_yaml(defn: dict, include_materialization: bool = False) -> str:
     """Serialize a JSON definition to the YAML body for CREATE VIEW WITH METRICS.
 
@@ -892,7 +921,7 @@ def _definition_to_yaml(defn: dict, include_materialization: bool = False) -> st
         measures_out.append(entry)
     mv["measures"] = measures_out
     if defn.get("joins"):
-        mv["joins"] = defn["joins"]
+        mv["joins"] = _clean_joins_for_yaml(defn["joins"])
     if include_materialization and defn.get("materialization"):
         mv["materialization"] = defn["materialization"]
     return yaml.dump(mv, Dumper=_IndentYamlDumper, default_flow_style=False, sort_keys=False)
