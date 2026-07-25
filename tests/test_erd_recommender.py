@@ -168,6 +168,19 @@ class TestSufficiency:
         assert "c.s.fct_orders".lower() not in [t.lower() for t in rec.sufficiency.uncovered_tables]
         assert rec.sufficiency.metric_views_current == 1
 
+    def test_current_views_counts_only_realized(self):
+        # created/failed drafts must NOT inflate current_views (which would
+        # spuriously shrink the gap); only validated/applied count.
+        rec = recommend_erd(
+            self._star_tables(), fk_rows=self._fks(),
+            existing_defs=[
+                {"source_table": "c.s.fct_orders", "status": "created"},
+                {"source_table": "c.s.fct_orders", "status": "failed"},
+                {"source_table": "c.s.fct_orders", "status": "validated"},
+            ],
+        )
+        assert rec.sufficiency.metric_views_current == 1  # only the validated one
+
     def test_coverage_aware_differs_from_naive_third(self):
         # 3 tables -> naive num//3 == 1. But an uncovered fact + 2 missing KPIs
         # should push the recommendation above 1.

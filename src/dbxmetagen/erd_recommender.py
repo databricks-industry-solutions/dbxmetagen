@@ -454,7 +454,12 @@ def recommend_erd(
     uncovered_tables = [n.table for n in nodes
                         if n.role in ("fact", "source") and n.table.lower() not in covered]
     missing_kpis = list(kpi_coverage.get("missing") or [])
-    current_views = len(existing_defs)
+    # Count only realized views (validated/applied) so current_views is
+    # consistent with `covered` -- 'created'/'failed' drafts must not inflate it
+    # (which would spuriously shrink the recommended gap to zero).
+    current_views = sum(
+        1 for d in existing_defs if (d.get("status") or "") in ("validated", "applied")
+    )
 
     recommended, reasons = _recommend_view_count(
         facts, uncovered_tables, missing_kpis, current_views

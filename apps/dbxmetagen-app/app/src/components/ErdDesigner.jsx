@@ -123,6 +123,7 @@ export default function ErdDesigner({ tables, projectId, profileId, businessCont
   const [colsByTable, setColsByTable] = useState({})  // {table: [{column_name,...}]}
   const [fkCands, setFkCands] = useState({})           // {"src||dst": [{src_column,dst_column,confidence}]}
   const roleRef = useRef({})
+  const manualEdgeSeq = useRef(0)   // monotonic counter for manual-edge ids
 
   const buildGraph = useCallback((rec) => {
     const roles = {}
@@ -182,7 +183,9 @@ export default function ErdDesigner({ tables, projectId, profileId, businessCont
   }, [fkCands])
 
   const onConnect = useCallback((conn) => {
-    const id = `${conn.source}::${conn.target}::manual::${Math.round(nodes.length + edges.length)}`
+    // Monotonic id so add/remove/re-add between the same pair never collides
+    // (a length-based suffix can repeat after a removal).
+    const id = `${conn.source}::${conn.target}::manual::${manualEdgeSeq.current++}`
     setEdges(eds => addEdge({
       ...conn, id,
       style: _edgeStyle('confirmed'),
@@ -191,7 +194,7 @@ export default function ErdDesigner({ tables, projectId, profileId, businessCont
     setSelectedEdgeId(id)   // open the join editor immediately
     ensureColumns(conn.source); ensureColumns(conn.target)
     ensureCandidates(conn.source, conn.target)
-  }, [setEdges, nodes.length, edges.length, ensureColumns, ensureCandidates])
+  }, [setEdges, ensureColumns, ensureCandidates])
 
   const setRole = useCallback((nodeId, role) => {
     roleRef.current[nodeId] = role

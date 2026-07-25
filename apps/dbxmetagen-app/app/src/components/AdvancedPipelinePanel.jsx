@@ -55,6 +55,16 @@ export default function AdvancedPipelinePanel({
   const seedTables = (tableNames || '').split(',').map(t => t.trim()).filter(Boolean)
   const [scope, setScope] = useState(() =>
     seedTables.length ? { mode: 'selected', tables: seedTables } : { mode: 'all', tables: [] })
+  // Track the incoming Semantic Layer selection until the user edits scope here.
+  // Once they touch it (scopeDirty), stop syncing so their choice is preserved.
+  const [scopeDirty, setScopeDirty] = useState(false)
+  const seedKey = seedTables.join(',')
+  useEffect(() => {
+    if (scopeDirty) return
+    setScope(seedTables.length ? { mode: 'selected', tables: seedTables } : { mode: 'all', tables: [] })
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [seedKey, scopeDirty])
+  const changeScope = (next) => { setScopeDirty(true); setScope(next) }
 
   // Pipeline knobs (defaults identical to the previous BatchJobs form, so a bare
   // "Run" click sends the same payload as before).
@@ -219,7 +229,8 @@ export default function AdvancedPipelinePanel({
       {/* Table scope — explicit All / Selected (no "blank = all" guessing) */}
       <div>
         <label className="text-xs text-slate-500 dark:text-slate-400 mb-1 block">Tables to process</label>
-        <TableScopePicker value={scope} onChange={setScope} kbOnly seedTables={seedTables} />
+        {/* Panel owns seeding (effect above); picker seed disabled to avoid double-seed. */}
+        <TableScopePicker value={scope} onChange={changeScope} kbOnly seedTables={[]} />
       </div>
 
       {/* Incremental — the headline reason to re-run, kept visible */}

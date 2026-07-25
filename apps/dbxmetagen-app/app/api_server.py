@@ -7839,9 +7839,12 @@ def _fetch_erd_inputs(tables: list[str]) -> tuple[list, list, dict, list]:
 
     existing_defs = []
     try:
+        # Scope to the tables in this request -- otherwise metric_views_current,
+        # the 'covered' set, and KPI-coverage measures would reflect the ENTIRE
+        # catalog (every project's definitions), not the tables being analyzed.
         existing_defs = execute_sql(
             f"SELECT source_table, status, json_definition FROM {fq('metric_view_definitions')} "
-            f"WHERE status NOT IN ('superseded', 'deleted')"
+            f"WHERE status NOT IN ('superseded', 'deleted') AND source_table IN ({in_clause})"
         ) or []
     except Exception as e:
         logger.warning("erd: metric_view_definitions fetch failed: %s", e)
