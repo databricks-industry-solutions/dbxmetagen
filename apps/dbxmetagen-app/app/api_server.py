@@ -27,6 +27,13 @@ from databricks.sdk import WorkspaceClient
 from databricks.sdk.service.sql import StatementParameterListItem
 from db import pg_execute, get_engine, pg_configured
 from dbxmetagen.ddl_bundle_utils import rewrite_ddl_catalog_schema as _rewrite_ddl_catalog_schema, dq_grade as _dq_grade
+# FK-vs-join-key constants: dependency-free, shared with the Spark library so the
+# discriminator value / SQL predicate cannot drift between the two DDL gates.
+from dbxmetagen.fk_constants import (
+    JOIN_KEY as _FK_JOIN_KEY_CONST,
+    FOREIGN_KEY as _FK_FOREIGN_KEY_CONST,
+    NOT_JOIN_KEY_SQL as _FK_NOT_JOIN_KEY_SQL_CONST,
+)
 # Shared, substrate-agnostic metric-view helpers -- single source of truth, also
 # used by the library generator. These were previously duplicated inline below.
 from dbxmetagen.metric_view_core import (
@@ -301,15 +308,56 @@ def fq(table: str) -> str:
 _SAFE_IDENT_RE = re.compile(r"^[a-zA-Z0-9_.\- %]*$")
 
 
-def _ensure_column(table_fqn: str, col_name: str, col_type: str = "STRING"):
-    """Add a column to a table if it doesn't already exist (schema evolution helper)."""
+def _ensure_column(table_fqn: str, col_name: str, col_type: str = "STRING") -> bool:
+    """Add a column to a table if it doesn't already exist (schema evolution helper).
+
+    Returns True when the column is confirmed present (already existed or was just
+    added), False when the operation could not be completed (e.g. the table does
+    not exist yet). Callers that cache a 'done' flag must gate it on this result."""
     try:
         cols = execute_sql(f"DESCRIBE TABLE {table_fqn}", timeout=15)
         if any(r.get("col_name") == col_name for r in cols):
-            return
+            return True
         execute_sql(f"ALTER TABLE {table_fqn} ADD COLUMN {col_name} {col_type}", timeout=15)
+        return True
     except Exception as e:
         logger.debug("_ensure_column(%s, %s) skipped: %s", table_fqn, col_name, e)
+        return False
+
+
+# fk_predictions.relationship_kind discriminates a true referential FK
+# ('foreign_key' / legacy NULL) from a broad join key ('join_key'). Only true FKs
+# may become ALTER TABLE ADD CONSTRAINT; join keys still feed metric-view / Genie
+# joins. Constants are imported from the shared dependency-free fk_constants module
+# (single source of truth; the app is Spark-free so it cannot import fk_prediction).
+_FK_JOIN_KEY = _FK_JOIN_KEY_CONST
+_FK_FOREIGN_KEY = _FK_FOREIGN_KEY_CONST
+_FK_NOT_JOIN_KEY_SQL = _FK_NOT_JOIN_KEY_SQL_CONST
+_fk_relationship_cols_ensured = False
+
+
+def _normalize_fk_kind(kind: Optional[str]) -> str:
+    """Normalize a user-supplied relationship kind. Anything other than an
+    explicit 'foreign_key' becomes 'join_key' — so confirming a join never
+    silently asserts a referential constraint."""
+    return _FK_FOREIGN_KEY if (kind or "").strip().lower() == _FK_FOREIGN_KEY else _FK_JOIN_KEY
+
+
+def _ensure_fk_relationship_columns():
+    """Idempotently add the Phase-1 relationship columns to fk_predictions so the
+    app can write/filter them even when the table predates the library schema bump.
+
+    Only latches the process-global 'done' flag when ALL columns are confirmed
+    present; if fk_predictions does not exist yet (_ensure_column returns False),
+    the flag stays False so a later call retries once the table appears."""
+    global _fk_relationship_cols_ensured
+    if _fk_relationship_cols_ensured:
+        return
+    tbl = fq("fk_predictions")
+    ok = _ensure_column(tbl, "relationship_kind", "STRING")
+    ok = _ensure_column(tbl, "is_composite", "BOOLEAN") and ok
+    ok = _ensure_column(tbl, "join_condition", "STRING") and ok
+    _fk_relationship_cols_ensured = ok
 
 
 def _safe_sql_str(s: Optional[str]) -> str:
@@ -1866,9 +1914,18 @@ def apply_ddl(body: GenerateDDLBody, batch: bool = True):
 
 
 def _fetch_fk_rows(identifiers: Optional[list[str]] = None) -> list[dict]:
-    """Fetch parsed FK prediction rows (shared by tag and constraint builders)."""
+    """Fetch parsed FK prediction rows for the FK **constraint / tag** DDL builders.
+
+    Excludes rows tagged relationship_kind='join_key': those are broad join keys
+    (e.g. ERD-confirmed joins that are not referential FKs) and must not become
+    ALTER TABLE ADD CONSTRAINT / fk_references tags. Legacy NULL rows still count
+    as true FKs (backward compatible)."""
     fk_tbl = fq("fk_predictions")
-    where = "src_table != dst_table AND final_confidence >= 0.5"
+    _ensure_fk_relationship_columns()
+    # A true FK constraint requires is_fk=TRUE (matches the library's generate_ddl);
+    # AI-rejected pairs (is_fk=FALSE) must never become ADD CONSTRAINT / fk_references
+    # tags even at final_confidence>=0.5. Combined with the join-key exclusion below.
+    where = f"src_table != dst_table AND is_fk = 'true' AND final_confidence >= 0.5 AND {_FK_NOT_JOIN_KEY_SQL}"
     if identifiers:
         safe = [_safe_sql_str(x) for x in identifiers if _SAFE_IDENT_RE.match(x)]
         if safe:
@@ -2340,6 +2397,7 @@ def _review_combined_impl(tbl_kb, col_kb, ent_tbl, fk_tbl, where):
         fk_rows = execute_sql(f"""
             SELECT src_column, src_table, dst_column, dst_table, final_confidence,
                    ai_reasoning, ai_confidence, col_similarity, rule_score,
+                   ri_score, join_rate, join_matched, pk_uniqueness,
                    is_fk, review_updated_at
             FROM {fk_tbl}
             WHERE (src_table IN ({in_clause}) OR dst_table IN ({in_clause}))
@@ -3022,11 +3080,28 @@ class FKAddBody(BaseModel):
     src_table: str
     dst_table: str
     reasoning: Optional[str] = None
+    # 'join_key' (default) = a joinable pair for metric-view / Genie joins that is
+    # NOT asserted to be a referential constraint. 'foreign_key' = a true FK the
+    # user is asserting (eligible for ALTER TABLE ADD CONSTRAINT). Defaulting to
+    # join_key means confirming a join in the ERD never silently arms a constraint.
+    kind: Optional[str] = None
+    # Optional multi-column join condition (e.g. "a.x = b.x AND a.y = b.y"); when
+    # set, is_composite is recorded TRUE. Populated by the composite-key UI (Phase 3).
+    join_condition: Optional[str] = None
 
 
 @app.post("/api/analytics/fk-add")
 def add_fk_prediction(body: FKAddBody):
-    """Manually add a validated FK relationship."""
+    """Manually add a validated relationship (join key by default, or a true FK).
+
+    Writes is_fk=TRUE, final_confidence=1.0 so the pair flows to metric-view / Genie
+    joins immediately. relationship_kind controls FK-constraint eligibility: only
+    'foreign_key' rows can become ALTER TABLE ADD CONSTRAINT; 'join_key' (default)
+    rows never do."""
+    _ensure_fk_relationship_columns()
+    kind = _normalize_fk_kind(body.kind)
+    is_composite = bool(body.join_condition and body.join_condition.strip())
+    join_condition = _safe_sql_str(body.join_condition) if is_composite else "NULL"
     preds_tbl = fq("fk_predictions")
     src_col = _esc_sql(body.src_column)
     dst_col = _esc_sql(body.dst_column)
@@ -3036,13 +3111,15 @@ def add_fk_prediction(body: FKAddBody):
     sql = f"""
         INSERT INTO {preds_tbl}
         (src_column, dst_column, src_table, dst_table, final_confidence,
-         ai_confidence, ai_reasoning, is_fk, review_updated_at, created_at, updated_at)
+         ai_confidence, ai_reasoning, is_fk, relationship_kind, is_composite,
+         join_condition, review_updated_at, created_at, updated_at)
         VALUES ('{src_col}', '{dst_col}', '{src_tbl}', '{dst_tbl}', 1.0,
-                1.0, {reasoning}, TRUE, current_timestamp(), current_timestamp(), current_timestamp())
+                1.0, {reasoning}, TRUE, '{kind}', {str(is_composite).upper()},
+                {join_condition}, current_timestamp(), current_timestamp(), current_timestamp())
     """
     try:
         execute_sql(sql, timeout=45)
-        return {"ok": True}
+        return {"ok": True, "kind": kind}
     except Exception as e:
         raise HTTPException(500, str(e)) from e
 
@@ -5299,20 +5376,47 @@ def get_fk_predictions(limit: int = 200):
     return execute_sql(q)
 
 
+def _num_or_none(v):
+    """Coerce a SQL numeric cell to a rounded float, or None when absent/NaN.
+
+    NaN must map to None (not a NaN float) so the UI shows an honest '—' for a
+    signal that was never computed, rather than a broken numeric value."""
+    if v is None:
+        return None
+    try:
+        f = float(v)
+    except (TypeError, ValueError):
+        return None
+    if f != f:  # NaN
+        return None
+    return round(f, 3)
+
+
 @app.get("/api/analytics/fk-candidates")
 def get_fk_candidates(src_table: str, dst_table: str, limit: int = 8):
-    """Ranked join-column candidates for a specific table pair.
+    """Ranked join-column candidates for a specific table pair, WITH the evidence.
 
     Powers the ERD designer's join editor: shows suggested (src_column ->
     dst_column) pairs ordered by confidence so the user can one-click a join
     instead of hand-picking columns. Matches the pair in EITHER direction
     (src/dst may be swapped in the predictions table).
+
+    Beyond confidence, returns the signals the predictor already computed so a
+    reviewer can VERIFY rather than trust one opaque number: referential
+    integrity (ri_score), actual join hit rate (join_rate/join_matched), parent
+    uniqueness (pk_uniqueness), column-embedding similarity, the AI's reasoning,
+    and whether the row is already a confirmed FK vs a join key. `stored_reversed`
+    flags that the pair is stored parent->child relative to the request, so the
+    UI can explain that pk_uniqueness/ri_score describe the stored orientation.
     """
+    _ensure_fk_relationship_columns()
     s = _safe_sql_str(src_table)
     d = _safe_sql_str(dst_table)
     try:
         rows = execute_sql(
-            f"SELECT src_table, src_column, dst_table, dst_column, final_confidence "
+            f"SELECT src_table, src_column, dst_table, dst_column, final_confidence, "
+            f"       ri_score, join_rate, join_matched, pk_uniqueness, col_similarity, "
+            f"       ai_reasoning, is_fk, relationship_kind "
             f"FROM {fq('fk_predictions')} "
             f"WHERE (src_table = {s} AND dst_table = {d}) "
             f"   OR (src_table = {d} AND dst_table = {s}) "
@@ -5322,18 +5426,35 @@ def get_fk_candidates(src_table: str, dst_table: str, limit: int = 8):
         logger.warning("fk-candidates query failed: %s", e)
         return {"candidates": []}
     # Normalize so src_column always belongs to the requested src_table.
-    out = []
-    for r in rows:
-        if (r.get("src_table") or "").lower() == src_table.lower():
-            sc, dc = r.get("src_column"), r.get("dst_column")
-        else:
-            sc, dc = r.get("dst_column"), r.get("src_column")
-        out.append({
-            "src_column": (sc or "").split(".")[-1],
-            "dst_column": (dc or "").split(".")[-1],
-            "confidence": round(float(r.get("final_confidence") or 0.0), 3),
-        })
+    out = [_normalize_fk_candidate(r, src_table) for r in rows]
     return {"candidates": out}
+
+
+def _normalize_fk_candidate(r: dict, src_table: str) -> dict:
+    """Shape one fk_predictions row into a join-editor candidate, oriented to the
+    requested src_table and carrying the evidence signals. `stored_reversed` marks
+    that the row is stored parent->child relative to the request (so the UI can
+    caveat that directional signals describe the stored orientation)."""
+    stored_reversed = (r.get("src_table") or "").lower() != src_table.lower()
+    if not stored_reversed:
+        sc, dc = r.get("src_column"), r.get("dst_column")
+    else:
+        sc, dc = r.get("dst_column"), r.get("src_column")
+    return {
+        "src_column": (sc or "").split(".")[-1],
+        "dst_column": (dc or "").split(".")[-1],
+        "confidence": _num_or_none(r.get("final_confidence")) or 0.0,
+        # Evidence (the signals the predictor already measured).
+        "ri_score": _num_or_none(r.get("ri_score")),
+        "join_rate": _num_or_none(r.get("join_rate")),
+        "join_matched": r.get("join_matched"),
+        "pk_uniqueness": _num_or_none(r.get("pk_uniqueness")),
+        "col_similarity": _num_or_none(r.get("col_similarity")),
+        "reasoning": r.get("ai_reasoning"),
+        "is_fk": bool(r.get("is_fk")) if r.get("is_fk") is not None else None,
+        "relationship_kind": r.get("relationship_kind"),
+        "stored_reversed": stored_reversed,
+    }
 
 
 @app.get("/api/analytics/fk-ddl")

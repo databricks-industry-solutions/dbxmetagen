@@ -379,3 +379,139 @@ class TestMaterialization:
         err = api_server._yaml_dry_run(d, "cat", "sch", include_materialization=True)
         assert err is None
         assert any("materialization" in c for c in calls)
+
+
+# ---------------------------------------------------------------------------
+# FK vs join-key split (Phase 1)
+# ---------------------------------------------------------------------------
+class TestFkVsJoinKey:
+    """The ERD 'confirm' path must default to join_key so a confirmed join never
+    silently becomes an ALTER TABLE ADD CONSTRAINT; only an explicit foreign_key
+    assertion is constraint-eligible. Constraint/tag DDL excludes join keys."""
+
+    def test_normalize_kind_defaults_to_join_key(self):
+        # No kind, empty, and unknown all fall back to join_key so a confirmed
+        # join is never silently promoted to a constraint-eligible FK.
+        assert api_server._normalize_fk_kind(None) == "join_key"
+        assert api_server._normalize_fk_kind("") == "join_key"
+        assert api_server._normalize_fk_kind("banana") == "join_key"
+
+    def test_normalize_kind_honors_explicit_foreign_key(self):
+        assert api_server._normalize_fk_kind("foreign_key") == "foreign_key"
+        assert api_server._normalize_fk_kind("  Foreign_Key  ") == "foreign_key"
+
+    def test_fk_add_body_defaults_kind_none(self):
+        # The request model must not default to a constraint-eligible kind.
+        body = api_server.FKAddBody(
+            src_column="a", dst_column="b", src_table="c.s.a", dst_table="c.s.b",
+        )
+        assert body.kind is None
+        assert api_server._normalize_fk_kind(body.kind) == "join_key"
+
+    def test_fetch_fk_rows_excludes_join_keys(self):
+        import inspect as _inspect
+        src = _inspect.getsource(api_server._fetch_fk_rows)
+        assert "_FK_NOT_JOIN_KEY_SQL" in src
+
+    def test_fetch_fk_rows_gates_is_fk(self):
+        # The constraint/tag DDL builder must require is_fk (matches the library's
+        # generate_ddl); AI-rejected pairs at final_confidence>=0.5 are not FKs.
+        import inspect as _inspect
+        src = _inspect.getsource(api_server._fetch_fk_rows)
+        assert "is_fk = 'true'" in src
+
+    def test_not_join_key_sql_is_null_safe(self):
+        # Legacy NULL and foreign_key survive; only 'join_key' excluded.
+        pred = api_server._FK_NOT_JOIN_KEY_SQL
+        assert "relationship_kind IS NULL" in pred
+        assert "join_key" in pred
+
+    def test_constants_shared_with_library(self):
+        # No drift: the app's kind constants ARE the shared fk_constants values.
+        from dbxmetagen import fk_constants
+        assert api_server._FK_JOIN_KEY == fk_constants.JOIN_KEY
+        assert api_server._FK_FOREIGN_KEY == fk_constants.FOREIGN_KEY
+        assert api_server._FK_NOT_JOIN_KEY_SQL == fk_constants.NOT_JOIN_KEY_SQL
+
+    def test_ensure_column_returns_bool(self, monkeypatch):
+        # #4: the guard must only latch when columns are confirmed present.
+        # Table-absent (DESCRIBE throws) => False => guard stays unlatched.
+        def boom(sql, timeout=15):
+            raise RuntimeError("TABLE_OR_VIEW_NOT_FOUND")
+        monkeypatch.setattr(api_server, "execute_sql", boom)
+        assert api_server._ensure_column("c.s.missing", "x", "STRING") is False
+
+        api_server._fk_relationship_cols_ensured = False
+        api_server._ensure_fk_relationship_columns()
+        assert api_server._fk_relationship_cols_ensured is False
+
+    def test_ensure_columns_latches_when_present(self, monkeypatch):
+        # Columns already present => _ensure_column True => guard latches True.
+        def desc(sql, timeout=15):
+            return [{"col_name": "relationship_kind"}, {"col_name": "is_composite"},
+                    {"col_name": "join_condition"}]
+        monkeypatch.setattr(api_server, "execute_sql", desc)
+        api_server._fk_relationship_cols_ensured = False
+        api_server._ensure_fk_relationship_columns()
+        assert api_server._fk_relationship_cols_ensured is True
+
+
+# ---------------------------------------------------------------------------
+# FK-candidates evidence payload (Phase 2)
+# ---------------------------------------------------------------------------
+class TestFkCandidatesEvidence:
+    """The join editor must receive the evidence signals (ri_score / join_rate /
+    pk_uniqueness / col_similarity / reasoning), not just a bare confidence."""
+
+    def test_num_or_none(self):
+        assert api_server._num_or_none(None) is None
+        assert api_server._num_or_none("") is None
+        assert api_server._num_or_none("nan") is None
+        assert api_server._num_or_none(0.12345) == 0.123
+        assert api_server._num_or_none("0.5") == 0.5
+
+    def test_candidates_query_selects_evidence(self):
+        # get_fk_candidates is a decorated route (a MagicMock under the fastapi
+        # mock, not inspectable), so assert the SELECT column list via the module
+        # source file text instead.
+        import os as _os
+        path = _os.path.join(APP_DIR, "api_server.py")
+        with open(path, encoding="utf-8") as fh:
+            text = fh.read()
+        # The fk-candidates SELECT must carry the evidence columns.
+        assert "ri_score, join_rate, join_matched, pk_uniqueness, col_similarity" in text
+
+    def test_normalize_candidate_passes_evidence(self):
+        # Row stored in the requested direction: evidence passes through, rounded.
+        row = {
+            "src_table": "c.s.orders", "src_column": "c.s.orders.customer_id",
+            "dst_table": "c.s.customers", "dst_column": "c.s.customers.id",
+            "final_confidence": 0.9123, "ri_score": 0.987654, "join_rate": 0.5,
+            "join_matched": 42, "pk_uniqueness": 1.0, "col_similarity": 0.8,
+            "ai_reasoning": "name+RI match", "is_fk": True, "relationship_kind": "foreign_key",
+        }
+        c = api_server._normalize_fk_candidate(row, "c.s.orders")
+        assert c["src_column"] == "customer_id" and c["dst_column"] == "id"
+        assert c["ri_score"] == 0.988         # rounded to 3dp
+        assert c["join_matched"] == 42
+        assert c["pk_uniqueness"] == 1.0
+        assert c["stored_reversed"] is False
+        assert c["reasoning"] == "name+RI match"
+        assert c["is_fk"] is True
+
+    def test_normalize_candidate_flags_stored_reversed(self):
+        # Row stored parent->child relative to the request => columns swap +
+        # stored_reversed flag so the UI can caveat directional signals.
+        row = {
+            "src_table": "c.s.customers", "src_column": "c.s.customers.id",
+            "dst_table": "c.s.orders", "dst_column": "c.s.orders.customer_id",
+            "final_confidence": 0.8, "ri_score": None, "join_rate": None,
+            "join_matched": None, "pk_uniqueness": None, "col_similarity": None,
+            "ai_reasoning": None, "is_fk": None, "relationship_kind": None,
+        }
+        c = api_server._normalize_fk_candidate(row, "c.s.orders")
+        assert c["src_column"] == "customer_id"   # normalized back to requested src
+        assert c["dst_column"] == "id"
+        assert c["stored_reversed"] is True
+        assert c["ri_score"] is None               # absent signal stays None, not 0
+        assert c["is_fk"] is None                  # unknown stays None, not False

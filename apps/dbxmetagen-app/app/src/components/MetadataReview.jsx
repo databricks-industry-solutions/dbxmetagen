@@ -26,6 +26,31 @@ function DataTable({ data, maxRows = 100 }) {
   )
 }
 
+// Compact evidence cell for an FK prediction row: the data probes behind the
+// score (referential integrity · actual join hit rate · parent-key uniqueness),
+// each colored by strength so a reviewer can verify rather than trust the number.
+// Renders "—" for a signal that was never computed (e.g. sampling disabled).
+function fkEvidence(fk) {
+  const pct = (v) => (v == null || v === '' || Number.isNaN(Number(v)))
+    ? null : `${Math.round(Number(v) * 100)}%`
+  const cls = (v) => v == null ? 'text-slate-300 dark:text-slate-600'
+    : Number(v) >= 0.95 ? 'text-emerald-600 dark:text-emerald-400'
+    : Number(v) >= 0.7 ? 'text-amber-600 dark:text-amber-400'
+    : 'text-red-600 dark:text-red-400'
+  const parts = [
+    { k: 'ri_score', label: 'RI', title: 'Referential integrity: fraction of child rows whose key exists in the parent' },
+    { k: 'join_rate', label: 'join', title: 'Actual join hit rate on sampled rows' },
+    { k: 'pk_uniqueness', label: 'PK', title: 'Parent-side key uniqueness (a true FK needs a near-unique parent key)' },
+  ]
+  return (
+    <span className="inline-flex gap-1.5">
+      {parts.map(p => (
+        <span key={p.k} className={cls(fk[p.k])} title={p.title}>{pct(fk[p.k]) ?? '—'}</span>
+      ))}
+    </span>
+  )
+}
+
 const Tip = ({ text }) => (
   <span className="relative group ml-1.5 inline-flex align-middle">
     <button
@@ -1377,6 +1402,7 @@ function ReviewEditor() {
                                 ) : null}</td>
                                 <td className="px-2 py-1 text-slate-500 dark:text-slate-400">{Number(fk.ai_confidence ?? 0).toFixed(2)}</td>
                                 <td className="px-2 py-1 text-slate-500 dark:text-slate-400">{Number(fk.col_similarity ?? 0).toFixed(2)}</td>
+                                <td className="px-2 py-1 font-mono text-[10px] whitespace-nowrap">{fkEvidence(fk)}</td>
                                 <td className="px-2 py-1 text-slate-500 dark:text-slate-400 max-w-xs truncate cursor-pointer" title="Click to expand"
                                   onClick={() => setExpandedFKs(p => ({ ...p, [fkKey]: !p[fkKey] }))}>
                                   {fk.ai_reasoning || '--'}
@@ -1406,7 +1432,7 @@ function ReviewEditor() {
                                 </td>
                               </tr>
                               {isExpReasoning && fk.ai_reasoning && (
-                                <tr><td colSpan={9} className="px-3 py-2 bg-slate-50 dark:bg-dbx-navy-500/30 text-xs text-slate-600 dark:text-slate-300 italic">{fk.ai_reasoning}</td></tr>
+                                <tr><td colSpan={10} className="px-3 py-2 bg-slate-50 dark:bg-dbx-navy-500/30 text-xs text-slate-600 dark:text-slate-300 italic">{fk.ai_reasoning}</td></tr>
                               )}
                             </React.Fragment>
                           )
@@ -1426,6 +1452,7 @@ function ReviewEditor() {
                                     <th className="text-left px-1 py-1 font-semibold text-slate-500 dark:text-slate-400">Status</th>
                                     <th className="text-left px-2 py-1 font-semibold text-slate-500 dark:text-slate-400" title="AI model confidence">AI</th>
                                     <th className="text-left px-2 py-1 font-semibold text-slate-500 dark:text-slate-400" title="Column embedding similarity">Sim</th>
+                                    <th className="text-left px-2 py-1 font-semibold text-slate-500 dark:text-slate-400" title="Referential integrity · actual join hit rate · parent-key uniqueness (the data probes behind the score)">RI·join·PK</th>
                                     <th className="text-left px-2 py-1 font-semibold text-slate-500 dark:text-slate-400">Reasoning</th>
                                     <th className="w-8 px-1 py-1"></th>
                                   </tr></thead>
@@ -1450,6 +1477,7 @@ function ReviewEditor() {
                                     <th className="text-left px-1 py-1 font-semibold text-slate-500 dark:text-slate-400">Status</th>
                                     <th className="text-left px-2 py-1 font-semibold text-slate-500 dark:text-slate-400" title="AI model confidence">AI</th>
                                     <th className="text-left px-2 py-1 font-semibold text-slate-500 dark:text-slate-400" title="Column embedding similarity">Sim</th>
+                                    <th className="text-left px-2 py-1 font-semibold text-slate-500 dark:text-slate-400" title="Referential integrity · actual join hit rate · parent-key uniqueness (the data probes behind the score)">RI·join·PK</th>
                                     <th className="text-left px-2 py-1 font-semibold text-slate-500 dark:text-slate-400">Reasoning</th>
                                     <th className="w-8 px-1 py-1"></th>
                                   </tr></thead>

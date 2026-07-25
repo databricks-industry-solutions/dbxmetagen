@@ -38,6 +38,12 @@ const SCHEMA_NOTES = {
   SIMPLE: 'Simple: few or no foreign keys found — expect single-table views, no fabricated joins.',
 }
 
+// A true foreign-key constraint needs a (near-)unique parent key and (near-)full
+// referential integrity. Below these floors we only let the user save a join key,
+// not assert an FK — the constraint would likely fail at apply otherwise.
+const FK_PK_UNIQUENESS_FLOOR = 0.99
+const FK_RI_SCORE_FLOOR = 0.99
+
 function _short(t) { return (t || '').split('.').pop() }
 
 // Parse "src.col = alias.col" -> {src_column, dst_column}
@@ -216,6 +222,34 @@ export default function ErdDesigner({ tables, projectId, profileId, businessCont
     }))
   }, [setEdges])
 
+  // Mark a join as a plain join key (default) vs a true foreign key. Only
+  // 'foreign_key' joins become an ALTER TABLE ADD CONSTRAINT downstream; both
+  // kinds feed metric-view / Genie joins identically. Setting the kind on a
+  // still-predicted edge also promotes it to 'confirmed' (and restyles it) so
+  // save() persists it -- otherwise the assertion would be silently dropped by
+  // the confirmedJoins filter.
+  const setJoinKind = useCallback((edgeId, kind) => {
+    setEdges(eds => eds.map(e => e.id === edgeId
+      ? { ...e, data: { ...e.data, kind, source: 'confirmed' }, style: _edgeStyle('confirmed') }
+      : e))
+  }, [setEdges])
+
+  // Flip a join's direction: swap which table is the FK (child) side vs the
+  // referenced (parent) side. The predictor infers direction, but a reviewer may
+  // know better; this swaps endpoints + columns and rewrites the `on` clause.
+  const flipJoinDirection = useCallback((edgeId) => {
+    setEdges(eds => eds.map(e => {
+      if (e.id !== edgeId) return e
+      const sc = e.data?.dst_column || '', dc = e.data?.src_column || ''
+      const on = (sc && dc) ? `source.${sc} = ${_short(e.source)}.${dc}` : ''
+      return {
+        ...e,
+        source: e.target, target: e.source,
+        data: { ...e.data, src_column: sc, dst_column: dc, on },
+      }
+    }))
+  }, [setEdges])
+
   // Reflect selection ring into node data.
   useEffect(() => {
     setNodes(nds => nds.map(n => n.data._selected === (n.id === selectedNodeId)
@@ -240,15 +274,30 @@ export default function ErdDesigner({ tables, projectId, profileId, businessCont
       if (!r.ok) throw new Error(`save ERD failed (HTTP ${r.status})`)
 
       const confirmedJoins = edges.filter(e => e.data?.source === 'confirmed' && e.data?.src_column && e.data?.dst_column)
+      let joinFailures = 0
       for (const e of confirmedJoins) {
-        await fetch('/api/analytics/fk-add', {
-          method: 'POST', headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({
-            src_table: e.source, src_column: e.data.src_column,
-            dst_table: e.target, dst_column: e.data.dst_column,
-            reasoning: 'Confirmed in ERD designer',
-          }),
-        }).catch(() => {})
+        // Default to a join key; only send foreign_key when the user explicitly
+        // asserted a true FK. join_key confirmations never become DDL constraints.
+        const kind = e.data?.kind === 'foreign_key' ? 'foreign_key' : 'join_key'
+        try {
+          const jr = await fetch('/api/analytics/fk-add', {
+            method: 'POST', headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({
+              src_table: e.source, src_column: e.data.src_column,
+              dst_table: e.target, dst_column: e.data.dst_column,
+              kind,
+              reasoning: kind === 'foreign_key'
+                ? 'Confirmed as foreign key in ERD designer'
+                : 'Confirmed as join key in ERD designer',
+            }),
+          })
+          if (!jr.ok) joinFailures++
+        } catch { joinFailures++ }
+      }
+      // The ERD itself saved (PATCH above); surface a partial-save warning rather
+      // than silently reporting full success when some relationships did not persist.
+      if (joinFailures > 0) {
+        setError(`Model saved, but ${joinFailures} of ${confirmedJoins.length} join${confirmedJoins.length === 1 ? '' : 's'} could not be persisted — try Save again.`)
       }
       onSaved?.()
     } catch (e) {
@@ -403,6 +452,8 @@ export default function ErdDesigner({ tables, projectId, profileId, businessCont
           dstCols={colsByTable[selectedEdge.target] || null}
           candidates={fkCands[`${selectedEdge.source}||${selectedEdge.target}`] || null}
           onPick={(sc, dc) => setJoinColumns(selectedEdge.id, sc, dc)}
+          onKind={(k) => setJoinKind(selectedEdge.id, k)}
+          onFlip={() => flipJoinDirection(selectedEdge.id)}
           onRemove={() => removeEdge(selectedEdge.id)}
           onClose={() => setSelectedEdgeId(null)}
         />
@@ -424,16 +475,43 @@ export default function ErdDesigner({ tables, projectId, profileId, businessCont
   )
 }
 
+// A single evidence chip: label + value, dimmed when the signal is absent.
+function _pct(v) { return v == null ? '—' : `${Math.round(v * 100)}%` }
+function EvidenceChip({ label, value, title, tone }) {
+  const toneCls = tone === 'good' ? 'text-emerald-600 dark:text-emerald-400'
+    : tone === 'warn' ? 'text-amber-600 dark:text-amber-400'
+    : tone === 'bad' ? 'text-red-600 dark:text-red-400'
+    : 'text-slate-500 dark:text-slate-400'
+  return (
+    <span className="inline-flex items-baseline gap-1 px-1.5 py-0.5 rounded bg-slate-100 dark:bg-dbx-navy-500" title={title}>
+      <span className="text-[10px] uppercase tracking-wide text-slate-400">{label}</span>
+      <span className={`font-mono ${toneCls}`}>{value}</span>
+    </span>
+  )
+}
+
 // --- Join column editor -------------------------------------------------------
-function JoinEditor({ edge, srcCols, dstCols, candidates, onPick, onRemove, onClose }) {
+function JoinEditor({ edge, srcCols, dstCols, candidates, onPick, onKind, onFlip, onRemove, onClose }) {
   const src = edge.source, dst = edge.target
   const cur = { src_column: edge.data?.src_column || '', dst_column: edge.data?.dst_column || '' }
   const colName = c => (typeof c === 'string' ? c : c.column_name)
+  const isFk = edge.data?.kind === 'foreign_key'
+  const bothCols = !!(cur.src_column && cur.dst_column)
+
+  // Evidence for the currently-chosen columns (matched against the candidate set
+  // the backend returned for this pair). Lets the reviewer see WHY, and gates the
+  // "true foreign key" assertion on real referential-integrity signals.
+  const chosen = (candidates || []).find(c => c.src_column === cur.src_column && c.dst_column === cur.dst_column)
+  const ri = chosen?.ri_score, pk = chosen?.pk_uniqueness, jr = chosen?.join_rate
+  const fkEligible = pk != null && ri != null && pk >= FK_PK_UNIQUENESS_FLOOR && ri >= FK_RI_SCORE_FLOOR
+  const tone = v => v == null ? undefined : v >= 0.95 ? 'good' : v >= 0.7 ? 'warn' : 'bad'
 
   return (
     <div className="px-3 py-2 rounded-md border border-slate-200 dark:border-slate-700 bg-white dark:bg-dbx-navy-600 text-xs space-y-2">
       <div className="flex items-center gap-2">
         <span className="font-semibold text-slate-700 dark:text-slate-200">Join: {_short(src)} → {_short(dst)}</span>
+        <button onClick={onFlip} title="Swap which table is the foreign-key (child) side vs the referenced (parent) side"
+          className="text-slate-400 hover:text-dbx-lava" aria-label="Flip join direction">⇄ flip</button>
         <div className="flex-1" />
         <button onClick={onRemove} className="text-red-600 dark:text-red-400 hover:underline">Remove join</button>
         <button onClick={onClose} className="text-slate-400 hover:text-slate-600">✕</button>
@@ -447,10 +525,15 @@ function JoinEditor({ edge, srcCols, dstCols, candidates, onPick, onRemove, onCl
           <span className="text-[11px] text-slate-400">Suggested:</span>
           {candidates.map((c, i) => {
             const active = c.src_column === cur.src_column && c.dst_column === cur.dst_column
+            const evid = [
+              c.ri_score != null && `RI ${_pct(c.ri_score)}`,
+              c.join_rate != null && `join ${_pct(c.join_rate)}`,
+              c.pk_uniqueness != null && `PK-uniq ${_pct(c.pk_uniqueness)}`,
+            ].filter(Boolean).join(' · ')
             return (
               <button key={i} onClick={() => onPick(c.src_column, c.dst_column)}
                 className={`px-2 py-0.5 rounded border font-mono ${active ? 'bg-dbx-lava text-white border-transparent' : 'border-slate-300 dark:border-slate-600 hover:bg-slate-100 dark:hover:bg-dbx-navy-500'}`}
-                title={`confidence ${(c.confidence * 100).toFixed(0)}%`}>
+                title={[`confidence ${(c.confidence * 100).toFixed(0)}%`, evid, c.reasoning].filter(Boolean).join('\n')}>
                 {c.src_column} = {c.dst_column}
                 <span className="ml-1 opacity-70">{(c.confidence * 100).toFixed(0)}%</span>
               </button>
@@ -476,8 +559,55 @@ function JoinEditor({ edge, srcCols, dstCols, candidates, onPick, onRemove, onCl
           {(dstCols || []).map(c => <option key={colName(c)} value={colName(c)}>{colName(c)}</option>)}
         </select>
       </div>
-      {(!cur.src_column || !cur.dst_column) && (
+      {!bothCols && (
         <p className="text-[11px] text-amber-600 dark:text-amber-400">Pick both columns to confirm this join (unconfirmed joins are not saved).</p>
+      )}
+
+      {/* Evidence for the chosen columns: the signals the predictor already
+          measured, so the reviewer verifies rather than trusts one number. */}
+      {bothCols && chosen && (
+        <div className="flex flex-wrap gap-1.5 items-center">
+          <span className="text-[10px] uppercase tracking-wide text-slate-400">Evidence:</span>
+          <EvidenceChip label="RI" value={_pct(ri)} tone={tone(ri)}
+            title="Referential integrity: fraction of child rows whose key exists in the parent (join-and-count probe). Low = orphan rows." />
+          <EvidenceChip label="join" value={_pct(jr)} tone={tone(jr)}
+            title={`Actual join hit rate on sampled rows${chosen.join_matched != null ? ` (${chosen.join_matched} matched)` : ''}.`} />
+          <EvidenceChip label="PK-uniq" value={_pct(pk)} tone={tone(pk)}
+            title="Parent-side key uniqueness. A true FK needs a (near-)unique parent key." />
+          {chosen.col_similarity != null && (
+            <EvidenceChip label="sim" value={_pct(chosen.col_similarity)}
+              title="Column-name/embedding similarity between the two columns." />
+          )}
+          {chosen.stored_reversed && (
+            <span className="text-[10px] text-slate-400" title="This pair is stored parent→child in the predictions table; RI / PK-uniqueness describe that stored orientation.">(stored reversed)</span>
+          )}
+        </div>
+      )}
+      {bothCols && chosen?.reasoning && (
+        <p className="text-[11px] text-slate-500 dark:text-slate-400 italic">{chosen.reasoning}</p>
+      )}
+
+      {/* Relationship kind. Confirming a join saves it as a join key (used for
+          metric-view / Genie joins). Only allow the "true foreign key" assertion
+          when the evidence supports it (unique parent key + full RI) — an FK
+          constraint on a non-unique / orphaned parent would fail at apply. */}
+      {bothCols && (
+        <label className={`flex items-start gap-2 text-[11px] ${fkEligible ? 'text-slate-600 dark:text-slate-300 cursor-pointer' : 'text-slate-400 cursor-not-allowed'}`}>
+          <input type="checkbox" className="mt-0.5" checked={isFk} disabled={!fkEligible}
+            onChange={e => onKind?.(e.target.checked ? 'foreign_key' : 'join_key')} />
+          <span>
+            This join is a <strong>true foreign key</strong> (referential constraint)
+            <span className="block text-slate-400">
+              {!fkEligible
+                ? (chosen
+                    ? `Evidence too weak to assert an FK (needs PK-uniqueness ≥ ${Math.round(FK_PK_UNIQUENESS_FLOOR * 100)}% and RI ≥ ${Math.round(FK_RI_SCORE_FLOOR * 100)}%). Saved as a join key.`
+                    : 'Run FK prediction to get referential-integrity evidence before asserting an FK. Saved as a join key.')
+                : isFk
+                  ? 'Eligible for an ALTER TABLE ADD CONSTRAINT. Requires a unique parent key + no orphan rows.'
+                  : 'Saved as a join key: used for metric-view & Genie joins, but never emitted as a DDL constraint.'}
+            </span>
+          </span>
+        </label>
       )}
     </div>
   )

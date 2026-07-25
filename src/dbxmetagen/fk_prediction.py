@@ -46,6 +46,19 @@ _FK_EXCLUDED_DTYPES = (
 _FEDERATION_SAMPLE_ROWS = 1000
 _FEDERATION_MAX_WORKERS = 4
 
+# relationship_kind discriminates a true referential FK ('foreign_key' or legacy
+# NULL) from a broad join key ('join_key'). Constants live in the dependency-free
+# fk_constants module so the Spark-free app imports the identical literals (no drift).
+# Re-exported here for existing importers of dbxmetagen.fk_prediction.
+from dbxmetagen.fk_constants import JOIN_KEY, FOREIGN_KEY, NOT_JOIN_KEY_SQL  # noqa: E402,F401
+
+
+def _not_join_key():
+    """Column predicate: row is a true FK (kind is NULL/legacy or 'foreign_key'),
+    excluding rows explicitly tagged as a non-constraint 'join_key'."""
+    return F.col("relationship_kind").isNull() | (F.col("relationship_kind") != F.lit(JOIN_KEY))
+
+
 def _dtype_exclusion_sql() -> str:
     """SQL IN-list for data types that can never be foreign keys."""
     return ", ".join(f"'{d}'" for d in _FK_EXCLUDED_DTYPES)
@@ -1944,7 +1957,8 @@ class FKPredictor:
                     LEAST(1.0, GREATEST(0.0, ai_confidence)) as ai_confidence,
                     ai_reasoning, join_rate, join_matched, pk_uniqueness, ri_score,
                     LEAST(1.0, GREATEST(0.0, final_confidence)) as final_confidence,
-                    created_at, updated_at, is_fk, review_updated_at
+                    created_at, updated_at, is_fk, review_updated_at,
+                    relationship_kind, is_composite, join_condition
                 FROM (
                     SELECT *, ROW_NUMBER() OVER (
                         PARTITION BY src_column, dst_column
@@ -2083,6 +2097,7 @@ class FKPredictor:
         high_conf = self.spark.table(preds_table).filter(
             (F.col("ai_confidence") >= self.config.confidence_threshold)
             & (F.col("is_fk") == True)
+            & _not_join_key()
         )
         w = Window.partitionBy("src_column", "dst_column").orderBy(F.col("ai_confidence").desc())
         high_conf = high_conf.withColumn("_rn", F.row_number().over(w)) \
@@ -2118,6 +2133,7 @@ class FKPredictor:
         high_conf = self.spark.table(preds_table).filter(
             (F.col("ai_confidence") >= self.config.confidence_threshold)
             & (F.col("is_fk") == True)
+            & _not_join_key()
         )
         ddl = high_conf.withColumn(
             "ddl_statement",
@@ -2184,10 +2200,16 @@ class FKPredictor:
                 join_rate DOUBLE, join_matched BIGINT,
                 pk_uniqueness DOUBLE, ri_score DOUBLE,
                 final_confidence DOUBLE, created_at TIMESTAMP,
-                updated_at TIMESTAMP, is_fk BOOLEAN
+                updated_at TIMESTAMP, is_fk BOOLEAN, review_updated_at TIMESTAMP,
+                relationship_kind STRING, is_composite BOOLEAN, join_condition STRING
             ) COMMENT 'Predicted foreign key relationships'
         """)
-        for col_def in ["updated_at TIMESTAMP", "is_fk BOOLEAN", "review_updated_at TIMESTAMP"]:
+        # NULL relationship_kind is treated as a true FK for backward compat: existing
+        # rows keep emitting ADD CONSTRAINT exactly as before. Only rows explicitly
+        # tagged 'join_key' (e.g. an ERD-confirmed join that is not a referential FK)
+        # are excluded from DDL. is_composite/join_condition are populated in Phase 3.
+        for col_def in ["updated_at TIMESTAMP", "is_fk BOOLEAN", "review_updated_at TIMESTAMP",
+                        "relationship_kind STRING", "is_composite BOOLEAN", "join_condition STRING"]:
             try:
                 self.spark.sql(f"ALTER TABLE {preds} ADD COLUMNS ({col_def})")
                 logger.info("Added column %s to %s", col_def, preds)

@@ -926,6 +926,78 @@ class TestTableBackedOutputs:
         assert "source_system" in src
 
 
+class TestForeignKeyVsJoinKey:
+    """Phase 1: relationship_kind splits a true referential FK ('foreign_key' /
+    legacy NULL) from a broad join key ('join_key'). Only true FKs may become
+    ADD CONSTRAINT / predicted_fk edges; join keys still feed metric-view joins.
+    """
+
+    def test_kind_constants(self):
+        from dbxmetagen.fk_prediction import JOIN_KEY, FOREIGN_KEY
+        assert JOIN_KEY == "join_key"
+        assert FOREIGN_KEY == "foreign_key"
+
+    def test_not_join_key_sql_predicate_is_null_safe(self):
+        # Legacy NULL rows and explicit foreign_key rows must pass; only
+        # 'join_key' is excluded. The SQL form is used by app-side consumers.
+        from dbxmetagen.fk_prediction import NOT_JOIN_KEY_SQL
+        assert "relationship_kind IS NULL" in NOT_JOIN_KEY_SQL
+        assert "join_key" in NOT_JOIN_KEY_SQL
+        # <> / != excludes only the join_key literal, so NULL/foreign_key survive.
+        assert "<>" in NOT_JOIN_KEY_SQL or "!=" in NOT_JOIN_KEY_SQL
+
+    def test_generate_ddl_excludes_join_key(self):
+        src = inspect.getsource(FKPredictor.generate_ddl)
+        assert "_not_join_key" in src
+
+    def test_write_graph_edges_excludes_join_key(self):
+        src = inspect.getsource(FKPredictor.write_graph_edges)
+        assert "_not_join_key" in src
+
+    def test_ensure_output_tables_adds_relationship_columns(self):
+        src = inspect.getsource(FKPredictor._ensure_output_tables)
+        assert "relationship_kind" in src
+        assert "is_composite" in src
+        assert "join_condition" in src
+
+    def test_write_predictions_overwrite_carries_new_columns(self):
+        # The dedup INSERT OVERWRITE lists columns explicitly; the new columns
+        # must be projected or a steward's relationship_kind is dropped on rewrite.
+        src = inspect.getsource(FKPredictor.write_predictions)
+        assert "relationship_kind" in src
+        assert "is_composite" in src
+        assert "join_condition" in src
+
+    def test_not_join_key_helper_exists(self):
+        from dbxmetagen.fk_prediction import _not_join_key
+        # Callable with no args; returns a (mocked) column predicate.
+        assert callable(_not_join_key)
+        _not_join_key()
+
+    def test_create_and_overwrite_column_order_agree(self):
+        # Regression: the dedup INSERT OVERWRITE is positional (no column list),
+        # so the CREATE TABLE body column order must match the SELECT projection
+        # order for a fresh table, or the rewrite throws (silently swallowed) and
+        # dedup never runs. Compare the tail of both column sequences.
+        src = inspect.getsource(FKPredictor._ensure_output_tables)
+        # CREATE body tail (the columns after final_confidence).
+        assert "updated_at TIMESTAMP, is_fk BOOLEAN, review_updated_at TIMESTAMP," in src
+        assert "relationship_kind STRING, is_composite BOOLEAN, join_condition STRING" in src
+        wp = inspect.getsource(FKPredictor.write_predictions)
+        # SELECT projection tail must be in the SAME order.
+        assert "created_at, updated_at, is_fk, review_updated_at" in wp
+        assert "relationship_kind, is_composite, join_condition" in wp
+
+    def test_kind_constants_come_from_shared_module(self):
+        # Single source of truth: fk_prediction re-exports from fk_constants so the
+        # Spark-free app can import the identical literals without pyspark.
+        from dbxmetagen import fk_constants
+        from dbxmetagen.fk_prediction import JOIN_KEY, FOREIGN_KEY, NOT_JOIN_KEY_SQL
+        assert JOIN_KEY is fk_constants.JOIN_KEY
+        assert FOREIGN_KEY is fk_constants.FOREIGN_KEY
+        assert NOT_JOIN_KEY_SQL is fk_constants.NOT_JOIN_KEY_SQL
+
+
 # --- TestAIJudgeMockIntegration ---
 
 
