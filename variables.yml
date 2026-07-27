@@ -316,6 +316,9 @@ variables:
   fk_system_column_exclude_patterns:
     description: "Comma-separated regex patterns identifying system/ETL columns (e.g. _created_at, batch_id) that should not receive FK boosting signals. Empty string uses sensible defaults."
     default: ""
+  fk_generic_column_names:
+    description: "Comma-separated generic column names (e.g. id, code, status, type) that are low-information for FK inference. A candidate pair whose BOTH sides are generic is dropped unless corroborated by a matching table/entity or a high-trust source. Prevents 'id'-column over-matching, especially in federation mode where real-data validation is limited. Empty string uses sensible defaults."
+    default: ""
   use_customer_context:
     description: "When true, enrich prompts with customer-provided context from the customer_context Delta table. Context is scoped hierarchically (catalog > schema > pattern > table). Requires the customer_context table to exist (seed from YAML or create via the app)."
     default: false

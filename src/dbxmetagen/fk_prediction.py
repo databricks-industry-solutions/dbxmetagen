@@ -43,6 +43,19 @@ _FK_EXCLUDED_DTYPES = (
     "timestamp_ntz", "binary", "variant", "struct", "array", "map",
 )
 
+# Whole-name (lowercased) generic/low-information column names. Unlike the regex
+# system_column_patterns, these are exact column-name matches. A column named
+# exactly one of these carries no entity semantics on its own, so a candidate FK
+# pair whose BOTH sides are generic (e.g. id<->id, status<->type) is dropped
+# unless something else vouches for it (matching table/entity/stem, or a
+# high-trust source). A bare `id` is still a legitimate PK target -- the guard
+# only fires when BOTH sides are generic, so customer_id<->id is unaffected.
+_DEFAULT_GENERIC_COL_NAMES: Tuple[str, ...] = (
+    "id", "pk", "key", "code", "name", "value", "type", "status",
+    "date", "datetime", "timestamp", "ts", "num", "number", "seq",
+    "sequence", "idx", "index", "val", "flag", "category",
+)
+
 _FEDERATION_SAMPLE_ROWS = 1000
 _FEDERATION_MAX_WORKERS = 4
 
@@ -62,6 +75,11 @@ def _not_join_key():
 def _dtype_exclusion_sql() -> str:
     """SQL IN-list for data types that can never be foreign keys."""
     return ", ".join(f"'{d}'" for d in _FK_EXCLUDED_DTYPES)
+
+
+def _generic_names_sql(names: Tuple[str, ...]) -> str:
+    """SQL IN-list of generic column names (lowercased, single-quote-escaped)."""
+    return ", ".join("'" + n.lower().replace("'", "''") + "'" for n in names) or "''"
 
 
 def _dtype_excluded(col_expr: str) -> str:
@@ -140,6 +158,7 @@ class FKPredictionConfig:
     cardinality_sample_rows: int = 100000
     max_ai_candidates: int = 200
     system_column_patterns: Tuple[str, ...] = field(default_factory=lambda: _DEFAULT_SYSTEM_COL_PATTERNS)
+    generic_column_names: Tuple[str, ...] = field(default_factory=lambda: _DEFAULT_GENERIC_COL_NAMES)
     table_names: list = field(default_factory=list)
     federation_mode: bool = False
 
@@ -320,6 +339,7 @@ class FKPredictor:
         col_thresh = self.config.column_similarity_threshold
         dup_t = self.config.duplicate_table_similarity_threshold
         xb_min = self.config.cross_block_column_similarity_min
+        generic_list = _generic_names_sql(self.config.generic_column_names)
 
         cross_block_sql = ""
         if self.config.cross_block_strict:
@@ -402,6 +422,22 @@ class FKPredictor:
               OR RLIKE(j.stem_b, CONCAT('(^|_)', j.stem_a, '(_|$)'))
             )
           )
+          -- Drop pairs whose only commonality is a GENERIC column name
+          -- (e.g. id x id, status x type). When BOTH sides are generic
+          -- whole-names, stem/name relations are meaningless (they self-match:
+          -- 'id' relates to 'id'), so the ONLY corroboration that keeps the
+          -- pair is a TABLE-name token-match with the other side's column
+          -- (role/entity linkage, e.g. table 'customer' <-> column 'customer').
+          -- Prefixed keys like prov_id x prov_id are NOT both-generic (prov_id
+          -- is not a generic whole-name), so they are never touched here.
+          AND NOT (
+            j.short_a IN ({generic_list})
+            AND j.short_b IN ({generic_list})
+            AND NOT (
+              RLIKE(LOWER(ELEMENT_AT(SPLIT(j.table_a, '\\\\.'), -1)), CONCAT('(^|_)', j.short_b, '(_|$)'))
+              OR RLIKE(LOWER(ELEMENT_AT(SPLIT(j.table_b, '\\\\.'), -1)), CONCAT('(^|_)', j.short_a, '(_|$)'))
+            )
+          )
         """
         df = self.spark.sql(sql)
         df = (
@@ -426,6 +462,7 @@ class FKPredictor:
         nodes = self.config.fq(self.config.nodes_table)
         k = self.config.max_candidates_per_table_pair
         _sing_tbl = _singularize_sql("pk.tbl_short")
+        generic_list = _generic_names_sql(self.config.generic_column_names)
         sql = f"""
         WITH cols AS (
             SELECT id, parent_id, data_type,
@@ -459,7 +496,10 @@ class FKPredictor:
                   = pk.tbl_short
               )
         ),
-        -- Strategy 2: same-name _id/_key/_code columns across different tables
+        -- Strategy 2: same-name _id/_key/_code columns across different tables.
+        -- Exclude generic whole-names (e.g. type_code x type_code) -- a same-name
+        -- match on a generic column is a join key at best, not evidence of an FK,
+        -- and fans out across every table that happens to share the name.
         same_name_matches AS (
             SELECT
                 c1.id AS col_a, c2.id AS col_b,
@@ -471,6 +511,7 @@ class FKPredictor:
               ON c1.col_short = c2.col_short
               AND c1.parent_id != c2.parent_id
               AND c1.id < c2.id
+              AND c1.col_short NOT IN ({generic_list})
         ),
         all_matches AS (
             SELECT * FROM classic_matches
@@ -1608,6 +1649,18 @@ class FKPredictor:
         ).otherwise(0.0) if sys_pattern else F.lit(0.0)
         not_system = F.lit(1.0) - is_system_col
 
+        # Both-generic gate: when BOTH column short-names are generic (id x id,
+        # status x type), the name-only boosts below (id_pattern, sim_floor,
+        # pk_match) shouldn't push the pair over rule_score_min_for_ai on their
+        # own -- there's no entity evidence. Single-generic pairs (customer_id x
+        # id) have both_generic=0 and are unaffected.
+        generic_names = [n.lower() for n in self.config.generic_column_names]
+        both_generic = (
+            F.when(col_a_short.isin(*generic_names) & col_b_short.isin(*generic_names), 1.0).otherwise(0.0)
+            if generic_names else F.lit(0.0)
+        )
+        not_both_generic = F.lit(1.0) - both_generic
+
         schema_a = F.element_at(F.split(F.col("table_a"), "\\."), 2)
         schema_b = F.element_at(F.split(F.col("table_b"), "\\."), 2)
         schema_signal = F.when(
@@ -1632,24 +1685,30 @@ class FKPredictor:
             1.0,
         ).otherwise(0.0)
 
-        return candidates.withColumn(
-            "rule_score",
-            F.round(
-                F.col("col_similarity") * 0.05
-                + dtype_score * 0.15
-                + id_pattern * 0.1
-                + table_name_match * 0.15
-                + fk_prefix * 0.05
-                + overlap * 0.1
-                + entity_match * bonus
-                + lineage_sig * 0.1
-                + source_bonus * 0.10
-                + schema_signal * not_system
-                + same_domain * 0.05 * not_system
-                + sim_floor * not_system
-                + pk_match * 0.10 * not_system,
-                4,
-            ),
+        return (
+            candidates.withColumn(
+                "rule_score",
+                F.round(
+                    F.col("col_similarity") * 0.05
+                    + dtype_score * 0.15
+                    + id_pattern * 0.1 * not_both_generic
+                    + table_name_match * 0.15
+                    + fk_prefix * 0.05
+                    + overlap * 0.1
+                    + entity_match * bonus
+                    + lineage_sig * 0.1
+                    + source_bonus * 0.10
+                    + schema_signal * not_system
+                    + same_domain * 0.05 * not_system
+                    + sim_floor * not_system * not_both_generic
+                    + pk_match * 0.10 * not_system * not_both_generic,
+                    4,
+                ),
+            )
+            # Persist the signals the corroboration drop in run() needs, so it
+            # doesn't recompute the table-name / generic logic.
+            .withColumn("_table_name_match", table_name_match)
+            .withColumn("_both_generic", both_generic)
         )
 
     # ------------------------------------------------------------------
@@ -2338,6 +2397,24 @@ class FKPredictor:
         candidates = self.add_pk_signal(candidates)
         candidates = self.rule_score(candidates)
 
+        # Global strict: a pair whose BOTH sides are generic column names
+        # (id x id, status x type) must carry corroboration to survive -- a
+        # high-trust source, a table-name match, or an entity match. Otherwise
+        # it's pure generic-name coincidence (the federation over-matching the
+        # customer hit, where real-data RI/join validation can't filter it).
+        _entity_sig = F.col("entity_match") if "entity_match" in candidates.columns else F.lit(0.0)
+        _has_corroboration = (
+            F.col("source_rank").isin(SR_DECLARED, SR_QUERY, SR_COL_PROP, SR_ONTOLOGY)
+            | (F.coalesce(F.col("_table_name_match"), F.lit(0.0)) > 0)
+            | (F.coalesce(_entity_sig, F.lit(0.0)) > 0)
+        )
+        _drop = (F.coalesce(F.col("_both_generic"), F.lit(0.0)) > 0) & (~_has_corroboration)
+        _before = candidates.count()
+        candidates = candidates.filter(~_drop).drop("_both_generic", "_table_name_match")
+        _dropped = _before - candidates.count()
+        if _dropped:
+            logger.info("Dropped %d uncorroborated generic-name FK candidate(s)", _dropped)
+
         try:
             candidates = self.cardinality_analysis(candidates)
         except Exception as e:
@@ -2471,6 +2548,7 @@ def predict_foreign_keys(
     same_schema_bonus: float = 0.10,
     cross_schema_penalty: float = -0.10,
     system_column_patterns: Tuple[str, ...] = _DEFAULT_SYSTEM_COL_PATTERNS,
+    generic_column_names: Tuple[str, ...] = _DEFAULT_GENERIC_COL_NAMES,
     sweep_stale: bool = False,
     table_names: list = None,
     federation_mode: bool = False,
@@ -2501,6 +2579,7 @@ def predict_foreign_keys(
         same_schema_bonus=same_schema_bonus,
         cross_schema_penalty=cross_schema_penalty,
         system_column_patterns=system_column_patterns,
+        generic_column_names=generic_column_names,
         table_names=table_names or [],
         federation_mode=federation_mode,
     )

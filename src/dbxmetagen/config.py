@@ -125,6 +125,7 @@ class MetadataConfig:
             "rule_score_min_for_ai",
             "max_candidates_per_table_pair",
             "fk_system_column_exclude_patterns",
+            "fk_generic_column_names",
             "ontology_vs_index",
             "use_ann_similarity",
             "ann_k_multiplier",

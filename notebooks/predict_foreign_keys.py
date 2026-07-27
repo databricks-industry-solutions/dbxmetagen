@@ -34,6 +34,7 @@ dbutils.widgets.text("max_candidates_per_table_pair", "5", "Max candidates per t
 dbutils.widgets.text("same_schema_bonus", "0.10", "Same-schema FK score bonus")
 dbutils.widgets.text("cross_schema_penalty", "-0.10", "Cross-schema FK score penalty")
 dbutils.widgets.text("system_column_exclude_patterns", "", "Regex patterns to exclude system columns from FK boosting (comma-separated, empty=defaults)")
+dbutils.widgets.text("generic_column_names", "", "Generic column names (e.g. id,code,status) that need corroboration to form an FK (comma-separated, empty=defaults)")
 dbutils.widgets.text("sweep_stale_edges", "false", "Sweep stale edges")
 dbutils.widgets.text("table_names", "", "Table Names")
 dbutils.widgets.dropdown("federation_mode", "false", ["true", "false"], "Federation Mode")
@@ -60,6 +61,8 @@ same_schema_bonus = float(dbutils.widgets.get("same_schema_bonus"))
 cross_schema_penalty = float(dbutils.widgets.get("cross_schema_penalty"))
 _sys_col_raw = dbutils.widgets.get("system_column_exclude_patterns").strip()
 system_column_patterns = tuple(p.strip() for p in _sys_col_raw.split(",") if p.strip()) if _sys_col_raw else None
+_generic_raw = dbutils.widgets.get("generic_column_names").strip()
+generic_column_names = tuple(p.strip().lower() for p in _generic_raw.split(",") if p.strip()) if _generic_raw else None
 sweep_stale = dbutils.widgets.get("sweep_stale_edges").strip().lower() in ("true", "1", "yes")
 
 federation_mode = dbutils.widgets.get("federation_mode").lower() == "true"
@@ -117,6 +120,8 @@ _fk_kwargs = dict(
 )
 if system_column_patterns is not None:
     _fk_kwargs["system_column_patterns"] = system_column_patterns
+if generic_column_names is not None:
+    _fk_kwargs["generic_column_names"] = generic_column_names
 _fk_kwargs["sweep_stale"] = sweep_stale
 if table_names:
     _fk_kwargs["table_names"] = table_names

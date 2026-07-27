@@ -71,13 +71,16 @@ def _nonempty_candidate_df(total=4, ai_eligible=2, skip_n=1):
     need.count = MagicMock(return_value=ai_eligible)
     skip = MagicMock()
     skip.count = MagicMock(return_value=skip_n)
+    # run() issues these df.filter() calls in order: (1) relationship_kind guard,
+    # (2) _rn==1 dedup, (3) generic-name corroboration drop, then (4) skip_ai and
+    # (5) ~skip_ai & rule_score>=min. The last two select the skip/need frames.
     fc = {"n": 0}
 
     def _filter(*_a, **_k):
         fc["n"] += 1
-        if fc["n"] == 3:
-            return skip
         if fc["n"] == 4:
+            return skip
+        if fc["n"] == 5:
             return need
         return df
 
@@ -112,7 +115,19 @@ class _ColExpr:
     def __ne__(self, _o):
         return self
 
+    def __gt__(self, _o):
+        return self
+
+    def __lt__(self, _o):
+        return self
+
     def __and__(self, _o):
+        return self
+
+    def __or__(self, _o):
+        return self
+
+    def isin(self, *_o):
         return self
 
 
@@ -123,6 +138,7 @@ def _patch_fk_functions_for_run():
     mock_f.col = lambda *_a, **_k: _ColExpr()
     mock_f.row_number = lambda *_a, **_k: SimpleNamespace(over=lambda *_w, **_kw: _ColExpr())
     mock_f.lit = lambda *_a, **_k: _ColExpr()
+    mock_f.coalesce = lambda *_a, **_k: _ColExpr()
     fk_prediction_mod.F = mock_f
     try:
         yield
@@ -1101,14 +1117,17 @@ class TestRuleScoreBehavior:
         return df
 
     def test_adds_rule_score_column(self):
-        """rule_score() must call withColumn('rule_score', ...)."""
+        """rule_score() must add a 'rule_score' column (plus persisted guard signals)."""
         p = self._make_predictor()
         df = self._make_candidates(["col_a", "col_b", "dtype_a", "dtype_b",
                                      "table_a", "table_b", "col_similarity",
                                      "samples_a", "samples_b"])
         result = p.rule_score(df)
-        df.withColumn.assert_called_once()
-        assert df.withColumn.call_args[0][0] == "rule_score"
+        added = [c.args[0] for c in df.withColumn.call_args_list]
+        assert "rule_score" in added
+        # persisted signals the run() corroboration drop consumes
+        assert "_table_name_match" in added
+        assert "_both_generic" in added
         assert result is df
 
     def test_entity_match_used_when_present(self):
@@ -1476,3 +1495,116 @@ class TestCandidateCanonicalizationAlignment:
             assert "CASE WHEN col_a <= col_b THEN dtype_a ELSE dtype_b END AS dtype_a" in src, name
             assert "CASE WHEN col_a <= col_b THEN dtype_b ELSE dtype_a END AS dtype_b" in src, name
 
+
+
+# ---------------------------------------------------------------------------
+# Generic-column-name guard (federation 'id' over-matching fix).
+# ---------------------------------------------------------------------------
+from dbxmetagen.fk_prediction import (  # noqa: E402
+    _DEFAULT_GENERIC_COL_NAMES,
+    _generic_names_sql,
+)
+
+
+class TestGenericNamesSql:
+    def test_builds_quoted_lowercased_in_list(self):
+        out = _generic_names_sql(("ID", "Code", "status"))
+        assert out == "'id', 'code', 'status'"
+
+    def test_empty_yields_safe_placeholder(self):
+        # Empty must not produce `IN ()` (a SQL error); a never-matching literal is fine.
+        assert _generic_names_sql(()) == "''"
+
+    def test_escapes_single_quotes(self):
+        assert _generic_names_sql(("o'id",)) == "'o''id'"
+
+
+class TestGenericGuardConfig:
+    def test_default_generic_names_present(self):
+        c = FKPredictionConfig(catalog_name="c", schema_name="s")
+        assert "id" in c.generic_column_names
+        assert "status" in c.generic_column_names
+
+    def test_predict_foreign_keys_threads_generic_names(self):
+        sig = inspect.signature(predict_foreign_keys)
+        assert "generic_column_names" in sig.parameters
+        captured = {}
+        spark = MagicMock()
+
+        real_init = FKPredictionConfig.__init__
+
+        def _spy(self, *a, **k):
+            real_init(self, *a, **k)
+            captured["names"] = self.generic_column_names
+
+        with patch.object(FKPredictor, "run", return_value={"ok": True}), \
+             patch.object(FKPredictionConfig, "__init__", _spy):
+            predict_foreign_keys(spark, "c", "s", generic_column_names=("id", "foo"))
+        assert captured["names"] == ("id", "foo")
+
+
+class TestGenericGuardSql:
+    def test_get_candidates_sql_has_generic_guard(self):
+        spark = MagicMock()
+        p = FKPredictor(spark, _cfg())
+        p._changed_tables = None
+        p.get_candidates()
+        sql = spark.sql.call_args[0][0]
+        # generic IN-list present and the both-generic drop clause present
+        assert "'id'" in sql and "'status'" in sql
+        assert "j.short_a IN (" in sql and "j.short_b IN (" in sql
+        # only a table-name token-match corroborates a both-generic pair
+        assert "SPLIT(j.table_a" in sql and "', j.short_b, '" in sql
+
+    def test_name_based_same_name_excludes_generic(self):
+        spark = MagicMock()
+        p = FKPredictor(spark, _cfg())
+        p.get_name_based_candidates()
+        sql = spark.sql.call_args[0][0]
+        assert "c1.col_short NOT IN (" in sql
+        # classic strategy is preserved (fk stem must match the pk's table name)
+        assert "classic_matches" in sql
+        assert "pk.tbl_short" in sql
+
+
+class TestGenericGuardLogic:
+    """Python mirror of the get_candidates both-generic drop, to document intent."""
+
+    GENERIC = set(_DEFAULT_GENERIC_COL_NAMES)
+
+    @staticmethod
+    def _stem(col_short: str) -> str:
+        return re.sub(r"(_id|_key|_code)$", "", col_short)
+
+    @staticmethod
+    def _token_match(a: str, b: str) -> bool:
+        return bool(re.search(rf"(^|_){re.escape(b)}(_|$)", a))
+
+    def _dropped(self, short_a, short_b, table_a="c.s.foo", table_b="c.s.bar"):
+        # Mirrors get_candidates: a both-generic pair is dropped unless a TABLE
+        # short-name token-matches the OTHER side's column (role/entity linkage).
+        if not (short_a in self.GENERIC and short_b in self.GENERIC):
+            return False  # not both-generic -> never dropped by this guard
+        ta = table_a.split(".")[-1]
+        tb = table_b.split(".")[-1]
+        corroborated = self._token_match(ta, short_b) or self._token_match(tb, short_a)
+        return not corroborated
+
+    def test_id_x_id_dropped(self):
+        assert self._dropped("id", "id") is True
+
+    def test_status_x_type_dropped(self):
+        assert self._dropped("status", "type") is True
+
+    def test_prov_id_x_prov_id_kept(self):
+        # 'prov_id' is not a generic whole-name -> not both-generic -> guard N/A
+        assert self._dropped("prov_id", "prov_id") is False
+
+    def test_customer_id_x_id_kept(self):
+        # not both-generic (customer_id is non-generic)
+        assert self._dropped("customer_id", "id") is False
+
+    def test_generic_pair_kept_when_table_token_matches_other_col(self):
+        # 'code' on table 'status' vs 'status' col elsewhere: table_a 'status'
+        # token-matches short_b 'status' -> corroborated, kept.
+        assert self._dropped("code", "status", table_a="c.s.status", table_b="c.s.x") is False
