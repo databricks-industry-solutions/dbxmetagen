@@ -503,6 +503,14 @@ def run_genie_agent(
         sum(len(context.get("sql_snippets", {}).get(k, [])) for k in ("measures", "filters", "expressions")),
     )
 
+    # Whether this space is metric-view-only (no base tables). Computed once so
+    # both the refinement and fresh-generation paths -- and the shared tail below
+    # -- see the same value (the tail references mv_only unconditionally).
+    mv_only = bool(
+        context.get("data_sources", {}).get("metric_views")
+        and not context.get("data_sources", {}).get("tables")
+    )
+
     # ---- Refinement path: targeted sectional re-generation ----
     if prior_result and refinement_feedback:
         target_phases = _classify_feedback(refinement_feedback)
@@ -533,10 +541,6 @@ def run_genie_agent(
                     serialized.setdefault("instructions", {})["join_specs"] = extra_joins
                 phases_completed += 1
 
-        ref_mv_only = bool(
-            context.get("data_sources", {}).get("metric_views")
-            and not context.get("data_sources", {}).get("tables")
-        )
         if 2 in target_phases:
             progress_queue.put({"stage": "generating", "message": "Refining example SQL..."})
             ref_mv_guidance = _MV_GUIDANCE_BLOCK if context.get("data_sources", {}).get("metric_views") else ""
@@ -544,7 +548,7 @@ def run_genie_agent(
                 **ctx_subs,
                 description=serialized.get("description", ""),
                 mv_guidance=ref_mv_guidance,
-                patterns=_get_phase2_patterns(ref_mv_only),
+                patterns=_get_phase2_patterns(mv_only),
             ) + feedback_suffix
             p2 = _llm_phase(llm, p2_prompt, "Revise the example_sql JSON now.", "refine_sql")
             if p2:
@@ -555,7 +559,7 @@ def run_genie_agent(
         if 3 in target_phases:
             progress_queue.put({"stage": "generating", "message": "Refining SQL snippets..."})
             ref_p3_base = _PHASE3_PROMPT
-            if ref_mv_only:
+            if mv_only:
                 ref_p3_base = ref_p3_base + _MV_ONLY_PHASE3_EXTRA
             p3_prompt = (ref_p3_base + SAFETY_PROMPT_BLOCK).format(
                 **ctx_subs,
@@ -578,10 +582,6 @@ def run_genie_agent(
 
         # Phase 1: Core Config
         progress_queue.put({"stage": "generating", "message": "Phase 1/3: Generating core config..."})
-        mv_only = bool(
-            context.get("data_sources", {}).get("metric_views")
-            and not context.get("data_sources", {}).get("tables")
-        )
         p1_mv_extra = (
             "\nOVERRIDE: Generate 12-15 sample_questions (not 5-8) because this space uses only metric views "
             "and the questions will be used to generate example SQL. Make them analytically rich and diverse -- "
