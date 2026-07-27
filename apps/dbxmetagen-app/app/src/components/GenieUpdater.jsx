@@ -1157,6 +1157,21 @@ export default function GenieUpdater({ spaceId, onBack }) {
         </div>
       )}
 
+      {/* Accelerator hand-off note: dbxmetagen gets you to a solid starting space --
+          deeper, iterative tuning belongs in Genie's own best-practices / workbench. */}
+      {improveRound > 0 && (
+        <div className="card p-3 border-l-4 border-slate-300 dark:border-slate-600 text-xs text-slate-600 dark:text-slate-400">
+          dbxmetagen accelerates you to a solid starting space; it isn't a deep Genie optimizer.
+          For further tuning, see Genie best practices
+          (<a href="https://docs.databricks.com/aws/en/genie/best-practices" target="_blank" rel="noopener noreferrer"
+             className="text-indigo-600 dark:text-indigo-400 hover:underline">curate an effective Genie space</a>
+          {' '}&middot;{' '}
+          <a href="https://docs.databricks.com/aws/en/genie/" target="_blank" rel="noopener noreferrer"
+             className="text-indigo-600 dark:text-indigo-400 hover:underline">Genie docs</a>)
+          or continue in the Genie workbench.
+        </div>
+      )}
+
       {/* Analysis suggestions */}
       {analysisSuggestions && (
         <SuggestionsPanel suggestions={analysisSuggestions} onClose={() => setAnalysisSuggestions(null)}
