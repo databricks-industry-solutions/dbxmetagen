@@ -1,8 +1,20 @@
 import React, { useState, useEffect, useRef, useCallback, useMemo } from 'react'
 import { ErrorBanner } from '../App'
 import { PageHeader } from './ui'
+import { spacesEqual } from './genieDrift'
 
 function uuid() { return crypto.randomUUID?.() || Math.random().toString(36).slice(2) }
+
+// Fetch the current LIVE serialized_space for a space, or null on any failure.
+// Single source of the /live round-trip so callers don't each hand-roll it.
+async function fetchLiveSpace(spaceId) {
+  try {
+    const r = await fetch(`/api/genie/spaces/${spaceId}/live`)
+    if (!r.ok) return null
+    const d = await r.json()
+    return d.serialized_space || {}
+  } catch { return null }
+}
 
 function descToStr(d) {
   if (!d) return ''
@@ -517,24 +529,36 @@ function VersionHistory({ spaceId, onRestore, onClose }) {
 // Drift detection banner
 // ---------------------------------------------------------------------------
 
-function DriftBanner({ spaceId, localSs, onPullRemote }) {
+// Drift = the live space changed OUTSIDE dbxmetagen since it was loaded. This is
+// the SINGLE /live fetch at editor load: the fetched live space is reported up
+// via onBaseline to seed the parent's external-edit baseline (so we don't fetch
+// /live twice at load), and is compared against any pre-existing `baseline`.
+// We never compare against the user's local edits -- those are expected to
+// differ and are not "drift". The effect is gated on spaceId ONLY (not baseline)
+// so a later setLiveBaseline (post-deploy / pull-remote) can't re-trigger it.
+function DriftBanner({ spaceId, baseline, onBaseline, onPullRemote }) {
   const [drift, setDrift] = useState(null) // null | 'checking' | 'clean' | 'drifted'
   const [liveSs, setLiveSs] = useState(null)
   const [showDiff, setShowDiff] = useState(false)
+  const baselineRef = useRef(baseline)
+  baselineRef.current = baseline
 
   useEffect(() => {
     if (!spaceId) return
+    let cancelled = false
     setDrift('checking')
-    fetch(`/api/genie/spaces/${spaceId}/live`)
-      .then(r => r.ok ? r.json() : Promise.reject())
-      .then(data => {
-        const live = data.serialized_space || {}
-        setLiveSs(live)
-        const localStr = JSON.stringify(localSs || {}, Object.keys(localSs || {}).sort())
-        const liveStr = JSON.stringify(live, Object.keys(live).sort())
-        setDrift(localStr === liveStr ? 'clean' : 'drifted')
-      })
-      .catch(() => setDrift(null))
+    fetchLiveSpace(spaceId).then(live => {
+      if (cancelled) return
+      if (!live) { setDrift(null); return }
+      setLiveSs(live)
+      // Seed the parent baseline from this single fetch (parent ignores it if
+      // it already has one). Read baseline via ref to avoid re-running on change.
+      onBaseline?.(live)
+      const prior = baselineRef.current
+      setDrift(prior && !spacesEqual(live, prior) ? 'drifted' : 'clean')
+    })
+    return () => { cancelled = true }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [spaceId])
 
   if (drift !== 'drifted') return null
@@ -543,7 +567,10 @@ function DriftBanner({ spaceId, localSs, onPullRemote }) {
     <div className="bg-amber-50 dark:bg-amber-900/20 border border-amber-300 dark:border-amber-700 rounded-lg px-4 py-3 space-y-2">
       <div className="flex items-center gap-3 text-sm text-amber-800 dark:text-amber-300">
         <span className="font-medium">This space was modified outside dbxmetagen.</span>
-        <button onClick={() => { onPullRemote(liveSs); setDrift('clean') }}
+        <button onClick={() => {
+            if (!window.confirm('Pull the remote version? This replaces your current (unsaved) edits in this editor with the live space from Databricks.')) return
+            onPullRemote(liveSs); setDrift('clean')
+          }}
           className="text-xs px-2.5 py-1 rounded border border-amber-400 text-amber-700 hover:bg-amber-100 dark:hover:bg-amber-800/30 transition-colors">
           Pull Remote Changes
         </button>
@@ -698,6 +725,12 @@ export default function GenieUpdater({ spaceId, onBack }) {
   // Version history
   const [showHistory, setShowHistory] = useState(false)
 
+  // Snapshot of the LIVE space as it was when this editor loaded. External-edit
+  // detection compares live-now against THIS baseline (same /live serialization
+  // on both sides) -- never against the user's edited local state. State (not a
+  // ref) so the DriftBanner re-evaluates when the baseline is captured/refreshed.
+  const [liveBaseline, setLiveBaseline] = useState(null)
+
   // ---------------------------------------------------------------------------
   // Parse serialized space from API
   // ---------------------------------------------------------------------------
@@ -804,6 +837,10 @@ export default function GenieUpdater({ spaceId, onBack }) {
   useEffect(() => {
     if (!spaceId) return
     setLoading(true); setError(null); setParseInfo(null)
+    setLiveBaseline(null)
+    // The external-edit baseline (the live space as it was at load) is captured
+    // by DriftBanner's single /live fetch, which reports it back via
+    // onBaseline -> setLiveBaseline. deploy() has its own fallback if it's null.
     fetch(`/api/genie/spaces/${spaceId}/definition`)
       .then(r => r.ok ? r.json() : r.json().then(b => Promise.reject(b.detail || `Error ${r.status}`)))
       .then(data => {
@@ -988,22 +1025,27 @@ export default function GenieUpdater({ spaceId, onBack }) {
     if (!title.trim()) { setDeployError('Enter a title'); return }
     setDeploying(true); setDeployError(null); setDeployResult(null); setConflictWarning(null)
     try {
-      // Check for external modifications before updating (not needed for new spaces)
-      if (!asNew && spaceId) {
-        try {
-          const liveRes = await fetch(`/api/genie/spaces/${spaceId}/live`)
-          if (liveRes.ok) {
-            const liveData = await liveRes.json()
-            const liveSs = liveData.serialized_space || {}
-            const localStr = JSON.stringify(rawJson || {}, Object.keys(rawJson || {}).sort())
-            const liveStr = JSON.stringify(liveSs, Object.keys(liveSs).sort())
-            if (localStr !== liveStr && !conflictWarning) {
-              setConflictWarning('This space was modified externally since you loaded it. Click Update again to overwrite.')
-              setDeploying(false)
-              return
-            }
-          }
-        } catch { /* live check failed, proceed anyway */ }
+      // Detect a GENUINE external edit: compare the live space now against the
+      // live snapshot captured when this editor loaded. We deliberately do NOT
+      // compare against the user's local (edited) state -- local differs from
+      // live precisely because the user made the changes we are about to save.
+      // Only warn when the remote actually changed out from under them.
+      if (!asNew && spaceId && liveBaseline && !conflictWarning) {
+        // We have a load-time baseline: compare it against the live space right
+        // now and warn only if the remote genuinely changed since load.
+        const liveNow = await fetchLiveSpace(spaceId)
+        if (liveNow && !spacesEqual(liveNow, liveBaseline)) {
+          setConflictWarning('This space was modified outside dbxmetagen since you loaded it. Click Update again to overwrite the external changes.')
+          setDeploying(false)
+          return
+        }
+      } else if (!asNew && spaceId && !liveBaseline && !conflictWarning) {
+        // Load-time baseline never landed (e.g. the load /live failed): capture
+        // one now so protection isn't silently disabled. It equals the current
+        // live, so there is nothing to compare against this round -- it will
+        // guard subsequent updates in this session.
+        const live = await fetchLiveSpace(spaceId)
+        if (live) setLiveBaseline(live)
       }
 
       const payload = rawJsonEditing ? JSON.parse(rawJsonText) : assemble()
@@ -1018,6 +1060,12 @@ export default function GenieUpdater({ spaceId, onBack }) {
       setDeployResult(result)
       setConflictWarning(null)
       if (result.updated) setVersion(prev => prev + 1)
+      // We just wrote the space, so the live copy is now our own edit. Refresh
+      // the external-edit baseline to the new live serialization so a follow-up
+      // update in the same session doesn't false-flag against the pre-update snapshot.
+      if (spaceId) {
+        fetchLiveSpace(spaceId).then(live => { if (live) setLiveBaseline(live) })
+      }
     } catch (e) { setDeployError(e.message) }
     finally { setDeploying(false) }
   }
@@ -1031,10 +1079,19 @@ export default function GenieUpdater({ spaceId, onBack }) {
     setShowHistory(false)
   }
 
-  // Pull remote changes (drift)
+  // Pull remote changes (drift): adopt the live space locally AND make it the
+  // new baseline so the drift banner clears and future edits diff against it.
   const pullRemote = (liveSs) => {
     loadSpaceIntoState(liveSs)
+    setLiveBaseline(liveSs || {})
   }
+
+  // Seed the external-edit baseline from DriftBanner's single load-time /live
+  // fetch. Only takes effect if we don't already have a baseline, so it never
+  // clobbers a post-deploy / pull-remote refresh.
+  const seedBaseline = useCallback((live) => {
+    setLiveBaseline(prev => prev == null ? (live || {}) : prev)
+  }, [])
 
   // ---------------------------------------------------------------------------
   // Render
@@ -1080,7 +1137,7 @@ export default function GenieUpdater({ spaceId, onBack }) {
       <ErrorBanner error={error} />
 
       {/* Drift detection */}
-      <DriftBanner spaceId={spaceId} localSs={rawJson} onPullRemote={pullRemote} />
+      <DriftBanner spaceId={spaceId} baseline={liveBaseline} onBaseline={seedBaseline} onPullRemote={pullRemote} />
 
       {/* Health details */}
       {showHealth && <HealthDetails health={health} onClose={() => setShowHealth(false)} />}
@@ -1403,6 +1460,23 @@ export default function GenieUpdater({ spaceId, onBack }) {
             {deployResult.updated ? 'Space updated' : 'New space created'}! ID: <span className="font-mono">{deployResult.space_id}</span>
           </div>
         )}
+        {deployResult && (() => {
+          // The backend silently strips joins/snippets/example-SQL that the Genie
+          // API rejects; surface those so a "reverted"-looking space is explained.
+          const warns = [...(deployResult.warnings || [])]
+          if (deployResult.persisted_join_count === 0 && deployResult.join_count > 0) {
+            warns.push(`${deployResult.join_count} join(s) were sent but the Genie API returned 0 -- they may not have persisted.`)
+          }
+          if (!warns.length) return null
+          return (
+            <div className="bg-amber-50 dark:bg-amber-900/20 border border-amber-300 dark:border-amber-700 rounded-lg px-4 py-2.5 text-sm text-amber-800 dark:text-amber-300 space-y-1">
+              <div className="font-medium">Some content was adjusted or dropped during deploy:</div>
+              <ul className="list-disc list-inside space-y-0.5">
+                {warns.map((w, i) => <li key={i}>{w}</li>)}
+              </ul>
+            </div>
+          )
+        })()}
       </div>
     </div>
   )
