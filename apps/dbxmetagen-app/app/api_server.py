@@ -75,6 +75,8 @@ from dbxmetagen.metric_view_core import (
     _qualify_nested_refs,
     _definition_to_yaml,
     _IndentYamlDumper,
+    _parse_join_condition,
+    _render_join_condition,
 )
 
 logger = logging.getLogger(__name__)
@@ -8695,12 +8697,19 @@ def _inject_fk_joins(plan_views: list[dict], tables: list[str], cat: str, sch: s
             alias = join_table.split(".")[-1]
             fk_col = fk_col.split(".")[-1]
             pk_col = pk_col.split(".")[-1]
-            # Composite key: use the stored multi-column condition verbatim (its
-            # authored alias is the joined table's short name) instead of the
-            # single-column equality. Only valid when source is the FK child side.
-            composite_on = fk.get("join_condition") if fk.get("is_composite") else None
-            on_clause = (composite_on if (composite_on and fk["src_table"] == src)
-                         else f"source.{fk_col} = {alias}.{pk_col}")
+            # Composite key: render the multi-column condition for THIS direction.
+            # The stored condition is authored child->parent with the child side
+            # qualified "source"; the plan source (`src`) may be either endpoint,
+            # so parse + re-render rather than reducing to one column (which would
+            # under-constrain the join) or replaying the wrong-direction string.
+            src_is_child = (fk["src_table"] == src)
+            pairs = (_parse_join_condition(fk["join_condition"], "source")
+                     if (fk.get("is_composite") and fk.get("join_condition")) else None)
+            if pairs:
+                child_al, parent_al = ("source", alias) if src_is_child else (alias, "source")
+                on_clause = _render_join_condition(pairs, child_al, parent_al)
+            else:
+                on_clause = f"source.{fk_col} = {alias}.{pk_col}"
             pv.setdefault("joins", []).append({
                 "name": alias,
                 "source": join_table,

@@ -920,6 +920,21 @@ class TestDiscoverJoinPathsComposite:
         joins = gen._discover_join_paths("cat.sch.orders")
         assert joins[0]["on"] == "source.order_id = lines.order_id AND source.line_no = lines.line_no"
 
+    def test_composite_reverse_direction_reorients(self, gen):
+        # Same FK (child=lines, parent=orders) but the VIEW is sourced from the
+        # PARENT (orders). The composite ON must reorient: joined child alias
+        # 'lines' on the child columns, 'source' (= orders) on the parent columns.
+        # Regression guard for the direction-blind string-replace bug.
+        gen._safe_collect = lambda sql: [{
+            "src_table": "cat.sch.lines", "dst_table": "cat.sch.orders",
+            "src_column": "cat.sch.lines.order_id", "dst_column": "cat.sch.orders.order_id",
+            "final_confidence": 0.9, "is_composite": True,
+            "join_condition": "source.order_id = orders.order_id AND source.line_no = orders.line_no",
+        }]
+        joins = gen._discover_join_paths("cat.sch.orders")
+        # child columns (order_id, line_no) live on the joined 'lines' alias.
+        assert joins[0]["on"] == "lines.order_id = source.order_id AND lines.line_no = source.line_no"
+
     def test_missing_columns_fall_back(self, gen):
         # Primary query returns [] (missing column), fallback returns single-col row.
         calls = {"n": 0}

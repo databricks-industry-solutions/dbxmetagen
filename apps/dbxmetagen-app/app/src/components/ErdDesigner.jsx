@@ -278,18 +278,21 @@ export default function ErdDesigner({ tables, projectId, profileId, businessCont
   }, [setEdges])
 
   // Flip a join's direction: swap which table is the FK (child) side vs the
-  // referenced (parent) side. The predictor infers direction, but a reviewer may
-  // know better; this swaps endpoints + columns and rewrites the `on` clause.
+  // referenced (parent) side. Swaps endpoints AND every column pair (primary +
+  // composite extras), then recomputes on/is_composite/join_condition via the
+  // shared helper so a flipped composite key stays consistent (not stale).
   const flipJoinDirection = useCallback((edgeId) => {
     setEdges(eds => eds.map(e => {
       if (e.id !== edgeId) return e
-      const sc = e.data?.dst_column || '', dc = e.data?.src_column || ''
-      const on = (sc && dc) ? `source.${sc} = ${_short(e.source)}.${dc}` : ''
-      return {
-        ...e,
-        source: e.target, target: e.source,
-        data: { ...e.data, src_column: sc, dst_column: dc, on },
-      }
+      const swappedExtras = (e.data?.extra_pairs || []).map(p => ({ src: p.dst, dst: p.src }))
+      const newTarget = e.source  // old source becomes the new join target (alias base)
+      const data = _withJoinCondition({
+        ...e.data,
+        src_column: e.data?.dst_column || '',
+        dst_column: e.data?.src_column || '',
+        extra_pairs: swappedExtras,
+      }, newTarget)
+      return { ...e, source: e.target, target: e.source, data }
     }))
   }, [setEdges])
 

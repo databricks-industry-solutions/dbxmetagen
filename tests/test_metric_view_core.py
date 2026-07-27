@@ -490,3 +490,46 @@ class TestCleanJoinsForYaml:
         y = _definition_to_yaml(defn)
         assert "source.order_id = lines.order_id AND source.line_no = lines.line_no" in y
         assert "is_composite" not in y   # internal key stripped
+
+
+class TestJoinConditionHelpers:
+    """Phase 3 fix: composite conditions are parsed + re-rendered per direction,
+    not string-replaced (which broke reverse-direction walks)."""
+
+    def test_parse_child_on_left(self):
+        from dbxmetagen.metric_view_core import _parse_join_condition
+        pairs = _parse_join_condition(
+            "source.order_id = lines.order_id AND source.line_no = lines.line_no", "source")
+        assert pairs == [("order_id", "order_id"), ("line_no", "line_no")]
+
+    def test_parse_child_on_right_normalizes(self):
+        from dbxmetagen.metric_view_core import _parse_join_condition
+        # child qualifier appears on the RHS of a term -> still child-first.
+        pairs = _parse_join_condition("lines.a = source.x AND source.y = lines.b", "source")
+        assert pairs == [("x", "a"), ("y", "b")]
+
+    def test_parse_returns_empty_when_child_absent(self):
+        from dbxmetagen.metric_view_core import _parse_join_condition
+        assert _parse_join_condition("a.x = b.y", "source") == []
+
+    def test_render_orientation(self):
+        from dbxmetagen.metric_view_core import _render_join_condition
+        pairs = [("order_id", "order_id"), ("line_no", "line_no")]
+        # child=source, parent=lines (view sourced from the fact)
+        assert _render_join_condition(pairs, "source", "lines") == \
+            "source.order_id = lines.order_id AND source.line_no = lines.line_no"
+        # reversed: child=orders (joined), parent=source (view sourced from parent)
+        assert _render_join_condition(pairs, "orders", "source") == \
+            "orders.order_id = source.order_id AND orders.line_no = source.line_no"
+
+
+class TestCleanJoinsDropsUnjoinable:
+    def test_drops_join_without_on_or_using(self):
+        joins = [{"name": "x", "source": "c.s.x"},
+                 {"name": "y", "source": "c.s.y", "on": "source.a = y.b"}]
+        out = _clean_joins_for_yaml(joins)
+        assert [j["name"] for j in out] == ["y"]
+
+    def test_keeps_using_only_join(self):
+        joins = [{"name": "y", "source": "c.s.y", "using": ["a", "b"]}]
+        assert len(_clean_joins_for_yaml(joins)) == 1

@@ -171,12 +171,16 @@ def check_dim_source_pattern(defn: dict, fk_rows: list[dict]) -> Optional[dict]:
         if as_dst >= 2 and as_src == 0:
             signals.append(("fk_fanout", f"source {src_short} appears as FK target {as_dst}x, never as FK source"))
 
-    # Signal 4: measured cardinality (authoritative when available). If the source
-    # is the PK PARENT (dst_table) of an FK whose join column on the source side is
-    # highly unique (high pk_uniqueness), the source is the "one" side (a dimension)
-    # while the joined child is the "many" side (the fact) -- exactly the inverted
-    # anti-pattern. Uses the predictor's real probe, not just naming/topology.
-    # Absent on rows that predate the column (falls back to signals 1-3).
+    # Signal 4: measured cardinality (corroborating). When the source is the
+    # PARENT (dst_table) side of an FK to a joined child AND the pair carries a
+    # high uniqueness probe, that strengthens the "source is a dimension, joined
+    # child is the fact" reading with measured data rather than just naming.
+    # NOTE: pk_uniqueness is GREATEST(both sides) in fk_prediction, so it does not
+    # by itself prove the PARENT column is the unique one -- it only shows the pair
+    # has a (near-)unique key on some side. The topological guard below (source is
+    # the FK dst/parent, child is joined) is what establishes direction; a
+    # legitimately fact-sourced view has its source as the FK *child* (src_table),
+    # so this cannot fire for it. Absent on rows predating the column.
     for fk in fk_rows:
         pk_uniq = fk.get("pk_uniqueness")
         if pk_uniq is None:
@@ -189,7 +193,7 @@ def check_dim_source_pattern(defn: dict, fk_rows: list[dict]) -> Optional[dict]:
         fk_src = fk.get("src_table", "").split(".")[-1].lower()
         if fk_dst == src_short and fk_src in join_shorts and pk_uniq >= 0.9:
             signals.append(("measured_cardinality",
-                            f"source {src_short} is the unique-key parent (pk_uniqueness={pk_uniq:.2f}) of joined {fk_src} -- {fk_src} is the many/fact side"))
+                            f"source {src_short} is the FK parent of joined {fk_src} with a near-unique key (pk_uniqueness={pk_uniq:.2f}) -- {fk_src} is likely the many/fact side"))
             break
 
     if not signals:
@@ -1394,38 +1398,43 @@ OUTPUT (one JSON object only, no array, no explanation):"""
             return []
 
         # Build undirected adjacency. Each edge carries the single-column fk/pk
-        # AND an optional composite join_condition (multi-column ON) that, when
-        # present, is used verbatim instead of the single-column equality.
-        adj: dict[str, list[tuple[str, str, str, str]]] = {}
+        # AND, for composite keys, the parsed (child_col, parent_col) pairs plus a
+        # flag for which endpoint is the FK child -- so the multi-column ON can be
+        # rendered correctly in EITHER traversal direction (a direction-blind
+        # string replace of the stored condition was wrong when a view is sourced
+        # from the parent side).
+        from dbxmetagen.metric_view_core import _parse_join_condition, _render_join_condition
+        adj: dict[str, list[tuple]] = {}
         for fk in fk_rows:
-            src_t, dst_t = fk["src_table"], fk["dst_table"]
+            src_t, dst_t = fk["src_table"], fk["dst_table"]  # src_t = FK child, dst_t = parent
             src_c = fk["src_column"].split(".")[-1]
             dst_c = fk["dst_column"].split(".")[-1]
-            jc = fk.get("join_condition") if fk.get("is_composite") else None
-            adj.setdefault(src_t, []).append((dst_t, src_c, dst_c, jc))
-            adj.setdefault(dst_t, []).append((src_t, dst_c, src_c, jc))
+            pairs = None
+            if fk.get("is_composite") and fk.get("join_condition"):
+                # Authored child->parent with the child side qualified "source".
+                pairs = _parse_join_condition(fk["join_condition"], "source") or None
+            # (neighbor, fk_col, pk_col, composite_pairs, neighbor_is_child)
+            adj.setdefault(src_t, []).append((dst_t, src_c, dst_c, pairs, False))
+            adj.setdefault(dst_t, []).append((src_t, dst_c, src_c, pairs, True))
 
         def _walk(table: str, depth: int, visited: set) -> list[dict]:
             if depth >= max_hops:
                 return []
             joins: list[dict] = []
-            for neighbor, fk_col, pk_col, composite_on in adj.get(table, []):
+            for neighbor, fk_col, pk_col, composite_pairs, neighbor_is_child in adj.get(table, []):
                 if neighbor in visited:
                     continue
                 visited.add(neighbor)
                 alias = neighbor.split(".")[-1]
                 parent_alias = "source" if depth == 0 else table.split(".")[-1]
                 child_joins = _walk(neighbor, depth + 1, visited)
-                entry: dict = {
-                    "name": alias,
-                    "source": neighbor,
-                    # A composite join_condition is authored parent->child as
-                    # "source.a = alias.x AND source.b = alias.y"; rewrite the
-                    # generic "source." prefix to the actual parent alias.
-                    "on": (composite_on.replace("source.", f"{parent_alias}.")
-                           if composite_on
-                           else f"{parent_alias}.{fk_col} = {alias}.{pk_col}"),
-                }
+                if composite_pairs:
+                    # child columns live on whichever endpoint is the FK child.
+                    child_al, parent_al = (alias, parent_alias) if neighbor_is_child else (parent_alias, alias)
+                    on = _render_join_condition(composite_pairs, child_al, parent_al)
+                else:
+                    on = f"{parent_alias}.{fk_col} = {alias}.{pk_col}"
+                entry: dict = {"name": alias, "source": neighbor, "on": on}
                 if child_joins:
                     entry["joins"] = child_joins
                 joins.append(entry)

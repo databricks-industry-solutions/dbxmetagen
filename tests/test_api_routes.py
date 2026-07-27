@@ -426,6 +426,42 @@ class TestFkVsJoinKey:
         assert "relationship_kind IS NULL" in pred
         assert "join_key" in pred
 
+
+class TestInjectFkJoinsComposite:
+    """_inject_fk_joins must render a composite condition correctly in BOTH
+    directions -- not reduce the reverse direction to a single column."""
+
+    def _run(self, monkeypatch, fk_row, source):
+        def fake_execute_sql(sql, timeout=30):
+            if sql.strip().upper().startswith("DESCRIBE"):
+                return [{"col_name": "relationship_kind"}]
+            return [fk_row]
+        monkeypatch.setattr(api_server, "execute_sql", fake_execute_sql)
+        api_server._fk_relationship_cols_ensured = True
+        plan = [{"source": source, "question_indices": [0]}]
+        out, _ = api_server._inject_fk_joins(plan, [source, "c.s.other"], "c", "s")
+        return out[0].get("joins", [])
+
+    def test_source_is_child_forward(self, monkeypatch):
+        fk = {"src_table": "c.s.orders", "dst_table": "c.s.lines",
+              "src_column": "c.s.orders.order_id", "dst_column": "c.s.lines.order_id",
+              "pk_uniqueness": 0.9, "is_composite": True,
+              "join_condition": "source.order_id = lines.order_id AND source.line_no = lines.line_no"}
+        joins = self._run(monkeypatch, fk, "c.s.orders")
+        assert joins[0]["on"] == "source.order_id = lines.order_id AND source.line_no = lines.line_no"
+
+    def test_source_is_parent_reverse_keeps_all_columns(self, monkeypatch):
+        # View sourced from the PARENT (lines); the joined child is orders. Every
+        # column must survive -- not collapse to a single-column equality.
+        fk = {"src_table": "c.s.orders", "dst_table": "c.s.lines",
+              "src_column": "c.s.orders.order_id", "dst_column": "c.s.lines.order_id",
+              "pk_uniqueness": 0.9, "is_composite": True,
+              "join_condition": "source.order_id = lines.order_id AND source.line_no = lines.line_no"}
+        joins = self._run(monkeypatch, fk, "c.s.lines")
+        on = joins[0]["on"]
+        assert " AND " in on                      # both columns present
+        assert on == "orders.order_id = source.order_id AND orders.line_no = source.line_no"
+
     def test_constants_shared_with_library(self):
         # No drift: the app's kind constants ARE the shared fk_constants values.
         from dbxmetagen import fk_constants

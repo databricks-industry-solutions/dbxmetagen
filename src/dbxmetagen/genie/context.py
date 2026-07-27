@@ -49,14 +49,19 @@ def _safe_sql(ws: WorkspaceClient, warehouse_id: str, query: str,
         return _run_sql(ws, warehouse_id, query)
     except Exception as e:
         err = str(e)
-        if fallback and ("UNRESOLVED_COLUMN" in err or "cannot be resolved" in err
-                         or "COLUMN_NOT_FOUND" in err or "UNRESOLVED_ROUTINE" in err):
+        # Retry the fallback on ANY primary failure when one is provided -- the
+        # fallback is a strict subset query (fewer columns), so it's safe to try
+        # even for transient/unrecognized errors, and we must not silently drop
+        # all FK-derived joins just because the error wording wasn't whitelisted.
+        # Skip only when the table itself is missing (fallback can't help).
+        table_missing = "TABLE_OR_VIEW_NOT_FOUND" in err or "SCHEMA_NOT_FOUND" in err
+        if fallback and not table_missing:
             try:
                 return _run_sql(ws, warehouse_id, fallback)
             except Exception as e2:
                 logger.warning("SQL fallback also failed: %s — %s", fallback[:80], e2)
                 return []
-        if "TABLE_OR_VIEW_NOT_FOUND" in err or "SCHEMA_NOT_FOUND" in err:
+        if table_missing:
             logger.info("Table not found (expected before pipeline runs): %s", query[:80])
         else:
             logger.warning("SQL query failed (non-404): %s — %s", query[:80], e)

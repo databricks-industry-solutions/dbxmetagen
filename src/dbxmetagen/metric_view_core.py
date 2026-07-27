@@ -860,7 +860,8 @@ def _clean_joins_for_yaml(joins: list) -> list:
 
     Drops the default cardinality ('many_to_one') so we only emit it when it is
     the non-default 'one_to_many' (a fan-out fact source). Joins are LEFT OUTER by
-    spec; there is no join-type key to emit.
+    spec; there is no join-type key to emit. A join that ends up with neither an
+    'on' nor a 'using' is unjoinable YAML (CREATE VIEW rejects it) -- drop it.
     """
     out = []
     for j in joins or []:
@@ -873,8 +874,51 @@ def _clean_joins_for_yaml(joins: list) -> list:
             nested = _clean_joins_for_yaml(j["joins"])
             if nested:
                 clean["joins"] = nested
+        if not clean.get("on") and not clean.get("using"):
+            logger.warning("Dropping join '%s' with no on/using clause", clean.get("name", "?"))
+            continue
         out.append(clean)
     return out
+
+
+# --- Composite (multi-column) join-condition helpers -------------------------
+# A composite join condition is a set of equality terms ANDed together, authored
+# child->parent as "<child>.<col> = <parent>.<col> AND ...". These helpers parse
+# it into (child_col, parent_col) pairs and re-render it for a specific
+# child-alias / parent-alias orientation, so a stored condition can be applied
+# correctly in EITHER traversal direction (not just the direction it was authored
+# in). Direction-blind string .replace() of "source." was the prior bug.
+
+_EQ_TERM_RE = re.compile(
+    r"([A-Za-z_]\w*)\.([A-Za-z_]\w*)\s*=\s*([A-Za-z_]\w*)\.([A-Za-z_]\w*)"
+)
+
+
+def _parse_join_condition(condition: str, child_qualifier: str) -> list[tuple]:
+    """Parse a composite ON into [(child_col, parent_col), ...].
+
+    ``child_qualifier`` names the alias/prefix that denotes the child (FK) side in
+    the stored string (the ERD authors it as 'source'). Each equality term is
+    normalized so the child column comes first regardless of which side it was
+    written on. Returns [] if nothing parses (caller falls back)."""
+    pairs: list[tuple] = []
+    for m in _EQ_TERM_RE.finditer(condition or ""):
+        lq, lc, rq, rc = m.group(1), m.group(2), m.group(3), m.group(4)
+        if lq == child_qualifier:
+            pairs.append((lc, rc))
+        elif rq == child_qualifier:
+            pairs.append((rc, lc))
+        else:
+            # Neither side matches the expected child qualifier -- can't orient it.
+            return []
+    return pairs
+
+
+def _render_join_condition(pairs: list[tuple], child_alias: str, parent_alias: str) -> str:
+    """Render (child_col, parent_col) pairs as '<child_alias>.c = <parent_alias>.p AND ...'."""
+    return " AND ".join(
+        f"{child_alias}.{cc} = {parent_alias}.{pc}" for cc, pc in pairs
+    )
 
 
 def _definition_to_yaml(defn: dict, include_materialization: bool = False) -> str:
