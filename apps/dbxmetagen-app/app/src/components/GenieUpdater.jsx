@@ -529,37 +529,28 @@ function VersionHistory({ spaceId, onRestore, onClose }) {
 // Drift detection banner
 // ---------------------------------------------------------------------------
 
-// Drift = the live space changed OUTSIDE dbxmetagen since it was loaded. This is
-// the SINGLE /live fetch at editor load: the fetched live space is reported up
-// via onBaseline to seed the parent's external-edit baseline (so we don't fetch
-// /live twice at load), and is compared against any pre-existing `baseline`.
-// We never compare against the user's local edits -- those are expected to
-// differ and are not "drift". The effect is gated on spaceId ONLY (not baseline)
-// so a later setLiveBaseline (post-deploy / pull-remote) can't re-trigger it.
-function DriftBanner({ spaceId, baseline, onBaseline, onPullRemote }) {
+// Drift = the LIVE space differs from what this editor loaded (`baseline`,
+// captured from /definition at load). That covers both a later external edit
+// and a stale tracked copy that already differed from live at load. We never
+// compare against the user's local edits -- those are expected to differ. The
+// effect waits for `baseline` to be set, then fetches live once and compares.
+function DriftBanner({ spaceId, baseline, onPullRemote }) {
   const [drift, setDrift] = useState(null) // null | 'checking' | 'clean' | 'drifted'
   const [liveSs, setLiveSs] = useState(null)
   const [showDiff, setShowDiff] = useState(false)
-  const baselineRef = useRef(baseline)
-  baselineRef.current = baseline
 
   useEffect(() => {
-    if (!spaceId) return
+    if (!spaceId || !baseline) return
     let cancelled = false
     setDrift('checking')
     fetchLiveSpace(spaceId).then(live => {
       if (cancelled) return
       if (!live) { setDrift(null); return }
       setLiveSs(live)
-      // Seed the parent baseline from this single fetch (parent ignores it if
-      // it already has one). Read baseline via ref to avoid re-running on change.
-      onBaseline?.(live)
-      const prior = baselineRef.current
-      setDrift(prior && !spacesEqual(live, prior) ? 'drifted' : 'clean')
+      setDrift(spacesEqual(live, baseline) ? 'clean' : 'drifted')
     })
     return () => { cancelled = true }
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [spaceId])
+  }, [spaceId, baseline])
 
   if (drift !== 'drifted') return null
 
@@ -725,11 +716,13 @@ export default function GenieUpdater({ spaceId, onBack }) {
   // Version history
   const [showHistory, setShowHistory] = useState(false)
 
-  // Snapshot of the LIVE space as it was when this editor loaded. External-edit
-  // detection compares live-now against THIS baseline (same /live serialization
-  // on both sides) -- never against the user's edited local state. State (not a
-  // ref) so the DriftBanner re-evaluates when the baseline is captured/refreshed.
-  const [liveBaseline, setLiveBaseline] = useState(null)
+  // Snapshot of the serialized_space as it was LOADED into this editor (from
+  // /definition). Drift detection compares the current LIVE space against this
+  // baseline -- so it flags both a later external edit and a stale tracked copy
+  // that already differs from live at load. Never compared against the user's
+  // edited state (those diffs are expected). State (not a ref) so DriftBanner
+  // re-evaluates when the baseline is captured/refreshed.
+  const [loadedBaseline, setLoadedBaseline] = useState(null)
 
   // ---------------------------------------------------------------------------
   // Parse serialized space from API
@@ -837,10 +830,7 @@ export default function GenieUpdater({ spaceId, onBack }) {
   useEffect(() => {
     if (!spaceId) return
     setLoading(true); setError(null); setParseInfo(null)
-    setLiveBaseline(null)
-    // The external-edit baseline (the live space as it was at load) is captured
-    // by DriftBanner's single /live fetch, which reports it back via
-    // onBaseline -> setLiveBaseline. deploy() has its own fallback if it's null.
+    setLoadedBaseline(null)
     fetch(`/api/genie/spaces/${spaceId}/definition`)
       .then(r => r.ok ? r.json() : r.json().then(b => Promise.reject(b.detail || `Error ${r.status}`)))
       .then(data => {
@@ -852,6 +842,11 @@ export default function GenieUpdater({ spaceId, onBack }) {
         if (typeof ss === 'string') { try { ss = JSON.parse(ss) } catch { ss = {} } }
         if (!ss || typeof ss !== 'object') ss = {}
         loadSpaceIntoState(ss, data.title || '', data.description || '')
+        // Drift baseline = exactly what we loaded into the editor. Comparing the
+        // LIVE space against this catches both a later external edit AND the case
+        // where the tracked copy /definition served is already stale vs live.
+        // (Never compare against the user's edits -- those are expected to differ.)
+        setLoadedBaseline(ss)
       })
       .catch(e => setError(typeof e === 'string' ? e : e.message || 'Failed to load'))
       .finally(() => setLoading(false))
@@ -1025,27 +1020,19 @@ export default function GenieUpdater({ spaceId, onBack }) {
     if (!title.trim()) { setDeployError('Enter a title'); return }
     setDeploying(true); setDeployError(null); setDeployResult(null); setConflictWarning(null)
     try {
-      // Detect a GENUINE external edit: compare the live space now against the
-      // live snapshot captured when this editor loaded. We deliberately do NOT
-      // compare against the user's local (edited) state -- local differs from
-      // live precisely because the user made the changes we are about to save.
-      // Only warn when the remote actually changed out from under them.
-      if (!asNew && spaceId && liveBaseline && !conflictWarning) {
-        // We have a load-time baseline: compare it against the live space right
-        // now and warn only if the remote genuinely changed since load.
+      // Detect a GENUINE external edit: compare the live space now against what
+      // this editor loaded (loadedBaseline). We deliberately do NOT compare
+      // against the user's local (edited) state -- local differs precisely
+      // because the user made the changes we are about to save. Warn only when
+      // the remote differs from what we loaded (external edit, or a stale tracked
+      // copy that already differed from live at load).
+      if (!asNew && spaceId && loadedBaseline && !conflictWarning) {
         const liveNow = await fetchLiveSpace(spaceId)
-        if (liveNow && !spacesEqual(liveNow, liveBaseline)) {
+        if (liveNow && !spacesEqual(liveNow, loadedBaseline)) {
           setConflictWarning('This space was modified outside dbxmetagen since you loaded it. Click Update again to overwrite the external changes.')
           setDeploying(false)
           return
         }
-      } else if (!asNew && spaceId && !liveBaseline && !conflictWarning) {
-        // Load-time baseline never landed (e.g. the load /live failed): capture
-        // one now so protection isn't silently disabled. It equals the current
-        // live, so there is nothing to compare against this round -- it will
-        // guard subsequent updates in this session.
-        const live = await fetchLiveSpace(spaceId)
-        if (live) setLiveBaseline(live)
       }
 
       const payload = rawJsonEditing ? JSON.parse(rawJsonText) : assemble()
@@ -1060,11 +1047,11 @@ export default function GenieUpdater({ spaceId, onBack }) {
       setDeployResult(result)
       setConflictWarning(null)
       if (result.updated) setVersion(prev => prev + 1)
-      // We just wrote the space, so the live copy is now our own edit. Refresh
-      // the external-edit baseline to the new live serialization so a follow-up
-      // update in the same session doesn't false-flag against the pre-update snapshot.
+      // We just wrote the space, so live == what we intended. Refresh the drift
+      // baseline to the new live serialization so a follow-up update in the same
+      // session doesn't false-flag against the pre-update snapshot.
       if (spaceId) {
-        fetchLiveSpace(spaceId).then(live => { if (live) setLiveBaseline(live) })
+        fetchLiveSpace(spaceId).then(live => { if (live) setLoadedBaseline(live) })
       }
     } catch (e) { setDeployError(e.message) }
     finally { setDeploying(false) }
@@ -1083,15 +1070,8 @@ export default function GenieUpdater({ spaceId, onBack }) {
   // new baseline so the drift banner clears and future edits diff against it.
   const pullRemote = (liveSs) => {
     loadSpaceIntoState(liveSs)
-    setLiveBaseline(liveSs || {})
+    setLoadedBaseline(liveSs || {})
   }
-
-  // Seed the external-edit baseline from DriftBanner's single load-time /live
-  // fetch. Only takes effect if we don't already have a baseline, so it never
-  // clobbers a post-deploy / pull-remote refresh.
-  const seedBaseline = useCallback((live) => {
-    setLiveBaseline(prev => prev == null ? (live || {}) : prev)
-  }, [])
 
   // ---------------------------------------------------------------------------
   // Render
@@ -1137,7 +1117,7 @@ export default function GenieUpdater({ spaceId, onBack }) {
       <ErrorBanner error={error} />
 
       {/* Drift detection */}
-      <DriftBanner spaceId={spaceId} baseline={liveBaseline} onBaseline={seedBaseline} onPullRemote={pullRemote} />
+      <DriftBanner spaceId={spaceId} baseline={loadedBaseline} onPullRemote={pullRemote} />
 
       {/* Health details */}
       {showHealth && <HealthDetails health={health} onClose={() => setShowHealth(false)} />}

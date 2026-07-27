@@ -29,9 +29,19 @@ for mod_name in _STUB_MODS:
     if mod_name not in sys.modules:
         sys.modules[mod_name] = MagicMock()
 
+# mlflow is stubbed as a MagicMock, so the agent's @trace decorator would wrap
+# run_genie_agent into a MagicMock (uncallable as the real fn). Make mlflow.trace
+# a pass-through decorator so the real function is exercised. (conftest does the
+# same globally; repeated here because this file stubs mlflow independently and
+# may be collected/run on its own.)
+sys.modules["mlflow"].trace = lambda *a, **k: (lambda fn: fn)
+
 # Now safe to import
 sys.path.insert(0, "src")
-from dbxmetagen.genie.agent import _merge_prebuilt_join_specs, _validate_output  # noqa: E402
+from dbxmetagen.genie import agent as agent_mod  # noqa: E402
+from dbxmetagen.genie.agent import (  # noqa: E402
+    _merge_prebuilt_join_specs, _validate_output, run_genie_agent,
+)
 from dbxmetagen.genie.context import GenieContextAssembler  # noqa: E402
 
 
@@ -496,3 +506,62 @@ class TestBuildJoinSpecsComposite:
         ]
         assert specs[0]["left"]["identifier"] == "c.s.orders"
         assert specs[0]["right"]["identifier"] == "c.s.lines"
+
+
+# ---------------------------------------------------------------------------
+# run_genie_agent refinement path -- regression guard for the mv_only bug.
+# The refinement branch referenced mv_only in the shared tail before it was
+# assigned (it was only defined in the fresh-generation branch), so Improve
+# crashed with UnboundLocalError for every existing space. mv_only is now
+# hoisted above the branch; this test drives the refinement path end-to-end
+# (LLM + SQL validation stubbed) and asserts it completes without that crash.
+# ---------------------------------------------------------------------------
+import queue as _queue  # noqa: E402
+
+
+class TestRunGenieAgentRefinement:
+    def _run(self, context):
+        q = _queue.Queue()
+        prior = {
+            "description": "prior",
+            "instructions": {"text": "prior text", "join_specs": [], "example_sql": []},
+            "sample_questions": ["q1"],
+        }
+        # Feedback that routes to all phases so every mv_only reference executes.
+        feedback = "improve joins, example sql, and measures/filters/expressions"
+        # Return content that satisfies whichever phase asks, so phases_completed
+        # advances and we exercise the shared tail (where mv_only is referenced).
+        def _fake_phase(llm, sys_prompt, user_msg, label):
+            return {
+                "description": "d", "instructions": {"text": "t"},
+                "sample_questions": ["q"], "join_specs": [],
+                "example_sql": [{"question": "q?", "sql": "SELECT 1"}],
+                "sql_snippets": {"measures": [], "filters": [], "expressions": []},
+            }
+        with patch.object(agent_mod, "ChatDatabricks", return_value=MagicMock()), \
+             patch.object(agent_mod, "_llm_phase", side_effect=_fake_phase), \
+             patch.object(agent_mod, "_validate_and_strip_sql", side_effect=lambda s, *a, **k: s):
+            return run_genie_agent(
+                MagicMock(), "wh", context, q,
+                refinement_feedback=feedback, prior_result=prior,
+            )
+
+    def test_refinement_table_space_no_unbound_mv_only(self):
+        # Table-only space (the common case that crashed).
+        ctx = {
+            "data_sources": {"tables": [{"identifier": "c.s.orders"}], "metric_views": []},
+            "join_specs": [], "sql_snippets": {}, "questions": [],
+            "context_text": "test context",
+        }
+        result = self._run(ctx)
+        assert isinstance(result, dict)
+
+    def test_refinement_mv_only_space(self):
+        # Metric-view-only space -- exercises the mv_only=True branches in the tail.
+        ctx = {
+            "data_sources": {"tables": [], "metric_views": [{"identifier": "c.s.mv"}]},
+            "join_specs": [], "sql_snippets": {}, "questions": [],
+            "context_text": "test context",
+        }
+        result = self._run(ctx)
+        assert isinstance(result, dict)

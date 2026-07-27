@@ -49,13 +49,21 @@ def _safe_sql(ws: WorkspaceClient, warehouse_id: str, query: str,
         return _run_sql(ws, warehouse_id, query)
     except Exception as e:
         err = str(e)
-        # Retry the fallback on ANY primary failure when one is provided -- the
+        # Retry the fallback on most primary failures when one is provided -- the
         # fallback is a strict subset query (fewer columns), so it's safe to try
         # even for transient/unrecognized errors, and we must not silently drop
         # all FK-derived joins just because the error wording wasn't whitelisted.
-        # Skip only when the table itself is missing (fallback can't help).
+        # Skip the retry when it cannot possibly help: the table is missing, or
+        # access to it was denied (the fallback hits the SAME table, so it would
+        # just fail identically and waste a round-trip).
         table_missing = "TABLE_OR_VIEW_NOT_FOUND" in err or "SCHEMA_NOT_FOUND" in err
-        if fallback and not table_missing:
+        permission_denied = any(
+            tok in err for tok in (
+                "PERMISSION_DENIED", "ACCESS_DENIED", "INSUFFICIENT_PRIVILEGES",
+                "does not have", "User does not have",
+            )
+        )
+        if fallback and not table_missing and not permission_denied:
             try:
                 return _run_sql(ws, warehouse_id, fallback)
             except Exception as e2:

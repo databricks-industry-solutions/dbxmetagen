@@ -48,6 +48,11 @@ for _mod_name in [
     if _mod_name not in sys.modules:
         sys.modules[_mod_name] = MagicMock()
 
+# mlflow.trace must be a pass-through decorator, not a MagicMock. Modules like
+# dbxmetagen.genie.agent decorate functions with @trace(name=...); a MagicMock
+# would replace the decorated function with a mock, making it uncallable in tests.
+sys.modules["mlflow"].trace = lambda *a, **k: (lambda fn: fn)
+
 # grpc._channel exception types must be real classes (not MagicMock)
 # so that `except _InactiveRpcError` works correctly
 _gc = sys.modules["grpc._channel"]
