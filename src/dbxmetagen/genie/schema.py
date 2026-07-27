@@ -417,6 +417,11 @@ def build_serialized_space(raw: dict) -> dict:
 
         split: list[str] = []
         for s in sql_list:
+            # Strip any relationship-type marker(s) left over from a prior
+            # round-trip before splitting. The marker is appended fresh below;
+            # without this, re-editing a space accumulates it (--rt=...----rt=...)
+            # and embeds it mid-predicate, corrupting the join SQL.
+            s = re.sub(r"--rt=[^-]*--", " ", s)
             s = _simplify_join_sql(s)
             for p in re.split(r"\s+AND\s+", s, flags=re.IGNORECASE):
                 p = p.strip()
@@ -502,7 +507,11 @@ def build_serialized_space(raw: dict) -> dict:
         )
 
     # -- sample_questions --
-    sq_raw = raw.get("sample_questions") or []
+    # Accept both the top-level shape (what the agent + the non-raw editor emit)
+    # and the nested config.sample_questions shape (what the Genie API returns and
+    # the raw-JSON editor shows). Without the config fallback, editing sample
+    # questions via raw JSON silently drops them.
+    sq_raw = raw.get("sample_questions") or (raw.get("config") or {}).get("sample_questions") or []
     sample_qs = []
     for q in sq_raw:
         if isinstance(q, str) and q:

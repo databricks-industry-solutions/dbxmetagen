@@ -257,6 +257,45 @@ class TestBuildJoins:
         js = result["instructions"]["join_specs"][0]
         assert js["sql"][-1] == "--rt=FROM_RELATIONSHIP_TYPE_ONE_TO_MANY--"
 
+    def test_rt_directive_not_accumulated_on_roundtrip(self):
+        # Simulates the editor round-trip: the incoming join SQL already carries
+        # the marker (joined with ' AND ' by the editor). It must not accumulate.
+        raw = _minimal_raw()
+        raw["instructions"]["join_specs"] = [{
+            "left": {"identifier": "cat.sch.a"},
+            "right": {"identifier": "cat.sch.b"},
+            "sql": ["`a`.`id` = `b`.`id`--rt=FROM_RELATIONSHIP_TYPE_ONE_TO_MANY-- AND --rt=FROM_RELATIONSHIP_TYPE_ONE_TO_MANY--"],
+        }]
+        result = build_serialized_space(raw)
+        js = result["instructions"]["join_specs"][0]
+        markers = [s for s in js["sql"] if "--rt=" in s]
+        assert len(markers) == 1, js["sql"]
+        # the real predicate survives and carries no embedded marker
+        conditions = [s for s in js["sql"] if "--rt=" not in s]
+        assert len(conditions) == 1
+        assert "--rt=" not in conditions[0]
+        assert "`a`.`id`" in conditions[0] and "`b`.`id`" in conditions[0]
+
+    def test_rt_directive_stable_across_repeated_builds(self):
+        # Build twice, feeding the first output's join back in -- marker count stays 1.
+        raw = _minimal_raw()
+        raw["instructions"]["join_specs"] = [{
+            "left": {"identifier": "cat.sch.a"},
+            "right": {"identifier": "cat.sch.b"},
+            "sql": ["a.id = b.id"],
+        }]
+        r1 = build_serialized_space(raw)
+        j1 = r1["instructions"]["join_specs"][0]
+        # emulate editor collapsing the sql list into one ' AND '-joined string
+        raw2 = _minimal_raw()
+        raw2["instructions"]["join_specs"] = [{
+            "left": j1["left"], "right": j1["right"],
+            "sql": [" AND ".join(j1["sql"])],
+        }]
+        r2 = build_serialized_space(raw2)
+        j2 = r2["instructions"]["join_specs"][0]
+        assert sum("--rt=" in s for s in j2["sql"]) == 1, j2["sql"]
+
     def test_instruction_set(self):
         raw = _minimal_raw()
         raw["instructions"]["join_specs"] = [{
@@ -453,6 +492,28 @@ class TestBuildMisc:
         raw = _minimal_raw(sample_questions=[])
         result = build_serialized_space(raw)
         assert "config" not in result
+
+    def test_sample_questions_from_nested_config(self):
+        # The raw-JSON editor / live API shape nests questions under config.
+        raw = _minimal_raw(sample_questions=[])
+        raw["config"] = {"sample_questions": [
+            {"id": "abcdef0123456789abcdef0123456789", "question": ["Nested Q one?"]},
+            {"question": "Nested Q two?"},
+        ]}
+        result = build_serialized_space(raw)
+        qs = result["config"]["sample_questions"]
+        assert len(qs) == 2
+        texts = {q["question"][0] for q in qs}
+        assert texts == {"Nested Q one?", "Nested Q two?"}
+
+    def test_top_level_sample_questions_win_over_config(self):
+        # If both shapes are present, the top-level (agent/non-raw editor) wins.
+        raw = _minimal_raw(sample_questions=["Top level Q?"])
+        raw["config"] = {"sample_questions": [{"question": ["Nested Q?"]}]}
+        result = build_serialized_space(raw)
+        qs = result["config"]["sample_questions"]
+        assert len(qs) == 1
+        assert qs[0]["question"] == ["Top level Q?"]
 
     def test_data_sources_sorted(self):
         raw = _minimal_raw()
