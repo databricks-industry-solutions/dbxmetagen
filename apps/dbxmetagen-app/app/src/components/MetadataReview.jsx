@@ -98,9 +98,13 @@ const LEGACY_ROLE_MAP = {
 }
 
 function ReviewEditor() {
-  const cst = useCatalogSchemaTables()
+  // kbOnly: the Pick Tables list must offer only tables that already have
+  // generated metadata in the knowledge base. information_schema lists every
+  // table in the schema, but review-combined only returns KB rows -- picking an
+  // unprocessed table silently returns nothing ("nothing loads").
+  const cst = useCatalogSchemaTables('', '', { kbOnly: true })
   const { catalogs, schemas, filtered: filteredTables, catalog: selectedCatalog, schema: selectedSchema, filter: tableFilter, setCatalog: setSelectedCatalog, setSchema: setSelectedSchema, setFilter: setTableFilter } = cst
-  const allTables = cst.tables
+  const allSchemaTableCount = cst.allSchemaTableCount
   const [scopeMode, setScopeMode] = useState('schema')
   const [selectedTables, setSelectedTables] = useState([])
   const [activeType, setActiveType] = useState('comments')
@@ -220,6 +224,12 @@ function ReviewEditor() {
       setOriginal(JSON.parse(JSON.stringify(tables)))
       const exp = {}; tables.forEach(t => { exp[t.table_name] = true }); setExpanded(exp)
       if (j.truncated) setInfo(`Showing 200 of ${j.total_count} tables. Use the filter to narrow results.`)
+      else if (tables.length === 0) setInfo(
+        scopeMode === 'table'
+          ? 'No generated metadata found for the selected tables. Only tables that have been processed by metadata generation appear here -- run the metadata generator on these tables first.'
+          : 'No generated metadata found for this schema. Run the metadata generator on it first, then reload.'
+      )
+      else setInfo(null)
     } catch (e) { setError(e.message) }
     setLoading(false)
   }
@@ -569,12 +579,15 @@ function ReviewEditor() {
         {scopeMode === 'table' && selectedSchema && (
           <div>
             <input value={tableFilter} onChange={e => setTableFilter(e.target.value)} placeholder="Filter tables..." className={inp + ' mb-2 max-w-xs'} aria-label="Filter tables" />
-            {filteredTables.length > 0 && (
+            {filteredTables.length > 0 ? (
               <>
                 <div className="flex gap-2 mb-1 text-xs">
                   <button onClick={() => setSelectedTables(filteredTables)} className="text-blue-600 hover:underline">Select all ({filteredTables.length})</button>
                   <button onClick={() => setSelectedTables([])} className="text-blue-600 hover:underline">Clear</button>
-                  <span className="text-slate-400 ml-auto">{selectedTables.length} selected</span>
+                  <span className="text-slate-400 ml-auto">
+                    {selectedTables.length} selected
+                    {allSchemaTableCount > cst.tables.length && ` · ${cst.tables.length} of ${allSchemaTableCount} tables have generated metadata`}
+                  </span>
                 </div>
                 <div className="grid grid-cols-2 md:grid-cols-4 gap-1 max-h-36 overflow-y-auto border border-slate-200 rounded-md p-2">
                   {filteredTables.map(t => (
@@ -583,6 +596,14 @@ function ReviewEditor() {
                     </label>))}
                 </div>
               </>
+            ) : (
+              <p className="text-xs text-slate-500 dark:text-slate-400 py-1">
+                {tableFilter
+                  ? 'No tables match the filter.'
+                  : allSchemaTableCount > 0
+                    ? `None of the ${allSchemaTableCount} tables in this schema have generated metadata yet. Run the metadata generator on them first, then reload.`
+                    : 'No tables with generated metadata in this schema yet.'}
+              </p>
             )}
           </div>
         )}
