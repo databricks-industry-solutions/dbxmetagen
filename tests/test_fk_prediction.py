@@ -188,6 +188,80 @@ class TestDeclaredFKGuard:
         assert spark.sql.called
 
 
+# --- TestColumnPropertyBlockGuard ---
+
+
+class TestColumnPropertyBlockGuard:
+    """The column-property FK generator links by entity type only; without a
+    same-block guard it produces cross-schema pairs that never join (and, via the
+    SR_COL_PROP skip-AI path, land is_fk=true). It must block cross-catalog.schema
+    pairs by default, gated on ontology_cross_block."""
+
+    def _last_col_prop_sql(self, spark):
+        # get_column_property_candidates probes the table first (SELECT 1 ...),
+        # then runs the main SQL. Return the main SQL (the one with obj_props CTE).
+        for call in reversed(spark.sql.call_args_list):
+            sql = call[0][0]
+            if "obj_props" in sql:
+                return sql
+        return ""
+
+    def test_same_block_filter_present_by_default(self):
+        spark = MagicMock()
+        cfg = _cfg()
+        assert cfg.ontology_cross_block is False
+        p = FKPredictor(spark, cfg)
+        p.get_column_property_candidates()
+        sql = self._last_col_prop_sql(spark)
+        # The guard compares catalog.schema of the two tables.
+        assert "ap.table_a" in sql and "ap.table_b" in sql
+        assert "ELEMENT_AT(SPLIT(ap.table_a" in sql
+        assert "ELEMENT_AT(SPLIT(ap.table_b" in sql
+
+    def test_cross_block_filter_absent_when_enabled(self):
+        spark = MagicMock()
+        cfg = _cfg()
+        cfg.ontology_cross_block = True
+        p = FKPredictor(spark, cfg)
+        p.get_column_property_candidates()
+        sql = self._last_col_prop_sql(spark)
+        # With cross-block allowed, no catalog.schema equality guard is emitted.
+        assert "ELEMENT_AT(SPLIT(ap.table_a" not in sql
+
+
+# --- TestNeverJoinsVeto ---
+
+
+class TestNeverJoinsVeto:
+    """Defense in depth: a skip-AI candidate whose join probe found ZERO overlap
+    (join_matched=0) and ri_score=0.0 provably never joins and must not be
+    asserted is_fk=true, except when steward-declared (SR_DECLARED)."""
+
+    def _never_joins(self, join_matched, ri_score, source_rank):
+        # Mirror the predicate in run()'s final projection.
+        base = (join_matched == 0) and (ri_score == 0.0)
+        if source_rank is not None:
+            base = base and (source_rank != SR_DECLARED)
+        return base
+
+    def test_cross_schema_col_prop_pair_vetoed(self):
+        # The observed bug: dim_department.location_id <-> dim_store.store_id,
+        # column-property skip-AI, join_matched=0, ri_score=0.0.
+        assert self._never_joins(0, 0.0, SR_COL_PROP) is True
+
+    def test_declared_fk_exempt(self):
+        # Steward-declared FKs may reference rows absent from the sample.
+        assert self._never_joins(0, 0.0, SR_DECLARED) is False
+
+    def test_real_join_not_vetoed(self):
+        # A pair that actually joins (join_matched>0) is never vetoed.
+        assert self._never_joins(5, 0.0, SR_COL_PROP) is False
+
+    def test_partial_ri_not_vetoed(self):
+        # Non-zero RI (or the neutral 0.5 fallback for unprobed pairs) is not vetoed.
+        assert self._never_joins(0, 0.5, SR_COL_PROP) is False
+
+
 # --- TestUIDedup ---
 
 

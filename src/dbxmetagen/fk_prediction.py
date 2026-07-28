@@ -697,6 +697,20 @@ class FKPredictor:
             return empty
 
         k = self.config.max_candidates_per_table_pair
+        # Same-block (catalog.schema) guard, mirroring get_ontology_candidates.
+        # This generator links purely by entity type -- an object_property column
+        # to ANY primary table of its linked entity type -- with no reference to
+        # real data. Without a block guard, an entity type shared across schemas
+        # (e.g. two tables both classified 'Location') produces cross-schema pairs
+        # that never join; combined with the SR_COL_PROP skip-AI path they land
+        # is_fk=true despite join_rate=0. Gated on the same ontology_cross_block flag.
+        block_filter = ""
+        if not self.config.ontology_cross_block:
+            block_filter = """
+              AND CONCAT_WS('.', ELEMENT_AT(SPLIT(ap.table_a, '\\\\.'), 1),
+                    ELEMENT_AT(SPLIT(ap.table_a, '\\\\.'), 2))
+                  = CONCAT_WS('.', ELEMENT_AT(SPLIT(ap.table_b, '\\\\.'), 1),
+                    ELEMENT_AT(SPLIT(ap.table_b, '\\\\.'), 2))"""
         sql = f"""
         WITH obj_props AS (
             SELECT table_name, column_name, linked_entity_type, confidence
@@ -762,6 +776,7 @@ class FKPredictor:
             WHERE sa.data_type IS NOT NULL AND da.data_type IS NOT NULL
               AND NOT {_dtype_excluded('sa.data_type')}
               AND NOT {_dtype_excluded('da.data_type')}
+              {block_filter}
         ),
         capped AS (
             SELECT *, ROW_NUMBER() OVER (
@@ -2035,6 +2050,26 @@ class FKPredictor:
         ri = F.coalesce(F.col("ri_score"), F.lit(0.5))
         capped_join = F.least(F.lit(1.0), F.greatest(F.lit(0.0), F.col("join_rate")))
 
+        # Data-probe veto (defense in depth): a high-trust skip-AI candidate
+        # (declared/column-property/query) normally bypasses AI *and* is asserted
+        # is_fk=true with a fixed confidence. But when the join probe actually ran
+        # and found ZERO overlap (join_matched=0) AND referential integrity is
+        # exactly 0, the two columns provably never join -- e.g. a column-property
+        # pair linked only by a shared entity type across unrelated tables. Force
+        # is_fk=false there so such pairs can't be emitted as confirmed FKs.
+        # Declared FKs (steward-asserted) are exempt: they may reference data not
+        # present in the sample. Absent probes leave ri coalesced to 0.5, so the
+        # veto only fires on a genuine 0.0 from a probe that ran.
+        is_fk_col = F.col("ai_is_fk")
+        if "join_matched" in df.columns:
+            never_joins = (
+                (F.coalesce(F.col("join_matched"), F.lit(0)) == F.lit(0))
+                & (F.coalesce(F.col("ri_score"), F.lit(0.5)) == F.lit(0.0))
+            )
+            if "source_rank" in df.columns:
+                never_joins = never_joins & (F.col("source_rank") != F.lit(SR_DECLARED))
+            is_fk_col = F.when(never_joins, F.lit(False)).otherwise(F.col("ai_is_fk"))
+
         pair_ok = (F.col("table_a") != F.col("table_b")) & (F.col("col_a") != F.col("col_b"))
         if "source_rank" in df.columns:
             pair_ok = pair_ok | (F.col("source_rank") == F.lit(SR_DECLARED))
@@ -2064,7 +2099,7 @@ class FKPredictor:
             )).alias("final_confidence"),
             F.current_timestamp().alias("created_at"),
             F.current_timestamp().alias("updated_at"),
-            F.col("ai_is_fk").alias("is_fk"),
+            is_fk_col.alias("is_fk"),
         ).filter(F.col("ai_confidence") >= self.config.confidence_threshold)
 
         w = Window.partitionBy("src_column", "dst_column").orderBy(F.col("final_confidence").desc())
