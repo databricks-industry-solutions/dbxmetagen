@@ -40,6 +40,8 @@ All open work items from every roadmap and plan document, organized by theme. Ea
 | MG-14 | Presidio `diagnosis_code` regex too broad -- raise threshold or gate | OPEN | P2 | S | PI precision analysis |
 | MG-15 | Preserve `type` field downstream instead of collapsing to `protected` | OPEN | P2 | S | PI precision analysis |
 | MG-16 | PI confidence threshold gating (discard low-confidence classifications) | OPEN | P2 | S | PI precision analysis |
+| MG-17 | SWIFT/BIC code lost to LOCATION NER collision -> classified None instead of PCI | OPEN | P2 | S | UAT PI scenario |
+| MG-18 | UAT PI gold not normalized for equivalent classes (pi/pii, phi/medical_information) | OPEN | P3 | S | UAT PI scenario |
 
 ### MG-1: Chat client garbage fallback on JSON parse failure
 
@@ -169,6 +171,27 @@ All open work items from every roadmap and plan document, organized by theme. Ea
 **Work:** Add a `pi_confidence_threshold` config parameter (default 0.5). Classifications below this threshold are downgraded to `None`. Applied post-LLM, pre-hardcode.
 
 **Files:** `src/dbxmetagen/processing.py`, `src/dbxmetagen/config.py`, `variables.yml`
+
+### MG-17: SWIFT/BIC code lost to LOCATION NER collision
+
+**Status: OPEN** -- A realistic SWIFT/BIC value (e.g. an 11-char bank identifier embedding a country code) is picked up by the spaCy NER as a `LOCATION` entity, which outranks the custom SWIFT PCI pattern recognizer. `LOCATION` is then filtered as an aggressive/false-positive entity, so the column collapses to `None` -- a missed PCI detection. Confirmed via a UAT payments table: `iban` (same bank-identifier family) correctly classified PCI while `swift` came back `None`, with `presidio_results` showing `{classification: PII, entities: [LOCATION]}`. The SWIFT regex itself matches the value; the loss is in entity priority + false-positive filtering, not the pattern.
+
+**Work:**
+- Give the custom SWIFT (and other high-specificity PCI/PHI pattern) recognizers priority over generic spaCy NER entities when their spans overlap, OR
+- Exclude columns whose custom-recognizer match is a strong PCI/PHI signal from the `LOCATION`/aggressive-entity filter, so a co-occurring LOCATION guess cannot suppress them.
+- Add a regression case (SWIFT/BIC value -> PCI) alongside the existing PI precision/recall tests.
+
+**Files:** `src/dbxmetagen/deterministic_pi.py` (recognizer registration + `classify_column` entity filtering)
+
+### MG-18: UAT PI gold not normalized for equivalent classes
+
+**Status: OPEN** -- The `uat_expected_pi` gold table (UAT scenario builder) uses `pi`/`phi`, but the pipeline emits the equivalent classes `pii` and `medical_information`. Naive string comparison flags these equivalent matches as diffs, inflating the apparent error rate (observed: `icd10_code` gold `phi` vs actual `medical_information` is a correct match, not a miss).
+
+**Work:** Normalize equivalence classes in the scoring step / gold table: treat `pi`≡`pii` and `phi`≡`medical_information` (and any other documented synonyms) as matches. Update `tests/data/build_uat_scenarios.py` gold and the eval_e2e scoring join.
+
+**Files:** `tests/data/build_uat_scenarios.py`, `tests/data/build_test_warehouse.py` (scoring), `docs/UAT_SANITY_CHECK.md`
+
+---
 
 
 
@@ -322,6 +345,11 @@ All open work items from every roadmap and plan document, organized by theme. Ea
 | GN-8 | Value sampling batching (50 sequential queries) | DEFERRED | P2 | M | GJ |
 | GN-9 | Context window measurement and truncation | DEFERRED | P2 | M | GJ |
 | GN-10 | `_strip_out_of_scope_sql` regex ineffectiveness | DEFERRED | P3 | S | GJ |
+| GN-11 | Metric-view model builder reverted saved ERD (recommendation endpoint never overlaid saved `erd_json`); now overlays saved roles/grain/schema_type + clears `_erd_cache` on save | DONE | -- | S | UAT model-builder |
+
+### GN-11: Metric-view model builder reverted saved ERD
+
+**Status: DONE** -- The visual model builder loads via `GET /api/semantic-layer/erd-recommendation`, which always recomputed a fresh heuristic ERD and never read the project's saved `erd_json`. Saving node roles/grain/schema_type, switching to the Generate tab (which unmounts the designer), and returning to Model reverted the edits. Fixed with `_load_saved_erd()` + `_overlay_saved_erd()` overlaying saved node roles/grain + schema_type onto the recommendation (confirmed joins already round-trip via `fk_predictions`, so edges are untouched), plus clearing `_erd_cache` on the ERD PATCH so a reload right after save is not served a pre-save cached recommendation. Verified live: saved a distinctive edit, re-fetched, overlay honored it (`user_confirmed=true`). Files: `apps/dbxmetagen-app/app/api_server.py`.
 
 ### GN-1: Extract MV joins into `join_specs`
 
@@ -438,6 +466,19 @@ Hardening of multi-bundle coexistence and sweep cleanup. Canonical invariants in
 | OB-3 | `_purge_stale_relationships()` non-incremental sweep of all auto-generated `ontology_relationships` (incl. `configured`); fixes `categorized_as`/`category_of` regression | DONE | -- | M | relationships audit |
 | OB-4 | `_build_structural_edges` excludes `categorized_as`/`category_of` while preserving bundle-defined `contains`/`part_of`/`member_of`/`has_part` | DONE | -- | S | relationships audit |
 | OB-5 | FK pair canonicalization swaps `col`/`table`/`dtype` in lockstep (3 generator sites) | DONE | -- | S | fk label audit |
+| OB-6 | Column-property FK generator: same-block (catalog.schema) guard gated on `ontology_cross_block` (was linking by entity type across schemas) | DONE | -- | S | UAT FK scenario |
+| OB-7 | Data-probe veto: force `is_fk=false` when join probe found zero overlap (`join_matched=0 AND ri_score=0`), exempting declared FKs -- stops skip-AI tiers asserting non-joining pairs | DONE | -- | S | UAT FK scenario |
+| OB-8 | `fk_predictions` MERGE has no delete-by-source path -> a spurious row already persisted is not corrected when a fix stops the pair being regenerated (goes stale). "Sweep stale edges" only cleans `graph_edges`, not `fk_predictions`. | OPEN | P2 | M | UAT FK scenario |
+
+### OB-8: `fk_predictions` stale-row cleanup
+
+**Status: OPEN** -- FK predictions are written via an upsert-only MERGE keyed on `(src_column, dst_column)` with no `WHEN NOT MATCHED BY SOURCE ... DELETE`. Once a pair stops being generated (e.g. after OB-6 blocks a cross-schema pair, or the tables leave scope), an already-persisted `is_fk=true` row lingers indefinitely. The OB-7 veto only rewrites a row if a later run regenerates that exact pair. `sweep_stale_edges` does NOT help: it sweeps `graph_edges` scoped to `source_system='fk_predictions'`, a different table -- so the phantom row in `fk_predictions` (which the app FK views and ERD designer read directly) survives, and the two tables can drift out of sync.
+
+**Work:**
+- Add a scoped delete path to the `fk_predictions` write: a `WHEN NOT MATCHED BY SOURCE` clause restricted to the run's `table_names` (mirroring the `merge_edges` per-source sweep), gated behind a flag / non-incremental run, and preserving steward-reviewed rows (`review_updated_at IS NOT NULL`).
+- Consider a one-off maintenance sweep for existing deployments carrying stale rows.
+
+**Files:** `src/dbxmetagen/fk_prediction.py` (the MERGE + DELETE around the staging view write)
 
 ---
 
