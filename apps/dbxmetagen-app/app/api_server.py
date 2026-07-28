@@ -6677,8 +6677,13 @@ def update_project_erd(project_id: str, req: ProjectErdUpdate):
     erd_str = json.dumps(req.erd_json).replace("'", "''")
     execute_sql(
         f"UPDATE {fq('semantic_layer_projects')} SET erd_json = '{erd_str}' "
-        f"WHERE project_id = '{project_id}'"
+        f"WHERE project_id = {_safe_sql_str(project_id)}"
     )
+    # Invalidate the ERD recommendation cache so the next load reflects this save
+    # instead of serving a pre-save recommendation for up to the 120s TTL. The
+    # cache key varies by table list AND profile/project, so clear all entries
+    # (small cache, maxsize=16) rather than trying to reconstruct the exact key.
+    _erd_cache.clear()
     return {"project_id": project_id, "saved": True}
 
 
@@ -7975,6 +7980,66 @@ def _fetch_erd_inputs(tables: list[str]) -> tuple[list, list, dict, list]:
     return fk_rows, ontology_rows, profiling_by_table, existing_defs
 
 
+def _load_saved_erd(project_id: Optional[str]) -> Optional[dict]:
+    """Return the project's saved erd_json (parsed) or None.
+
+    Persisted by PATCH /api/semantic-layer/projects/{id}/erd. Best-effort: a
+    missing project / column / parse error degrades to None (fresh recommendation).
+    """
+    if not project_id:
+        return None
+    try:
+        rows = execute_sql(
+            f"SELECT erd_json FROM {fq('semantic_layer_projects')} "
+            f"WHERE project_id = {_safe_sql_str(project_id)}"
+        )
+        raw = rows[0].get("erd_json") if rows else None
+        if not raw:
+            return None
+        return json.loads(raw) if isinstance(raw, str) else raw
+    except Exception as e:
+        logger.warning("erd: saved erd_json load failed: %s", e)
+        return None
+
+
+def _overlay_saved_erd(rec: dict, saved: Optional[dict]) -> dict:
+    """Overlay a user's saved ERD (node roles/grain + schema_type) onto a fresh
+    recommendation so the visual builder shows what the user confirmed, not a
+    re-derived heuristic. Only the fields the user actually edits and that have no
+    other persistence home are overridden -- confirmed *joins* already round-trip
+    through fk_predictions (source='confirmed'), so edges are left untouched.
+
+    Node matching is by fully-qualified table name (case-insensitive). Saved nodes
+    for tables no longer in scope are ignored; recommended nodes with no saved role
+    keep their heuristic role, so newly-added tables still get a sensible default.
+    """
+    if not saved:
+        return rec
+    saved_nodes = {
+        (n.get("table") or "").lower(): n
+        for n in (saved.get("nodes") or [])
+        if n.get("table")
+    }
+    if not saved_nodes:
+        # schema_type may still have been set even with no node overrides.
+        if saved.get("schema_type"):
+            rec["schema_type"] = saved["schema_type"]
+        return rec
+    for node in rec.get("nodes") or []:
+        sn = saved_nodes.get((node.get("table") or "").lower())
+        if not sn:
+            continue
+        if sn.get("role"):
+            node["role"] = sn["role"]
+        if sn.get("grain") is not None:
+            node["grain"] = sn["grain"]
+        # Mark that this role came from the user so the UI can distinguish it.
+        node["user_confirmed"] = True
+    if saved.get("schema_type"):
+        rec["schema_type"] = saved["schema_type"]
+    return rec
+
+
 @app.get("/api/semantic-layer/erd-recommendation")
 def get_erd_recommendation(
     tables: Optional[str] = None,
@@ -8023,7 +8088,11 @@ def get_erd_recommendation(
         existing_defs=existing_defs,
         kpi_coverage=kpi_cov,
     )
-    result = rec.to_dict()
+    # Overlay the user's saved ERD (confirmed node roles/grain + schema_type) so
+    # the visual builder reflects what they saved rather than a re-derived
+    # heuristic. Without this, saving then leaving and returning to the Model tab
+    # reverts the edits (they persisted to erd_json but were never read back here).
+    result = _overlay_saved_erd(rec.to_dict(), _load_saved_erd(project_id))
     _erd_cache[cache_key] = result
     return result
 
