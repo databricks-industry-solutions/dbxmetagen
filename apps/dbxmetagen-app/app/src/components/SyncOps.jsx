@@ -14,7 +14,7 @@ import TableScopePicker, { scopeToTableNames } from './TableScopePicker'
  *   - MCP setup: expose the metadata as MCP tools.
  */
 export default function SyncOps({ onNavigate }) {
-  const { runningAction, runError, runJob } = useSharedJobRunner()
+  const { runningAction, runError, runJob, waitForRun } = useSharedJobRunner()
   const [catalogName, setCatalogName] = useState('')
   const [schemaName, setSchemaName] = useState('')
   const [lakebaseConfigured, setLakebaseConfigured] = useState(false)
@@ -40,41 +40,49 @@ export default function SyncOps({ onNavigate }) {
 
   const ready = !!(catalogName.trim() && schemaName.trim())
 
-  // Refresh both the knowledge graph and the vector index (KG first, then VI) so
-  // approved/rejected FKs and metadata edits propagate to both in one click.
+  // Refresh both the knowledge graph and the vector index. The vector index is
+  // built from metadata_documents derived from the graph, so the KG rebuild must
+  // COMPLETE before the index rebuild starts — otherwise VI re-indexes the stale
+  // pre-refresh graph. runJob only triggers a run (returns immediately, doesn't
+  // throw), so wait for the KG run to reach a terminal state before launching VI.
   const refreshKgIndex = async () => {
     setKgiError(null)
-    try {
-      await runJob('build_knowledge_graph', {
-        catalog_name: catalogName, schema_name: schemaName,
-        ...(scopeToTableNames(kgScope) ? { table_names: scopeToTableNames(kgScope) } : {}),
-        sweep_stale_edges: 'true', incremental: 'false',
-      }, 'refresh_kgi')
-      await runJob('build_vector_index', {
-        catalog_name: catalogName, schema_name: schemaName,
-        sweep_stale_docs: 'true', incremental: 'false',
-      }, 'refresh_kgi')
-    } catch (e) { setKgiError(e.message || 'Refresh KG/Index failed') }
+    const kgRun = await runJob('build_knowledge_graph', {
+      catalog_name: catalogName, schema_name: schemaName,
+      ...(scopeToTableNames(kgScope) ? { table_names: scopeToTableNames(kgScope) } : {}),
+      sweep_stale_edges: 'true', incremental: 'false',
+    }, 'refresh_kgi')
+    if (!kgRun) { setKgiError('Could not start the knowledge-graph rebuild.'); return }
+    const kgResult = await waitForRun(kgRun.run_id)
+    if (kgResult !== 'SUCCESS') {
+      setKgiError(`Knowledge-graph rebuild ${kgResult === 'TIMEOUT' ? 'is still running' : `did not succeed (${kgResult})`} — vector index was not refreshed.`)
+      return
+    }
+    const viRun = await runJob('build_vector_index', {
+      catalog_name: catalogName, schema_name: schemaName,
+      sweep_stale_docs: 'true', incremental: 'false',
+    }, 'refresh_kgi')
+    if (!viRun) setKgiError('Knowledge graph refreshed, but the vector-index rebuild failed to start.')
   }
 
   const syncLakebase = async () => {
     setLakebaseError(null)
-    try {
-      await runJob('sync_graph_lakebase', {
-        catalog_name: catalogName, schema_name: schemaName,
-        extra_params: { ...(lakebaseCatalog ? { lakebase_catalog: lakebaseCatalog } : {}) },
-      }, 'lakebase')
-    } catch (e) { setLakebaseError(e.message || 'Lakebase sync failed') }
+    // runJob returns null (and sets the shared runError banner) on failure rather
+    // than throwing, so check the return value instead of relying on a catch.
+    const run = await runJob('sync_graph_lakebase', {
+      catalog_name: catalogName, schema_name: schemaName,
+      extra_params: { ...(lakebaseCatalog ? { lakebase_catalog: lakebaseCatalog } : {}) },
+    }, 'lakebase')
+    if (!run) setLakebaseError('Lakebase sync failed to start.')
   }
 
   const setupMcpServers = async () => {
     setMcpError(null)
-    try {
-      await runJob('setup_mcp_servers', {
-        catalog_name: catalogName, schema_name: schemaName,
-        extra_params: { drop_existing: String(mcpDropExisting) },
-      }, 'mcp_setup')
-    } catch (e) { setMcpError(e.message || 'MCP setup failed') }
+    const run = await runJob('setup_mcp_servers', {
+      catalog_name: catalogName, schema_name: schemaName,
+      extra_params: { drop_existing: String(mcpDropExisting) },
+    }, 'mcp_setup')
+    if (!run) setMcpError('MCP setup failed to start.')
   }
 
   const cardCls = 'card p-5 space-y-3'

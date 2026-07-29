@@ -7054,6 +7054,11 @@ def _build_sl_context(
 
     # KPI library enrichment (skip gracefully if table doesn't exist yet)
     try:
+        # Ensure the table + resolved_table column exist before selecting it.
+        # On an upgraded deployment the pre-existing kpi_definitions table lacks
+        # resolved_table until an ALTER runs; without this, the SELECT below would
+        # throw and the outer `except: pass` would silently drop ALL KPI context.
+        _ensure_kpi_table()
         kpi_where = f" WHERE profile_id = '{profile_id.replace(chr(39), chr(39)*2)}'" if profile_id else ""
         kpi_rows = execute_sql(
             f"SELECT name, description, formula, domain, target_tables, validation_status, resolved_table FROM {fq('kpi_definitions')}{kpi_where}"
@@ -12546,14 +12551,15 @@ def list_kpis(profile_id: str = None):
 def create_kpi(req: KpiRequest):
     _ensure_kpi_table()
     kpi_id = str(_uuid.uuid4())[:12]
-    name_esc = req.name.replace("'", "''")
-    desc_esc = req.description.replace("'", "''")
-    formula_esc = req.formula.replace("'", "''")
-    arr = ",".join("'" + t + "'" for t in req.target_tables)
+    name_esc = _esc_sql(req.name)
+    desc_esc = _esc_sql(req.description)
+    formula_esc = _esc_sql(req.formula)
+    domain_esc = _esc_sql(req.domain)
+    arr = ",".join("'" + _esc_sql(t) + "'" for t in req.target_tables)
     v_status, v_error, v_resolved = _validate_kpi_formula(req.formula, req.target_tables)
-    v_error_esc = v_error.replace("'", "''")
-    v_resolved_esc = v_resolved.replace("'", "''")
-    pid = req.profile_id or ""
+    v_error_esc = _esc_sql(v_error)
+    v_resolved_esc = _esc_sql(v_resolved)
+    pid = _esc_sql(req.profile_id or "")
     # Explicit column list (NOT positional VALUES): the table is created with a
     # fixed column order then extended via ALTER ADD COLUMNS, so a positional
     # INSERT silently corrupts data the moment a new column is added.
@@ -12562,7 +12568,7 @@ def create_kpi(req: KpiRequest):
         f"(kpi_id, name, description, formula, target_tables, domain, source, "
         f"created_at, updated_at, validation_status, validation_error, profile_id, resolved_table) VALUES "
         f"('{kpi_id}', '{name_esc}', '{desc_esc}', '{formula_esc}', "
-        f"ARRAY({arr}), '{req.domain}', 'manual', current_timestamp(), current_timestamp(), "
+        f"ARRAY({arr}), '{domain_esc}', 'manual', current_timestamp(), current_timestamp(), "
         f"'{v_status}', '{v_error_esc}', '{pid}', '{v_resolved_esc}')",
         timeout=30,
     )
@@ -12573,20 +12579,21 @@ def create_kpi(req: KpiRequest):
 @app.put("/api/kpis/{kpi_id}")
 def update_kpi(kpi_id: str, req: KpiRequest):
     _ensure_kpi_table()
-    name_esc = req.name.replace("'", "''")
-    desc_esc = req.description.replace("'", "''")
-    formula_esc = req.formula.replace("'", "''")
-    arr = ",".join("'" + t + "'" for t in req.target_tables)
+    name_esc = _esc_sql(req.name)
+    desc_esc = _esc_sql(req.description)
+    formula_esc = _esc_sql(req.formula)
+    domain_esc = _esc_sql(req.domain)
+    arr = ",".join("'" + _esc_sql(t) + "'" for t in req.target_tables)
     v_status, v_error, v_resolved = _validate_kpi_formula(req.formula, req.target_tables)
-    v_error_esc = v_error.replace("'", "''")
-    v_resolved_esc = v_resolved.replace("'", "''")
-    pid = req.profile_id or ""
+    v_error_esc = _esc_sql(v_error)
+    v_resolved_esc = _esc_sql(v_resolved)
+    pid = _esc_sql(req.profile_id or "")
     execute_sql(
         f"UPDATE {fq('kpi_definitions')} SET name = '{name_esc}', description = '{desc_esc}', "
-        f"formula = '{formula_esc}', target_tables = ARRAY({arr}), domain = '{req.domain}', "
+        f"formula = '{formula_esc}', target_tables = ARRAY({arr}), domain = '{domain_esc}', "
         f"validation_status = '{v_status}', validation_error = '{v_error_esc}', "
         f"resolved_table = '{v_resolved_esc}', profile_id = '{pid}', "
-        f"updated_at = current_timestamp() WHERE kpi_id = '{kpi_id}'",
+        f"updated_at = current_timestamp() WHERE kpi_id = '{_esc_sql(kpi_id)}'",
         timeout=30,
     )
     return {"ok": True, "validation_status": v_status, "validation_error": v_error,

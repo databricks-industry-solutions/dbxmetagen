@@ -111,13 +111,33 @@ export function useJobRunner({ onJobsError } = {}) {
       .catch(() => {})
   }, [])
 
+  // Poll a single run to terminal state. Returns the final result_state string
+  // ('SUCCESS' | 'FAILED' | ...) or 'UNKNOWN'. Used to sequence dependent jobs
+  // (e.g. rebuild the knowledge graph BEFORE re-indexing docs from it). Gives up
+  // after maxMs and returns 'TIMEOUT' so callers don't hang forever.
+  const waitForRun = useCallback(async (runId, { intervalMs = 5000, maxMs = 30 * 60 * 1000 } = {}) => {
+    if (!runId) return 'UNKNOWN'
+    const deadline = Date.now() + maxMs
+    while (Date.now() < deadline) {
+      await new Promise(res => setTimeout(res, intervalMs))
+      let data
+      try {
+        const res = await fetch(`/api/jobs/${runId}/status`)
+        if (!res.ok) continue
+        data = await res.json()
+      } catch { continue }
+      if (data && TERMINAL_STATES.has(data.state)) return data.result || 'UNKNOWN'
+    }
+    return 'TIMEOUT'
+  }, [])
+
   const activeRuns = runHistory.filter(r => !TERMINAL_STATES.has(r.state))
   const completedRuns = runHistory.filter(r => TERMINAL_STATES.has(r.state))
 
   return {
     jobs, runHistory, activeRuns, completedRuns,
     runningAction, runError, setRunError, jobsError,
-    findJob, runJob, refreshRuns, setRunHistory,
+    findJob, runJob, refreshRuns, setRunHistory, waitForRun,
   }
 }
 
