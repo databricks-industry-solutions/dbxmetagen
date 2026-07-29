@@ -26,6 +26,7 @@ from pydantic import BaseModel, Field
 from databricks.sdk import WorkspaceClient
 from databricks.sdk.service.sql import StatementParameterListItem
 from db import pg_execute, get_engine, pg_configured
+from kpi_logic import reduce_kpi_validation, resolve_kpi_target
 from dbxmetagen.ddl_bundle_utils import rewrite_ddl_catalog_schema as _rewrite_ddl_catalog_schema, dq_grade as _dq_grade
 # FK-vs-join-key constants: dependency-free, shared with the Spark library so the
 # discriminator value / SQL predicate cannot drift between the two DDL gates.
@@ -7055,12 +7056,18 @@ def _build_sl_context(
     try:
         kpi_where = f" WHERE profile_id = '{profile_id.replace(chr(39), chr(39)*2)}'" if profile_id else ""
         kpi_rows = execute_sql(
-            f"SELECT name, description, formula, domain, target_tables, validation_status FROM {fq('kpi_definitions')}{kpi_where}"
+            f"SELECT name, description, formula, domain, target_tables, validation_status, resolved_table FROM {fq('kpi_definitions')}{kpi_where}"
         )
         if kpi_rows:
-            # Filter KPIs to those whose target_tables overlap with selected tables
+            fq_lower = {t.lower() for t in fq_tables} | {t.split(".")[-1].lower() for t in fq_tables}
+            # Filter KPIs to those whose target_tables overlap with selected tables,
+            # excluding confirmed-invalid ones (their formula resolves against no
+            # target table -- feeding them to the LLM only wastes tokens and invites
+            # hallucinated columns). valid / empty / unchecked / skipped are kept.
             relevant = []
             for k in kpi_rows:
+                if (k.get("validation_status") or "").lower() == "invalid":
+                    continue
                 kt = k.get("target_tables") or []
                 if isinstance(kt, str):
                     try:
@@ -7068,15 +7075,30 @@ def _build_sl_context(
                     except Exception:
                         kt = [kt]
                 kt_set = {t.lower() for t in kt} | {t.split(".")[-1].lower() for t in kt}
-                if not kt or kt_set & {t.lower() for t in fq_tables} | {t.split(".")[-1].lower() for t in fq_tables}:
-                    relevant.append(k)
+                if not kt or kt_set & fq_lower:
+                    # Bind each KPI to the ONE table its formula belongs to, so the
+                    # LLM implements it in the right view instead of dropping it when
+                    # its columns aren't visible in whatever view it picked.
+                    bind = (k.get("resolved_table") or "").strip()
+                    if not bind:
+                        overlap = [t for t in kt if t.lower() in fq_lower or t.split(".")[-1].lower() in fq_lower]
+                        bind = kt[0] if len(kt) == 1 else (overlap[0] if overlap else (kt[0] if kt else ""))
+                    relevant.append((k, bind))
             if relevant:
                 kpi_block = (
-                    "\nREQUIRED KPIs -- implement each as a measure in an appropriate metric view.\n"
-                    "If a KPI cannot be implemented with the available columns, skip it silently."
+                    "\nREQUIRED KPIs -- implement each as a measure in the metric view built on its\n"
+                    "indicated source table. Do NOT silently drop a KPI: only skip one if its columns\n"
+                    "genuinely do not exist in that table (and such cases should be rare here, since\n"
+                    "each KPI's formula was validated against its source table)."
                 )
-                for i, k in enumerate(relevant, 1):
-                    kpi_block += f"\n  {i}. {k['name']} ({k.get('domain', '')}) : {k.get('description', '')} | Formula: {k.get('formula', 'N/A')}"
+                # Group by bind table so KPIs cluster with the view that implements them.
+                by_table = {}
+                for k, bind in relevant:
+                    by_table.setdefault(bind or "(any selected table)", []).append(k)
+                for tbl, ks in by_table.items():
+                    kpi_block += f"\n  Source table {tbl}:"
+                    for k in ks:
+                        kpi_block += f"\n    - {k['name']} ({k.get('domain', '')}): {k.get('description', '')} | Formula: {k.get('formula', 'N/A')}"
                 parts.append(kpi_block)
     except Exception:
         pass
@@ -12424,20 +12446,30 @@ def _ensure_kpi_table():
         execute_sql(f"ALTER TABLE {fq('kpi_definitions')} ADD COLUMNS (profile_id STRING)", timeout=15)
     except Exception:
         pass
+    try:
+        execute_sql(f"ALTER TABLE {fq('kpi_definitions')} ADD COLUMNS (resolved_table STRING)", timeout=15)
+    except Exception:
+        pass
 
 
-def _validate_kpi_formula(formula: str, target_tables: list[str]) -> tuple[str, str]:
-    """Dry-run a KPI formula to check syntax and column existence."""
+def _validate_kpi_formula(formula: str, target_tables: list[str]) -> tuple[str, str, str]:
+    """Dry-run a KPI formula to check syntax and column existence.
+
+    Returns (validation_status, validation_error, resolved_table). The KPI is valid
+    if the formula resolves against ANY one of its target tables (see
+    kpi_logic.reduce_kpi_validation); resolved_table records which table it validated
+    against so metric-view generation can bind the KPI to the right view.
+    """
     if not formula or not target_tables:
-        return "skipped", ""
+        return "skipped", "", ""
+    results = []
     for table in target_tables:
         try:
             rows = execute_sql(f"SELECT {formula} AS kpi_val FROM {table} LIMIT 1", timeout=30)
-            if not rows:
-                return "empty", f"No rows returned from {table}"
+            results.append(("ok" if rows else "empty", table, ""))
         except Exception as e:
-            return "invalid", f"Against {table}: {e}"
-    return "valid", ""
+            results.append(("error", table, str(e)))
+    return reduce_kpi_validation(results)
 
 
 class KpiRequest(BaseModel):
@@ -12467,6 +12499,46 @@ def list_kpis(profile_id: str = None):
     for row in rows:
         if row.get("formula"):
             row["formula"] = _autofix_expr(row["formula"])
+    # Retro-fix: KPIs created before the any-table-valid validation (or before the
+    # source-table picker) carry target_tables = [all selected tables] and a stale
+    # "invalid" status from the old all-or-nothing loop. validation_status is only
+    # recomputed on create/update, so re-validate the currently-invalid ones on read
+    # (capped, to avoid warehouse spam) and persist any that now resolve. This flips
+    # genuinely-fine KPIs to valid + records resolved_table without a manual re-save.
+    _RETRO_CAP = 8
+    revalidated = 0
+    for row in rows:
+        if revalidated >= _RETRO_CAP:
+            break
+        if (row.get("validation_status") or "").lower() != "invalid":
+            continue
+        kt = row.get("target_tables") or []
+        if isinstance(kt, str):
+            try:
+                kt = json.loads(kt)
+            except Exception:
+                kt = [kt]
+        if not row.get("formula") or not kt:
+            continue
+        revalidated += 1
+        try:
+            v_status, v_error, v_resolved = _validate_kpi_formula(row["formula"], kt)
+        except Exception:
+            continue
+        if v_status != "invalid":
+            row["validation_status"] = v_status
+            row["validation_error"] = v_error
+            row["resolved_table"] = v_resolved
+            try:
+                execute_sql(
+                    f"UPDATE {fq('kpi_definitions')} SET validation_status = '{v_status}', "
+                    f"validation_error = '{v_error.replace(chr(39), chr(39)*2)}', "
+                    f"resolved_table = '{v_resolved.replace(chr(39), chr(39)*2)}' "
+                    f"WHERE kpi_id = '{row['kpi_id'].replace(chr(39), chr(39)*2)}'",
+                    timeout=30,
+                )
+            except Exception:
+                pass
     return rows
 
 
@@ -12478,19 +12550,24 @@ def create_kpi(req: KpiRequest):
     desc_esc = req.description.replace("'", "''")
     formula_esc = req.formula.replace("'", "''")
     arr = ",".join("'" + t + "'" for t in req.target_tables)
-    v_status, v_error = _validate_kpi_formula(req.formula, req.target_tables)
+    v_status, v_error, v_resolved = _validate_kpi_formula(req.formula, req.target_tables)
     v_error_esc = v_error.replace("'", "''")
+    v_resolved_esc = v_resolved.replace("'", "''")
     pid = req.profile_id or ""
+    # Explicit column list (NOT positional VALUES): the table is created with a
+    # fixed column order then extended via ALTER ADD COLUMNS, so a positional
+    # INSERT silently corrupts data the moment a new column is added.
     execute_sql(
         f"INSERT INTO {fq('kpi_definitions')} "
         f"(kpi_id, name, description, formula, target_tables, domain, source, "
-        f"created_at, updated_at, validation_status, validation_error, profile_id) VALUES "
+        f"created_at, updated_at, validation_status, validation_error, profile_id, resolved_table) VALUES "
         f"('{kpi_id}', '{name_esc}', '{desc_esc}', '{formula_esc}', "
         f"ARRAY({arr}), '{req.domain}', 'manual', current_timestamp(), current_timestamp(), "
-        f"'{v_status}', '{v_error_esc}', '{pid}')",
+        f"'{v_status}', '{v_error_esc}', '{pid}', '{v_resolved_esc}')",
         timeout=30,
     )
-    return {"kpi_id": kpi_id, "name": req.name, "validation_status": v_status, "validation_error": v_error}
+    return {"kpi_id": kpi_id, "name": req.name, "validation_status": v_status,
+            "validation_error": v_error, "resolved_table": v_resolved}
 
 
 @app.put("/api/kpis/{kpi_id}")
@@ -12500,18 +12577,20 @@ def update_kpi(kpi_id: str, req: KpiRequest):
     desc_esc = req.description.replace("'", "''")
     formula_esc = req.formula.replace("'", "''")
     arr = ",".join("'" + t + "'" for t in req.target_tables)
-    v_status, v_error = _validate_kpi_formula(req.formula, req.target_tables)
+    v_status, v_error, v_resolved = _validate_kpi_formula(req.formula, req.target_tables)
     v_error_esc = v_error.replace("'", "''")
+    v_resolved_esc = v_resolved.replace("'", "''")
     pid = req.profile_id or ""
     execute_sql(
         f"UPDATE {fq('kpi_definitions')} SET name = '{name_esc}', description = '{desc_esc}', "
         f"formula = '{formula_esc}', target_tables = ARRAY({arr}), domain = '{req.domain}', "
         f"validation_status = '{v_status}', validation_error = '{v_error_esc}', "
-        f"profile_id = '{pid}', "
+        f"resolved_table = '{v_resolved_esc}', profile_id = '{pid}', "
         f"updated_at = current_timestamp() WHERE kpi_id = '{kpi_id}'",
         timeout=30,
     )
-    return {"ok": True, "validation_status": v_status, "validation_error": v_error}
+    return {"ok": True, "validation_status": v_status, "validation_error": v_error,
+            "resolved_table": v_resolved}
 
 
 @app.delete("/api/kpis")
@@ -12708,25 +12787,11 @@ Return ONLY a JSON array of objects with keys: name, description, formula, domai
             if kpi["formula"] != original:
                 logger.info("KPI autofix [%s]: %s -> %s", kpi.get("name", "?"), original[:80], kpi["formula"][:80])
 
-    short_to_fq = {t.split(".")[-1].lower(): t for t in req.table_identifiers}
-    fq_to_fq = {t.lower(): t for t in req.table_identifiers}
     for kpi in kpis:
-        raw = (kpi.get("source_table") or "").lower().strip()
-        if raw in short_to_fq:
-            target = [short_to_fq[raw]]
-        elif raw in fq_to_fq:
-            target = [fq_to_fq[raw]]
-        elif raw.split(".")[-1] in short_to_fq:
-            target = [short_to_fq[raw.split(".")[-1]]]
-        else:
-            # fallback: pick table with most column overlap in the formula
-            formula_lower = kpi.get("formula", "").lower()
-            best, best_score = req.table_identifiers[:1], 0
-            for tbl_fq, cols in col_by_table.items():
-                score = sum(1 for c in cols if c["column_name"].lower() in formula_lower)
-                if score > best_score:
-                    best, best_score = [tbl_fq], score
-            target = best
+        target = resolve_kpi_target(
+            kpi.get("source_table"), kpi.get("formula", ""),
+            req.table_identifiers, col_by_table,
+        )
         kpi["validation_status"] = "unchecked"
         kpi["validation_error"] = ""
         kpi["target_tables"] = target

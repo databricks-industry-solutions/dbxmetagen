@@ -429,7 +429,7 @@ export default function SemanticLayer({ onNavigate, pipelineStats, onRefreshPipe
   // KPI Library
   const [kpis, setKpis] = useState([])
   const [showKpiForm, setShowKpiForm] = useState(false)
-  const [kpiDraft, setKpiDraft] = useState({ name: '', description: '', formula: '', domain: '' })
+  const [kpiDraft, setKpiDraft] = useState({ name: '', description: '', formula: '', domain: '', target_tables: [] })
   const [kpiEditId, setKpiEditId] = useState(null)
   const [kpiSuggesting, setKpiSuggesting] = useState(false)
   const [expandedKpiSections, setExpandedKpiSections] = useState(new Set())
@@ -845,12 +845,15 @@ export default function SemanticLayer({ onNavigate, pipelineStats, onRefreshPipe
   }
   const saveKpi = async () => {
     try {
-      const body = { ...kpiDraft, target_tables: selectedTables, profile_id: activeProfileId || undefined }
+      // Bind the KPI to the source table(s) the user picked; fall back to all selected
+      // tables ("Auto") only when none is chosen, preserving the pre-picker behavior.
+      const picked = Array.isArray(kpiDraft.target_tables) ? kpiDraft.target_tables.filter(Boolean) : []
+      const body = { ...kpiDraft, target_tables: picked.length ? picked : selectedTables, profile_id: activeProfileId || undefined }
       const res = kpiEditId
         ? await fetch(`/api/kpis/${kpiEditId}`, { method: 'PUT', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body) })
         : await fetch('/api/kpis', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body) })
       if (!res.ok) { const d = await res.json().catch(() => ({})); setError(d.detail || 'Save KPI failed'); return }
-      setKpiDraft({ name: '', description: '', formula: '', domain: '' }); setKpiEditId(null); setShowKpiForm(false)
+      setKpiDraft({ name: '', description: '', formula: '', domain: '', target_tables: [] }); setKpiEditId(null); setShowKpiForm(false)
       loadKpis()
     } catch (e) { setError(e.message || 'Save KPI failed') }
   }
@@ -892,8 +895,10 @@ export default function SemanticLayer({ onNavigate, pipelineStats, onRefreshPipe
       const j = await res.json()
       if (j.warning) setError(j.warning)
       for (const k of (j.kpis || [])) {
+        // Preserve the backend-resolved single target_tables (suggest_kpis binds each
+        // KPI to the one table its formula belongs to). Do NOT broaden to all tables.
         await fetch('/api/kpis', { method: 'POST', headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({ ...k, target_tables: fqTables, source: 'suggested', profile_id: activeProfileId || undefined }) })
+          body: JSON.stringify({ ...k, source: 'suggested', profile_id: activeProfileId || undefined }) })
       }
       loadKpis()
     } catch (e) {
@@ -1704,7 +1709,7 @@ export default function SemanticLayer({ onNavigate, pipelineStats, onRefreshPipe
               className="px-3 py-1.5 bg-teal-600 text-white rounded text-xs hover:bg-teal-700 disabled:opacity-50">
               {kpiSuggesting ? 'Suggesting...' : 'Auto-Suggest KPIs'}
             </button>
-            <button onClick={() => { setShowKpiForm(true); setKpiEditId(null); setKpiDraft({ name: '', description: '', formula: '', domain: '' }) }}
+            <button onClick={() => { setShowKpiForm(true); setKpiEditId(null); setKpiDraft({ name: '', description: '', formula: '', domain: '', target_tables: [] }) }}
               className="px-3 py-1.5 bg-dbx-blue text-white rounded text-xs hover:bg-blue-700">+ Add KPI</button>
             {kpis.length > 0 && (
               <button onClick={deleteAllKpis}
@@ -1721,6 +1726,15 @@ export default function SemanticLayer({ onNavigate, pipelineStats, onRefreshPipe
               placeholder="Business description" rows={2} className="input-base w-full" />
             <input value={kpiDraft.formula} onChange={e => setKpiDraft(d => ({ ...d, formula: e.target.value }))}
               placeholder="SQL formula (e.g. SUM(orders.total_amount))" className="input-base w-full" />
+            <div>
+              <label className="block text-xs text-slate-500 dark:text-slate-400 mb-1">Source table &mdash; which table this KPI's formula runs against</label>
+              <select value={(kpiDraft.target_tables && kpiDraft.target_tables[0]) || ''}
+                onChange={e => setKpiDraft(d => ({ ...d, target_tables: e.target.value ? [e.target.value] : [] }))}
+                className="input-base w-full">
+                <option value="">Auto (validate against all selected tables)</option>
+                {selectedTables.map(t => <option key={t} value={t}>{t.split('.').slice(-1)[0]}</option>)}
+              </select>
+            </div>
             <div className="flex gap-2">
               <input value={kpiDraft.domain} onChange={e => setKpiDraft(d => ({ ...d, domain: e.target.value }))}
                 placeholder="Domain (e.g. sales)" className="input-base flex-1" />
@@ -1730,7 +1744,24 @@ export default function SemanticLayer({ onNavigate, pipelineStats, onRefreshPipe
           </div>
         )}
         {kpis.length > 0 && (() => {
-          const kpiStatusBadge = () => null
+          // Surface validation status so users don't have to query kpi_definitions
+          // directly. validation_error goes in the tooltip. resolved_table (set by
+          // any-table-valid validation) shows which table the formula validated against.
+          const kpiStatusBadge = (status, error) => {
+            const s = (status || '').toLowerCase()
+            const styles = {
+              valid: 'bg-green-100 dark:bg-green-900/40 text-green-700 dark:text-green-300',
+              empty: 'bg-amber-100 dark:bg-amber-900/40 text-amber-700 dark:text-amber-300',
+              invalid: 'bg-red-100 dark:bg-red-900/40 text-red-700 dark:text-red-300',
+              unchecked: 'bg-slate-100 dark:bg-slate-700 text-slate-600 dark:text-slate-300',
+            }
+            const labels = { valid: 'Valid', empty: 'No data', invalid: 'Invalid', unchecked: 'Unchecked' }
+            if (!labels[s]) return null  // skipped / unknown -> no badge
+            return (
+              <span className={`ml-2 text-xs px-1.5 py-0.5 rounded ${styles[s]}`}
+                title={error || labels[s]}>{labels[s]}</span>
+            )
+          }
           const KpiRow = ({ k, dimmed }) => (
             <div className={`flex items-start justify-between gap-3 border rounded-lg px-3 py-2 text-sm ${dimmed ? 'border-slate-200/60 dark:border-slate-700/50 opacity-60' : 'border-slate-200 dark:border-slate-700'}`}>
               <div className="flex-1 min-w-0">
@@ -1739,9 +1770,10 @@ export default function SemanticLayer({ onNavigate, pipelineStats, onRefreshPipe
                 {kpiStatusBadge(k.validation_status, k.validation_error)}
                 {k.description && <p className="text-xs text-gray-500 dark:text-gray-400 mt-0.5 truncate">{k.description}</p>}
                 {k.formula && <code className="text-xs text-gray-400 dark:text-gray-500 block mt-0.5 truncate">{k.formula}</code>}
+                {k.resolved_table && <p className="text-[10px] text-slate-400 dark:text-slate-500 mt-0.5">validated against {k.resolved_table.split('.').slice(-1)[0]}</p>}
               </div>
               <div className="flex gap-1 shrink-0">
-                <button onClick={() => { setKpiEditId(k.kpi_id); setKpiDraft({ name: k.name, description: k.description || '', formula: k.formula || '', domain: k.domain || '' }); setShowKpiForm(true) }}
+                <button onClick={() => { setKpiEditId(k.kpi_id); setKpiDraft({ name: k.name, description: k.description || '', formula: k.formula || '', domain: k.domain || '', target_tables: Array.isArray(k.target_tables) ? k.target_tables : [] }); setShowKpiForm(true) }}
                   className="text-xs text-blue-600 hover:underline">Edit</button>
                 <button onClick={() => deleteKpi(k.kpi_id)} className="text-xs text-red-500 hover:underline">Del</button>
               </div>
