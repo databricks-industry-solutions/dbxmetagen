@@ -21,6 +21,7 @@ export default function SyncOps({ onNavigate }) {
   const [error, setError] = useState(null)
 
   const [kgScope, setKgScope] = useState({ mode: 'all', tables: [] })
+  const [kgiError, setKgiError] = useState(null)
   const [lakebaseCatalog, setLakebaseCatalog] = useState('')
   const [lakebaseError, setLakebaseError] = useState(null)
   const [mcpDropExisting, setMcpDropExisting] = useState(false)
@@ -39,16 +40,22 @@ export default function SyncOps({ onNavigate }) {
 
   const ready = !!(catalogName.trim() && schemaName.trim())
 
-  const syncKnowledgeGraph = () => runJob('build_knowledge_graph', {
-    catalog_name: catalogName, schema_name: schemaName,
-    ...(scopeToTableNames(kgScope) ? { table_names: scopeToTableNames(kgScope) } : {}),
-    sweep_stale_edges: 'true', incremental: 'false',
-  }, 'sync_kg')
-
-  const syncVectorIndex = () => runJob('build_vector_index', {
-    catalog_name: catalogName, schema_name: schemaName,
-    sweep_stale_docs: 'true', incremental: 'false',
-  }, 'sync_vi')
+  // Refresh both the knowledge graph and the vector index (KG first, then VI) so
+  // approved/rejected FKs and metadata edits propagate to both in one click.
+  const refreshKgIndex = async () => {
+    setKgiError(null)
+    try {
+      await runJob('build_knowledge_graph', {
+        catalog_name: catalogName, schema_name: schemaName,
+        ...(scopeToTableNames(kgScope) ? { table_names: scopeToTableNames(kgScope) } : {}),
+        sweep_stale_edges: 'true', incremental: 'false',
+      }, 'refresh_kgi')
+      await runJob('build_vector_index', {
+        catalog_name: catalogName, schema_name: schemaName,
+        sweep_stale_docs: 'true', incremental: 'false',
+      }, 'refresh_kgi')
+    } catch (e) { setKgiError(e.message || 'Refresh KG/Index failed') }
+  }
 
   const syncLakebase = async () => {
     setLakebaseError(null)
@@ -85,71 +92,59 @@ export default function SyncOps({ onNavigate }) {
         </p>
       )}
 
-      {/* Post-Review Sync */}
+      {/* Post-Review Sync — three actions after reviewing FKs / editing metadata */}
       <section className={cardCls}>
         <div className="flex items-center gap-2">
           <h3 className="text-sm font-semibold text-slate-700 dark:text-slate-200">Post-Review Sync</h3>
-          <InfoTip text="After reviewing foreign keys or editing metadata in Review & Apply, propagate those changes to the knowledge graph and vector index without re-running the full pipeline." />
+          <InfoTip text="After reviewing foreign keys or editing metadata in Review & Apply, propagate those changes and expose the metadata — without re-running the full pipeline." />
         </div>
         <div>
-          <label className="text-xs text-slate-500 dark:text-slate-400 mb-1 block">Tables (knowledge-graph rebuild)</label>
+          <label className="text-xs text-slate-500 dark:text-slate-400 mb-1 block">Tables (knowledge-graph rebuild scope)</label>
           <TableScopePicker value={kgScope} onChange={setKgScope} kbOnly />
         </div>
-        <div className="flex flex-wrap gap-3">
-          <div className="flex-1 min-w-[200px]">
-            <button onClick={syncKnowledgeGraph} disabled={!!runningAction || !ready} className="btn-secondary btn-md w-full">
-              {runningAction === 'sync_kg' ? 'Starting…' : 'Sync Knowledge Graph'}
+        <div className="grid grid-cols-1 sm:grid-cols-3 gap-3">
+          {/* Generate MCPs */}
+          <div>
+            <button onClick={setupMcpServers} disabled={!!runningAction || !ready} className="btn-secondary btn-md w-full">
+              {runningAction === 'mcp_setup' ? 'Starting…' : 'Generate MCPs'}
             </button>
-            <p className="text-[11px] text-slate-400 mt-1">Rebuilds graph nodes/edges from the knowledge base, applying approved/rejected FKs and sweeping orphaned edges.</p>
+            <label className="flex items-center gap-1.5 text-[11px] text-slate-500 dark:text-slate-400 cursor-pointer select-none mt-1.5">
+              <input type="checkbox" checked={mcpDropExisting} onChange={e => setMcpDropExisting(e.target.checked)} className="rounded" />
+              Recreate existing functions
+            </label>
+            <p className="text-[11px] text-slate-400 mt-1 flex items-center gap-1">
+              Expose metadata as MCP tools
+              <InfoTip text="Creates UC functions and validates the Vector Search index so the knowledge base, graph, FKs, and ontology entities are exposed as MCP tools for Cursor, Claude Code, AI Playground, and custom agents." />
+            </p>
+            {mcpError && <div className="text-[11px] text-red-600 dark:text-red-400 mt-1">{mcpError}</div>}
           </div>
-          <div className="flex-1 min-w-[200px]">
-            <button onClick={syncVectorIndex} disabled={!!runningAction || !ready} className="btn-secondary btn-md w-full">
-              {runningAction === 'sync_vi' ? 'Starting…' : 'Sync Vector Index'}
+          {/* Refresh KG/Index */}
+          <div>
+            <button onClick={refreshKgIndex} disabled={!!runningAction || !ready} className="btn-secondary btn-md w-full">
+              {runningAction === 'refresh_kgi' ? 'Refreshing…' : 'Refresh KG/Index'}
             </button>
-            <p className="text-[11px] text-slate-400 mt-1">Regenerates metadata documents and re-indexes them in Vector Search — powers the agent's semantic search.</p>
+            <p className="text-[11px] text-slate-400 mt-1 flex items-center gap-1">
+              Rebuild knowledge graph + vector index
+              <InfoTip text="Rebuilds graph nodes/edges from the knowledge base (applying approved/rejected FKs and sweeping orphaned edges), then regenerates and re-indexes metadata documents in Vector Search — which powers the agent's semantic search." />
+            </p>
+            {kgiError && <div className="text-[11px] text-red-600 dark:text-red-400 mt-1">{kgiError}</div>}
+          </div>
+          {/* Lakebase Sync (Beta) */}
+          <div>
+            <button onClick={syncLakebase} disabled={!!runningAction || !ready} className="btn-secondary btn-md w-full">
+              {runningAction === 'lakebase' ? 'Syncing…' : 'Lakebase Sync'}
+            </button>
+            <div className="flex items-center gap-1.5 mt-1.5">
+              <span className="badge bg-amber-100 text-amber-700 dark:bg-amber-900/40 dark:text-amber-300 text-[10px]">Beta</span>
+              {lakebaseConfigured
+                ? <span className="badge bg-emerald-50 text-emerald-700 dark:bg-emerald-900/40 dark:text-emerald-300 text-[10px]">Configured</span>
+                : <span className="badge bg-slate-100 text-slate-500 dark:bg-slate-800 dark:text-slate-400 text-[10px]" title="Not configured — the graph uses Delta tables instead.">Using Delta Tables</span>}
+              <InfoTip text="Syncs the graph (nodes, edges, entities, relationships) to Lakebase (Postgres) for low-latency queries by the exploration agents. Requires a completed analytics pipeline and a configured Lakebase catalog." />
+            </div>
+            <input value={lakebaseCatalog} onChange={e => setLakebaseCatalog(e.target.value)} placeholder="Target catalog (optional)" className="input-base !text-xs mt-1.5" />
+            {lakebaseError && <div className="text-[11px] text-red-600 dark:text-red-400 mt-1">{lakebaseError}</div>}
           </div>
         </div>
-      </section>
-
-      {/* Lakebase sync */}
-      <section className={cardCls}>
-        <div className="flex items-center gap-2">
-          <h3 className="text-sm font-semibold text-slate-700 dark:text-slate-200">Sync Knowledge Graph to Lakebase</h3>
-          <span className="badge bg-amber-100 text-amber-700 dark:bg-amber-900/40 dark:text-amber-300 text-[10px]">Beta</span>
-          {lakebaseConfigured
-            ? <span className="badge bg-emerald-50 text-emerald-700 dark:bg-emerald-900/40 dark:text-emerald-300 text-[10px]">Configured</span>
-            : <span className="badge bg-slate-100 text-slate-500 dark:bg-slate-800 dark:text-slate-400 text-[10px]" title="Not configured — the graph uses Delta tables instead.">Using Delta Tables</span>}
-          <InfoTip text="Syncs the graph (nodes, edges, entities, relationships) to Lakebase (Postgres) for low-latency queries by the exploration agents. Requires a completed analytics pipeline and a configured Lakebase catalog." />
-        </div>
-        <div className="flex items-end gap-3">
-          <div className="flex-1">
-            <label className="text-xs text-slate-500 dark:text-slate-400 mb-1 block">Target Lakebase catalog (optional)</label>
-            <input value={lakebaseCatalog} onChange={e => setLakebaseCatalog(e.target.value)} placeholder="e.g. lakebase_catalog" className="input-base !text-xs" />
-          </div>
-          <button onClick={syncLakebase} disabled={!!runningAction || !ready} className="btn-secondary btn-md whitespace-nowrap">
-            {runningAction === 'lakebase' ? 'Syncing…' : 'Sync to Lakebase'}
-          </button>
-        </div>
-        {lakebaseError && <div className="text-xs text-red-600 dark:text-red-400 bg-red-50 dark:bg-red-900/20 rounded-lg px-3 py-2">{lakebaseError}</div>}
-      </section>
-
-      {/* MCP setup */}
-      <section className={cardCls}>
-        <div className="flex items-center gap-2">
-          <h3 className="text-sm font-semibold text-slate-700 dark:text-slate-200">Setup MCP Servers</h3>
-          <span className="badge bg-blue-100 text-blue-700 dark:bg-blue-900/40 dark:text-blue-300 text-[10px]">Beta</span>
-          <InfoTip text="Creates UC functions and validates the Vector Search index so the knowledge base, graph, FKs, and ontology entities are exposed as MCP tools for Cursor, Claude Code, AI Playground, and custom agents." />
-        </div>
-        <div className="flex items-end gap-3">
-          <label className="flex items-center gap-1.5 text-xs text-slate-600 dark:text-slate-400 cursor-pointer select-none">
-            <input type="checkbox" checked={mcpDropExisting} onChange={e => setMcpDropExisting(e.target.checked)} className="rounded" />
-            Recreate existing functions
-          </label>
-          <button onClick={setupMcpServers} disabled={!!runningAction || !ready} className="btn-secondary btn-md whitespace-nowrap">
-            {runningAction === 'mcp_setup' ? 'Starting…' : 'Setup MCP Servers'}
-          </button>
-        </div>
-        {mcpError && <div className="text-xs text-red-600 dark:text-red-400 bg-red-50 dark:bg-red-900/20 rounded-lg px-3 py-2">{mcpError}</div>}
       </section>
     </div>
   )

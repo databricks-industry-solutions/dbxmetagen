@@ -544,11 +544,11 @@ export default function BatchJobs({ onNavigate, pipelineStats }) {
 
       <TabErrorBoundary key="core">
       {(
-        <section className="card border-l-4 border-l-dbx-lava overflow-hidden">
+        <section className="card border-l-4 border-l-dbx-lava">
           <div className="p-6 space-y-4">
             <p className="text-sm text-slate-500 dark:text-slate-400 flex items-center gap-1.5">
-              Generate <strong className="text-slate-700 dark:text-slate-200">descriptions, sensitivity, and domain</strong> for the chosen tables. Results land in Review &amp; Apply before anything is written.
-              <InfoTip text="Core metadata = table/column descriptions (comments), PII/PHI/PCI classification, and business-domain classification. Use the dropdown beside Generate to run just one type for targeted re-runs." />
+              Generate <strong className="text-slate-700 dark:text-slate-200">descriptions, sensitivity, and domain</strong> for the chosen tables.
+              <InfoTip text="Core metadata = table/column descriptions (comments), PII/PHI/PCI classification, and business-domain classification. Results land in Review & Apply before anything is written. Use the dropdown beside Generate to run just one type for targeted re-runs." />
             </p>
 
             <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
@@ -565,28 +565,26 @@ export default function BatchJobs({ onNavigate, pipelineStats }) {
                   <div className="mt-1.5">
                     <textarea value={patternText} onChange={e => setPatternText(e.target.value)}
                       placeholder="catalog.schema.*, catalog.schema.table1"
+                      title="Comma-separated fully-qualified table names; use * for all tables in a schema. Combined with any tables selected above."
                       className="textarea-base h-16 !text-xs" />
-                    <p className="text-[10px] text-slate-400 dark:text-slate-500 mt-1">Comma-separated FQNs; use <code className="bg-dbx-oat dark:bg-dbx-navy-500 px-1 rounded">*</code> for all tables in a schema. Combined with any tables selected above.</p>
                   </div>
                 )}
               </div>
               <div className="space-y-3">
                 <p className="text-sm font-medium text-slate-700 dark:text-slate-200">Options</p>
-                <label className="flex items-center gap-2.5 text-sm text-slate-600 dark:text-slate-300 cursor-pointer"
-                  title="Applies SQL comments directly to your tables. Disable this to review results first in the Review tab.">
+                <label className="flex items-center gap-2 text-sm text-slate-600 dark:text-slate-300 cursor-pointer">
                   <input type="checkbox" checked={applyDdl} disabled={federationMode} onChange={e => setApplyDdl(e.target.checked)} />
                   Apply to tables immediately
+                  <InfoTip text="Applies SQL comments directly to your tables. When on, this writes SQL COMMENT ON statements to your Unity Catalog tables and columns — existing comments will be overwritten. Disable to review results first in the Review tab." />
                 </label>
-                {applyDdl && !federationMode && <p className="text-[10px] text-amber-600 dark:text-amber-400 ml-6 -mt-1">This will write SQL COMMENT ON statements directly to your Unity Catalog tables and columns. Existing comments will be overwritten.</p>}
-                <label className="flex items-center gap-2.5 text-sm text-slate-600 dark:text-slate-300 cursor-pointer"
-                  title="Enable for external/federated catalogs (Redshift, Snowflake, etc.). Disables DDL apply and skips DESCRIBE EXTENDED.">
+                <label className="flex items-center gap-2 text-sm text-slate-600 dark:text-slate-300 cursor-pointer">
                   <input type="checkbox" checked={federationMode} onChange={e => {
                     setFederationMode(e.target.checked)
                     if (e.target.checked) setApplyDdl(false)
                   }} />
                   Federation mode (external catalogs)
+                  <InfoTip text="Enable for external/federated catalogs (Redshift, Snowflake, etc.). DDL apply is disabled and DESCRIBE EXTENDED is skipped for federated tables." />
                 </label>
-                {federationMode && <p className="text-[10px] text-blue-600 dark:text-blue-400 ml-6 -mt-1">DDL apply is disabled. DESCRIBE EXTENDED will be skipped for federated tables.</p>}
               </div>
             </div>
 

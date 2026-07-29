@@ -75,9 +75,13 @@ const MORE_NAV = {
     { id: 'entities', label: 'Entity Browser', desc: 'Entity-first navigation with conformance view' },
     { id: 'ontologyBuilder', label: 'Build Ontology', desc: 'Visual entity, relationship, and property editor' },
     { id: 'syncops', label: 'Sync & Ops', desc: 'Rebuild graph/index, sync to Lakebase, set up MCP' },
-    { id: 'guide', label: 'Guide', desc: 'Full walkthrough and workflow help' },
+    // 'guide' intentionally omitted from More — reachable via the header "?" button.
   ],
 }
+
+// Interactive tour (react-joyride) is hidden until it's polished; re-enable by
+// flipping this flag. Roadmapped in docs/CONSOLIDATED_ROADMAP.md.
+const TOUR_ENABLED = false
 
 export async function safeFetch(url, options) {
   try {
@@ -384,20 +388,22 @@ export default function App() {
         </div>
       </header>
 
-      <Joyride
-        steps={TOUR_STEPS}
-        run={runTour}
-        continuous
-        showSkipButton
-        showProgress
-        callback={({ status }) => {
-          if ([STATUS.FINISHED, STATUS.SKIPPED].includes(status)) setRunTour(false)
-        }}
-        styles={{
-          options: { primaryColor: '#FF3621', zIndex: 10000 },
-          tooltip: { borderRadius: 12, fontSize: 14 },
-        }}
-      />
+      {TOUR_ENABLED && (
+        <Joyride
+          steps={TOUR_STEPS}
+          run={runTour}
+          continuous
+          showSkipButton
+          showProgress
+          callback={({ status }) => {
+            if ([STATUS.FINISHED, STATUS.SKIPPED].includes(status)) setRunTour(false)
+          }}
+          styles={{
+            options: { primaryColor: '#FF3621', zIndex: 10000 },
+            tooltip: { borderRadius: 12, fontSize: 14 },
+          }}
+        />
+      )}
 
       {/* Navigation */}
       {/* On the home screen the two outcome cards ARE the navigation, so the nav
@@ -434,7 +440,7 @@ export default function App() {
               <TabErrorBoundary>
                 <Comp onNavigate={setActiveTab} pipelineStats={pipelineStats}
                   onRefreshPipelineStats={refreshPipelineStats}
-                  {...(tabId === 'guide' ? { onStartTour: () => setRunTour(true) } : {})} />
+                  {...(TOUR_ENABLED && tabId === 'guide' ? { onStartTour: () => setRunTour(true) } : {})} />
               </TabErrorBoundary>
             </div>
           )

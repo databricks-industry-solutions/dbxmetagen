@@ -94,16 +94,16 @@ export default function Home({ onNavigate }) {
         <p className="text-xs font-semibold uppercase tracking-wider text-slate-400 dark:text-slate-500 mb-3">
           Already have metadata?
         </p>
-        <div className="flex flex-wrap gap-2.5">
+        <div className="grid grid-cols-1 sm:grid-cols-3 gap-2.5">
           {SECONDARY.map(s => (
             <button
               key={s.id}
               onClick={() => onNavigate(s.id)}
-              className="flex items-center gap-2 px-3.5 py-2 rounded-lg border border-slate-200 dark:border-dbx-navy-400/30 text-sm text-slate-600 dark:text-slate-300 hover:border-dbx-lava/40 hover:text-dbx-lava dark:hover:text-dbx-lava transition-colors"
+              className="flex items-center gap-2 min-w-0 px-3.5 py-2 rounded-lg border border-slate-200 dark:border-dbx-navy-400/30 text-sm text-slate-600 dark:text-slate-300 hover:border-dbx-lava/40 hover:text-dbx-lava dark:hover:text-dbx-lava transition-colors"
               title={s.desc}
             >
-              <span className="font-medium">{s.label}</span>
-              <span className="text-xs text-slate-400 dark:text-slate-500 hidden sm:inline">· {s.desc}</span>
+              <span className="font-medium whitespace-nowrap">{s.label}</span>
+              <span className="text-xs text-slate-400 dark:text-slate-500 hidden lg:inline truncate">· {s.desc}</span>
             </button>
           ))}
         </div>

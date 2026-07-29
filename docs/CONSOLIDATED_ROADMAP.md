@@ -369,6 +369,18 @@ All open work items from every roadmap and plan document, organized by theme. Ea
 
 ---
 
+## 4b. App UX / Onboarding
+
+| ID | Item | Status | Priority | Effort | Source |
+|----|------|--------|----------|--------|--------|
+| UX-1 | Interactive product tour (`react-joyride`) hidden behind `TOUR_ENABLED=false` in `App.jsx` until polished — steps are stale/thin and need a rewrite before re-enabling | OPEN | P3 | S | UI polish pass |
+
+### UX-1: Finish/re-enable the interactive tour
+
+**Status: OPEN** -- The `react-joyride` tour (`TOUR_STEPS` in `App.jsx`, triggered by the "Take the Interactive Tour" button in `GettingStarted.jsx`) is gated off via `const TOUR_ENABLED = false`: the `<Joyride>` render and the `onStartTour` prop are both suppressed. The three existing steps (auth badge, More menu, header guide) are thin and partly stale after nav changes. To re-enable: flip `TOUR_ENABLED`, refresh the step targets/copy to match the current nav (no "Guide" in More; header "?" button), and consider a first-run auto-start using the existing `dbxmetagen_tourSeen` localStorage key. **Files:** `apps/dbxmetagen-app/app/src/App.jsx`, `components/GettingStarted.jsx`.
+
+---
+
 ## 5. Data Engineering Performance
 
 ### 5a. Core Pipeline Performance

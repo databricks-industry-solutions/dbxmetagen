@@ -265,18 +265,35 @@ function deriveFoundation(pipelineStats) {
  * unmet prerequisite. Collapses to a thin confirmation once ready.
  */
 function FoundationRail({ foundation, onNavigate, step2Runner }) {
+  const [showRerun, setShowRerun] = useState(false)
   if (!foundation) return null
   const { metadataDone, analyticsDone, ready, stats } = foundation
 
   if (ready) {
+    // Collapsed once the foundation is set — but keep a way to re-run the
+    // analytics pipeline (e.g. after adding tables, switching ontology bundle,
+    // or a partial prior run), since the inline first-run runner is gone here.
     return (
-      <div className="rounded-lg border border-emerald-200 dark:border-emerald-800/40 bg-emerald-50/60 dark:bg-emerald-900/15 px-4 py-2 text-sm flex items-center gap-2">
-        <svg className="w-4 h-4 text-emerald-500 shrink-0" fill="none" viewBox="0 0 24 24" stroke="currentColor">
-          <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M5 13l4 4L19 7" />
-        </svg>
-        <span className="text-slate-600 dark:text-slate-300">
-          Foundation ready &mdash; core metadata and the analytics pipeline are in place. Generate metric views below.
-        </span>
+      <div className="rounded-lg border border-emerald-200 dark:border-emerald-800/40 bg-emerald-50/60 dark:bg-emerald-900/15 px-4 py-2 text-sm">
+        <div className="flex items-center gap-2">
+          <svg className="w-4 h-4 text-emerald-500 shrink-0" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+            <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M5 13l4 4L19 7" />
+          </svg>
+          <span className="text-slate-600 dark:text-slate-300">
+            Foundation ready &mdash; core metadata and the analytics pipeline are in place. Generate metric views below.
+          </span>
+          {step2Runner && (
+            <button onClick={() => setShowRerun(v => !v)}
+              className="ml-auto text-xs font-semibold text-dbx-lava hover:underline shrink-0">
+              {showRerun ? 'Hide' : 'Re-run advanced metadata'}
+            </button>
+          )}
+        </div>
+        {showRerun && step2Runner && (
+          <div className="mt-3 pt-3 border-t border-emerald-200/70 dark:border-emerald-700/30">
+            {step2Runner}
+          </div>
+        )}
       </div>
     )
   }
