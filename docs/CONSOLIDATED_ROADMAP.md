@@ -470,6 +470,7 @@ Hardening of multi-bundle coexistence and sweep cleanup. Canonical invariants in
 | OB-7 | Data-probe veto: force `is_fk=false` when join probe found zero overlap (`join_matched=0 AND ri_score=0`), exempting declared FKs -- stops skip-AI tiers asserting non-joining pairs | DONE | -- | S | UAT FK scenario |
 | OB-8 | `fk_predictions` MERGE has no delete-by-source path -> a spurious row already persisted is not corrected when a fix stops the pair being regenerated (goes stale). "Sweep stale edges" only cleans `graph_edges`, not `fk_predictions`. | OPEN | P2 | M | UAT FK scenario |
 | OB-9 | One-FK-per-child-column resolution: a single child column claiming `is_fk=true` to >1 parent table (polymorphic reference, not a valid SQL FK) keeps only the highest-confidence target; demotes the rest to `is_fk=false`. Fixes multi-primary-table entity-type collisions (e.g. one `Organization`/`Person` type primary for two tables in a schema) that the same-block guard (OB-6) and never-joins veto (OB-7) both miss. | DONE | -- | S | UAT snowflake scenario |
+| OB-10 | Standalone `fk_prediction_job` never exposed `sweep_stale_edges` as a job parameter (the notebook widget existed but was unwired), so the job could never clean orphaned `graph_edges` -- a demoted/removed pair lingered as a stale predicted_fk edge. Wired the param through job YAML -> notebook widget -> `merge_edges(sweep_stale=True)`. | DONE | -- | S | UAT snowflake scenario |
 
 ### OB-8: `fk_predictions` stale-row cleanup
 
@@ -490,6 +491,14 @@ Hardening of multi-bundle coexistence and sweep cleanup. Canonical invariants in
 **Verified:** live on `uat_snowflake_health` -- `fct_encounter.patient_id` resolves to `dim_patient` (0.90) not the bridge (0.80); `patient_facility_bridge.facility_id` resolves to `dim_facility` (0.92) not `dim_health_system` (0.89). 7 tests in `TestOneFkPerChildColumn`.
 
 **Files:** `src/dbxmetagen/fk_prediction.py` (`write_predictions`), `tests/test_fk_prediction.py`
+
+### OB-10: standalone FK job could not sweep stale graph edges
+
+**Status: DONE** -- The `predict_foreign_keys.py` notebook has always had a `sweep_stale_edges` widget (default false) that flows to `write_graph_edges(sweep_stale=...)` -> `merge_edges(sweep_stale=True)`, which deletes orphaned `predicted_fk` edges from `graph_edges` for `source_system='fk_predictions'`. But the standalone `fk_prediction.job.yml` never declared `sweep_stale_edges` as a job parameter nor passed it into `base_parameters`, so the job always ran with the widget default (false) and could never clean orphans. Observed on `uat_snowflake_health`: after OB-9 demoted two pairs to `is_fk=false`, `fk_predictions` self-healed (in-place MERGE overwrite), but two stale `predicted_fk` edges lingered in `graph_edges` because this job's `merge_edges` ran with `sweep_stale=False`. (Distinct from OB-8, which is the still-open gap that `fk_predictions` itself has no delete-by-source path.)
+
+**Work (shipped):** Added `sweep_stale_edges` (default `"false"`, backward compatible) to `fk_prediction.job.yml` job parameters and wired it into the notebook task `base_parameters`. Running the job with `sweep_stale_edges=true` now clears orphaned FK graph edges. Do NOT hand-DELETE `graph_edges` (pitfall #6) -- the sweep goes through `merge_edges`.
+
+**Files:** `resources/jobs/fk_prediction.job.yml`
 
 ---
 
