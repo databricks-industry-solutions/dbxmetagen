@@ -262,6 +262,120 @@ class TestNeverJoinsVeto:
         assert self._never_joins(0, 0.5, SR_COL_PROP) is False
 
 
+class TestOneFkPerChildColumn:
+    """A single fully-qualified child column (src_column, always the FK side after
+    _enforce_direction) cannot be a referential FK to more than one parent table.
+    When >1 is_fk=true targets survive for one child column, keep only the highest
+    final_confidence one; demote the rest to is_fk=false. Declared FKs are exempt,
+    and a lone target or an already-false row is untouched. This mirrors the
+    resolution in run()'s final projection (write_predictions)."""
+
+    def _resolve(self, rows):
+        """rows: list of dicts with src_column, dst_column, is_fk, final_confidence,
+        source_rank. Returns the resolved is_fk per row, in input order."""
+        # Rank per src_column: is_fk=true first, then declared, then higher
+        # confidence, then stable dst_column tiebreak (mirrors the Window orderBy).
+        out = []
+        by_child = {}
+        for i, r in enumerate(rows):
+            by_child.setdefault(r["src_column"], []).append(i)
+        resolved = [r["is_fk"] for r in rows]
+        for child, idxs in by_child.items():
+            ordered = sorted(
+                idxs,
+                key=lambda i: (
+                    0 if rows[i]["is_fk"] else 1,
+                    0 if rows[i]["source_rank"] == SR_DECLARED else 1,
+                    -rows[i]["final_confidence"],
+                    rows[i]["dst_column"],
+                ),
+            )
+            for rank, i in enumerate(ordered, start=1):
+                r = rows[i]
+                is_declared = r["source_rank"] == SR_DECLARED
+                resolvable = r["is_fk"] and not is_declared
+                if resolvable and rank > 1:
+                    resolved[i] = False
+        return resolved
+
+    def test_multi_target_keeps_highest_confidence(self):
+        # The observed bug: fct_encounter.patient_id links to Person, which is
+        # 'primary' for both dim_patient AND patient_facility_bridge. Both land
+        # is_fk=true via column_property_skip_ai; only dim_patient (higher conf) survives.
+        rows = [
+            {"src_column": "c.s.fct.patient_id", "dst_column": "c.s.dim_patient.patient_id",
+             "is_fk": True, "final_confidence": 0.90, "source_rank": SR_COL_PROP},
+            {"src_column": "c.s.fct.patient_id", "dst_column": "c.s.bridge.patient_id",
+             "is_fk": True, "final_confidence": 0.80, "source_rank": SR_COL_PROP},
+        ]
+        assert self._resolve(rows) == [True, False]
+
+    def test_second_multi_target_pattern(self):
+        # bridge.facility_id -> Organization, primary for both dim_facility AND
+        # dim_health_system. dim_facility (0.92) wins; dim_health_system (0.89) demoted.
+        rows = [
+            {"src_column": "c.s.bridge.facility_id", "dst_column": "c.s.dim_facility.facility_id",
+             "is_fk": True, "final_confidence": 0.92, "source_rank": SR_COL_PROP},
+            {"src_column": "c.s.bridge.facility_id", "dst_column": "c.s.dim_health_system.health_system_id",
+             "is_fk": True, "final_confidence": 0.89, "source_rank": SR_COL_PROP},
+        ]
+        assert self._resolve(rows) == [True, False]
+
+    def test_lone_target_untouched(self):
+        rows = [
+            {"src_column": "c.s.fct.customer_id", "dst_column": "c.s.dim_customer.id",
+             "is_fk": True, "final_confidence": 0.85, "source_rank": SR_COL_PROP},
+        ]
+        assert self._resolve(rows) == [True]
+
+    def test_shared_dimension_across_facts_untouched(self):
+        # Different child columns (different fact tables) -> not competing. Both keep is_fk.
+        rows = [
+            {"src_column": "c.s.fct_sales.customer_id", "dst_column": "c.s.dim_customer.id",
+             "is_fk": True, "final_confidence": 0.9, "source_rank": SR_COL_PROP},
+            {"src_column": "c.s.fct_returns.customer_id", "dst_column": "c.s.dim_customer.id",
+             "is_fk": True, "final_confidence": 0.8, "source_rank": SR_COL_PROP},
+        ]
+        assert self._resolve(rows) == [True, True]
+
+    def test_declared_fk_wins_and_demotes_competing_prediction(self):
+        # A steward-declared FK is authoritative: a real SQL FK constraint references
+        # exactly one table, so a competing PREDICTION on the same child column (even
+        # a higher-confidence one) is spurious and must be demoted. The declared row
+        # is itself exempt from demotion; the prediction ranks after it and is demoted.
+        rows = [
+            {"src_column": "c.s.fct.k", "dst_column": "c.s.dim_a.k",
+             "is_fk": True, "final_confidence": 0.99, "source_rank": SR_COL_PROP},
+            {"src_column": "c.s.fct.k", "dst_column": "c.s.dim_b.k",
+             "is_fk": True, "final_confidence": 0.70, "source_rank": SR_DECLARED},
+        ]
+        # Declared (index 1) wins the ranking and stays True; the competing prediction
+        # (index 0) is demoted to False.
+        assert self._resolve(rows) == [False, True]
+
+    def test_two_declared_fks_both_exempt(self):
+        # Two declared FKs on one child column (rare, but possible via metadata quirks):
+        # neither is a prediction, so neither is demoted -- resolution never touches
+        # declared rows. Left to the steward.
+        rows = [
+            {"src_column": "c.s.fct.k", "dst_column": "c.s.dim_a.k",
+             "is_fk": True, "final_confidence": 0.9, "source_rank": SR_DECLARED},
+            {"src_column": "c.s.fct.k", "dst_column": "c.s.dim_b.k",
+             "is_fk": True, "final_confidence": 0.8, "source_rank": SR_DECLARED},
+        ]
+        assert self._resolve(rows) == [True, True]
+
+    def test_already_false_target_untouched(self):
+        # A vetoed (is_fk=false) runner-up must not block or be re-touched.
+        rows = [
+            {"src_column": "c.s.fct.x_id", "dst_column": "c.s.dim_x.id",
+             "is_fk": True, "final_confidence": 0.9, "source_rank": SR_COL_PROP},
+            {"src_column": "c.s.fct.x_id", "dst_column": "c.s.other.id",
+             "is_fk": False, "final_confidence": 0.6, "source_rank": SR_COL_PROP},
+        ]
+        assert self._resolve(rows) == [True, False]
+
+
 # --- TestUIDedup ---
 
 

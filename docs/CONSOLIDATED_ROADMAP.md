@@ -469,6 +469,7 @@ Hardening of multi-bundle coexistence and sweep cleanup. Canonical invariants in
 | OB-6 | Column-property FK generator: same-block (catalog.schema) guard gated on `ontology_cross_block` (was linking by entity type across schemas) | DONE | -- | S | UAT FK scenario |
 | OB-7 | Data-probe veto: force `is_fk=false` when join probe found zero overlap (`join_matched=0 AND ri_score=0`), exempting declared FKs -- stops skip-AI tiers asserting non-joining pairs | DONE | -- | S | UAT FK scenario |
 | OB-8 | `fk_predictions` MERGE has no delete-by-source path -> a spurious row already persisted is not corrected when a fix stops the pair being regenerated (goes stale). "Sweep stale edges" only cleans `graph_edges`, not `fk_predictions`. | OPEN | P2 | M | UAT FK scenario |
+| OB-9 | One-FK-per-child-column resolution: a single child column claiming `is_fk=true` to >1 parent table (polymorphic reference, not a valid SQL FK) keeps only the highest-confidence target; demotes the rest to `is_fk=false`. Fixes multi-primary-table entity-type collisions (e.g. one `Organization`/`Person` type primary for two tables in a schema) that the same-block guard (OB-6) and never-joins veto (OB-7) both miss. | DONE | -- | S | UAT snowflake scenario |
 
 ### OB-8: `fk_predictions` stale-row cleanup
 
@@ -479,6 +480,16 @@ Hardening of multi-bundle coexistence and sweep cleanup. Canonical invariants in
 - Consider a one-off maintenance sweep for existing deployments carrying stale rows.
 
 **Files:** `src/dbxmetagen/fk_prediction.py` (the MERGE + DELETE around the staging view write)
+
+### OB-9: One-FK-per-child-column resolution
+
+**Status: DONE** -- A single fully-qualified child column (`src_column`, always the FK side after `_enforce_direction`) cannot be a referential FK to more than one parent table -- that is a polymorphic reference, not expressible as a SQL FK constraint and a frequent source of bad downstream joins. Root cause: when one ontology entity type is `primary` for two tables in the same schema (e.g. both `dim_facility` and `dim_health_system` classify as `Organization`; both `dim_patient` and a bridge classify as `Person`), the column-property candidate generator crosses an `object_property` column against EVERY primary table of its linked type, and the `column_property_skip_ai` path stamps them all `is_fk=true`. The extra targets slip past the same-block guard (OB-6 -- they are same-schema) and the never-joins veto (OB-7 -- small integer id domains coincidentally overlap so `join_matched>0`, or the fan-out target's key is merely non-unique).
+
+**Work (shipped):** In `write_predictions`' final projection, after per-pair dedup, rank surviving `is_fk=true` targets per `src_column` (is_fk-true first, declared-FK next, then `final_confidence` desc, then a stable `dst_column` tiebreak) and demote all but the winner to `is_fk=false`. Declared FKs (`SR_DECLARED`) are exempt from demotion but authoritatively win the ranking, demoting any competing prediction on the same child column. Rows are retained (not deleted), so the ERD recommender and review UI -- which read on confidence, not `is_fk` -- still surface them for optional steward confirmation, while `graph_edges` / metric views / Genie / DDL (all filter `is_fk=true`) no longer see the spurious join.
+
+**Verified:** live on `uat_snowflake_health` -- `fct_encounter.patient_id` resolves to `dim_patient` (0.90) not the bridge (0.80); `patient_facility_bridge.facility_id` resolves to `dim_facility` (0.92) not `dim_health_system` (0.89). 7 tests in `TestOneFkPerChildColumn`.
+
+**Files:** `src/dbxmetagen/fk_prediction.py` (`write_predictions`), `tests/test_fk_prediction.py`
 
 ---
 

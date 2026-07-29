@@ -2100,10 +2100,50 @@ class FKPredictor:
             F.current_timestamp().alias("created_at"),
             F.current_timestamp().alias("updated_at"),
             is_fk_col.alias("is_fk"),
+            *([F.col("source_rank").alias("_source_rank")] if "source_rank" in df.columns else []),
         ).filter(F.col("ai_confidence") >= self.config.confidence_threshold)
 
         w = Window.partitionBy("src_column", "dst_column").orderBy(F.col("final_confidence").desc())
         out = out.withColumn("_rn", F.row_number().over(w)).filter(F.col("_rn") == 1).drop("_rn")
+
+        # One-FK-per-child-column resolution. A single fully-qualified child column
+        # (src_column, always the FK side after _enforce_direction) cannot be a
+        # referential FK to more than one parent table -- that is a polymorphic
+        # reference, not expressible as a SQL FK, and a common source of bad joins
+        # downstream: two entity types that share a parent-table classification (e.g.
+        # both 'Organization') in the same schema make the column-property generator
+        # cross an object_property column against EVERY primary table of its linked
+        # type, and the skip-AI path stamps them all is_fk=true. The extra targets
+        # survive the never-joins veto because small integer id domains coincidentally
+        # overlap (join_matched>0) or a fan-out target's key is non-unique. Keep only
+        # the highest-final_confidence target as is_fk=true; demote the rest to
+        # is_fk=false so graph_edges / metric views / Genie / DDL (all filter is_fk)
+        # never see the spurious join. The rows are retained (not dropped), so the ERD
+        # recommender and review UI -- which read on confidence, not is_fk -- still
+        # surface them for optional steward confirmation. Declared (steward-asserted)
+        # FKs are exempt; only fires when a child column has >1 surviving is_fk target.
+        is_declared = F.lit(False)
+        if "_source_rank" in out.columns:
+            is_declared = F.coalesce(F.col("_source_rank"), F.lit(-1)) == F.lit(SR_DECLARED)
+        resolvable = (F.col("is_fk") == True) & (~is_declared)  # noqa: E712
+        # Rank surviving is_fk targets per child column: an is_fk=true row wins over a
+        # false one, a declared FK wins over a prediction, then higher confidence, then
+        # a stable dst_column tiebreak. Only a resolvable (non-declared, is_fk=true) row
+        # that is NOT the winner (_fk_rank > 1) is demoted -- so a lone target, a
+        # declared FK, and already-false rows are all untouched.
+        wc = Window.partitionBy("src_column").orderBy(
+            F.when(F.col("is_fk") == True, F.lit(0)).otherwise(F.lit(1)).asc(),  # noqa: E712
+            F.when(is_declared, F.lit(0)).otherwise(F.lit(1)).asc(),
+            F.col("final_confidence").desc(),
+            F.col("dst_column").asc(),
+        )
+        out = out.withColumn("_fk_rank", F.row_number().over(wc))
+        out = out.withColumn(
+            "is_fk",
+            F.when(resolvable & (F.col("_fk_rank") > 1), F.lit(False)).otherwise(F.col("is_fk")),
+        ).drop("_fk_rank")
+        if "_source_rank" in out.columns:
+            out = out.drop("_source_rank")
 
         count = out.count()
         if count == 0:
