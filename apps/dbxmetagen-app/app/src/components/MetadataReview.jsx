@@ -114,8 +114,17 @@ function ReviewEditor() {
   const [error, setError] = useState(null)
   const [info, setInfo] = useState(null)
   const [expanded, setExpanded] = useState({})
-  // Server-side pagination for the review table list (backend caps limit at 500).
-  const REVIEW_PAGE_SIZE = 200
+  // Server-side pagination for the review table list. Page size is intentionally
+  // small: each card can expand to ~100 column rows plus FK/ontology detail, so
+  // 25 cards/page keeps a page light and reviewable. Backend caps `limit` at 500.
+  const REVIEW_PAGE_SIZE = 25
+  // Hard cap on how many tables a user can select for one review. Keeps the
+  // review-combined WHERE (an N-way table_name = ... OR) small and keeps a
+  // selection to a human-reviewable batch; larger schemas use schema mode.
+  const MAX_REVIEW_SELECTION = 100
+  // Cap on how many table checkboxes render in the picker at once; the filter
+  // box narrows a large (5k+) schema down to find anything past the cap.
+  const PICK_RENDER_CAP = 300
   const [reviewOffset, setReviewOffset] = useState(0)
   const [reviewTotal, setReviewTotal] = useState(0)
   const [reviewHasMore, setReviewHasMore] = useState(false)
@@ -211,11 +220,27 @@ function ReviewEditor() {
 
   useEffect(() => { fetch('/api/ontology/entity-type-options').then(r => r.json()).then(d => setEntityTypeOptions(Array.isArray(d) ? d : [])).catch(() => {}) }, [])
 
-  const toggleTable = t => setSelectedTables(prev => prev.includes(t) ? prev.filter(x => x !== t) : [...prev, t])
+  const toggleTable = t => setSelectedTables(prev => {
+    if (prev.includes(t)) return prev.filter(x => x !== t)  // removal always allowed
+    if (prev.length >= MAX_REVIEW_SELECTION) {
+      // Hard cap: never silently ignore — tell the user why the click did nothing.
+      setInfo(`You can review up to ${MAX_REVIEW_SELECTION} tables at a time. Deselect some, or use schema mode to review a whole large schema.`)
+      return prev
+    }
+    return [...prev, t]
+  })
   // O(1) membership for the per-row checkbox render (avoids .includes() per checkbox).
   const selectedTableSet = useMemo(() => new Set(selectedTables), [selectedTables])
+  const atSelectionCap = selectedTables.length >= MAX_REVIEW_SELECTION
 
   const loadData = async (offset = 0) => {
+    // Belts-and-suspenders: block (don't silently truncate) a table-mode load that
+    // exceeds the selection cap — e.g. a seeded/programmatic selection. Schema mode
+    // is unbounded (server-paginated), so it's exempt.
+    if (scopeMode === 'table' && selectedTables.length > MAX_REVIEW_SELECTION) {
+      setError(`Selected ${selectedTables.length} tables — reduce to ${MAX_REVIEW_SELECTION} or fewer, or switch to schema mode to review a whole large schema.`)
+      return
+    }
     setLoading(true); setError(null); setDdlSql(''); setDdlApplyResult(null); setExportResult(null)
     setResultFilter(''); setResultSchemaFilter('')
     const body = scopeMode === 'schema'
@@ -588,7 +613,7 @@ function ReviewEditor() {
             </div>
           </div>
           <div className="flex items-end">
-            <button onClick={loadData} disabled={loading || !selectedCatalog || !selectedSchema || (scopeMode === 'table' && !selectedTables.length)}
+            <button onClick={() => loadData()} disabled={loading || !selectedCatalog || !selectedSchema || (scopeMode === 'table' && (!selectedTables.length || selectedTables.length > MAX_REVIEW_SELECTION))}
               className="px-5 py-1.5 bg-dbx-lava text-white rounded-lg text-sm font-medium hover:bg-red-700 disabled:opacity-50 shadow-sm w-full">
               {loading ? 'Loading...' : 'Load'}
             </button>
@@ -600,19 +625,44 @@ function ReviewEditor() {
             {filteredTables.length > 0 ? (
               <>
                 <div className="flex gap-2 mb-1 text-xs">
-                  <button onClick={() => setSelectedTables(filteredTables)} className="text-blue-600 hover:underline">Select all ({filteredTables.length})</button>
+                  <button
+                    onClick={() => setSelectedTables(prev => {
+                      // Fill up to the cap with the first available filtered tables.
+                      const room = MAX_REVIEW_SELECTION - prev.length
+                      if (room <= 0) return prev
+                      const add = filteredTables.filter(t => !selectedTableSet.has(t)).slice(0, room)
+                      return [...prev, ...add]
+                    })}
+                    className="text-blue-600 hover:underline">
+                    Select first {MAX_REVIEW_SELECTION}
+                  </button>
                   <button onClick={() => setSelectedTables([])} className="text-blue-600 hover:underline">Clear</button>
-                  <span className="text-slate-400 ml-auto">
-                    {selectedTables.length} selected
+                  <span className={`ml-auto ${atSelectionCap ? 'text-amber-600 dark:text-amber-400 font-medium' : 'text-slate-400'}`}>
+                    {selectedTables.length} / {MAX_REVIEW_SELECTION} selected
                     {allSchemaTableCount > cst.tables.length && ` · ${cst.tables.length} of ${allSchemaTableCount} tables have generated metadata`}
                   </span>
                 </div>
                 <div className="grid grid-cols-2 md:grid-cols-4 gap-1 max-h-36 overflow-y-auto border border-slate-200 rounded-md p-2">
-                  {filteredTables.map(t => (
-                    <label key={t} className="flex items-center gap-1.5 text-xs cursor-pointer py-0.5">
-                      <input type="checkbox" checked={selectedTableSet.has(t)} onChange={() => toggleTable(t)} className="rounded" />{t}
-                    </label>))}
+                  {filteredTables.slice(0, PICK_RENDER_CAP).map(t => {
+                    const checked = selectedTableSet.has(t)
+                    // At the cap, disable unchecked boxes so the limit is visible (not a silent no-op).
+                    const disabled = !checked && atSelectionCap
+                    return (
+                    <label key={t} className={`flex items-center gap-1.5 text-xs py-0.5 ${disabled ? 'opacity-40 cursor-not-allowed' : 'cursor-pointer'}`}
+                      title={disabled ? `Selection is capped at ${MAX_REVIEW_SELECTION}` : t}>
+                      <input type="checkbox" checked={checked} disabled={disabled} onChange={() => toggleTable(t)} className="rounded" />{t}
+                    </label>)})}
                 </div>
+                {filteredTables.length > PICK_RENDER_CAP && (
+                  <p className="text-xs text-slate-400 mt-1">
+                    Showing first {PICK_RENDER_CAP} of {filteredTables.length} — type in the filter to find a specific table.
+                  </p>
+                )}
+                {atSelectionCap && (
+                  <p className="text-xs text-amber-600 dark:text-amber-400 mt-1">
+                    Selection is capped at {MAX_REVIEW_SELECTION} tables. Deselect some, or use <strong>Entire Schema</strong> mode to review a whole large schema.
+                  </p>
+                )}
               </>
             ) : (
               <p className="text-xs text-slate-500 dark:text-slate-400 py-1">

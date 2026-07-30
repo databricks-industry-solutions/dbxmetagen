@@ -3,6 +3,9 @@ import { useCatalogSchemaTables } from '../hooks/useCatalogSchemaTables'
 
 // Cap how many table checkboxes render at once; the filter box narrows past it.
 const RENDER_CAP = 300
+// Cap how many selected-table badges render (a bulk "Select all" can select
+// thousands); the count + Clear all still reflect the full selection.
+const BADGE_CAP = 200
 
 /**
  * Shared table-scope control used by the core-metadata screen and the analytics
@@ -155,12 +158,20 @@ export default function TableScopePicker({
                 <button type="button" onClick={clearAll} className="text-xs text-red-500 hover:underline">Clear all</button>
               </div>
               <div className="flex flex-wrap gap-1.5">
-                {tables.map(t => (
+                {/* Cap rendered badges so a bulk "Select all" on a 5k-table schema
+                    doesn't build thousands of DOM nodes; the count + Clear all still
+                    reflect the full selection. */}
+                {tables.slice(0, BADGE_CAP).map(t => (
                   <span key={t} className="inline-flex items-center gap-1 px-2 py-0.5 text-xs bg-slate-100 dark:bg-slate-800 border border-slate-200 dark:border-slate-700 rounded-md text-slate-700 dark:text-slate-300">
                     <span className="truncate max-w-[220px]" title={t}>{t}</span>
                     <button type="button" onClick={() => remove(t)} className="text-slate-400 hover:text-red-500">&times;</button>
                   </span>
                 ))}
+                {tables.length > BADGE_CAP && (
+                  <span className="inline-flex items-center px-2 py-0.5 text-xs text-slate-500 dark:text-slate-400">
+                    …and {tables.length - BADGE_CAP} more selected
+                  </span>
+                )}
               </div>
             </div>
           )}
