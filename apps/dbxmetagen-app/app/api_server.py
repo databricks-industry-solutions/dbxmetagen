@@ -230,12 +230,29 @@ _PERMISSION_DENIED_RE = re.compile(
 )
 
 
-def execute_sql(query: str, warehouse_id: Optional[str] = None, timeout: int = 30, parameters: Optional[list] = None):
-    """Execute SQL via Statement Execution API and return rows as list[dict].
+# Hard cap on rows materialized from a single query. The Statement Execution
+# API chunks large result sets; we follow chunks up to this many rows so callers
+# never silently receive only the first chunk, but stop here so a pathological
+# query can't OOM the app compute. Callers needing the truncation signal use
+# execute_sql_meta().
+_MAX_RESULT_ROWS = 100_000
 
-    Returns [] for missing-table/schema/catalog errors (expected before
-    pipelines have run).  Raises HTTPException for other failures.
-    Polls for completion when the initial wait_timeout is exceeded.
+
+def execute_sql_meta(
+    query: str, warehouse_id: Optional[str] = None, timeout: int = 30,
+    parameters: Optional[list] = None, max_rows: int = _MAX_RESULT_ROWS,
+) -> tuple[list[dict], bool]:
+    """Execute SQL via the Statement Execution API.
+
+    Returns (rows, truncated). Follows result chunks (next_chunk_index) so large
+    result sets are returned in full, not just the API's first chunk. Stops at
+    max_rows and sets truncated=True (logging a warning) if more rows existed, so
+    huge results degrade to a bounded, *signalled* result instead of a silent
+    partial one or an OOM.
+
+    Returns ([], False) for missing-table/schema/catalog errors (expected before
+    pipelines have run). Raises HTTPException for other failures. Polls for
+    completion when the initial wait_timeout is exceeded.
     """
     wh = warehouse_id or os.environ.get("WAREHOUSE_ID", "")
     if not wh:
@@ -287,11 +304,50 @@ def execute_sql(query: str, warehouse_id: Optional[str] = None, timeout: int = 3
                 detail=f"Permission denied (running as {identity}). {_obo_permission_hint()}{msg}",
             )
         raise HTTPException(500, detail=f"SQL error (running as {identity}): {msg}")
+
     cols = [c.name for c in resp.manifest.schema.columns] if resp.manifest else []
-    rows = []
-    if resp.result and resp.result.data_array:
-        for row in resp.result.data_array:
+    rows: list[dict] = []
+    truncated = False
+    statement_id = resp.statement_id
+    result = resp.result
+    while result is not None:
+        for row in (result.data_array or []):
             rows.append(dict(zip(cols, row)))
+            if len(rows) >= max_rows:
+                break
+        # Stop if we hit the cap; flag truncation when the API says more remained.
+        if len(rows) >= max_rows:
+            more_remained = getattr(result, "next_chunk_index", None) is not None
+            total = getattr(resp.manifest, "total_row_count", None) if resp.manifest else None
+            if more_remained or (total is not None and total > len(rows)):
+                truncated = True
+                logger.warning(
+                    "execute_sql result truncated at %d rows (total_row_count=%s) for query: %.200s",
+                    max_rows, total, query,
+                )
+            break
+        next_idx = getattr(result, "next_chunk_index", None)
+        if next_idx is None:
+            break
+        try:
+            result = ws.statement_execution.get_statement_result_chunk_n(statement_id, next_idx)
+        except Exception as exc:
+            # A chunk fetch failing mid-stream means we have a partial result;
+            # signal truncation rather than pretend it's complete.
+            logger.warning("Error fetching result chunk %s for %s: %s", next_idx, statement_id, exc)
+            truncated = True
+            break
+    return rows, truncated
+
+
+def execute_sql(query: str, warehouse_id: Optional[str] = None, timeout: int = 30, parameters: Optional[list] = None):
+    """Execute SQL and return rows as list[dict] (see execute_sql_meta).
+
+    Thin wrapper that drops the truncation flag, preserving the long-standing
+    signature used by ~100 call sites. Callers that must detect truncation call
+    execute_sql_meta() directly.
+    """
+    rows, _ = execute_sql_meta(query, warehouse_id=warehouse_id, timeout=timeout, parameters=parameters)
     return rows
 
 
@@ -2282,18 +2338,29 @@ def apply_ddl_bundle_status(task_id: str):
 # Review Editor combined endpoint
 # ---------------------------------------------------------------------------
 
+_REVIEW_PAGE_MAX = 500
+
+
 class ReviewCombinedRequest(BaseModel):
     tables: Optional[list[str]] = None
     schemas: Optional[list[str]] = None
+    offset: int = 0
+    limit: int = 200
 
 
 @app.post("/api/metadata/review-combined")
 def review_combined(body: ReviewCombinedRequest):
-    """Fetch combined table + column KB data, with ontology and FK info per table."""
+    """Fetch combined table + column KB data, with ontology and FK info per table.
+
+    Paginated: `offset`/`limit` (limit hard-capped at _REVIEW_PAGE_MAX) page over
+    the tables in scope; the response echoes offset/limit and a `has_more` flag.
+    """
     tbl_kb = fq("table_knowledge_base")
     col_kb = fq("column_knowledge_base")
     ent_tbl = fq("ontology_entities")
     fk_tbl = fq("fk_predictions")
+    offset = max(0, int(body.offset or 0))
+    limit = max(1, min(int(body.limit or 200), _REVIEW_PAGE_MAX))
 
     where_parts = []
     if body.tables:
@@ -2310,7 +2377,7 @@ def review_combined(body: ReviewCombinedRequest):
     where = " OR ".join(where_parts)
 
     try:
-        return _review_combined_impl(tbl_kb, col_kb, ent_tbl, fk_tbl, where)
+        return _review_combined_impl(tbl_kb, col_kb, ent_tbl, fk_tbl, where, offset, limit)
     except HTTPException:
         raise
     except Exception as e:
@@ -2318,7 +2385,7 @@ def review_combined(body: ReviewCombinedRequest):
         raise HTTPException(500, detail=str(e))
 
 
-def _review_combined_impl(tbl_kb, col_kb, ent_tbl, fk_tbl, where):
+def _review_combined_impl(tbl_kb, col_kb, ent_tbl, fk_tbl, where, offset=0, limit=200):
     _has_review_status = False
     try:
         cols = execute_sql(f"DESCRIBE TABLE {tbl_kb}", timeout=15)
@@ -2341,10 +2408,11 @@ def _review_combined_impl(tbl_kb, col_kb, ent_tbl, fk_tbl, where):
         SELECT table_name, catalog, `schema`, table_short_name, comment,
                domain, subdomain, has_pii, has_phi,
                {rs_expr}
-        FROM {tbl_kb} WHERE {where} LIMIT 200
+        FROM {tbl_kb} WHERE {where} ORDER BY table_name LIMIT {limit} OFFSET {offset}
     """)
     if not tbl_rows:
-        return {"tables": [], "total_count": total_count or 0, "truncated": False}
+        return {"tables": [], "total_count": total_count or 0, "truncated": False,
+                "offset": offset, "limit": limit, "has_more": False}
 
     tbl_names = [r["table_name"] for r in tbl_rows]
     safe_names = [_safe_sql_str(n) for n in tbl_names]
@@ -2490,8 +2558,17 @@ def _review_combined_impl(tbl_kb, col_kb, ent_tbl, fk_tbl, where):
             "column_properties": col_props_by_table.get(tn, []),
             "fk_predictions": fk_by_table.get(tn, []),
         })
-    truncated = total_count is not None and total_count > 200
-    return {"tables": result, "total_count": total_count or len(result), "truncated": truncated}
+    resolved_total = total_count if total_count is not None else (offset + len(result))
+    has_more = (offset + len(result)) < resolved_total
+    return {
+        "tables": result,
+        "total_count": resolved_total,
+        "offset": offset,
+        "limit": limit,
+        "has_more": has_more,
+        # Back-compat: `truncated` historically meant "more than one page exists".
+        "truncated": has_more,
+    }
 
 
 class ExportVolumeRequest(BaseModel):

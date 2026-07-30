@@ -114,6 +114,16 @@ function ReviewEditor() {
   const [error, setError] = useState(null)
   const [info, setInfo] = useState(null)
   const [expanded, setExpanded] = useState({})
+  // Server-side pagination for the review table list (backend caps limit at 500).
+  const REVIEW_PAGE_SIZE = 200
+  const [reviewOffset, setReviewOffset] = useState(0)
+  const [reviewTotal, setReviewTotal] = useState(0)
+  const [reviewHasMore, setReviewHasMore] = useState(false)
+  // Per-table "show all columns" opt-in. Wide tables render only the first
+  // COL_RENDER_CAP columns until the user expands, so a 1000-column table
+  // doesn't build 1000 <tr> at once.
+  const COL_RENDER_CAP = 100
+  const [colsShowAll, setColsShowAll] = useState({})
   const [saving, setSaving] = useState(false)
   const [ddlSql, setDdlSql] = useState('')
   const [ddlLoading, setDdlLoading] = useState(false)
@@ -202,13 +212,15 @@ function ReviewEditor() {
   useEffect(() => { fetch('/api/ontology/entity-type-options').then(r => r.json()).then(d => setEntityTypeOptions(Array.isArray(d) ? d : [])).catch(() => {}) }, [])
 
   const toggleTable = t => setSelectedTables(prev => prev.includes(t) ? prev.filter(x => x !== t) : [...prev, t])
+  // O(1) membership for the per-row checkbox render (avoids .includes() per checkbox).
+  const selectedTableSet = useMemo(() => new Set(selectedTables), [selectedTables])
 
-  const loadData = async () => {
+  const loadData = async (offset = 0) => {
     setLoading(true); setError(null); setDdlSql(''); setDdlApplyResult(null); setExportResult(null)
     setResultFilter(''); setResultSchemaFilter('')
     const body = scopeMode === 'schema'
-      ? { schemas: [`${selectedCatalog}.${selectedSchema}`] }
-      : { tables: selectedTables.map(t => `${selectedCatalog}.${selectedSchema}.${t}`) }
+      ? { schemas: [`${selectedCatalog}.${selectedSchema}`], offset, limit: REVIEW_PAGE_SIZE }
+      : { tables: selectedTables.map(t => `${selectedCatalog}.${selectedSchema}.${t}`), offset, limit: REVIEW_PAGE_SIZE }
     try {
       const res = await fetch('/api/metadata/review-combined', {
         method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body)
@@ -223,7 +235,13 @@ function ReviewEditor() {
       setReviewData(tables)
       setOriginal(JSON.parse(JSON.stringify(tables)))
       const exp = {}; tables.forEach(t => { exp[t.table_name] = true }); setExpanded(exp)
-      if (j.truncated) setInfo(`Showing 200 of ${j.total_count} tables. Use the filter to narrow results.`)
+      setReviewOffset(offset)
+      setReviewTotal(j.total_count || tables.length)
+      setReviewHasMore(!!j.has_more)
+      if ((j.total_count || 0) > REVIEW_PAGE_SIZE) {
+        const from = offset + 1, to = offset + tables.length
+        setInfo(`Showing ${from}–${to} of ${j.total_count} tables. Use Prev/Next to page, or the filter to narrow the current page.`)
+      }
       else if (tables.length === 0) setInfo(
         scopeMode === 'table'
           ? 'No generated metadata found for the selected tables. Only tables that have been processed by metadata generation appear here -- run the metadata generator on these tables first.'
@@ -592,7 +610,7 @@ function ReviewEditor() {
                 <div className="grid grid-cols-2 md:grid-cols-4 gap-1 max-h-36 overflow-y-auto border border-slate-200 rounded-md p-2">
                   {filteredTables.map(t => (
                     <label key={t} className="flex items-center gap-1.5 text-xs cursor-pointer py-0.5">
-                      <input type="checkbox" checked={selectedTables.includes(t)} onChange={() => toggleTable(t)} className="rounded" />{t}
+                      <input type="checkbox" checked={selectedTableSet.has(t)} onChange={() => toggleTable(t)} className="rounded" />{t}
                     </label>))}
                 </div>
               </>
@@ -785,6 +803,18 @@ function ReviewEditor() {
             <button onClick={() => { setResultFilter(''); setResultSchemaFilter('') }}
               className="text-xs text-blue-600 dark:text-blue-400 hover:underline">Clear filters</button>
           )}
+          {/* Server-side pagination: only when the scope has more than one page. */}
+          {reviewTotal > REVIEW_PAGE_SIZE && (
+            <div className="flex items-center gap-2 text-xs">
+              <button onClick={() => loadData(Math.max(0, reviewOffset - REVIEW_PAGE_SIZE))}
+                disabled={reviewOffset === 0 || loading}
+                className="px-2 py-0.5 rounded border border-slate-300 dark:border-dbx-navy-400/40 disabled:opacity-40 hover:bg-slate-50 dark:hover:bg-dbx-navy-500">Prev</button>
+              <span className="text-slate-400">{reviewOffset + 1}–{reviewOffset + reviewData.length} of {reviewTotal}</span>
+              <button onClick={() => loadData(reviewOffset + REVIEW_PAGE_SIZE)}
+                disabled={!reviewHasMore || loading}
+                className="px-2 py-0.5 rounded border border-slate-300 dark:border-dbx-navy-400/40 disabled:opacity-40 hover:bg-slate-50 dark:hover:bg-dbx-navy-500">Next</button>
+            </div>
+          )}
         </div>
       )}
 
@@ -897,8 +927,22 @@ function ReviewEditor() {
                           {show('ontology') && <th title="Saves immediately to ontology_column_properties" className="text-left px-3 py-2 text-xs font-semibold text-slate-500 dark:text-slate-400 uppercase">Property Role</th>}
                         </tr></thead>
                         <tbody>
-                          {tbl.columns.map((col, ci) => {
-                            const colProp = (tbl.column_properties || []).find(p => p.column_name === col.column_name)
+                          {(() => {
+                            // Precompute per-table lookups ONCE instead of per-column:
+                            // colProp by column_name, and entities keyed by each
+                            // source column (parsing source_columns JSON a single time).
+                            const colPropByName = {}
+                            for (const p of (tbl.column_properties || [])) colPropByName[p.column_name] = p
+                            const entsByCol = {}
+                            for (const e of (tbl.ontology_entities || [])) {
+                              let sc = e.source_columns
+                              if (typeof sc === 'string') { try { sc = JSON.parse(sc) } catch { sc = [] } }
+                              if (Array.isArray(sc)) for (const cn of sc) (entsByCol[cn] = entsByCol[cn] || []).push(e)
+                            }
+                            const showAllCols = colsShowAll[tbl.table_name]
+                            const renderCols = showAllCols ? tbl.columns : tbl.columns.slice(0, COL_RENDER_CAP)
+                            return renderCols.map((col, ci) => {
+                            const colProp = colPropByName[col.column_name]
                             return (
                             <tr key={col.column_id || ci} className={`border-b border-slate-100 dark:border-dbx-navy-400/20 ${isColDirty(tblIdx, ci) ? 'bg-amber-50 dark:bg-amber-900/20' : ''} hover:bg-orange-50/30 dark:hover:bg-dbx-navy-500/30`}>
                               <td className="px-3 py-1.5 text-slate-600 dark:text-slate-300 font-mono text-xs truncate">{col.column_name}</td>
@@ -912,11 +956,7 @@ function ReviewEditor() {
                               </td>}
                               {show('pii') && <td className="px-2 py-1"><input value={col.classification_type ?? ''} onChange={e => onColChange(tblIdx, ci, 'classification_type', e.target.value)} className={inp} /></td>}
                               {show('ontology') && <td className="px-2 py-1">{(() => {
-                                const ents = (tbl.ontology_entities || []).filter(e => {
-                                  let sc = e.source_columns
-                                  if (typeof sc === 'string') { try { sc = JSON.parse(sc) } catch { sc = [] } }
-                                  return Array.isArray(sc) && sc.includes(col.column_name)
-                                })
+                                const ents = entsByCol[col.column_name] || []
                                 return ents.length > 0 ? (
                                   <div className="flex flex-wrap gap-1">{ents.map((e, ei) => {
                                     const c = Number(e.confidence ?? 0)
@@ -966,7 +1006,16 @@ function ReviewEditor() {
                                 )
                               })() : <span className="text-[10px] text-slate-300">--</span>}</td>}
                             </tr>
-                          )})}
+                          )})
+                          })()}
+                          {tbl.columns.length > COL_RENDER_CAP && !colsShowAll[tbl.table_name] && (
+                            <tr><td colSpan={6} className="px-3 py-2 text-center">
+                              <button onClick={() => setColsShowAll(p => ({ ...p, [tbl.table_name]: true }))}
+                                className="text-xs text-blue-600 dark:text-blue-400 hover:underline">
+                                Show all {tbl.columns.length} columns (showing first {COL_RENDER_CAP})
+                              </button>
+                            </td></tr>
+                          )}
                         </tbody>
                       </table>
                     </div>

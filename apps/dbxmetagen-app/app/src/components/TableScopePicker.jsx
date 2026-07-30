@@ -1,6 +1,9 @@
 import React, { useEffect, useMemo, useRef } from 'react'
 import { useCatalogSchemaTables } from '../hooks/useCatalogSchemaTables'
 
+// Cap how many table checkboxes render at once; the filter box narrows past it.
+const RENDER_CAP = 300
+
 /**
  * Shared table-scope control used by the core-metadata screen and the analytics
  * pipeline. Replaces the ambiguous "blank = all tables" convention with an
@@ -122,13 +125,21 @@ export default function TableScopePicker({
                 <span className="text-slate-400 ml-auto">{tables.length} selected total</span>
               </div>
               <div className="grid grid-cols-2 md:grid-cols-3 lg:grid-cols-4 gap-1 max-h-40 overflow-y-auto border dark:border-slate-600 rounded-md p-2">
-                {filteredTables.map(t => (
+                {/* Render at most RENDER_CAP checkboxes so a schema with thousands
+                    of tables doesn't build thousands of DOM nodes; the search box
+                    (filter) narrows the list to find anything past the cap. */}
+                {filteredTables.slice(0, RENDER_CAP).map(t => (
                   <label key={t} className="flex items-center gap-1.5 text-xs cursor-pointer py-0.5 dark:text-slate-200">
                     <input type="checkbox" checked={selectedSet.has(fq(t))} onChange={() => toggle(t)} className="rounded" />
                     <span className="truncate" title={t}>{t}</span>
                   </label>
                 ))}
               </div>
+              {filteredTables.length > RENDER_CAP && (
+                <p className="text-xs text-slate-400">
+                  Showing first {RENDER_CAP} of {filteredTables.length} — type to filter, or use “Select all” to include every match.
+                </p>
+              )}
             </>
           )}
           {catalog && schema && allTables.length === 0 && allSchemaTableCount > 0 && (

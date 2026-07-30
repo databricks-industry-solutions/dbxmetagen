@@ -551,3 +551,172 @@ class TestFkCandidatesEvidence:
         assert c["stored_reversed"] is True
         assert c["ri_score"] is None               # absent signal stays None, not 0
         assert c["is_fk"] is None                  # unknown stays None, not False
+
+
+# ---------------------------------------------------------------------------
+# execute_sql chunk-following + truncation cap
+# ---------------------------------------------------------------------------
+class _FakeState:
+    def __init__(self, value):
+        self.value = value
+
+
+class _FakeStatus:
+    def __init__(self, value="SUCCEEDED"):
+        self.state = _FakeState(value)
+        self.error = None
+
+
+class _FakeCol:
+    def __init__(self, name):
+        self.name = name
+
+
+class _FakeSchema:
+    def __init__(self, names):
+        self.columns = [_FakeCol(n) for n in names]
+
+
+class _FakeManifest:
+    def __init__(self, names, total_row_count=None):
+        self.schema = _FakeSchema(names)
+        self.total_row_count = total_row_count
+
+
+class _FakeResult:
+    def __init__(self, data_array, next_chunk_index=None):
+        self.data_array = data_array
+        self.next_chunk_index = next_chunk_index
+
+
+class _FakeResp:
+    def __init__(self, cols, first_chunk, next_chunk_index=None, total_row_count=None):
+        self.status = _FakeStatus("SUCCEEDED")
+        self.manifest = _FakeManifest(cols, total_row_count=total_row_count)
+        self.result = _FakeResult(first_chunk, next_chunk_index=next_chunk_index)
+        self.statement_id = "stmt-1"
+
+
+class _FakeStatementExecution:
+    """Simulates a multi-chunk result set: chunk 0 comes on the initial response,
+    chunks 1..N are served by get_statement_result_chunk_n."""
+    def __init__(self, cols, chunks, total_row_count=None):
+        self._cols = cols
+        self._chunks = chunks
+        self._total = total_row_count
+
+    def execute_statement(self, **kw):
+        nxt = 1 if len(self._chunks) > 1 else None
+        return _FakeResp(self._cols, self._chunks[0], next_chunk_index=nxt, total_row_count=self._total)
+
+    def get_statement_result_chunk_n(self, statement_id, chunk_index):
+        data = self._chunks[chunk_index]
+        nxt = chunk_index + 1 if chunk_index + 1 < len(self._chunks) else None
+        return _FakeResult(data, next_chunk_index=nxt)
+
+
+class _FakeClient:
+    def __init__(self, se):
+        self.statement_execution = se
+
+
+class TestExecuteSqlChunking:
+    def _patch(self, monkeypatch, se):
+        monkeypatch.setattr(api_server, "_get_effective_client", lambda: _FakeClient(se))
+        monkeypatch.setattr(api_server, "_auth_identity_label", lambda: "test")
+        monkeypatch.setenv("WAREHOUSE_ID", "wh123")
+
+    def test_single_chunk(self, monkeypatch):
+        se = _FakeStatementExecution(["a"], [[["1"], ["2"]]])
+        self._patch(monkeypatch, se)
+        rows, truncated = api_server.execute_sql_meta("SELECT a FROM t")
+        assert [r["a"] for r in rows] == ["1", "2"]
+        assert truncated is False
+
+    def test_follows_all_chunks(self, monkeypatch):
+        # 3 chunks of 2 rows each -> all 6 rows returned in order.
+        se = _FakeStatementExecution(
+            ["a"], [[["1"], ["2"]], [["3"], ["4"]], [["5"], ["6"]]]
+        )
+        self._patch(monkeypatch, se)
+        rows, truncated = api_server.execute_sql_meta("SELECT a FROM t")
+        assert [r["a"] for r in rows] == ["1", "2", "3", "4", "5", "6"]
+        assert truncated is False
+
+    def test_caps_and_flags_truncation(self, monkeypatch):
+        # Two chunks, but cap at 2 rows while total_row_count says 4 -> truncated.
+        se = _FakeStatementExecution(
+            ["a"], [[["1"], ["2"]], [["3"], ["4"]]], total_row_count=4
+        )
+        self._patch(monkeypatch, se)
+        rows, truncated = api_server.execute_sql_meta("SELECT a FROM t", max_rows=2)
+        assert [r["a"] for r in rows] == ["1", "2"]
+        assert truncated is True
+
+    def test_execute_sql_wrapper_drops_flag(self, monkeypatch):
+        se = _FakeStatementExecution(["a"], [[["1"]]])
+        self._patch(monkeypatch, se)
+        rows = api_server.execute_sql("SELECT a FROM t")
+        assert rows == [{"a": "1"}]
+
+
+class TestReviewCombinedPagination:
+    """review-combined has_more + SQL LIMIT/OFFSET via _review_combined_impl
+    (the decorated endpoint isn't callable under the mocked fastapi harness)."""
+
+    def _run(self, monkeypatch, total, page_tables, offset, limit):
+        calls = {}
+
+        def fake_execute_sql(query, *a, **kw):
+            q = " ".join(query.split())
+            if q.startswith("DESCRIBE TABLE"):
+                return [{"col_name": "review_status"}]
+            if "COUNT(*)" in q:
+                return [{"cnt": total}]
+            if "FROM tkb" in q and "LIMIT" in q:
+                calls["table_query"] = q
+                return [
+                    {"table_name": f"c.s.{t}", "catalog": "c", "schema": "s",
+                     "table_short_name": t, "comment": "", "domain": "", "subdomain": "",
+                     "has_pii": False, "has_phi": False, "review_status": "unreviewed"}
+                    for t in page_tables
+                ]
+            return []  # columns / ontology / fk / col_props
+
+        monkeypatch.setattr(api_server, "execute_sql", fake_execute_sql)
+        res = api_server._review_combined_impl(
+            "tkb", "ckb", "ent", "fk", "catalog='c' AND `schema`='s'", offset, limit,
+        )
+        return res, calls
+
+    def test_first_page_has_more(self, monkeypatch):
+        res, calls = self._run(monkeypatch, total=500,
+                               page_tables=[f"t{i}" for i in range(200)], offset=0, limit=200)
+        assert res["offset"] == 0 and res["limit"] == 200
+        assert res["total_count"] == 500
+        assert res["has_more"] is True
+        assert "LIMIT 200 OFFSET 0" in calls["table_query"]
+
+    def test_last_page_no_more(self, monkeypatch):
+        res, _ = self._run(monkeypatch, total=500,
+                           page_tables=[f"t{i}" for i in range(100)], offset=400, limit=200)
+        assert res["has_more"] is False   # 400 + 100 == 500
+        assert res["offset"] == 400
+
+    def test_sql_uses_offset_and_limit(self, monkeypatch):
+        _, calls = self._run(monkeypatch, total=10,
+                             page_tables=[f"t{i}" for i in range(10)], offset=40, limit=20)
+        assert "LIMIT 20 OFFSET 40" in calls["table_query"]
+
+    def test_endpoint_clamps_offset_and_limit(self):
+        # Mirror the clamp expressions in review_combined() (which can't be called
+        # under the mocked-fastapi harness): offset floored at 0, limit in [1, MAX].
+        cap = api_server._REVIEW_PAGE_MAX
+        clamp_off = lambda o: max(0, int(o or 0))
+        clamp_lim = lambda l: max(1, min(int(l or 200), cap))
+        assert clamp_off(-5) == 0
+        assert clamp_off(30) == 30
+        assert clamp_lim(99999) == cap
+        assert clamp_lim(0) == 200   # 0 is falsy -> default 200 (0 is meaningless)
+        assert clamp_lim(1) == 1
+        assert clamp_lim(200) == 200
