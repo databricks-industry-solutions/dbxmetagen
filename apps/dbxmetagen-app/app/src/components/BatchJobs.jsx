@@ -715,8 +715,9 @@ export default function BatchJobs({ onNavigate, pipelineStats }) {
                   <input type="checkbox" checked={skipKbEnrich} onChange={e => setSkipKbEnrich(e.target.checked)} className="mt-0.5" />
                   <span>Skip knowledge-base enrichment <span className="text-slate-400">(faster; sensitivity/domain won't see fresh descriptions)</span></span>
                 </label>
-                <p className="text-slate-400">
-                  <strong className="text-slate-500">Default (KB-enriched):</strong> descriptions first, then a knowledge-base build, then sensitivity + domain enriched with those descriptions &mdash; so they benefit from the new comments even before DDL is applied.
+                <p className="text-slate-400 flex items-center gap-1.5">
+                  <span><strong className="text-slate-500">Default (KB-enriched):</strong> descriptions first, then sensitivity + domain enriched with them.</span>
+                  <InfoTip text="Descriptions are generated first, then a knowledge-base build runs, then sensitivity + domain classification are enriched with those descriptions — so they benefit from the new comments even before DDL is applied." />
                 </p>
               </div>
             </details>
@@ -735,33 +736,20 @@ export default function BatchJobs({ onNavigate, pipelineStats }) {
       )}
       </TabErrorBoundary>
 
-      {/* The advanced analytics pipeline now lives in the Semantic Layer's
-          foundation gate (it is the prerequisite for metric views). Point users there. */}
-      <div className="pt-1">
-        <div className="card border-l-4 border-l-dbx-amber p-4 flex items-start gap-3">
-          <span className="flex items-center justify-center w-6 h-6 rounded-full bg-dbx-amber text-white text-xs font-bold shrink-0 mt-0.5">2</span>
-          <div className="flex-1">
-            <h2 className="text-base font-semibold text-slate-800 dark:text-slate-100">Advanced analytics pipeline</h2>
-            <p className="text-xs text-slate-500 dark:text-slate-400 mt-0.5">Ontology · Foreign keys · Knowledge graph · Vector index. This builds the foundation for metric views and now runs in the <strong>Semantic Layer</strong>.</p>
-            <button onClick={() => onNavigate?.('semantic')} className="mt-2 text-xs font-semibold text-dbx-lava hover:underline">
-              Run the analytics pipeline in Semantic Layer &rarr;
-            </button>
+      {/* Next steps: the advanced pipeline lives in the Semantic Layer and the
+          post-generation maintenance actions live in Sync & Ops. Simple links
+          to where each action actually runs, instead of full pointer cards. */}
+      {onNavigate && (
+        <div className="pt-1">
+          <p className="text-xs font-semibold uppercase tracking-wider text-slate-400 dark:text-slate-500 mb-2">Next steps</p>
+          <div className="grid grid-cols-2 sm:grid-cols-4 gap-2">
+            <button onClick={() => onNavigate('semantic')} className="btn-secondary btn-sm">Generate Semantic Layer</button>
+            <button onClick={() => onNavigate('syncops')} className="btn-secondary btn-sm">Post-review Sync</button>
+            <button onClick={() => onNavigate('syncops')} className="btn-secondary btn-sm">Lakebase</button>
+            <button onClick={() => onNavigate('syncops')} className="btn-secondary btn-sm">Create MCPs</button>
           </div>
         </div>
-      </div>
-
-      {/* Post-generation maintenance moved to Sync & Ops */}
-      <section className="card p-4 border-l-4 border-l-dbx-teal flex items-center gap-3 flex-wrap">
-        <div>
-          <h3 className="text-sm font-semibold text-slate-700 dark:text-slate-200">Post-review sync, Lakebase & MCP</h3>
-          <p className="text-xs text-slate-500 dark:text-slate-400">Refresh the knowledge graph/index after edits, sync to Lakebase, or set up MCP access.</p>
-        </div>
-        {onNavigate && (
-          <button onClick={() => onNavigate('syncops')} className="btn-secondary btn-sm ml-auto whitespace-nowrap">
-            Go to Sync &amp; Ops &rarr;
-          </button>
-        )}
-      </section>
+      )}
 
       {/* Active Runs */}
       {activeRuns.length > 0 && (
