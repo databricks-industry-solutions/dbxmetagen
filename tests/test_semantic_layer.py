@@ -1078,3 +1078,63 @@ class TestKpiRefRegex:
         result = self._strip(text)
         assert "KPI" not in result
         assert "#" not in result
+
+
+class TestGenieExamplesContext:
+    """_genie_examples_context: inject curated Genie SQL exemplars (item 15).
+    Best-effort — disabled/empty/error all return '' without blocking."""
+
+    def _gen(self, **cfg_kw):
+        from unittest.mock import MagicMock
+        base = dict(catalog_name="cat", schema_name="sch")
+        base.update(cfg_kw)
+        return SemanticLayerGenerator(MagicMock(), SemanticLayerConfig(**base))
+
+    def test_disabled_returns_empty(self):
+        g = self._gen(use_genie_sql_examples=False)
+        assert g._genie_examples_context(["cat.sch.orders"]) == ""
+
+    def test_no_tables_returns_empty(self):
+        g = self._gen()
+        assert g._genie_examples_context([]) == ""
+
+    def test_retrieval_error_returns_empty(self, monkeypatch):
+        g = self._gen()
+        import dbxmetagen.genie_sql_puller as puller
+        monkeypatch.setattr(puller, "query_examples",
+                            lambda **kw: (_ for _ in ()).throw(RuntimeError("no index")))
+        assert g._genie_examples_context(["cat.sch.orders"]) == ""
+
+    def test_no_examples_returns_empty(self, monkeypatch):
+        g = self._gen()
+        import dbxmetagen.genie_sql_puller as puller
+        monkeypatch.setattr(puller, "query_examples", lambda **kw: [])
+        assert g._genie_examples_context(["cat.sch.orders"]) == ""
+
+    def test_formats_exemplars_as_proven_patterns(self, monkeypatch):
+        g = self._gen()
+        import dbxmetagen.genie_sql_puller as puller
+        monkeypatch.setattr(puller, "query_examples", lambda **kw: [
+            {"question_text": "Revenue by region?", "sql": "SELECT region, SUM(amt) FROM orders GROUP BY region"},
+            {"question_text": "", "sql": "SELECT COUNT(*) FROM returns"},
+        ])
+        out = g._genie_examples_context(["cat.sch.orders"])
+        assert "PROVEN QUERY PATTERNS" in out
+        assert "Revenue by region?" in out
+        assert "SELECT region, SUM(amt)" in out
+        assert "SELECT COUNT(*) FROM returns" in out
+
+    def test_skips_examples_without_sql(self, monkeypatch):
+        g = self._gen()
+        import dbxmetagen.genie_sql_puller as puller
+        monkeypatch.setattr(puller, "query_examples", lambda **kw: [{"question_text": "Q", "sql": "  "}])
+        # header only + no sql rows -> nothing to add -> empty
+        assert g._genie_examples_context(["cat.sch.orders"]) == ""
+
+    def test_long_sql_is_truncated(self, monkeypatch):
+        g = self._gen()
+        import dbxmetagen.genie_sql_puller as puller
+        long_sql = "SELECT " + "x," * 2000 + "1"
+        monkeypatch.setattr(puller, "query_examples", lambda **kw: [{"question_text": "Q", "sql": long_sql}])
+        out = g._genie_examples_context(["cat.sch.orders"])
+        assert "..." in out and len(out) < len(long_sql)

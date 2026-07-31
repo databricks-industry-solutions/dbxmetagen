@@ -274,6 +274,14 @@ class SemanticLayerConfig:
     max_join_hops: int = 2
     materialize_metric_views: bool = False
     materialization_schedule: str = "every 6 hours"
+    # Item 15: seed generation with curated example SQL pulled from Genie spaces
+    # (built by genie_sql_puller into genie_examples_vs_index). When enabled and
+    # the index exists, build_context retrieves exemplars matching the tables in
+    # scope and injects them as "proven query patterns" few-shot context.
+    use_genie_sql_examples: bool = True
+    genie_examples_index_suffix: str = "genie_examples_vs_index"
+    vs_endpoint_name: str = "dbxmetagen-vs"
+    genie_examples_max: int = 5
 
     def fq(self, table: str) -> str:
         return f"{self.catalog_name}.{self.schema_name}.{table}"
@@ -874,11 +882,70 @@ class SemanticLayerGenerator:
                 parts.append("\nREFERENCE: METRIC VIEW BEST PRACTICES (follow these rules strictly)")
                 parts.append(ref_text)
 
+        # Curated Genie SQL exemplars (item 15): proven query patterns for these
+        # tables, retrieved from the genie_examples_vs_index. Best-effort — never
+        # blocks generation if the index is absent or retrieval fails.
+        genie_ctx = self._genie_examples_context(table_names_list)
+        if genie_ctx:
+            parts.append(genie_ctx)
+
         # Schema profile: adaptive signal so LLM calibrates output complexity
         sp = profile_schema(table_names_list, fk_rows)
         parts.append(sp["profile_text"])
 
         return "\n".join(parts)
+
+    def _genie_examples_context(self, table_names_list: list[str]) -> str:
+        """Retrieve curated Genie SQL exemplars matching the tables in scope and
+        format them as few-shot 'proven query patterns' context.
+
+        Returns "" when disabled, the index is missing, or nothing is retrieved.
+        The exemplars are real, human-curated SQL from existing Genie spaces, so
+        they anchor generation to measures/dimensions/joins that are known to
+        work against similar data (the "replace a mart layer" use case)."""
+        if not self.config.use_genie_sql_examples or not table_names_list:
+            return ""
+        try:
+            from dbxmetagen.genie_sql_puller import query_examples
+        except Exception:
+            return ""
+        fq_index = (
+            f"{self.config.catalog_name}.{self.config.schema_name}."
+            f"{self.config.genie_examples_index_suffix}"
+        )
+        # Query text = the short table names in scope, so retrieval favors exemplars
+        # over semantically-similar tables/marts.
+        short_names = sorted({t.split(".")[-1] for t in table_names_list})
+        query_text = "Metric queries for tables: " + ", ".join(short_names[:50])
+        try:
+            examples = query_examples(
+                fq_index=fq_index,
+                query_text=query_text,
+                num_results=self.config.genie_examples_max,
+                endpoint_name=self.config.vs_endpoint_name,
+            )
+        except Exception as e:
+            logger.info("Genie SQL exemplar retrieval skipped (%s)", e)
+            return ""
+        if not examples:
+            return ""
+        lines = [
+            "\nPROVEN QUERY PATTERNS (curated example SQL from existing Genie spaces "
+            "on similar data -- use these as REFERENCE for which measures, dimensions, "
+            "grains, and joins are known to work; adapt them into metric-view measures/"
+            "dimensions. Do NOT copy table/column names that are not in the metadata above):"
+        ]
+        for ex in examples:
+            q = (ex.get("question_text") or "").strip()
+            sql = (ex.get("sql") or "").strip()
+            if not sql:
+                continue
+            # Keep each exemplar bounded so a few don't blow the context budget.
+            sql_snip = sql if len(sql) <= 1200 else sql[:1200] + " ..."
+            if q:
+                lines.append(f"  Q: {q}")
+            lines.append(f"  SQL: {sql_snip}")
+        return "\n".join(lines) if len(lines) > 1 else ""
 
     def _safe_collect(self, sql: str) -> list[dict]:
         """Run SQL and return list of dicts; returns [] if table/column doesn't exist."""
