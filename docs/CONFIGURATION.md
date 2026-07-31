@@ -267,6 +267,21 @@ When `federation_mode=true`, dbxmetagen adapts for federated catalogs in Unity C
 | SET TAGS / UNSET TAGS | Skipped | Cannot tag federated tables |
 | Output tables | Works | All output tables are Delta |
 
+### Sampling against federated sources — start small
+
+In federation mode, row sampling uses a plain `LIMIT {sample_size}` (not Spark's `.sample()`, which
+does **not** push down through JDBC and would pull the entire remote table into Spark). Because
+`LIMIT N` pushes down to the remote engine (Redshift, Snowflake, etc.), its cost is bounded by
+`sample_size`, **not** by the size of the remote table — so raising `sample_size` a little (say from
+the default 5 to 10–20) fetches a few more rows without scanning the whole source.
+
+**Recommendation: start small.** Begin with the default `sample_size` (5) on federated sources,
+confirm the query cost is acceptable on your remote engine, then raise it incrementally if you want
+richer samples for description quality. Avoid large values on federated sources with per-query cost
+or rate limits, and remember `sample_size=0` sends no row data at all (metadata-only). The
+null-heavy-row filtering that the native path applies is skipped in federation mode (it would require
+a full scan), so a slightly higher `LIMIT` is the simplest way to get more non-null example rows.
+
 ## Lakebase (Optional)
 
 Lakebase accelerates graph queries in the dashboard's deep analysis agent by serving `graph_nodes` and `graph_edges` from a managed PostgreSQL instance instead of the SQL warehouse. This is **optional** -- the app automatically falls back to UC Delta queries when Lakebase is not configured.

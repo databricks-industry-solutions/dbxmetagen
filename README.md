@@ -182,10 +182,20 @@ The `examples/` notebooks show how to use dbxmetagen as a **standalone pip-insta
 
 ## Disclaimer
 
-- AI-generated metadata must be human-reviewed for compliance.
-- Generated comments may include data samples depending on settings.
-- Compliance (e.g., HIPAA) is the user's responsibility.
-- Unless configured otherwise, dbxmetagen sends data to the specified model endpoint.
+> **Regulatory compliance — including HIPAA — is always the sole responsibility of the user.**
+> dbxmetagen is a tool that generates and classifies metadata; it does **not** guarantee, certify,
+> or ensure HIPAA (or any other regulatory) compliance. PII/PHI/PCI detection is AI-assisted and
+> **not** a substitute for a compliance review. You are responsible for validating all output,
+> controlling what data is sent to model endpoints, and meeting every legal and regulatory
+> obligation that applies to your data and jurisdiction.
+
+- AI-generated metadata must be human-reviewed for compliance — PII/PHI/PCI detection can produce
+  false negatives, and you must review all sensitivity classifications before relying on them.
+- Generated comments may include data samples depending on settings (`sample_size`, `allow_data`);
+  set `sample_size=0` to send no row data to the model.
+- Unless configured otherwise, dbxmetagen sends data to the specified model endpoint. You control
+  the endpoint and what data leaves your environment.
+- Compliance (e.g., HIPAA, GDPR, PCI-DSS) is the user's responsibility, as stated above.
 
 ## Architecture
 
