@@ -10755,6 +10755,20 @@ def _generate_questions_single(req: SuggestQuestionsRequest):
 
     mv_only = bool(req.metric_view_names) and not req.table_identifiers
 
+    # Shared analytical-depth guidance injected into every question-gen prompt so
+    # suggestions span varied, sophisticated patterns instead of only simple
+    # aggregations/trends. Kept business-language only (no SQL/column references).
+    depth_block = """- Deliberately VARY the analytical pattern across the set -- do not return N variations of the same shape. Cover a spread of:
+  * Trends over time (momentum, quarter-over-quarter / year-over-year change, seasonality)
+  * Comparisons across segments (region vs region, product vs product, cohort vs cohort)
+  * Rankings / top-N ("top 10 X by Y", "which segment leads / lags")
+  * Ratios & rates (conversion rate, retention rate, margin %, per-capita, X as a share of Y)
+  * Segmentation / cohort analysis (by lifecycle stage, tenure band, geography, category)
+  * Anomaly / driver questions ("what drove the recent change in X?", "what's unusual about Y?")
+  * Drill-down / decomposition ("break the change in X down by dimension Z")
+- When the metadata describes RELATIONSHIPS between entities, include cross-entity questions (e.g. per-entity efficiency, one entity's outcomes segmented by a related entity)
+- Range across complexity: a few simple ("total X last quarter?"), several mid ("X by segment over time?"), and a couple of deeper analytical questions"""
+
     if req.purpose == "metric_views":
         prompt = f"""You are a business intelligence strategist. Your task is to generate questions that would drive the creation of reusable KPI metric views.
 {biz_ctx_block}
@@ -10768,8 +10782,8 @@ Generate exactly {req.count} questions that a BUSINESS LEADER would ask to track
 - Use the domain and subdomain classifications to frame questions in the right business context
 - Think about what a CEO, CFO, VP, or department head would ask in a weekly review meeting
 - Focus on measurable outcomes: revenue growth, cost efficiency, customer satisfaction, operational throughput, quality metrics
-- Frame questions around time-based trends ("How has X changed over the past quarter?"), comparisons ("Which segment leads in Y?"), and thresholds ("Are we meeting our Z target?")
 - Prefer questions that naturally decompose into a measure (SUM, AVG, COUNT) and dimensions (time, category, region)
+{depth_block}
 - Do NOT mention column names, table names, or SQL concepts -- use business language only
 - A business user who USES the data but doesn't know the data model should understand every question
 {existing_block}
@@ -10785,8 +10799,8 @@ Generate exactly {req.count} questions that a BUSINESS USER would naturally ask 
 - ONLY use the measures and dimensions listed in the metric views above -- do not invent concepts not present
 - Every question must be answerable by querying one of the metric views above using its measures and dimensions
 - Frame questions around the specific KPIs defined (e.g., if a metric view tracks "Total Adverse Events" with dimensions like "System Organ Class", ask about adverse event patterns by organ class)
-- Focus on trends, comparisons, rankings, thresholds, and ratios USING THE ACTUAL MEASURES provided
-- Vary analytical depth: simple breakdowns, comparisons across dimensions, threshold analysis, ratios between measures
+- Every question must use the ACTUAL measures and dimensions provided
+{depth_block}
 - Do NOT reference column names, table names, SQL concepts, or MEASURE() syntax -- use business language only
 - Do NOT ask about concepts not represented in the metric views (no products, orders, invoices unless those are actual measures/dimensions listed)
 {existing_block}
@@ -10803,9 +10817,8 @@ Generate exactly {req.count} questions that a BUSINESS USER would naturally ask.
 - Every question MUST be answerable using ONLY the tables and columns described above -- do not invent data that isn't present
 - Use the domain and subdomain classifications to frame questions in the right business context
 - Questions should be outcome-oriented and insight-driven (e.g. "What are the top performing regions by revenue this quarter?")
+{depth_block}
 - Do NOT reference column names, table names, or technical schema details
-- Focus on trends, comparisons, rankings, anomalies, and KPIs
-- Vary the question types: aggregations, time-series trends, top-N, filters, comparisons
 - A business user who USES the data but doesn't know the data model should understand every question
 {existing_block}
 Return ONLY a JSON array of strings, no other text."""

@@ -2096,6 +2096,18 @@ class TestBuildSameEntityTypeEdges:
         join_sql = builder.spark.sql.call_args_list[0][0][0]
         assert "a.table_name < b.table_name" in join_sql
 
+    def test_join_requires_same_ontology_bundle(self, builder):
+        # Guard against spurious cross-dataset links: two entities sharing a type
+        # name under DIFFERENT bundles must NOT be joined. The self-join must key on
+        # ontology_bundle equality (with COALESCE so null/single-bundle still matches).
+        mock_df = MagicMock()
+        mock_df.count.return_value = 0
+        builder.spark.sql.return_value = mock_df
+        builder._build_same_entity_type_edges()
+        join_sql = builder.spark.sql.call_args_list[0][0][0]
+        assert "a.ontology_bundle = b.ontology_bundle" in join_sql
+        assert "COALESCE(ontology_bundle, '_default')" in join_sql
+
     def test_returns_dataframe_when_pairs_exist(self, builder):
         mock_df = MagicMock()
         mock_df.count.return_value = 3

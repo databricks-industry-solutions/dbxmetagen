@@ -1062,12 +1062,21 @@ class SemanticLayerGenerator:
                     errors = (errors or []) + validate_materialization(defn)
 
                 if not errors and self.config.validate_before_store:
+                    # Dry-run in the SAME catalog/schema the view will actually deploy to.
+                    # apply_metric_views() derives the deploy location from the SOURCE table
+                    # (not config), so a view dry-run'd in config.catalog/schema could still
+                    # fail apply in the source's location (cross-catalog perms / referencing)
+                    # -- a "validated" view that fails on apply. Match apply's location here.
+                    # NOTE: we intentionally do NOT emit the materialization block in the
+                    # dry-run -- it would provision a Lakeflow pipeline. The block is
+                    # validated structurally by validate_materialization() above.
                     dry_run_name = f"{mv_name}_dry_run"
-                    fq_dry = f"{self.config.catalog_name}.{self.config.schema_name}.{dry_run_name}"
+                    src_parts = source.split(".") if source else []
+                    dry_cat = src_parts[0] if len(src_parts) >= 3 else self.config.catalog_name
+                    dry_sch = src_parts[1] if len(src_parts) >= 3 else self.config.schema_name
+                    fq_dry = f"{dry_cat}.{dry_sch}.{dry_run_name}"
                     try:
-                        yaml_body = self._definition_to_yaml(
-                            defn, include_materialization=self.config.materialize_metric_views
-                        )
+                        yaml_body = self._definition_to_yaml(defn, include_materialization=False)
                         self.spark.sql(
                             f"CREATE OR REPLACE VIEW {fq_dry}\nWITH METRICS LANGUAGE YAML AS $$\n{yaml_body}$$"
                         )
@@ -1208,6 +1217,12 @@ RULES:
 23. NEVER nest aggregate functions inside other aggregate functions (e.g. SUM(COUNT(*)), AVG(SUM(x))). Databricks SQL does not allow nested aggregates. If you need a two-stage aggregation, use a conditional aggregate with CASE/WHEN or create a separate metric view for the inner aggregation
 24. If EXISTING METRIC VIEWS are listed in the metadata, do NOT recreate views that serve the same analytical purpose (as described in their comment) or use the same source table with overlapping measures. Instead create complementary views that cover genuinely different grains, join paths, or business questions not already addressed by existing views
 25. Do NOT create duplicate measures with identical expressions but different names. Each measure must have a semantically distinct expr. "Revenue per Physician" as SUM(cost) is just a duplicate of "Total Revenue" -- the grouping is a query-time choice, not a measure definition property
+26. DIMENSION BREADTH -- generate a RICH set of dimensions, not a minimal one. A metric view is more valuable to Genie/agents/SQL when it exposes many ways to slice the data. Concretely:
+    - Include a dimension for EVERY categorical / low-cardinality descriptive column available on the source table AND on each joined table (status, type, category, segment, region, channel, priority, flags, codes with a label, etc.). Aim for at least one dimension per joined table, and roughly one dimension per 2-3 descriptive (non-numeric, non-measure) columns present.
+    - Include temporal dimensions for EVERY meaningful date/timestamp column, at the natural grains (e.g. Order Month, Order Quarter via DATE_TRUNC/DATE_FORMAT) -- not just one date.
+    - Include geographic dimensions when location columns exist (country, state/region, city).
+    - Do NOT invent columns and do NOT turn measures (amounts, counts, scores) into dimensions. Only use columns present in the metadata. Respect the grain/fan-out rules above (dimension-table attributes are fine as grouping dimensions; never aggregate them from a fact-grain view).
+    - Err on the side of MORE dimensions when the columns exist -- under-populating dimensions is a common failure. The consumer picks which to use per query, so breadth is cheap and valuable.
 
 EXAMPLE:
 {few_shot}

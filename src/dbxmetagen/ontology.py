@@ -4923,22 +4923,33 @@ class OntologyBuilder:
         """
         ent_table = self.config.fully_qualified_entities
         try:
+            # Require the SAME ontology_bundle on both sides. Without this guard, two
+            # DISCONNECTED datasets classified under different bundles that happen to share
+            # a type name (e.g. "Person" under schema_org and under fhir_r4) get linked by a
+            # spurious same_entity_type edge -- the "way too many connections" problem. Every
+            # other entity-concept edge builder already enforces same-bundle
+            # (_build_structural_edges, discover_inter_entity_relationships); this one was
+            # missing it. COALESCE so single-bundle / null-bundle deployments still match.
             pairs = self.spark.sql(f"""
                 SELECT a.table_name AS src, b.table_name AS dst, a.entity_type,
                        CAST(1.0 AS DOUBLE) AS weight
                 FROM (
-                    SELECT EXPLODE(source_tables) AS table_name, entity_type
+                    SELECT EXPLODE(source_tables) AS table_name, entity_type,
+                           COALESCE(ontology_bundle, '_default') AS ontology_bundle
                     FROM {ent_table}
                     WHERE COALESCE(entity_role, 'primary') = 'primary'
                       AND source_tables IS NOT NULL AND SIZE(source_tables) > 0
                 ) a
                 JOIN (
-                    SELECT EXPLODE(source_tables) AS table_name, entity_type
+                    SELECT EXPLODE(source_tables) AS table_name, entity_type,
+                           COALESCE(ontology_bundle, '_default') AS ontology_bundle
                     FROM {ent_table}
                     WHERE COALESCE(entity_role, 'primary') = 'primary'
                       AND source_tables IS NOT NULL AND SIZE(source_tables) > 0
                 ) b
-                ON a.entity_type = b.entity_type AND a.table_name < b.table_name
+                ON a.entity_type = b.entity_type
+                   AND a.ontology_bundle = b.ontology_bundle
+                   AND a.table_name < b.table_name
             """)
             count = pairs.count()
             if count == 0:
