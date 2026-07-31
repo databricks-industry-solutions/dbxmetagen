@@ -2379,7 +2379,11 @@ export default function SemanticLayer({ onNavigate, pipelineStats, onRefreshPipe
       {activeTab === 'definitions' && <>
 
       <div className="text-xs text-slate-500 dark:text-slate-400 space-y-1">
-        <p>Each definition below is a metric view. The lifecycle is: <strong>Generated</strong> &rarr; <strong>Validated</strong> (SQL checked) &rarr; <strong>Applied</strong> (created as a UC view). Use <strong>Improve</strong> to re-generate a definition with AI feedback.</p>
+        <p>Each definition below is a metric view. Lifecycle:
+          {' '}<span className="px-1.5 py-0.5 rounded bg-slate-100 dark:bg-slate-800 text-slate-600 dark:text-slate-300">validated</span> (SQL checked, stored, ready to deploy)
+          {' '}&rarr; <span className="px-1.5 py-0.5 rounded bg-green-100 text-green-700 dark:bg-green-900/40 dark:text-green-300">applied</span> (deployed as a UC metric view via <strong>Deploy as UC View</strong>)
+          {' '}&mdash; a <span className="px-1.5 py-0.5 rounded bg-red-100 text-red-700 dark:bg-red-900/40 dark:text-red-300">failed</span> one couldn't validate or deploy.
+          Use <strong>Improve</strong> to re-generate a definition with AI feedback; after deploying, use <strong>Test Queries</strong> to confirm it returns sensible results.</p>
         <p className="text-sky-700 dark:text-sky-400">
           After applying metric views, sync them to the vector store so the agents and Genie can find them:{' '}
           {onNavigate
@@ -2403,7 +2407,14 @@ export default function SemanticLayer({ onNavigate, pipelineStats, onRefreshPipe
       {/* Definitions */}
       {definitions.length === 0 ? (
         <section className={section}>
-          <p className="text-sm text-slate-400 text-center py-6">No metric view definitions yet. Generate some from the Generate tab.</p>
+          <div className="text-sm text-slate-500 dark:text-slate-400 text-center py-8 space-y-2">
+            <p className="font-medium text-slate-600 dark:text-slate-300">No metric view definitions yet.</p>
+            <p className="text-xs">
+              1. <button onClick={() => setActiveTab('setup')} className="text-blue-600 dark:text-blue-400 hover:underline font-medium">Setup</button> — pick your tables ·
+              {' '}2. <button onClick={() => setActiveTab('questions')} className="text-blue-600 dark:text-blue-400 hover:underline font-medium">Questions &amp; KPIs</button> — define what to measure ·
+              {' '}3. <button onClick={() => setActiveTab('generate')} className="text-blue-600 dark:text-blue-400 hover:underline font-medium">Generate</button> — create definitions
+            </p>
+          </div>
         </section>
       ) : (() => {
         const filtered = definitions.filter(d => {
@@ -2642,12 +2653,14 @@ export default function SemanticLayer({ onNavigate, pipelineStats, onRefreshPipe
                           {(d.status === 'validated' || d.status === 'applied') && (
                             <>
                               <button onClick={() => { improveDefinition(d.definition_id); setOpenMenuId(null) }} disabled={!!busy}
+                                title="Re-generate this definition with AI feedback (replaces the current definition)."
                                 className="w-full text-left px-3 py-1.5 text-xs text-blue-600 hover:bg-blue-50 dark:hover:bg-blue-900/20 disabled:opacity-50">
-                                {busy === 'improve' ? 'Improving...' : 'Improve'}
+                                {busy === 'improve' ? 'Re-generating...' : 'Improve (re-generate)'}
                               </button>
                               <button onClick={() => { createDefinition(d.definition_id); setOpenMenuId(null) }} disabled={!!busy}
+                                title={d.status === 'applied' ? 'Re-run CREATE OR REPLACE VIEW in Unity Catalog' : 'Deploy this definition as a UC metric view (CREATE OR REPLACE VIEW)'}
                                 className="w-full text-left px-3 py-1.5 text-xs text-green-600 hover:bg-green-50 dark:hover:bg-green-900/20 disabled:opacity-50">
-                                {busy === 'create' ? 'Creating...' : d.status === 'applied' ? 'Re-apply' : 'Create in UC'}
+                                {busy === 'create' ? 'Deploying...' : d.status === 'applied' ? 'Redeploy' : 'Deploy as UC View'}
                               </button>
                             </>
                           )}
