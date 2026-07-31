@@ -98,8 +98,10 @@ function EntityExpanded({ entity, onNavigate }) {
     return () => { cancelled = true }
   }, [entity.entity_type])
 
-  const tables = entity.tables?.length ? entity.tables : detail?.tables || []
-  const properties = detail?.properties || []
+  const tables = (Array.isArray(entity.tables) && entity.tables.length)
+    ? entity.tables
+    : (Array.isArray(detail?.tables) ? detail.tables : [])
+  const properties = Array.isArray(detail?.properties) ? detail.properties : []
   const byTable = {}
   properties.forEach(p => {
     const t = p.table_name || 'unknown'
@@ -149,6 +151,9 @@ function EntityExpanded({ entity, onNavigate }) {
             ))}
           </div>
           <h4 className="text-sm font-semibold text-slate-700 dark:text-slate-300 mb-2">Columns by table</h4>
+          {Object.keys(byTable).length === 0 && (
+            <p className="text-xs text-slate-500 dark:text-slate-400 italic mb-3">No columns discovered for this entity yet.</p>
+          )}
           <div className="space-y-3">
             {Object.entries(byTable).map(([table, cols]) => (
               <div key={table} className="rounded-lg border border-slate-200 dark:border-dbx-navy-400/20 overflow-hidden">

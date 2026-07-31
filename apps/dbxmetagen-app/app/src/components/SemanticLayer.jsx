@@ -1697,10 +1697,14 @@ export default function SemanticLayer({ onNavigate, pipelineStats, onRefreshPipe
           )}
         </div>
         <p className="text-xs text-gray-400 dark:text-gray-500 mt-2">Click multiple times to expand coverage -- each run generates new questions that complement the existing ones.</p>
-        {genSufficiency?.questions?.should_generate_more && (
+        {/* Drive `current` from the questions actually shown (questionLines), not the
+            backend's separately-counted value — the backend counts by profile scope and
+            can read 0 while the list shows several, producing "0 of ~N". Only recommend
+            more when the visible count is below the backend's target. */}
+        {genSufficiency?.questions?.recommended && questionLines.length < genSufficiency.questions.recommended && (
           <div className="mt-2 px-3 py-2 rounded-md bg-amber-50 dark:bg-amber-900/20 border border-amber-200 dark:border-amber-700/50 text-xs text-amber-800 dark:text-amber-300 leading-relaxed">
             <span className="font-semibold">Recommendation:</span>{' '}
-            generate more questions &mdash; {genSufficiency.questions.current} of ~{genSufficiency.questions.recommended} suggested
+            generate more questions &mdash; {questionLines.length} of ~{genSufficiency.questions.recommended} suggested
             {genSufficiency.questions.reasons?.length > 0 && <> ({genSufficiency.questions.reasons.join(', ')})</>}.
           </div>
         )}
@@ -1712,9 +1716,13 @@ export default function SemanticLayer({ onNavigate, pipelineStats, onRefreshPipe
           <div>
             <h2 className="text-lg font-semibold dark:text-gray-100">KPI Library</h2>
             <p className="text-xs text-gray-500 dark:text-gray-400 mt-0.5">Define or auto-suggest business KPIs from your selected tables. KPIs feed into metric view generation and Genie space configuration. Run multiple times for broader coverage -- each pass generates different KPIs.</p>
-            {genSufficiency?.kpis?.should_generate_more ? (
+            {/* Use the visible KPI count (kpis.length) for `current`, not the backend's
+                profile-scoped COUNT(*) which can read 0 while the library shows several
+                (the "0 of ~8" bug). Recommend more only when the visible count is under
+                the backend target. */}
+            {genSufficiency?.kpis?.recommended && kpis.length < genSufficiency.kpis.recommended ? (
               <p className="text-xs text-amber-600 dark:text-amber-400 mt-1">
-                Recommendation: generate more KPIs &mdash; {genSufficiency.kpis.current} of ~{genSufficiency.kpis.recommended}
+                Recommendation: generate more KPIs &mdash; {kpis.length} of ~{genSufficiency.kpis.recommended}
                 {genSufficiency.kpis.reasons?.length > 0 && <> ({genSufficiency.kpis.reasons.join(', ')})</>}.
               </p>
             ) : (
@@ -2186,6 +2194,13 @@ export default function SemanticLayer({ onNavigate, pipelineStats, onRefreshPipe
 
       <div className="text-xs text-slate-500 dark:text-slate-400 space-y-1">
         <p>Each definition below is a metric view. The lifecycle is: <strong>Generated</strong> &rarr; <strong>Validated</strong> (SQL checked) &rarr; <strong>Applied</strong> (created as a UC view). Use <strong>Improve</strong> to re-generate a definition with AI feedback.</p>
+        <p className="text-sky-700 dark:text-sky-400">
+          After applying metric views, sync them to the vector store so the agents and Genie can find them:{' '}
+          {onNavigate
+            ? <button onClick={() => onNavigate('syncops')} className="font-semibold underline">Refresh KG / Index in Sync &amp; Ops</button>
+            : <strong>Refresh KG / Index in Sync &amp; Ops</strong>}
+          {' '}(or the next full analytics pipeline run).
+        </p>
         <p className="text-amber-700 dark:text-amber-400">Note: Only the owner of a metric view can edit it. {userIdentity
           ? <>Views created by this app are owned by you (<strong>{userIdentity}</strong>) via on-behalf-of authentication.</>
           : <>Views created by this app are owned by the app service principal. Use <strong>Transfer Ownership</strong> to take ownership &mdash; this is irreversible for the app.</>
