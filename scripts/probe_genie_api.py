@@ -76,16 +76,15 @@ def main():
     except Exception as e:
         print(f"  get_space failed: {e}")
 
-    # 3. Raw REST probes — this is where serialized_space / example SQL / curated
-    #    questions / benchmarks MIGHT live. We try several candidate paths and dump
-    #    whatever comes back. ws.api_client.do() does authenticated REST.
+    # 3. Raw REST probes. CONFIRMED (probed live against DMVM 2026-07): the example
+    #    SQL + benchmarks are NOT on /genie/spaces/{id} (thin), but on the legacy
+    #    data-rooms endpoints. curated-questions with question_type BENCHMARK /
+    #    BENCHMARK_SUGGESTION carry answer_text = the curated example SQL.
+    #    ws.api_client.do() does authenticated REST.
     candidate_paths = [
-        f"/api/2.0/genie/spaces/{space_id}",
-        f"/api/2.0/genie/spaces/{space_id}?include_serialized_space=true",
-        f"/api/2.0/genie/spaces/{space_id}/curated-questions",
-        f"/api/2.0/genie/spaces/{space_id}/curated_questions",
-        f"/api/2.0/genie/spaces/{space_id}/benchmarks",
-        f"/api/2.0/data-rooms/{space_id}",
+        f"/api/2.0/genie/spaces/{space_id}",                    # thin: id/title/description/warehouse_id
+        f"/api/2.0/data-rooms/{space_id}",                      # + table_identifiers, suggestion_description
+        f"/api/2.0/data-rooms/{space_id}/curated-questions",    # <- the gold: question_text + answer_text (SQL)
     ]
     print("\n## 3. Raw REST probes (looking for serialized_space / example_sql / benchmarks)")
     for path in candidate_paths:
@@ -98,10 +97,18 @@ def main():
             if isinstance(out, dict):
                 for interesting in ("serialized_space", "example_sql", "sql_snippets",
                                     "curated_questions", "benchmarks", "instructions",
-                                    "sample_questions"):
+                                    "sample_questions", "table_identifiers"):
                     if interesting in out:
                         print(f"  >>> FOUND {interesting!r}:")
                         print("     ", json.dumps(_redact(out[interesting]))[:1000])
+                # curated-questions: summarize the answer_text (SQL) carriers
+                if "curated_questions" in out and isinstance(out["curated_questions"], list):
+                    from collections import Counter
+                    qs = out["curated_questions"]
+                    types = Counter(q.get("question_type") for q in qs)
+                    with_sql = sum(1 for q in qs if (q.get("answer_text") or "").strip())
+                    print(f"  >>> curated_questions: {len(qs)} total, types={dict(types)}, "
+                          f"{with_sql} with answer_text (example SQL)")
         except Exception as e:
             print(f"  -> {type(e).__name__}: {str(e)[:200]}")
 
