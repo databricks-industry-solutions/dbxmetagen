@@ -451,6 +451,7 @@ export default function BatchJobs({ onNavigate, pipelineStats }) {
                   <li><strong>Financial Services</strong> &mdash; Banking, insurance, and capital-markets data (accounts, transactions, instruments, risk, compliance).</li>
                   <li><strong>Retail &amp; CPG</strong> &mdash; Retail, supply chain, and consumer goods data (customers, orders, products, inventory, promotions).</li>
                   <li><strong>Schema.org</strong> &mdash; Broad formal ontology from schema.org. Best for web-originated or loosely structured data.</li>
+                  <li><strong>Dublin Core</strong> &mdash; Compact, standards-aligned general ontology (34 catalog types: Agent, Dataset, Document, Location, Rights, etc.). A simpler alternative to Schema.org for general catalog metadata. Pair with a Domain Taxonomy for domain classification.</li>
                 </ul>
                 <p className="mt-1.5 leading-relaxed">
                   <strong>Formal ontologies</strong> (labeled &ldquo;Formal OWL&rdquo;) are auto-extracted from published OWL/Turtle files
