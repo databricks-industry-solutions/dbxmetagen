@@ -111,6 +111,94 @@ function MvAnalysisPanel({ issues, onClose, onApplyFix, appliedFields, busy }) {
 }
 
 // ---------------------------------------------------------------------------
+// MV Test-query results panel (item 23)
+// ---------------------------------------------------------------------------
+
+const _testStatusStyles = {
+  ok: 'text-emerald-700 dark:text-emerald-400 bg-emerald-100 dark:bg-emerald-900/30',
+  warn: 'text-amber-700 dark:text-amber-400 bg-amber-100 dark:bg-amber-900/30',
+  fail: 'text-red-700 dark:text-red-400 bg-red-100 dark:bg-red-900/30',
+}
+
+function MvTestResultsPanel({ data, onClose }) {
+  const [openSql, setOpenSql] = useState(null)
+  const results = data.results || []
+  const summary = data.summary || {}
+  const overallCls = _testStatusStyles[data.overall] || _testStatusStyles.warn
+  return (
+    <div className="mt-2 p-3 border border-teal-200 dark:border-teal-700 rounded space-y-2">
+      <div className="flex items-center justify-between">
+        <div className="flex items-center gap-2">
+          <span className="text-xs font-medium text-slate-700 dark:text-slate-300">Test Queries</span>
+          <span className={`px-1.5 py-0.5 rounded text-[10px] font-medium ${overallCls}`}>
+            {summary.passed || 0} passed · {summary.warned || 0} warn · {summary.failed || 0} failed
+          </span>
+        </div>
+        <button onClick={onClose} className="text-xs text-slate-400 hover:text-slate-600">Close</button>
+      </div>
+      {data.federation_note && (
+        <p className="text-[10px] text-amber-700 dark:text-amber-400 bg-amber-50 dark:bg-amber-900/20 rounded px-2 py-1">
+          {data.federation_note}
+        </p>
+      )}
+      {results.length === 0 && (
+        <p className="text-xs text-slate-400">No test queries were generated (needs at least one measure).</p>
+      )}
+      {results.map((r, i) => {
+        const st = (r.health && r.health.status) || (r.error ? 'fail' : 'ok')
+        const cols = r.sample_result && r.sample_result.length ? Object.keys(r.sample_result[0]) : []
+        return (
+          <div key={i} className="text-xs border-t border-slate-100 dark:border-slate-700 pt-1.5 first:border-t-0">
+            <div className="flex items-start gap-2">
+              <span className={`px-1.5 py-0.5 rounded font-medium shrink-0 ${_testStatusStyles[st] || _testStatusStyles.warn}`}>{st}</span>
+              <div className="flex-1 min-w-0">
+                <div className="flex items-center gap-2">
+                  <span className="text-slate-700 dark:text-slate-300 font-medium">{r.label}</span>
+                  <span className="text-slate-400 text-[10px]">{r.row_count} row(s)</span>
+                  <button onClick={() => setOpenSql(openSql === i ? null : i)}
+                    className="text-teal-600 dark:text-teal-400 text-[10px] hover:underline">
+                    {openSql === i ? 'hide SQL' : 'show SQL'}
+                  </button>
+                </div>
+                {(r.health?.notes || []).map((n, j) => (
+                  <p key={j} className="text-slate-500 dark:text-slate-400 text-[10px]">{n}</p>
+                ))}
+                {r.error && (
+                  <p className="text-red-600 dark:text-red-400 text-[10px] whitespace-pre-wrap break-words mt-0.5">{r.error}</p>
+                )}
+                {openSql === i && (
+                  <pre className="mt-1 bg-dbx-oat dark:bg-gray-900 border dark:border-gray-600 rounded p-2 text-[10px] overflow-x-auto dark:text-gray-200">{r.sql}</pre>
+                )}
+                {cols.length > 0 && (
+                  <div className="mt-1 overflow-x-auto">
+                    <table className="text-[10px] border-collapse">
+                      <thead>
+                        <tr>{cols.map(c => (
+                          <th key={c} className="text-left px-1.5 py-0.5 border dark:border-gray-600 text-slate-500 dark:text-slate-400 font-medium">{c}</th>
+                        ))}</tr>
+                      </thead>
+                      <tbody>
+                        {r.sample_result.slice(0, 5).map((row, ri) => (
+                          <tr key={ri}>{cols.map(c => (
+                            <td key={c} className="px-1.5 py-0.5 border dark:border-gray-700 text-slate-600 dark:text-slate-300 whitespace-nowrap">
+                              {row[c] === null || row[c] === undefined ? <span className="text-slate-300 dark:text-slate-600 italic">null</span> : String(row[c])}
+                            </td>
+                          ))}</tr>
+                        ))}
+                      </tbody>
+                    </table>
+                  </div>
+                )}
+              </div>
+            </div>
+          </div>
+        )
+      })}
+    </div>
+  )
+}
+
+// ---------------------------------------------------------------------------
 // MV Structured Editor
 // ---------------------------------------------------------------------------
 
@@ -429,6 +517,8 @@ export default function SemanticLayer({ onNavigate, pipelineStats, onRefreshPipe
   const [mvAnalysis, setMvAnalysis] = useState({})
   const [mvAnalysisExpanded, setMvAnalysisExpanded] = useState(null)
   const [mvAppliedFields, setMvAppliedFields] = useState({})
+  const [mvTestResults, setMvTestResults] = useState({})
+  const [mvTestExpanded, setMvTestExpanded] = useState(null)
   const [structuredEditing, setStructuredEditing] = useState(null)
   const [structuredDraft, setStructuredDraft] = useState(null)
   const userEditedTargetRef = useRef(false)
@@ -1155,6 +1245,23 @@ export default function SemanticLayer({ onNavigate, pipelineStats, onRefreshPipe
         setError(data.detail || 'Analysis failed')
       }
     } catch (e) { setError(e.message) }
+    setActionLoading(prev => ({ ...prev, [defId]: null }))
+  }
+
+  const runTestQueries = async (defId) => {
+    setActionLoading(prev => ({ ...prev, [defId]: 'test' }))
+    setMvTestResults(prev => ({ ...prev, [defId]: null }))
+    setMvTestExpanded(defId)
+    try {
+      const res = await fetch(`/api/semantic-layer/definitions/${defId}/test-queries`, { method: 'POST' })
+      const data = await res.json().catch(() => ({}))
+      if (res.ok) {
+        setMvTestResults(prev => ({ ...prev, [defId]: data }))
+      } else {
+        setError(data.detail || 'Test queries failed')
+        setMvTestExpanded(null)
+      }
+    } catch (e) { setError(e.message); setMvTestExpanded(null) }
     setActionLoading(prev => ({ ...prev, [defId]: null }))
   }
 
@@ -2666,6 +2773,11 @@ export default function SemanticLayer({ onNavigate, pipelineStats, onRefreshPipe
                           )}
                           {d.status === 'applied' && (
                             <>
+                            <button onClick={() => { runTestQueries(d.definition_id); setOpenMenuId(null) }} disabled={!!busy}
+                              title="Run auto-generated MEASURE() drill queries against the deployed view to confirm it returns sensible results."
+                              className="w-full text-left px-3 py-1.5 text-xs text-teal-600 hover:bg-teal-50 dark:hover:bg-teal-900/20 disabled:opacity-50">
+                              {busy === 'test' ? 'Testing...' : 'Test Queries'}
+                            </button>
                             <button onClick={() => { dropDefinition(d.definition_id); setOpenMenuId(null) }} disabled={!!busy}
                               className="w-full text-left px-3 py-1.5 text-xs text-amber-600 hover:bg-amber-50 dark:hover:bg-amber-900/20 disabled:opacity-50">
                               {busy === 'drop' ? 'Dropping...' : 'Drop from UC'}
@@ -2779,6 +2891,12 @@ export default function SemanticLayer({ onNavigate, pipelineStats, onRefreshPipe
                       appliedFields={mvAppliedFields[d.definition_id]}
                       busy={actionLoading[d.definition_id] === 'apply-fix'}
                       onApplyFix={(path, value) => applyFieldFix(d.definition_id, path, value)} />
+                  )}
+
+                  {/* MV Test-query results panel */}
+                  {mvTestExpanded === d.definition_id && mvTestResults[d.definition_id] && (
+                    <MvTestResultsPanel data={mvTestResults[d.definition_id]}
+                      onClose={() => setMvTestExpanded(null)} />
                   )}
                 </div>
               )

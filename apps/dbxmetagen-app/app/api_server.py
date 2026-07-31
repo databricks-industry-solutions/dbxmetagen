@@ -10503,6 +10503,208 @@ Output JSON in ```json``` fences: {{"issues": [...]}}"""
     return {"health": health, "issues": combined}
 
 
+# ---------------------------------------------------------------------------
+# Metric-view test-query runner (item 23)
+# ---------------------------------------------------------------------------
+
+# Catalog types that are federated / foreign — live drill queries against these
+# push down to the remote source (Redshift, Snowflake, etc.), so we cap them.
+_FEDERATED_CATALOG_TYPES = {"FOREIGN", "FOREIGN_CATALOG", "EXTERNAL"}
+
+
+def _is_federated_catalog(catalog: str) -> bool:
+    """Best-effort check: is this catalog a federated/foreign catalog?
+
+    Returns True on a positive detection only. Any lookup error returns False so
+    we do not block Delta-native views on a transient metadata failure — the
+    per-query timeout + row LIMIT are the backstop there.
+    """
+    if not catalog:
+        return False
+    if os.environ.get("FEDERATION_MODE", "false").lower() == "true":
+        return True
+    try:
+        cat_esc = catalog.replace("'", "''")
+        rows = execute_sql(
+            f"SELECT catalog_type FROM system.information_schema.catalogs "
+            f"WHERE catalog_name = '{cat_esc}'",
+            timeout=15,
+        )
+        if rows:
+            ctype = (rows[0].get("catalog_type") or "").upper()
+            return ctype in _FEDERATED_CATALOG_TYPES
+    except Exception as e:
+        logger.debug("Federation catalog check skipped for %s: %s", catalog, e)
+    return False
+
+
+def _build_mv_test_queries(defn: dict, fq_mv: str, max_dims: int = 5) -> list[dict]:
+    """Auto-generate MEASURE() drill queries from a metric-view definition.
+
+    Returns a list of {label, kind, sql} dicts:
+      1. all measures, ungrouped (grand totals)
+      2. all measures GROUP BY each dimension (capped at max_dims)
+      3. all measures GROUP BY the top 2-3 dimensions combined
+      4. the ungrouped query WHERE the definition's own filter (if present)
+    """
+    measures = [m.get("name") for m in defn.get("measures", []) if m.get("name")]
+    dims = [d.get("name") for d in defn.get("dimensions", []) if d.get("name")]
+    queries: list[dict] = []
+    if not measures:
+        return queries
+
+    measure_clause = ", ".join(f"MEASURE(`{m}`) AS `{m}`" for m in measures)
+
+    # 1. Grand totals (all measures, no grouping)
+    queries.append({
+        "label": "Grand totals (all measures, ungrouped)",
+        "kind": "ungrouped",
+        "sql": f"SELECT {measure_clause} FROM {fq_mv} LIMIT 10",
+    })
+
+    # 2. One query per dimension (capped)
+    for dname in dims[:max_dims]:
+        queries.append({
+            "label": f"By {dname}",
+            "kind": "single_dim",
+            "dimension": dname,
+            "sql": f"SELECT `{dname}`, {measure_clause} FROM {fq_mv} "
+                   f"GROUP BY ALL ORDER BY `{dname}` LIMIT 10",
+        })
+
+    # 3. Combined GROUP BY top 2-3 dimensions
+    if len(dims) >= 2:
+        combo = dims[:3]
+        combo_clause = ", ".join(f"`{d}`" for d in combo)
+        queries.append({
+            "label": f"Combined by {', '.join(combo)}",
+            "kind": "combined_dims",
+            "sql": f"SELECT {combo_clause}, {measure_clause} FROM {fq_mv} "
+                   f"GROUP BY ALL LIMIT 10",
+        })
+
+    # 4. Filtered totals (uses the definition's own filter expression, if any)
+    filt = (defn.get("filter") or "").strip()
+    if filt:
+        queries.append({
+            "label": "Filtered totals (definition filter applied)",
+            "kind": "filtered",
+            "sql": f"SELECT {measure_clause} FROM {fq_mv} WHERE {filt} LIMIT 10",
+        })
+
+    return queries
+
+
+def _health_from_test_result(kind: str, dimension: str | None, rows: list) -> dict:
+    """Derive a lightweight health verdict from a single test-query result set."""
+    row_count = len(rows)
+    notes: list[str] = []
+    status = "ok"
+
+    if row_count == 0:
+        return {"status": "warn", "notes": ["Returned 0 rows — the view may be empty or the filter excludes everything."]}
+
+    # All-null measure values across the sample → likely a broken expression / no matching data
+    all_null = True
+    for r in rows:
+        for k, v in r.items():
+            if dimension and k == dimension:
+                continue
+            if v is not None:
+                all_null = False
+                break
+        if not all_null:
+            break
+    if all_null:
+        status = "warn"
+        notes.append("All measure values are NULL in the sample — check the measure expressions or source data.")
+
+    # Fan-out signal: for a single-dimension drill, dimension values should be unique per group
+    if kind == "single_dim" and dimension:
+        dim_vals = [r.get(dimension) for r in rows]
+        if len(dim_vals) != len(set(map(str, dim_vals))):
+            status = "warn"
+            notes.append(f"Dimension '{dimension}' has duplicate rows after GROUP BY — possible join fan-out.")
+
+    if not notes:
+        notes.append(f"Returned {row_count} row(s); measures resolved.")
+    return {"status": status, "notes": notes}
+
+
+@app.post("/api/semantic-layer/definitions/{definition_id}/test-queries")
+def run_mv_test_queries(definition_id: str):
+    """Run auto-generated MEASURE() drill queries against a metric view.
+
+    Confirms the view returns sensible results (not just that CREATE succeeded).
+    FEDERATION GUARD: when the deployed catalog is federated/foreign, these live
+    queries push down to the remote source — we cap to 1-2 lightweight drills to
+    avoid hammering Redshift/Snowflake.
+    """
+    _ensure_semantic_layer_tables()
+    row = _fetch_definition(definition_id)
+    defn = json.loads(row["json_definition"]) if isinstance(row["json_definition"], str) else row["json_definition"]
+    mv_name = defn.get("name") or row.get("metric_view_name", "")
+    if not mv_name:
+        raise HTTPException(400, detail="Definition has no metric view name")
+    if row.get("status") != "applied":
+        raise HTTPException(400, detail="Only applied metric views can be test-queried. Deploy it first.")
+    if not defn.get("measures"):
+        raise HTTPException(400, detail="Definition has no measures to test.")
+
+    mv_cat = row.get("deployed_catalog") or CATALOG
+    mv_sch = row.get("deployed_schema") or SCHEMA
+    fq_mv = f"`{mv_cat}`.`{mv_sch}`.`{mv_name}`"
+
+    federated = _is_federated_catalog(mv_cat)
+    queries = _build_mv_test_queries(defn, fq_mv)
+
+    federation_note = None
+    if federated:
+        # Keep at most the grand-total + one single-dimension drill.
+        capped = [q for q in queries if q["kind"] == "ungrouped"]
+        first_dim = next((q for q in queries if q["kind"] == "single_dim"), None)
+        if first_dim:
+            capped.append(first_dim)
+        queries = capped
+        federation_note = (
+            f"'{mv_cat}' is a federated catalog — live queries push down to the remote source. "
+            f"Limited to {len(queries)} lightweight drill(s) to avoid load. "
+            f"Run the full set manually if needed."
+        )
+
+    results = []
+    passed = 0
+    failed = 0
+    for q in queries:
+        entry = {"label": q["label"], "kind": q["kind"], "sql": q["sql"]}
+        try:
+            qrows = execute_sql(q["sql"], timeout=60)
+            entry["error"] = None
+            entry["row_count"] = len(qrows)
+            entry["sample_result"] = qrows[:10]
+            entry["health"] = _health_from_test_result(q["kind"], q.get("dimension"), qrows)
+            passed += 1
+        except Exception as e:
+            entry["error"] = str(e)
+            entry["row_count"] = 0
+            entry["sample_result"] = []
+            entry["health"] = {"status": "fail", "notes": ["Query failed — see error."]}
+            failed += 1
+        results.append(entry)
+
+    warn = sum(1 for r in results if not r["error"] and r["health"]["status"] == "warn")
+    overall = "fail" if failed else ("warn" if warn else "ok")
+    return {
+        "definition_id": definition_id,
+        "metric_view": fq_mv,
+        "federated": federated,
+        "federation_note": federation_note,
+        "overall": overall,
+        "summary": {"total": len(results), "passed": passed, "failed": failed, "warned": warn},
+        "results": results,
+    }
+
+
 class UpdateFieldRequest(BaseModel):
     path: str
     value: Any = None

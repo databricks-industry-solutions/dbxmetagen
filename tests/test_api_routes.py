@@ -834,3 +834,103 @@ class TestKpiColumnRolesBlock:
     def test_empty_returns_empty(self, monkeypatch):
         monkeypatch.setattr(api_server, "execute_sql", lambda sql, timeout=20: [])
         assert api_server._kpi_column_roles_block(["c.s.orders"]) == ""
+
+
+class TestBuildMvTestQueries:
+    """Tests for the metric-view test-query generator (item 23)."""
+
+    def _defn(self, **overrides):
+        base = {
+            "name": "mv_sales",
+            "measures": [
+                {"name": "total", "expr": "SUM(x)"},
+                {"name": "cnt", "expr": "COUNT(*)"},
+            ],
+            "dimensions": [
+                {"name": "region", "expr": "region"},
+                {"name": "quarter", "expr": "quarter"},
+            ],
+        }
+        base.update(overrides)
+        return base
+
+    def test_no_measures_returns_empty(self):
+        assert api_server._build_mv_test_queries(self._defn(measures=[]), "`c`.`s`.`mv`") == []
+
+    def test_generates_ungrouped_and_per_dim(self):
+        qs = api_server._build_mv_test_queries(self._defn(), "`c`.`s`.`mv`")
+        kinds = [q["kind"] for q in qs]
+        assert kinds[0] == "ungrouped"
+        assert kinds.count("single_dim") == 2
+        assert "combined_dims" in kinds
+        # every query wraps measures in MEASURE() and targets the fq view
+        for q in qs:
+            assert "MEASURE(`total`)" in q["sql"]
+            assert "`c`.`s`.`mv`" in q["sql"]
+            assert q["sql"].rstrip().endswith("LIMIT 10")
+
+    def test_dim_cap(self):
+        many_dims = [{"name": f"d{i}", "expr": f"d{i}"} for i in range(8)]
+        qs = api_server._build_mv_test_queries(self._defn(dimensions=many_dims), "`c`.`s`.`mv`", max_dims=5)
+        assert sum(1 for q in qs if q["kind"] == "single_dim") == 5
+
+    def test_filter_query_emitted(self):
+        qs = api_server._build_mv_test_queries(self._defn(filter="region = 'NA'"), "`c`.`s`.`mv`")
+        filtered = [q for q in qs if q["kind"] == "filtered"]
+        assert len(filtered) == 1
+        assert "WHERE region = 'NA'" in filtered[0]["sql"]
+
+    def test_no_combined_with_single_dim(self):
+        qs = api_server._build_mv_test_queries(
+            self._defn(dimensions=[{"name": "region", "expr": "region"}]), "`c`.`s`.`mv`")
+        assert "combined_dims" not in [q["kind"] for q in qs]
+
+
+class TestHealthFromTestResult:
+    def test_zero_rows_warns(self):
+        h = api_server._health_from_test_result("ungrouped", None, [])
+        assert h["status"] == "warn"
+
+    def test_all_null_measures_warns(self):
+        h = api_server._health_from_test_result("ungrouped", None, [{"total": None, "cnt": None}])
+        assert h["status"] == "warn"
+        assert any("NULL" in n for n in h["notes"])
+
+    def test_fanout_duplicate_dimension_warns(self):
+        rows = [{"region": "NA", "total": 1}, {"region": "NA", "total": 2}]
+        h = api_server._health_from_test_result("single_dim", "region", rows)
+        assert h["status"] == "warn"
+        assert any("fan-out" in n for n in h["notes"])
+
+    def test_clean_result_ok(self):
+        rows = [{"region": "NA", "total": 5}, {"region": "EU", "total": 3}]
+        h = api_server._health_from_test_result("single_dim", "region", rows)
+        assert h["status"] == "ok"
+
+
+class TestIsFederatedCatalog:
+    def test_empty_false(self):
+        assert api_server._is_federated_catalog("") is False
+
+    def test_federation_mode_env(self, monkeypatch):
+        monkeypatch.setenv("FEDERATION_MODE", "true")
+        assert api_server._is_federated_catalog("anycat") is True
+
+    def test_foreign_catalog_type(self, monkeypatch):
+        monkeypatch.setenv("FEDERATION_MODE", "false")
+        monkeypatch.setattr(api_server, "execute_sql",
+                            lambda sql, timeout=15: [{"catalog_type": "FOREIGN"}])
+        assert api_server._is_federated_catalog("snowflake_cat") is True
+
+    def test_managed_catalog_not_federated(self, monkeypatch):
+        monkeypatch.setenv("FEDERATION_MODE", "false")
+        monkeypatch.setattr(api_server, "execute_sql",
+                            lambda sql, timeout=15: [{"catalog_type": "MANAGED_CATALOG"}])
+        assert api_server._is_federated_catalog("main") is False
+
+    def test_lookup_error_returns_false(self, monkeypatch):
+        monkeypatch.setenv("FEDERATION_MODE", "false")
+        def _boom(sql, timeout=15):
+            raise RuntimeError("no access")
+        monkeypatch.setattr(api_server, "execute_sql", _boom)
+        assert api_server._is_federated_catalog("main") is False
