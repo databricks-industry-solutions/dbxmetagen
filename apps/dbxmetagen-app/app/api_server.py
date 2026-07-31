@@ -13068,6 +13068,123 @@ Return ONLY the paragraph text."""
 
 
 # ---------------------------------------------------------------------------
+# Genie SQL pull (items 14/15) -- app-native, no job. Lists Genie spaces so the
+# user can pinpoint one at metric-view build time, then pulls its curated example
+# SQL into genie_sql_examples (CDF) + a VS index for Phase-15 retrieval. All via
+# the Statement Execution API + Vector Search SDK (no Spark/cluster).
+# ---------------------------------------------------------------------------
+
+class PullGenieSQLRequest(BaseModel):
+    # Explicit scope -- at least one of these must be non-empty (the puller
+    # refuses to pull from every space by default).
+    space_ids: list[str] = []
+    title_contains: list[str] = []
+    include_sample_questions: bool = False
+
+
+@app.get("/api/genie/available-spaces")
+def list_genie_available_spaces():
+    """List Genie spaces (id/title/description) so the UI can offer a picker for
+    the 'pull curated SQL' action at metric-view build time."""
+    from dbxmetagen.genie_sql_puller import GenieSQLPuller, GenieSQLPullerConfig
+    try:
+        puller = GenieSQLPuller(
+            GenieSQLPullerConfig(catalog_name=CATALOG, schema_name=SCHEMA),
+            ws=get_workspace_client(),
+        )
+        spaces = puller.list_spaces()
+    except Exception as e:
+        logger.warning("list_genie_available_spaces failed: %s", e)
+        raise HTTPException(502, detail=f"Could not list Genie spaces: {e}")
+    return {"spaces": [
+        {"space_id": s.get("space_id"), "title": s.get("title"),
+         "description": (s.get("description") or "")[:300]}
+        for s in spaces if s.get("space_id")
+    ]}
+
+
+@app.post("/api/semantic-layer/pull-genie-sql")
+def pull_genie_sql(req: PullGenieSQLRequest):
+    """Pull curated example SQL from the chosen Genie space(s) into
+    genie_sql_examples (CDF) and (re)build the genie_examples_vs_index -- all
+    in-app via execute_sql + the Vector Search SDK. Returns counts + index info."""
+    from dbxmetagen.genie_sql_puller import (
+        GenieSQLPuller,
+        GenieSQLPullerConfig,
+        build_genie_examples_index,
+    )
+
+    if not req.space_ids and not req.title_contains:
+        raise HTTPException(400, detail="Provide space_ids and/or title_contains.")
+
+    cfg = GenieSQLPullerConfig(
+        catalog_name=CATALOG, schema_name=SCHEMA, endpoint_name=VS_ENDPOINT,
+        space_ids=req.space_ids, title_contains=req.title_contains,
+        include_sample_questions=req.include_sample_questions,
+    )
+    puller = GenieSQLPuller(cfg, ws=get_workspace_client())
+
+    # 1. REST reads (Spark-free).
+    try:
+        rows = puller.extract_examples()
+    except Exception as e:
+        raise HTTPException(502, detail=f"Genie pull failed: {e}")
+    if not rows:
+        return {"examples_written": 0, "message": "No curated SQL found in the selected space(s)."}
+
+    # 2. Ensure the CDF table + upsert each exemplar via the Statement Execution
+    #    API (idempotent on example_id -- re-pulls update in place).
+    _ensure_genie_sql_examples_table(cfg.fq_documents)
+    written = 0
+    for r in rows:
+        eid = _esc_sql(r["example_id"])
+        try:
+            execute_sql(
+                f"MERGE INTO {cfg.fq_documents} t "
+                f"USING (SELECT '{eid}' AS example_id) s ON t.example_id = s.example_id "
+                f"WHEN MATCHED THEN UPDATE SET "
+                f"space_id='{_esc_sql(r['space_id'])}', space_title='{_esc_sql(r['space_title'])}', "
+                f"question_text='{_esc_sql(r['question_text'])}', sql='{_esc_sql(r['sql'])}', "
+                f"content='{_esc_sql(r['content'])}', question_type='{_esc_sql(r['question_type'])}', "
+                f"table_identifiers='{_esc_sql(r['table_identifiers'])}', updated_at=current_timestamp() "
+                f"WHEN NOT MATCHED THEN INSERT (example_id, space_id, space_title, question_text, sql, "
+                f"content, question_type, table_identifiers, updated_at) VALUES ("
+                f"'{eid}', '{_esc_sql(r['space_id'])}', '{_esc_sql(r['space_title'])}', "
+                f"'{_esc_sql(r['question_text'])}', '{_esc_sql(r['sql'])}', '{_esc_sql(r['content'])}', "
+                f"'{_esc_sql(r['question_type'])}', '{_esc_sql(r['table_identifiers'])}', current_timestamp())",
+                timeout=30,
+            )
+            written += 1
+        except Exception as e:
+            logger.warning("Genie exemplar upsert failed (%s): %s", r.get("example_id"), e)
+
+    # 3. Build/sync the VS index (SDK; best-effort -- table is still useful without it).
+    index_info: dict = {}
+    try:
+        index_info = build_genie_examples_index(cfg)
+    except Exception as e:
+        logger.warning("genie_examples index build deferred: %s", e)
+        index_info = {"index_error": str(e)[:300]}
+
+    return {"examples_written": written, "spaces_pulled": len(set(r["space_id"] for r in rows)), **index_info}
+
+
+_genie_sql_examples_ready = False
+
+
+def _ensure_genie_sql_examples_table(fq_documents: str):
+    global _genie_sql_examples_ready
+    if _genie_sql_examples_ready:
+        return
+    from dbxmetagen.genie_sql_puller import create_table_sql
+    try:
+        execute_sql(create_table_sql(fq_documents), timeout=30)
+        _genie_sql_examples_ready = True
+    except Exception as e:
+        logger.warning("Could not create genie_sql_examples table: %s", e)
+
+
+# ---------------------------------------------------------------------------
 # Metadata Intelligence Agent endpoints
 # ---------------------------------------------------------------------------
 

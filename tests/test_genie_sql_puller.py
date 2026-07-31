@@ -1,7 +1,7 @@
 """Unit tests for genie_sql_puller: scope selection + curated-SQL extraction.
 
-The Genie REST reads are mocked via a fake ws.api_client; no network. Spark is
-only used for table/index writes (not exercised here)."""
+The Genie REST reads are mocked via a fake ws.api_client; no network. The puller
+is Spark-free (runs in the app); table writes + index build are the app's job."""
 
 import inspect
 from unittest.mock import MagicMock
@@ -45,7 +45,7 @@ def _cfg(**kw):
 
 class TestScopeRequirement:
     def test_empty_scope_raises(self):
-        puller = GenieSQLPuller(MagicMock(), _cfg(), ws=_ws({}))
+        puller = GenieSQLPuller(_cfg(), ws=_ws({}))
         with pytest.raises(ValueError, match="explicit scope"):
             puller.extract_examples()
 
@@ -58,7 +58,7 @@ class TestScopeRequirement:
             "/data-rooms/keep/curated-questions": {"curated_questions": []},
             "/data-rooms/keep": {"table_identifiers": []},
         })
-        puller = GenieSQLPuller(MagicMock(), _cfg(space_ids=["keep"]), ws=ws)
+        puller = GenieSQLPuller(_cfg(space_ids=["keep"]), ws=ws)
         selected = puller._select_spaces()
         assert [s["space_id"] for s in selected] == ["keep"]
 
@@ -69,7 +69,7 @@ class TestScopeRequirement:
                 {"space_id": "b", "title": "Random Test"},
             ]},
         })
-        puller = GenieSQLPuller(MagicMock(), _cfg(title_contains=["commercial"]), ws=ws)
+        puller = GenieSQLPuller(_cfg(title_contains=["commercial"]), ws=ws)
         selected = puller._select_spaces()
         assert [s["space_id"] for s in selected] == ["a"]
 
@@ -81,7 +81,7 @@ class TestExtraction:
             "/data-rooms/sp1/curated-questions": {"curated_questions": curated},
             "/data-rooms/sp1": {"table_identifiers": ["c.s.orders", "c.s.returns"]},
         })
-        return GenieSQLPuller(MagicMock(), _cfg(space_ids=["sp1"]), ws=ws)
+        return GenieSQLPuller(_cfg(space_ids=["sp1"]), ws=ws)
 
     def test_keeps_benchmark_sql_only(self):
         curated = [
@@ -113,7 +113,7 @@ class TestExtraction:
             "/data-rooms/sp1/curated-questions": {"curated_questions": curated},
             "/data-rooms/sp1": {"table_identifiers": []},
         })
-        puller = GenieSQLPuller(MagicMock(), _cfg(space_ids=["sp1"], include_sample_questions=True), ws=ws)
+        puller = GenieSQLPuller(_cfg(space_ids=["sp1"], include_sample_questions=True), ws=ws)
         assert len(puller.extract_examples()) == 1
 
 
@@ -136,15 +136,18 @@ class TestQueryExamples:
 
 
 class TestTableAndIndexContract:
-    def test_table_has_cdf_enabled(self):
-        src = inspect.getsource(GenieSQLPuller.ensure_table)
-        assert "delta.enableChangeDataFeed" in src and "'true'" in src
-        assert "deletedFileRetentionDuration" in src
+    def test_create_table_sql_has_cdf(self):
+        from dbxmetagen.genie_sql_puller import create_table_sql
+        ddl = create_table_sql("c.s.genie_sql_examples")
+        assert "CREATE TABLE IF NOT EXISTS c.s.genie_sql_examples" in ddl
+        assert "delta.enableChangeDataFeed" in ddl and "'true'" in ddl
+        assert "deletedFileRetentionDuration" in ddl
+        assert "example_id STRING NOT NULL" in ddl
 
-    def test_merge_is_keyed_on_example_id(self):
-        src = inspect.getsource(GenieSQLPuller.write_examples)
-        assert "t.example_id = s.example_id" in src
-        assert "WHEN NOT MATCHED THEN INSERT" in src
+    def test_puller_is_spark_free(self):
+        # __init__ must not require a spark arg (runs inside the app).
+        params = list(inspect.signature(GenieSQLPuller.__init__).parameters)
+        assert params == ["self", "config", "ws"]
 
     def test_index_primary_key_and_shared_endpoint(self):
         from dbxmetagen.genie_sql_puller import build_genie_examples_index

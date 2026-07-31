@@ -392,6 +392,13 @@ export default function SemanticLayer({ onNavigate, pipelineStats, onRefreshPipe
   const [businessContext, setBusinessContext] = useState('')
   const [bizCtxLoading, setBizCtxLoading] = useState(false)
   const [bizCtxUseKb, setBizCtxUseKb] = useState(false)
+  // Genie SQL pull (items 14/15): pick an existing Genie space and pull its
+  // curated example SQL to seed metric-view generation with proven query patterns.
+  const [genieSpaces, setGenieSpaces] = useState(null)  // null=unloaded, []=loaded-empty
+  const [genieSpacesLoading, setGenieSpacesLoading] = useState(false)
+  const [genieSelectedSpaces, setGenieSelectedSpaces] = useState([])
+  const [geniePullLoading, setGeniePullLoading] = useState(false)
+  const [geniePullStatus, setGeniePullStatus] = useState(null)
   const [generationStyle, setGenerationStyle] = useState('comprehensive')
   const [maxViews, setMaxViews] = useState(null)
   const [erdSufficiency, setErdSufficiency] = useState(null)  // {metric_views_recommended, reasons, ...}
@@ -840,6 +847,46 @@ export default function SemanticLayer({ onNavigate, pipelineStats, onRefreshPipe
       setError(e.message || 'Request failed')
     } finally {
       setBizCtxLoading(false)
+    }
+  }
+
+  // Lazy-load the list of Genie spaces the first time the picker is opened.
+  const loadGenieSpaces = async () => {
+    if (genieSpaces !== null || genieSpacesLoading) return
+    setGenieSpacesLoading(true)
+    try {
+      const res = await fetch('/api/genie/available-spaces')
+      if (!res.ok) { const d = await res.json().catch(() => ({})); setError(d.detail || 'Could not list Genie spaces'); setGenieSpaces([]); return }
+      const data = await res.json()
+      setGenieSpaces(data.spaces || [])
+    } catch (e) {
+      setError(e.message || 'Could not list Genie spaces'); setGenieSpaces([])
+    } finally {
+      setGenieSpacesLoading(false)
+    }
+  }
+
+  // Pull curated example SQL from the selected Genie space(s) into the
+  // genie_examples index so generation can retrieve proven query patterns.
+  const pullGenieSql = async () => {
+    if (!genieSelectedSpaces.length) { setError('Select at least one Genie space'); return }
+    setGeniePullLoading(true); setGeniePullStatus(null); setError(null)
+    try {
+      const res = await fetch('/api/semantic-layer/pull-genie-sql', {
+        method: 'POST', headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ space_ids: genieSelectedSpaces }),
+      })
+      const data = await res.json().catch(() => ({}))
+      if (!res.ok) { setError(data.detail || 'Genie SQL pull failed'); return }
+      if (data.examples_written > 0) {
+        setGeniePullStatus(`Pulled ${data.examples_written} example SQL statement${data.examples_written !== 1 ? 's' : ''} from ${data.spaces_pulled} space${data.spaces_pulled !== 1 ? 's' : ''}. They'll seed metric-view generation.`)
+      } else {
+        setGeniePullStatus(data.message || 'No curated SQL found in the selected space(s).')
+      }
+    } catch (e) {
+      setError(e.message || 'Request failed')
+    } finally {
+      setGeniePullLoading(false)
     }
   }
 
@@ -1760,6 +1807,45 @@ export default function SemanticLayer({ onNavigate, pipelineStats, onRefreshPipe
         <textarea value={businessContext} onChange={e => setBusinessContext(e.target.value)}
           placeholder={"e.g. We are a B2B SaaS company focused on enterprise sales. Key metrics: ARR, net revenue retention, pipeline velocity. Our fiscal year starts in February."}
           className={`${input} h-20 mb-4`} />
+
+        {/* Seed from an existing Genie space (items 14/15): pull its curated
+            example SQL so generation reuses proven measures/dimensions/joins. */}
+        <details className="mb-4 rounded-lg border border-slate-200 dark:border-slate-700 bg-slate-50/60 dark:bg-slate-800/30 group" onToggle={e => { if (e.target.open) loadGenieSpaces() }}>
+          <summary className="px-3 py-2 text-sm font-medium cursor-pointer select-none flex items-center gap-1.5 text-slate-700 dark:text-slate-200">
+            <svg className="w-3 h-3 transition-transform group-open:rotate-90 shrink-0" fill="none" viewBox="0 0 24 24" stroke="currentColor"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M9 5l7 7-7 7" /></svg>
+            Seed from a Genie space <span className="text-xs font-normal text-slate-400">(optional — reuse curated SQL as proven patterns)</span>
+          </summary>
+          <div className="px-3 pb-3 space-y-2">
+            <p className="text-xs text-slate-500 dark:text-slate-400">
+              Pull the curated example SQL &amp; benchmarks from an existing Genie space. Generation then treats them as proven query patterns — reusing the measures, dimensions, grains, and joins that already work — to build metric views that cover a data-mart layer without changing the Genie space.
+            </p>
+            {genieSpacesLoading && <p className="text-xs text-slate-400">Loading Genie spaces…</p>}
+            {genieSpaces !== null && genieSpaces.length === 0 && !genieSpacesLoading && (
+              <p className="text-xs text-amber-600 dark:text-amber-400">No Genie spaces found in this workspace.</p>
+            )}
+            {genieSpaces !== null && genieSpaces.length > 0 && (
+              <div className="max-h-40 overflow-y-auto border dark:border-slate-600 rounded-md p-2 space-y-0.5">
+                {genieSpaces.map(sp => (
+                  <label key={sp.space_id} className="flex items-start gap-1.5 text-xs cursor-pointer py-0.5 dark:text-slate-200">
+                    <input type="checkbox" className="rounded mt-0.5"
+                      checked={genieSelectedSpaces.includes(sp.space_id)}
+                      onChange={e => setGenieSelectedSpaces(prev => e.target.checked ? [...prev, sp.space_id] : prev.filter(x => x !== sp.space_id))} />
+                    <span className="truncate" title={sp.description || sp.title}>{sp.title || sp.space_id}</span>
+                  </label>
+                ))}
+              </div>
+            )}
+            <div className="flex items-center gap-2">
+              <button type="button" onClick={pullGenieSql}
+                disabled={geniePullLoading || !genieSelectedSpaces.length}
+                className="text-xs px-2 py-1 rounded-md bg-blue-100 text-blue-800 dark:bg-blue-900/40 dark:text-blue-300 hover:bg-blue-200 dark:hover:bg-blue-800 disabled:opacity-50">
+                {geniePullLoading ? 'Pulling…' : `Pull example SQL${genieSelectedSpaces.length ? ` (${genieSelectedSpaces.length})` : ''}`}
+              </button>
+              {geniePullStatus && <span className="text-xs text-green-600 dark:text-green-400">{geniePullStatus}</span>}
+            </div>
+          </div>
+        </details>
+
         <label className={label}>Business Questions (one per line)</label>
         <textarea value={questionsText} onChange={e => setQuestionsText(e.target.value)}
           placeholder={"What was total revenue by region last quarter?\nHow many orders per month by product category?\nWhat is the average deal size by sales rep?"}

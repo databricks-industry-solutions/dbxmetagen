@@ -1,9 +1,14 @@
-"""Pull curated example SQL + benchmarks from existing Genie spaces into a
-CDF-enabled Delta table, and index it for retrieval on the shared VS endpoint.
+"""Read curated example SQL + benchmarks from existing Genie spaces.
 
-Backlog items 14/15. The typed SDK ``GenieSpace`` exposes only
-id/title/description/warehouse_id -- the curated SQL lives on the LEGACY
-data-rooms REST endpoints (confirmed live against DMVM 2026-07):
+Backlog items 14/15. Runs INSIDE the Databricks App (Spark-free): the REST reads
+here + the app's Statement Execution API writes to the CDF-enabled
+``genie_sql_examples`` table + a Vector Search index (built via
+``build_genie_examples_index``) let the user pull a space's curated SQL at
+metric-view build time, on a button click -- no job, no cluster.
+
+The typed SDK ``GenieSpace`` exposes only id/title/description/warehouse_id --
+the curated SQL lives on the LEGACY data-rooms REST endpoints (confirmed live
+against DMVM 2026-07):
 
   * GET /api/2.0/genie/spaces                       -> list (paginated)
   * GET /api/2.0/data-rooms/{id}                    -> + table_identifiers
@@ -78,10 +83,16 @@ def _example_id(space_id: str, question_text: str, sql: str) -> str:
 
 
 class GenieSQLPuller:
-    """Read curated Genie SQL via REST, persist to Delta (CDF), and index it."""
+    """Read curated example SQL + benchmarks from existing Genie spaces via REST.
 
-    def __init__(self, spark, config: GenieSQLPullerConfig, ws: Optional[WorkspaceClient] = None):
-        self.spark = spark
+    Spark-free: all reads go through the Databricks SDK REST client, so this runs
+    inside the Databricks App (no cluster). Persistence to the CDF-enabled
+    ``genie_sql_examples`` table and the VS index are done by the caller (the app)
+    via the Statement Execution API + Vector Search SDK -- see the
+    ``/api/semantic-layer/pull-genie-sql`` endpoint in api_server.py.
+    """
+
+    def __init__(self, config: GenieSQLPullerConfig, ws: Optional[WorkspaceClient] = None):
         self.config = config
         self.ws = ws or WorkspaceClient()
 
@@ -180,73 +191,39 @@ class GenieSQLPuller:
         logger.info("Genie SQL pull: extracted %d exemplar(s)", len(rows))
         return rows
 
-    # -- Persistence (CDF-enabled Delta, MERGE on example_id) -----------------
+    # Persistence (genie_sql_examples table) and index build are done by the app
+    # via execute_sql (Statement Execution API) + build_genie_examples_index()
+    # below -- NOT here, so this module stays Spark-free and app-runnable.
 
-    def ensure_table(self) -> None:
-        """Create genie_sql_examples with Change Data Feed enabled (same pattern
-        as metadata_documents / ontology_chunks: CDF on + 30d file retention)."""
-        self.spark.sql(f"""
-            CREATE TABLE IF NOT EXISTS {self.config.fq_documents} (
-                example_id STRING NOT NULL,
-                space_id STRING,
-                space_title STRING,
-                question_text STRING,
-                sql STRING,
-                content STRING,
-                question_type STRING,
-                table_identifiers STRING,
-                updated_at TIMESTAMP
-            ) USING DELTA
-            TBLPROPERTIES (
-                'delta.enableChangeDataFeed' = 'true',
-                'delta.deletedFileRetentionDuration' = 'interval 30 days'
-            )
-        """)
-        # Backfill the properties for a pre-existing table (idempotent).
-        try:
-            self.spark.sql(
-                f"ALTER TABLE {self.config.fq_documents} SET TBLPROPERTIES "
-                "('delta.enableChangeDataFeed' = 'true', "
-                "'delta.deletedFileRetentionDuration' = 'interval 30 days')"
-            )
-        except Exception:
-            logger.debug("Could not backfill TBLPROPERTIES on %s", self.config.fq_documents)
 
-    def write_examples(self, rows: List[Dict[str, Any]]) -> int:
-        """MERGE exemplars into the table keyed on example_id (re-pull safe)."""
-        if not rows:
-            logger.info("No Genie SQL exemplars to write")
-            return 0
-        df = self.spark.createDataFrame(rows)
-        df.createOrReplaceTempView("genie_pull_stage")
-        self.spark.sql(f"""
-            MERGE INTO {self.config.fq_documents} AS t
-            USING genie_pull_stage AS s
-            ON t.example_id = s.example_id
-            WHEN MATCHED AND (
-                COALESCE(t.sql, '') != COALESCE(s.sql, '')
-                OR COALESCE(t.question_text, '') != COALESCE(s.question_text, '')
-                OR COALESCE(t.table_identifiers, '') != COALESCE(s.table_identifiers, '')
-            ) THEN UPDATE SET *
-            WHEN NOT MATCHED THEN INSERT *
-        """)
-        return len(rows)
+# --- table DDL / row SQL helpers (used by the app's execute_sql writes) -------
 
-    # -- Vector index (shared endpoint, DELTA_SYNC) ---------------------------
+GENIE_SQL_EXAMPLES_COLUMNS = [
+    "example_id", "space_id", "space_title", "question_text",
+    "sql", "content", "question_type", "table_identifiers", "updated_at",
+]
 
-    def build_index(self) -> Dict[str, str]:
-        """Provision + sync the genie_examples VS index on the shared endpoint."""
-        return build_genie_examples_index(self.config)
 
-    def run(self) -> Dict[str, Any]:
-        """Full pull: extract -> ensure table -> write -> ensure+sync index."""
-        self.ensure_table()
-        rows = self.extract_examples()
-        written = self.write_examples(rows)
-        index_info: Dict[str, str] = {}
-        if written:
-            index_info = self.build_index()
-        return {"examples_written": written, **index_info}
+def create_table_sql(fq_documents: str) -> str:
+    """DDL for the CDF-enabled genie_sql_examples table (same pattern as
+    metadata_documents / ontology_chunks). Run via the app's execute_sql."""
+    return (
+        f"CREATE TABLE IF NOT EXISTS {fq_documents} (\n"
+        "    example_id STRING NOT NULL,\n"
+        "    space_id STRING,\n"
+        "    space_title STRING,\n"
+        "    question_text STRING,\n"
+        "    sql STRING,\n"
+        "    content STRING,\n"
+        "    question_type STRING,\n"
+        "    table_identifiers STRING,\n"
+        "    updated_at TIMESTAMP\n"
+        ") USING DELTA\n"
+        "TBLPROPERTIES (\n"
+        "    'delta.enableChangeDataFeed' = 'true',\n"
+        "    'delta.deletedFileRetentionDuration' = 'interval 30 days'\n"
+        ")"
+    )
 
 
 def build_genie_examples_index(config: GenieSQLPullerConfig) -> Dict[str, str]:
