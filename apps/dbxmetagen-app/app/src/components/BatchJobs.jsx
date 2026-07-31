@@ -326,12 +326,12 @@ export default function BatchJobs({ onNavigate, pipelineStats }) {
             <svg className="w-3 h-3 transition-transform group-open:rotate-90" fill="none" viewBox="0 0 24 24" stroke="currentColor">
               <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M9 5l7 7-7 7" />
             </svg>
-            Ontology &amp; Business Domain
+            Industry &amp; Domain
             <span className="text-xs font-normal text-slate-400 dark:text-slate-500 ml-1">
               — optional for descriptions &amp; sensitivity; required for domain classification and the advanced pipeline
             </span>
           </summary>
-          <div className="grid grid-cols-1 md:grid-cols-2 gap-4 mt-3 animate-slide-up">
+          <div className="mt-3 animate-slide-up">
             <div>
               <label className="section-title mb-1.5 flex items-center gap-2">
                 Industry Ontology
@@ -374,8 +374,13 @@ export default function BatchJobs({ onNavigate, pipelineStats }) {
                 })()}
               </label>
               <select value={ontologyBundle} onChange={e => {
-                setOntologyBundle(e.target.value)
-                try { localStorage.setItem('dbxmetagen_ontologyBundle', e.target.value) } catch {}
+                const key = e.target.value
+                setOntologyBundle(key)
+                try { localStorage.setItem('dbxmetagen_ontologyBundle', key) } catch {}
+                // The domain-taxonomy override only applies to custom-imported
+                // ontologies; clear any lingering selection when switching to a
+                // curated/formal bundle so we never send a stale invisible override.
+                if (!bundles.find(b => b.key === key)?.custom) setDomainConfig('')
               }} className="select-base">
                 <option value="">(None — use domain list only)</option>
                 {bundles.length > 0 && (() => {
@@ -511,22 +516,32 @@ export default function BatchJobs({ onNavigate, pipelineStats }) {
                 }} />
                 Import ontology file (.ttl, .owl, or .rdf)
               </label>
-              <p className="text-xs text-slate-500 dark:text-slate-400 mt-1">Imported ontologies provide entity types and relationships. For domain classification, pair with a Domain Taxonomy below.</p>
+              <p className="text-xs text-slate-500 dark:text-slate-400 mt-1">Imported ontologies provide entity types and relationships but no domain definitions — a domain taxonomy fallback appears below when one is selected.</p>
               {importStatus && <p className="text-xs text-green-600 dark:text-green-400 mt-1">{importStatus}</p>}
-            </div>
-            <div>
-              <label className="section-title mb-1.5 block">Domain Taxonomy</label>
-              <select value={domainConfig} onChange={e => setDomainConfig(e.target.value)} className="select-base">
-                <option value="">{ontologyBundle && bundles.find(b => b.key === ontologyBundle)?.custom ? '(Select a domain taxonomy for classification)' : ontologyBundle ? '(Use domains from selected ontology)' : '(No domain taxonomy selected)'}</option>
-                {domainConfigs.map(d => (
-                  <option key={d.key} value={d.key}>{d.name} ({d.domain_count} domains)</option>
-                ))}
-              </select>
-              {ontologyBundle && bundles.find(b => b.key === ontologyBundle)?.custom && (
-                <p className="text-xs text-blue-600 dark:text-blue-400 mt-1">Imported ontologies don't include domain definitions. Select a domain taxonomy that matches your data's industry to enable domain classification.</p>
-              )}
+
+              {/* Domains derive from the selected bundle automatically. The
+                  explicit Domain Taxonomy control only surfaces for custom-imported
+                  ontologies, which carry entity types but no domain definitions. */}
               {ontologyBundle && !bundles.find(b => b.key === ontologyBundle)?.custom && (
-                <p className="text-xs text-slate-500 dark:text-slate-400 mt-1">Overrides the domain list included in the selected ontology bundle.</p>
+                <p className="text-xs text-slate-500 dark:text-slate-400 mt-2 flex items-center gap-1.5">
+                  Domains come from the selected industry bundle.
+                  <InfoTip text="Each ontology bundle carries its own business-domain list, used for domain classification. No separate taxonomy selection is needed. Custom-imported ontologies (.ttl/.owl/.rdf) are the exception — they define entity types but no domains, so they show a taxonomy picker here." />
+                </p>
+              )}
+              {ontologyBundle && bundles.find(b => b.key === ontologyBundle)?.custom && (
+                <div className="mt-3 rounded-lg border border-amber-200/60 dark:border-amber-700/30 bg-amber-50/50 dark:bg-amber-900/10 px-3 py-2.5">
+                  <label className="section-title mb-1.5 flex items-center gap-2">
+                    Domain Taxonomy
+                    <span className="text-[10px] px-1.5 py-0.5 rounded bg-amber-100 text-amber-800 dark:bg-amber-900/40 dark:text-amber-300 font-medium">Required for custom ontology</span>
+                  </label>
+                  <select value={domainConfig} onChange={e => setDomainConfig(e.target.value)} className="select-base">
+                    <option value="">(Select a domain taxonomy for classification)</option>
+                    {domainConfigs.map(d => (
+                      <option key={d.key} value={d.key}>{d.name} ({d.domain_count} domains)</option>
+                    ))}
+                  </select>
+                  <p className="text-xs text-amber-700 dark:text-amber-300/90 mt-1">This imported ontology has no domains — pick a taxonomy that matches your data's industry to enable domain classification.</p>
+                </div>
               )}
             </div>
           </div>
