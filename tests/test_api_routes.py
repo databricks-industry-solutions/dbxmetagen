@@ -778,3 +778,59 @@ class TestSuggestBusinessContext:
         with pytest.raises(api_server.HTTPException) as exc:
             api_server._suggest_business_context_impl(req)
         assert exc.value.status_code == 400
+
+
+# ---------------------------------------------------------------------------
+# KPI data-enrichment blocks (item 22)
+# ---------------------------------------------------------------------------
+class TestKpiProfilingBlock:
+    """_kpi_profiling_block reads CACHED column_profiling_stats (a local Delta
+    table) — NOT the source tables — so it adds zero load to federated sources."""
+
+    def test_empty_tables_returns_empty(self):
+        assert api_server._kpi_profiling_block([]) == ""
+
+    def test_reads_profiling_not_source_tables(self, monkeypatch):
+        seen = {}
+        def fake_execute_sql(sql, timeout=30):
+            seen["sql"] = sql
+            return [{"table_name": "c.s.orders", "column_name": "status", "data_type": "STRING",
+                     "distinct_count": 3, "cardinality_ratio": 0.01, "null_rate": 0.0,
+                     "sample_values": '["fulfilled", "pending", "refunded"]',
+                     "min_value": None, "max_value": None}]
+        monkeypatch.setattr(api_server, "execute_sql", fake_execute_sql)
+        out = api_server._kpi_profiling_block(["c.s.orders"])
+        assert "column_profiling_stats" in seen["sql"]  # cached table, not the source
+        assert "DATA PROFILE" in out
+        # real categorical values surfaced for FILTER literals
+        assert "fulfilled" in out and "pending" in out and "refunded" in out
+        assert "distinct=3" in out
+
+    def test_high_cardinality_omits_sample_values(self, monkeypatch):
+        monkeypatch.setattr(api_server, "execute_sql", lambda sql, timeout=30: [
+            {"table_name": "c.s.orders", "column_name": "amount", "data_type": "DECIMAL",
+             "distinct_count": 100000, "cardinality_ratio": 0.99, "null_rate": 0.0,
+             "sample_values": '["1.00","2.00"]', "min_value": "0.5", "max_value": "9999.0"}])
+        out = api_server._kpi_profiling_block(["c.s.orders"])
+        assert "values=[" not in out            # too high-cardinality to list as filter literals
+        assert "range=[0.5..9999.0]" in out      # numeric range hint instead
+
+    def test_query_failure_returns_empty(self, monkeypatch):
+        monkeypatch.setattr(api_server, "execute_sql",
+                            lambda sql, timeout=30: (_ for _ in ()).throw(Exception("no table")))
+        assert api_server._kpi_profiling_block(["c.s.orders"]) == ""
+
+
+class TestKpiColumnRolesBlock:
+    def test_formats_roles(self, monkeypatch):
+        monkeypatch.setattr(api_server, "execute_sql", lambda sql, timeout=20: [
+            {"table_name": "c.s.orders", "column_name": "amount", "property_role": "measure", "linked_entity_type": None},
+            {"table_name": "c.s.orders", "column_name": "region", "property_role": "dimension", "linked_entity_type": None},
+        ])
+        out = api_server._kpi_column_roles_block(["c.s.orders"])
+        assert "COLUMN ROLES" in out
+        assert "amount=measure" in out and "region=dimension" in out
+
+    def test_empty_returns_empty(self, monkeypatch):
+        monkeypatch.setattr(api_server, "execute_sql", lambda sql, timeout=20: [])
+        assert api_server._kpi_column_roles_block(["c.s.orders"]) == ""

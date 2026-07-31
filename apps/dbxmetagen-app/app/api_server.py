@@ -12763,6 +12763,99 @@ def delete_kpi(kpi_id: str):
     return {"ok": True}
 
 
+def _kpi_profiling_block(table_identifiers: list[str], max_cols_per_table: int = 25) -> str:
+    """Format a DATA PROFILE block from cached column_profiling_stats.
+
+    Reads the local profiling Delta table (NOT the source tables), so it adds no
+    load to federated sources. Surfaces the signals that let the LLM emit
+    data-grounded KPIs: real categorical values (for FILTER literals), cardinality
+    (categorical vs continuous), null rate (avoid sparse columns), numeric range."""
+    if not table_identifiers:
+        return ""
+    in_clause = ", ".join(_safe_sql_str(t) for t in table_identifiers)
+    try:
+        rows = execute_sql(
+            f"SELECT table_name, column_name, data_type, distinct_count, cardinality_ratio, "
+            f"null_rate, sample_values, min_value, max_value "
+            f"FROM {fq('column_profiling_stats')} WHERE table_name IN ({in_clause})",
+            timeout=30,
+        ) or []
+    except Exception as e:
+        logger.info("KPI profiling block skipped (%s)", e)
+        return ""
+    if not rows:
+        return ""
+    by_table: dict[str, list] = {}
+    for r in rows:
+        by_table.setdefault(r.get("table_name", ""), []).append(r)
+    lines = [
+        "\nDATA PROFILE (from actual data — use REAL categorical values in FILTER/CASE WHEN "
+        "conditions; do NOT invent literals. Low-cardinality columns are dimensions/filters; "
+        "high-cardinality numerics are measure inputs; high null_rate columns are unreliable):"
+    ]
+    for tname, cols in by_table.items():
+        lines.append(f"  {tname}:")
+        for c in cols[:max_cols_per_table]:
+            cn = c.get("column_name", "")
+            dt = (c.get("data_type") or "").upper()
+            dc = c.get("distinct_count")
+            card = c.get("cardinality_ratio")
+            nr = c.get("null_rate")
+            bits = [f"distinct={dc}" if dc is not None else "",
+                    f"null={nr:.0%}" if isinstance(nr, (int, float)) else ""]
+            # Real sample values for low-cardinality columns (the FILTER-literal fuel).
+            sv = c.get("sample_values")
+            sample_str = ""
+            if sv and isinstance(dc, int) and dc <= 50:
+                try:
+                    vals = json.loads(sv) if isinstance(sv, str) else sv
+                    if isinstance(vals, list) and vals:
+                        sample_str = " values=[" + ", ".join(str(v) for v in vals[:8]) + "]"
+                except Exception:
+                    pass
+            # Numeric range hint for continuous measures.
+            rng = ""
+            if dt in ("INT", "BIGINT", "DECIMAL", "DOUBLE", "FLOAT", "SMALLINT") and c.get("min_value") is not None:
+                rng = f" range=[{c.get('min_value')}..{c.get('max_value')}]"
+            meta = ", ".join(b for b in bits if b)
+            lines.append(f"    {cn} {dt} ({meta}){sample_str}{rng}")
+    return "\n".join(lines)
+
+
+def _kpi_column_roles_block(table_identifiers: list[str]) -> str:
+    """Format an ontology column-role block from ontology_column_properties.
+
+    property_role (measure/dimension/identifier/temporal/...) is a stronger
+    measure-vs-dimension signal than the keyword heuristic. Best-effort."""
+    if not table_identifiers:
+        return ""
+    in_clause = ", ".join(_safe_sql_str(t) for t in table_identifiers)
+    try:
+        rows = execute_sql(
+            f"SELECT table_name, column_name, property_role, linked_entity_type "
+            f"FROM {fq('ontology_column_properties')} "
+            f"WHERE table_name IN ({in_clause}) AND property_role IS NOT NULL",
+            timeout=20,
+        ) or []
+    except Exception as e:
+        logger.info("KPI column-roles block skipped (%s)", e)
+        return ""
+    if not rows:
+        return ""
+    lines = ["\nCOLUMN ROLES (ontology-assigned — trust these for measure vs dimension routing):"]
+    by_table: dict[str, list] = {}
+    for r in rows:
+        by_table.setdefault(r.get("table_name", ""), []).append(r)
+    for tname, cols in by_table.items():
+        role_bits = []
+        for c in cols[:30]:
+            role = c.get("property_role", "")
+            link = c.get("linked_entity_type")
+            role_bits.append(f"{c.get('column_name')}={role}" + (f"->{link}" if link else ""))
+        lines.append(f"  {tname}: {'; '.join(role_bits)}")
+    return "\n".join(lines)
+
+
 def _build_kpi_context(assembler, table_identifiers: list[str]) -> tuple[str, str, dict]:
     """Build condensed entity-first context for KPI generation.
 
@@ -12845,6 +12938,21 @@ def _build_kpi_context(assembler, table_identifiers: list[str]) -> tuple[str, st
         if dimensions:
             parts.append(f"  Dimension columns: {'; '.join(dimensions[:12])}")
 
+    # Data profile (item 22): feed CACHED profiling stats so the LLM grounds KPIs in
+    # the actual data -- real categorical values for FILTER literals, cardinality to
+    # tell dimensions from measures, null rates to avoid sparse columns. This reads
+    # column_profiling_stats (a local Delta table), NOT the source tables, so it adds
+    # ZERO load to federated sources.
+    prof_block = _kpi_profiling_block(table_identifiers)
+    if prof_block:
+        parts.append(prof_block)
+
+    # Ontology column roles (item 22): steward/AI-assigned property roles are a
+    # stronger measure-vs-dimension signal than the keyword heuristic above.
+    role_block = _kpi_column_roles_block(table_identifiers)
+    if role_block:
+        parts.append(role_block)
+
     if fk_rows:
         parts.append("\nFOREIGN KEY RELATIONSHIPS:")
         for fk in fk_rows:
@@ -12898,6 +13006,8 @@ Rules:
 - Formulas MUST encode ALL filtering or conditional logic implied by the KPI name. If the name says "overdue", "failed", "at risk", etc., the formula must include a CASE WHEN or equivalent filter -- never a bare aggregate that ignores the condition.
 - Prefer RATIO, RATE, and CONDITIONAL KPIs (e.g. SUM(CASE WHEN x THEN 1 ELSE 0 END) / COUNT(*), or SUM(a) / SUM(b)). A bare SUM(x) or COUNT(x) is acceptable ONLY if the KPI genuinely measures a simple total with no implied filter.
 - Each KPI's formula MUST reference only columns that exist in the provided table metadata -- do not invent columns.
+- GROUND EVERY FILTER IN REAL DATA. When the DATA PROFILE lists `values=[...]` for a column, any FILTER/CASE WHEN literal on that column MUST be one of those actual values -- never invent a status/category value. If a needed value is not in the listed samples, use a general condition (IS NOT NULL, > 0, a numeric range from the profile) instead of guessing a literal.
+- USE THE PROFILE TO ROUTE MEASURE vs DIMENSION: low-cardinality columns (small distinct count) are dimensions/filters; high-cardinality numeric columns are measure inputs. Prefer COLUMN ROLES (ontology-assigned) over guessing when present. Avoid aggregating over columns with high null_rate unless the KPI is explicitly about completeness.
 - Use RELATIONSHIPS between entities for cross-entity KPIs (e.g. encounters per patient, revenue per provider).
 - If BUSINESS QUESTIONS are provided, prioritize KPIs that directly support answering those questions.
 - Frame KPI names in business language -- no column names or schema references.
