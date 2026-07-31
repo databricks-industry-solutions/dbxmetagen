@@ -720,3 +720,61 @@ class TestReviewCombinedPagination:
         assert clamp_lim(0) == 200   # 0 is falsy -> default 200 (0 is meaningless)
         assert clamp_lim(1) == 1
         assert clamp_lim(200) == 200
+
+
+# ---------------------------------------------------------------------------
+# Suggest business context (item 3)
+# ---------------------------------------------------------------------------
+class TestSuggestBusinessContext:
+    """Draft business context from table descriptions. Default source = live UC
+    comments (system.information_schema); use_kb=true reads table_knowledge_base.
+    Warn-not-block: no descriptions -> returns a message, not an error."""
+
+    def _patch_llm(self, monkeypatch, text="We are a retailer."):
+        import databricks_langchain
+        fake_resp = MagicMock()
+        fake_resp.content = text
+        fake_llm = MagicMock()
+        fake_llm.invoke.return_value = fake_resp
+        monkeypatch.setattr(databricks_langchain, "ChatDatabricks",
+                            MagicMock(return_value=fake_llm), raising=False)
+
+    def test_uc_comments_source_default(self, monkeypatch):
+        self._patch_llm(monkeypatch, "Retail analytics context.")
+        def fake_execute_sql(sql, timeout=30):
+            assert "information_schema.tables" in sql  # default source
+            return [{"table_catalog": "c", "table_schema": "s",
+                     "table_name": "orders", "comment": "Customer orders fact table"}]
+        monkeypatch.setattr(api_server, "execute_sql", fake_execute_sql)
+        req = api_server.SuggestBusinessContextRequest(table_identifiers=["c.s.orders"])
+        res = api_server._suggest_business_context_impl(req)
+        assert res["source"] == "uc_comments"
+        assert res["tables_used"] == 1
+        assert res["business_context"] == "Retail analytics context."
+
+    def test_kb_source_when_flagged(self, monkeypatch):
+        self._patch_llm(monkeypatch)
+        def fake_execute_sql(sql, timeout=30):
+            assert "table_knowledge_base" in sql  # KB source
+            return [{"table_name": "c.s.orders", "comment": "Orders", "domain": "sales"}]
+        monkeypatch.setattr(api_server, "execute_sql", fake_execute_sql)
+        req = api_server.SuggestBusinessContextRequest(
+            table_identifiers=["c.s.orders"], use_kb=True)
+        res = api_server._suggest_business_context_impl(req)
+        assert res["source"] == "knowledge_base"
+        assert res["tables_used"] == 1
+
+    def test_no_descriptions_returns_message_not_error(self, monkeypatch):
+        self._patch_llm(monkeypatch)
+        monkeypatch.setattr(api_server, "execute_sql", lambda sql, timeout=30: [])
+        req = api_server.SuggestBusinessContextRequest(table_identifiers=["c.s.orders"])
+        res = api_server._suggest_business_context_impl(req)
+        assert res["tables_used"] == 0
+        assert res["business_context"] == ""
+        assert res.get("message")
+
+    def test_no_tables_raises(self):
+        req = api_server.SuggestBusinessContextRequest(table_identifiers=[])
+        with pytest.raises(api_server.HTTPException) as exc:
+            api_server._suggest_business_context_impl(req)
+        assert exc.value.status_code == 400

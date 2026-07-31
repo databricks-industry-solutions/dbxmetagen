@@ -12576,6 +12576,15 @@ class KpiSuggestRequest(BaseModel):
     existing_kpi_names: list[str] = []
 
 
+class SuggestBusinessContextRequest(BaseModel):
+    table_identifiers: list[str]
+    # Source for the table descriptions used to draft the context. Default = the
+    # live UC table comments (system.information_schema); use_kb=true pulls the
+    # generated descriptions from table_knowledge_base instead.
+    use_kb: bool = False
+    model_endpoint: str = _LLM_MODEL
+
+
 @app.get("/api/kpis")
 def list_kpis(profile_id: str = None):
     _ensure_kpi_table()
@@ -12951,6 +12960,98 @@ Return ONLY the JSON array."""
     if not result_kpis:
         result_kpis = valid_kpis  # fallback: return all if reviewer rejected everything
     return {"kpis": result_kpis[:req.count]}
+
+
+@app.post("/api/semantic-layer/suggest-business-context")
+def suggest_business_context(req: SuggestBusinessContextRequest):
+    """Draft a business-context paragraph from the project's table descriptions.
+
+    Default source is the live UC table comments (system.information_schema);
+    use_kb=true reads the generated descriptions (+ domain) from
+    table_knowledge_base instead. Returns {"business_context": str, "source":
+    "uc_comments"|"knowledge_base", "tables_used": int}. Warn-not-block: if no
+    descriptions are found, returns a clear message rather than failing.
+    """
+    return _suggest_business_context_impl(req)
+
+
+def _suggest_business_context_impl(req: SuggestBusinessContextRequest):
+    """Testable core of suggest_business_context (the route decorator is a no-op
+    mock under the test harness, so logic lives here to be called directly)."""
+    from databricks_langchain import ChatDatabricks
+
+    tables = [t.strip() for t in (req.table_identifiers or []) if t and t.strip()]
+    if not tables:
+        raise HTTPException(400, detail="No tables provided.")
+
+    # Cap to keep the prompt bounded on large selections.
+    tables = tables[:100]
+    in_list = ", ".join(_safe_sql_str(t) for t in tables)
+    descriptions: list[tuple[str, str, str]] = []  # (table, comment, domain)
+
+    if req.use_kb:
+        source = "knowledge_base"
+        try:
+            rows = execute_sql(
+                f"SELECT table_name, comment, domain FROM {fq('table_knowledge_base')} "
+                f"WHERE LOWER(table_name) IN ({in_list.lower()}) AND comment IS NOT NULL AND comment != ''",
+                timeout=30,
+            ) or []
+            for r in rows:
+                descriptions.append((r.get("table_name", ""), r.get("comment", ""), r.get("domain", "") or ""))
+        except Exception as e:
+            logger.warning("suggest-business-context: KB fetch failed: %s", e)
+    else:
+        source = "uc_comments"
+        # Split fully-qualified names to query system.information_schema.tables.comment.
+        want = {t.lower() for t in tables}
+        cats = {t.split(".")[0] for t in tables if t.count(".") >= 2}
+        for cat in cats:
+            try:
+                rows = execute_sql(
+                    f"SELECT table_catalog, table_schema, table_name, comment "
+                    f"FROM system.information_schema.tables "
+                    f"WHERE table_catalog = {_safe_sql_str(cat)} AND comment IS NOT NULL AND comment != ''",
+                    timeout=30,
+                ) or []
+                for r in rows:
+                    fqn = f"{r.get('table_catalog','')}.{r.get('table_schema','')}.{r.get('table_name','')}".lower()
+                    if fqn in want:
+                        descriptions.append((r.get("table_name", ""), r.get("comment", ""), ""))
+            except Exception as e:
+                logger.warning("suggest-business-context: info_schema fetch failed for %s: %s", cat, e)
+
+    if not descriptions:
+        msg = (
+            "No table descriptions found to draft from. "
+            + ("Generate core metadata first, then try again."
+               if req.use_kb else
+               "These tables have no UC comments yet — generate/apply core metadata, or enable the knowledge-base source.")
+        )
+        return {"business_context": "", "source": source, "tables_used": 0, "message": msg}
+
+    desc_block = "\n".join(
+        f"- {t}{f' (domain: {d})' if d else ''}: {c}" for t, c, d in descriptions
+    )
+    prompt = f"""You are a data strategy analyst. Below are descriptions of the tables in a data project.
+Write a concise BUSINESS CONTEXT paragraph (3-5 sentences) that a BI tool can use to steer metric and
+question generation. Capture: the apparent industry/domain, what the data is about, and the key business
+entities and terminology. Do NOT list the tables or restate column names; synthesize the business picture.
+Write in plain prose, no headings, no bullet points.
+
+TABLE DESCRIPTIONS:
+{desc_block}
+
+Return ONLY the paragraph text."""
+
+    try:
+        llm = ChatDatabricks(endpoint=req.model_endpoint, temperature=0.3, max_tokens=512)
+        text = (llm.invoke(prompt).content or "").strip()
+    except Exception as e:
+        logger.warning("suggest-business-context: LLM call failed: %s", e)
+        raise HTTPException(502, detail="Could not generate business context — the model call failed.")
+
+    return {"business_context": text, "source": source, "tables_used": len(descriptions)}
 
 
 # ---------------------------------------------------------------------------

@@ -390,6 +390,8 @@ export default function SemanticLayer({ onNavigate, pipelineStats, onRefreshPipe
   const [profileName, setProfileName] = useState('')
   const [questionsText, setQuestionsText] = useState('')
   const [businessContext, setBusinessContext] = useState('')
+  const [bizCtxLoading, setBizCtxLoading] = useState(false)
+  const [bizCtxUseKb, setBizCtxUseKb] = useState(false)
   const [generationStyle, setGenerationStyle] = useState('comprehensive')
   const [maxViews, setMaxViews] = useState(null)
   const [erdSufficiency, setErdSufficiency] = useState(null)  // {metric_views_recommended, reasons, ...}
@@ -812,6 +814,33 @@ export default function SemanticLayer({ onNavigate, pipelineStats, onRefreshPipe
       return prev ? prev + '\n' + toAdd.join('\n') : toAdd.join('\n')
     })
     return skipped
+  }
+
+  // Draft a business-context paragraph from the project's table descriptions.
+  // Default source is the live UC table comments; bizCtxUseKb switches to the
+  // knowledge-base descriptions. Replaces the field's contents (editable after).
+  const suggestBusinessContext = async () => {
+    if (!selectedTables.length) { setError('Select tables first'); return }
+    if (businessContext.trim() && !confirm('Replace the current business context with an AI-drafted one?')) return
+    setBizCtxLoading(true); setError(null)
+    try {
+      const fqTables = selectedTables.map(t => t.includes('.') ? t : `${selectedCatalog}.${selectedSchema}.${t}`)
+      const res = await fetch('/api/semantic-layer/suggest-business-context', {
+        method: 'POST', headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ table_identifiers: fqTables, use_kb: bizCtxUseKb }),
+      })
+      if (!res.ok) { const d = await res.json().catch(() => ({})); setError(d.detail || 'Failed to suggest business context'); return }
+      const data = await res.json()
+      if (data.business_context) {
+        setBusinessContext(data.business_context)
+      } else if (data.message) {
+        setError(data.message)  // e.g. no descriptions found — no silent no-op
+      }
+    } catch (e) {
+      setError(e.message || 'Request failed')
+    } finally {
+      setBizCtxLoading(false)
+    }
   }
 
   const suggestQuestions = async () => {
@@ -1586,16 +1615,23 @@ export default function SemanticLayer({ onNavigate, pipelineStats, onRefreshPipe
       <section className={section}>
         <h2 className="text-lg font-semibold mb-1 dark:text-gray-100">Select Tables</h2>
         <p className="text-xs text-slate-500 dark:text-slate-400 mb-3">Choose the source tables you want to create metric views for. Tables can span multiple schemas.</p>
-        <div className="px-3 py-2 mb-3 bg-blue-50 dark:bg-blue-900/20 border border-blue-200 dark:border-blue-700/50 rounded-md text-xs text-blue-800 dark:text-blue-200 leading-relaxed space-y-1.5">
-          <div className="font-semibold">Which tables make good metric views?</div>
-          <ul className="list-disc ml-4 space-y-1">
-            <li><span className="font-medium">Star schema (richest output):</span> select fact / transaction tables (<code className="px-1 bg-blue-100 dark:bg-blue-800/40 rounded">fct_</code>, <code className="px-1 bg-blue-100 dark:bg-blue-800/40 rounded">fact_</code>) together with their related dimension tables (<code className="px-1 bg-blue-100 dark:bg-blue-800/40 rounded">dim_</code>). The generator uses approved foreign keys to join them, producing multi-dimensional breakdowns (e.g. revenue by region, product, and month). Run and approve FK predictions first &mdash; without FKs it can only build single-table views.</li>
-            <li><span className="font-medium">Pre-aggregated gold / data marts:</span> if a table is already heavily aggregated (one row per summarized grain), select it on its own. You'll get a simple single-table metric view with direct aggregations and no joins. Don't expect joins, and don't mix marts with raw facts in the same selection.</li>
-            <li>Avoid raw / bronze / staging, audit / log, and purely operational tables.</li>
-            <li>Don't select dimension tables by themselves &mdash; they carry no measures.</li>
-          </ul>
-          <div className="text-blue-700/80 dark:text-blue-300/80">Only tables that already have core metadata appear in the list below.</div>
-        </div>
+        <details className="mb-3 bg-blue-50 dark:bg-blue-900/20 border border-blue-200 dark:border-blue-700/50 rounded-md text-xs text-blue-800 dark:text-blue-200 leading-relaxed group">
+          <summary className="px-3 py-2 font-semibold cursor-pointer select-none flex items-center gap-1.5">
+            <svg className="w-3 h-3 transition-transform group-open:rotate-90 shrink-0" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+              <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M9 5l7 7-7 7" />
+            </svg>
+            Which tables make good metric views?
+          </summary>
+          <div className="px-3 pb-2 space-y-1.5">
+            <ul className="list-disc ml-4 space-y-1">
+              <li><span className="font-medium">Star schema (richest output):</span> select fact / transaction tables (<code className="px-1 bg-blue-100 dark:bg-blue-800/40 rounded">fct_</code>, <code className="px-1 bg-blue-100 dark:bg-blue-800/40 rounded">fact_</code>) together with their related dimension tables (<code className="px-1 bg-blue-100 dark:bg-blue-800/40 rounded">dim_</code>). The generator uses approved foreign keys to join them, producing multi-dimensional breakdowns (e.g. revenue by region, product, and month). Run and approve FK predictions first &mdash; without FKs it can only build single-table views.</li>
+              <li><span className="font-medium">Pre-aggregated gold / data marts:</span> if a table is already heavily aggregated (one row per summarized grain), select it on its own. You'll get a simple single-table metric view with direct aggregations and no joins. Don't expect joins, and don't mix marts with raw facts in the same selection.</li>
+              <li>Avoid raw / bronze / staging, audit / log, and purely operational tables.</li>
+              <li>Don't select dimension tables by themselves &mdash; they carry no measures.</li>
+            </ul>
+            <div className="text-blue-700/80 dark:text-blue-300/80">Only tables that already have core metadata appear in the list below.</div>
+          </div>
+        </details>
         <div className="grid grid-cols-1 md:grid-cols-3 gap-4 mb-4">
           <div>
             <label className={label}>Catalog</label>
@@ -1706,7 +1742,21 @@ export default function SemanticLayer({ onNavigate, pipelineStats, onRefreshPipe
               placeholder="e.g. Sales Analytics Questions" className={input} />
           </div>
         </div>
-        <label className={label}>Business Context <span className="text-gray-400 font-normal">(optional -- describe your industry, strategic priorities, or key terminology to steer all generation)</span></label>
+        <div className="flex items-center flex-wrap gap-x-3 gap-y-1 mb-1">
+          <label className={`${label} !mb-0`}>Business Context <span className="text-gray-400 font-normal">(optional -- describe your industry, strategic priorities, or key terminology to steer all generation)</span></label>
+          <button
+            type="button"
+            onClick={suggestBusinessContext}
+            disabled={bizCtxLoading || !selectedTables.length}
+            title={!selectedTables.length ? 'Select tables first' : `Draft from ${bizCtxUseKb ? 'knowledge-base descriptions' : 'table comments'}`}
+            className="text-xs px-2 py-1 rounded-md bg-amber-100 text-amber-800 dark:bg-amber-900/40 dark:text-amber-300 hover:bg-amber-200 dark:hover:bg-amber-800 disabled:opacity-50">
+            {bizCtxLoading ? 'Drafting…' : '✨ Suggest from tables'}
+          </button>
+          <label className="inline-flex items-center gap-1.5 text-xs text-gray-500 dark:text-gray-400 cursor-pointer" title="Use the generated descriptions from the knowledge base instead of the live table comments.">
+            <input type="checkbox" checked={bizCtxUseKb} onChange={e => setBizCtxUseKb(e.target.checked)} className="rounded" />
+            Use knowledge-base descriptions
+          </label>
+        </div>
         <textarea value={businessContext} onChange={e => setBusinessContext(e.target.value)}
           placeholder={"e.g. We are a B2B SaaS company focused on enterprise sales. Key metrics: ARR, net revenue retention, pipeline velocity. Our fiscal year starts in February."}
           className={`${input} h-20 mb-4`} />
