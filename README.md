@@ -2,26 +2,44 @@
   <img src="images/dbxmetagen_logo.png" alt="dbxmetagen logo" width="120" />
 </p>
 
-# dbxmetagen: GenAI-Assisted Metadata Generation and Management for Databricks
+# dbxmetagen: AI-Native Metadata Platform for Databricks
 
 <img src="images/DBXMetagen_arch_hl.png" alt="High-level DBXMetagen Architecture" width="800" top-margin="50">
 
-**dbxmetagen** is an AI-powered toolkit for generating, managing, and analyzing metadata across Unity Catalog. It provides:
+**dbxmetagen** turns raw Unity Catalog tables into governed, AI-queryable knowledge. It
+generates AI-reviewed metadata (descriptions, PII/PHI/PCI tags, business-domain
+classification), builds a knowledge graph and formal-ontology layer on top of it, and uses
+that model to auto-generate a semantic layer (UC metric views) and Genie spaces — with
+human review at every step. The pipeline runs in four stages:
 
+**1. Metadata generation** — the foundation
 - **Comment generation**: AI-generated descriptions for tables and columns
-- **PI classification**: Identify and tag PII, PHI, and PCI with Unity Catalog tags
+- **PI classification**: Identify and tag PII, PHI, and PCI (LLM + rule-based spaCy/Presidio)
 - **Domain classification**: Categorize tables into business domains and subdomains
-- **Data profiling**: Statistical profiling and quality scoring
-- **Knowledge graph**: Graph-based metadata analytics with embeddings, similarity, and clustering
-- **Ontology discovery**: Business entity extraction and validation against standard ontologies (FHIR, OMOP, etc.)
-- **FK prediction**: AI-assisted foreign key relationship discovery using column similarity and LLM judgment
-- **Semantic layer**: Auto-generated metric views and Genie space creation from knowledge base
 - **Customer context**: Inject domain-specific knowledge into prompts, scoped by catalog/schema/table/pattern
-- **Metadata review**: Interactive review, edit, and apply workflow for generated metadata
-- **Web dashboard**: FastAPI + React app covering the full metadata lifecycle
+- **Metadata review**: Human-in-the-loop review, edit, and apply workflow — the governance centerpiece
 
+**2. Knowledge platform** — metadata → a queryable graph
+- **Knowledge base**: Aggregated table/column/schema metadata with extended system properties
+- **Formal ontologies + entity discovery**: Map tables/columns to standard ontologies — FHIR R4, OMOP CDM, Schema.org, Dublin Core — with multiple bundles coexisting in one schema
+- **Knowledge graph**: Entity-relationship model with embeddings, similarity, clustering, and quality scores
+- **FK prediction**: AI + heuristic foreign-key discovery (distinct from join-key suggestion), with column-similarity ranking and ontology hints
+- **Data profiling & quality scoring**: Automated profiling with gradient-boosted quality grades
+- **Vector Search indexes**: Hybrid semantic + lexical retrieval over metadata and ontology entities
 
-The core value of dbxmetagen is **metadata generation and a governed knowledge graph**. The web dashboard manages the full lifecycle -- generate, review, and apply -- but the outputs are standard Delta tables and Vector Search indexes that you can consume from any tool: notebooks, dashboards, Genie spaces, agents, or your own applications.
+**3. Semantic layer & Genie** — a business model from your data
+- **Metric view generation**: Auto-generated UC metric views (measures, dimensions, joins, filtered measures, windows) with SQL validation + autofix
+- **Genie space builder**: Generate Genie spaces with instructions and example SQL — and **pull curated SQL from existing Genie spaces to seed new metric views** (cover a data-mart layer without touching the room)
+- **ERD recommender**: Hybrid LLM + heuristic engine that proposes metric-view structure from your table relationships
+
+**4. Agents & serving** — explore it in natural language
+- **Deep analysis & analyst agents**: GraphRAG-style natural-language exploration of the catalog and its relationships
+- **Metric-view agent**: chat-driven metric discovery over deployed views
+- **Web dashboard**: FastAPI + React app covering the full lifecycle (Generate · Review · Explore)
+
+The core value is **metadata generation and a governed knowledge graph**. The dashboard drives the
+full lifecycle, but every output is a standard Delta table or Vector Search index you can consume
+from any tool: notebooks, dashboards, Genie spaces, agents, or your own applications.
 
 
 ## Quickstart

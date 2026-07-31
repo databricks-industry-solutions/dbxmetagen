@@ -135,6 +135,13 @@ executes the build hook; a fresh, timestamp-stamped wheel appears under `dist/`
 in your Git Folder on each deploy.) So there is nothing to download from GitHub
 Releases and no notebook to run first -- just deploy (Section 6).
 
+> **Caveat (UI deploy):** the build hook (`scripts/build_artifacts.sh`) requires
+> `uv` and Python 3.11+ in the environment that runs it. On a CLI deploy that's
+> your machine/CI. On a workspace UI deploy it's the DABs-hosted build env — if
+> that env lacks `uv` or Python 3.11, the UI deploy can ship a stale or missing
+> wheel while CLI works. This has **not been verified end-to-end on a live UI
+> deploy**; test it on your workspace before relying on the UI path.
+
 If you ever need to verify the build produced its outputs, check that these
 exist in your Git Folder after a deploy:
 
@@ -177,9 +184,15 @@ The deployment validates the bundle, creates all jobs, and deploys the app in a
 during the same deploy (no second pass is needed). Status appears in the Project
 output window.
 
-> **Note:** The Deploy button does not run the `artifacts.build` hook, so it uses
-> whatever wheel you staged in step 4. When you deploy from the CLI
-> (`databricks bundle deploy`), the wheel is built and staged automatically.
+<!-- Reconciled: this note previously CONTRADICTED Section 4 (which says the hook
+     runs on both CLI and UI). See the caveat in Section 4 -- the workspace UI's
+     build environment must have `uv` + Python 3.11 for the hook to succeed, and
+     that has not yet been verified end-to-end on a live UI deploy. -->
+> **Note:** CLI `databricks bundle deploy` always builds + stages the wheel via the
+> `artifacts.build` hook. The workspace Deploy button runs the same bundle engine
+> and should run the hook too — but its build environment must provide `uv` and
+> Python 3.11+ (see Section 4). If a UI deploy ever ships a stale/missing wheel,
+> that dependency is the likely cause.
 
 When deployment completes, deployed resources appear in the
 **Bundle resources** pane.
