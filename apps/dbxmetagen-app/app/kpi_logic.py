@@ -5,7 +5,58 @@ full FastAPI app (which pulls in heavy runtime deps). api_server imports these
 and layers the actual warehouse SQL execution on top.
 """
 
-from typing import List, Tuple
+import re
+from difflib import SequenceMatcher
+from typing import List, Optional, Tuple
+
+
+def _normalize_name(name: str) -> str:
+    """Lowercase, strip punctuation, collapse whitespace for name comparison."""
+    return " ".join(re.sub(r"[^\w\s]", " ", (name or "").lower()).split())
+
+
+def _formula_tokens(formula: str) -> set:
+    """Identifier-ish tokens in a formula, minus common SQL keywords, for overlap scoring."""
+    toks = set(re.findall(r"[a-z_][a-z0-9_]*", (formula or "").lower()))
+    return toks - {
+        "select", "from", "where", "group", "by", "order", "and", "or", "as",
+        "sum", "count", "avg", "min", "max", "case", "when", "then", "else", "end",
+        "on", "join", "left", "right", "inner", "outer", "distinct", "null", "is",
+    }
+
+
+def find_similar_kpi(
+    new_name: str,
+    new_formula: str,
+    existing_kpis: List[dict],
+    name_threshold: float = 0.85,
+    formula_threshold: float = 0.8,
+) -> Optional[dict]:
+    """Return the closest existing KPI that looks like a duplicate, or None.
+
+    WARN-not-block: this only surfaces a likely duplicate so the caller can ask
+    the user to confirm; it never mutates or drops anything. A match is reported
+    when the normalized name is (near-)identical OR the formula token-set overlap
+    (Jaccard) is high with a matching aggregate. Returns a dict:
+    ``{"kpi": <existing>, "reason": "name"|"formula", "score": float}``.
+    """
+    new_name_n = _normalize_name(new_name)
+    new_toks = _formula_tokens(new_formula)
+    best = None
+    for ex in existing_kpis or []:
+        ex_name_n = _normalize_name(ex.get("name", ""))
+        if new_name_n and ex_name_n:
+            if new_name_n == ex_name_n:
+                return {"kpi": ex, "reason": "name", "score": 1.0}
+            ratio = SequenceMatcher(None, new_name_n, ex_name_n).ratio()
+            if ratio >= name_threshold and (best is None or ratio > best["score"]):
+                best = {"kpi": ex, "reason": "name", "score": round(ratio, 3)}
+        ex_toks = _formula_tokens(ex.get("formula", ""))
+        if new_toks and ex_toks:
+            jaccard = len(new_toks & ex_toks) / len(new_toks | ex_toks)
+            if jaccard >= formula_threshold and (best is None or jaccard > best["score"]):
+                best = {"kpi": ex, "reason": "formula", "score": round(jaccard, 3)}
+    return best
 
 
 def reduce_kpi_validation(results: List[tuple]) -> Tuple[str, str, str]:

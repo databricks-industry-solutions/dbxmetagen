@@ -790,6 +790,30 @@ export default function SemanticLayer({ onNavigate, pipelineStats, onRefreshPipe
 
 
 
+  // Normalize a question for duplicate detection: lowercase, strip punctuation,
+  // collapse whitespace. Used to avoid appending near-identical suggested questions.
+  const normalizeQ = (q) => q.toLowerCase().replace(/[^\w\s]/g, ' ').replace(/\s+/g, ' ').trim()
+
+  // Append only the generated questions that aren't near-duplicates of what's already
+  // in the box; return how many were skipped so the caller can report it (no silent drop).
+  const appendUniqueQuestions = (generated) => {
+    let skipped = 0
+    setQuestionsText(prev => {
+      const existingLines = prev.split('\n').filter(l => l.trim())
+      const seen = new Set(existingLines.map(normalizeQ))
+      const toAdd = []
+      for (const q of generated) {
+        const n = normalizeQ(q)
+        if (!n) continue
+        if (seen.has(n)) { skipped++; continue }
+        seen.add(n); toAdd.push(q)
+      }
+      if (!toAdd.length) return prev
+      return prev ? prev + '\n' + toAdd.join('\n') : toAdd.join('\n')
+    })
+    return skipped
+  }
+
   const suggestQuestions = async () => {
     if (!selectedTables.length) { setError('Select tables first'); return }
     setSuggestQLoading(true); setError(null); setSuggestQProgress('')
@@ -837,15 +861,15 @@ export default function SemanticLayer({ onNavigate, pipelineStats, onRefreshPipe
           }
         }
         if (finalData) {
-          const newQs = (finalData.questions || []).join('\n')
-          setQuestionsText(prev => prev ? prev + '\n' + newQs : newQs)
+          const skipped = appendUniqueQuestions(finalData.questions || [])
+          if (skipped > 0) setError(`Skipped ${skipped} generated question${skipped !== 1 ? 's' : ''} that duplicated existing ones.`)
         }
       } else {
         // Standard JSON response (single-call for <=20 tables)
         const data = await res.json()
         if (data.warning) setError(data.warning)
-        const newQs = (data.questions || []).join('\n')
-        setQuestionsText(prev => prev ? prev + '\n' + newQs : newQs)
+        const skipped = appendUniqueQuestions(data.questions || [])
+        if (skipped > 0) setError(`Skipped ${skipped} generated question${skipped !== 1 ? 's' : ''} that duplicated existing ones.`)
       }
     } catch (e) {
       clearTimeout(timeout)
@@ -860,16 +884,23 @@ export default function SemanticLayer({ onNavigate, pipelineStats, onRefreshPipe
     const { data } = await cachedFetch('/api/kpis', {}, TTL.CONFIG)
     setKpis(data || [])
   }
-  const saveKpi = async () => {
+  const saveKpi = async (overrideDuplicate = false) => {
     try {
       // Bind the KPI to the source table(s) the user picked; fall back to all selected
       // tables ("Auto") only when none is chosen, preserving the pre-picker behavior.
       const picked = Array.isArray(kpiDraft.target_tables) ? kpiDraft.target_tables.filter(Boolean) : []
-      const body = { ...kpiDraft, target_tables: picked.length ? picked : selectedTables, profile_id: activeProfileId || undefined }
+      const body = { ...kpiDraft, target_tables: picked.length ? picked : selectedTables, profile_id: activeProfileId || undefined, override_duplicate: overrideDuplicate }
       const res = kpiEditId
         ? await fetch(`/api/kpis/${kpiEditId}`, { method: 'PUT', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body) })
         : await fetch('/api/kpis', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body) })
-      if (!res.ok) { const d = await res.json().catch(() => ({})); setError(d.detail || 'Save KPI failed'); return }
+      // 409 = likely-duplicate warning (create path only). Confirm, then re-save with override.
+      if (res.status === 409 && !kpiEditId) {
+        const d = await res.json().catch(() => ({}))
+        const warn = d.detail?.warning || 'This looks like an existing KPI. Save anyway?'
+        if (confirm(warn)) { await saveKpi(true) }
+        return
+      }
+      if (!res.ok) { const d = await res.json().catch(() => ({})); setError(d.detail?.warning || d.detail || 'Save KPI failed'); return }
       setKpiDraft({ name: '', description: '', formula: '', domain: '', target_tables: [] }); setKpiEditId(null); setShowKpiForm(false)
       loadKpis()
     } catch (e) { setError(e.message || 'Save KPI failed') }
@@ -911,11 +942,18 @@ export default function SemanticLayer({ onNavigate, pipelineStats, onRefreshPipe
       }
       const j = await res.json()
       if (j.warning) setError(j.warning)
+      let skippedDupes = 0
       for (const k of (j.kpis || [])) {
         // Preserve the backend-resolved single target_tables (suggest_kpis binds each
         // KPI to the one table its formula belongs to). Do NOT broaden to all tables.
-        await fetch('/api/kpis', { method: 'POST', headers: { 'Content-Type': 'application/json' },
+        const r = await fetch('/api/kpis', { method: 'POST', headers: { 'Content-Type': 'application/json' },
           body: JSON.stringify({ ...k, source: 'suggested', profile_id: activeProfileId || undefined }) })
+        // 409 = the backend flagged this suggestion as a near-duplicate of an existing
+        // KPI. In bulk we skip it (rather than pop a dialog per KPI) and report the count.
+        if (r.status === 409) skippedDupes++
+      }
+      if (skippedDupes > 0) {
+        setError(`Skipped ${skippedDupes} suggested KPI${skippedDupes !== 1 ? 's' : ''} that duplicated existing ones.`)
       }
       loadKpis()
     } catch (e) {
@@ -1763,7 +1801,7 @@ export default function SemanticLayer({ onNavigate, pipelineStats, onRefreshPipe
             <div className="flex gap-2">
               <input value={kpiDraft.domain} onChange={e => setKpiDraft(d => ({ ...d, domain: e.target.value }))}
                 placeholder="Domain (e.g. sales)" className="input-base flex-1" />
-              <button onClick={saveKpi} disabled={!kpiDraft.name.trim()} className={btnPrimary}>{kpiEditId ? 'Update' : 'Save'}</button>
+              <button onClick={() => saveKpi()} disabled={!kpiDraft.name.trim()} className={btnPrimary}>{kpiEditId ? 'Update' : 'Save'}</button>
               <button onClick={() => setShowKpiForm(false)} className="px-3 py-1.5 bg-slate-200 dark:bg-slate-700 rounded text-xs">Cancel</button>
             </div>
           </div>

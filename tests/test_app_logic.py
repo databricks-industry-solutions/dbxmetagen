@@ -561,5 +561,51 @@ class TestKpiTargetResolution:
         assert resolve("unknown", "SUM(mystery)", tables, col_by_table) == ["cat.sch.orders"]
 
 
+class TestKpiDedup:
+    """Pure duplicate-KPI detection (kpi_logic.find_similar_kpi). Warn-not-block:
+    returns the closest likely-duplicate or None; never mutates anything."""
+
+    def _fn(self):
+        app_dir = os.path.join(
+            os.path.dirname(__file__), "..", "apps", "dbxmetagen-app", "app"
+        )
+        sys.path.insert(0, os.path.abspath(app_dir))
+        from kpi_logic import find_similar_kpi
+        return find_similar_kpi
+
+    def test_none_when_no_existing(self):
+        find = self._fn()
+        assert find("Total Revenue", "SUM(amount)", []) is None
+
+    def test_exact_normalized_name_match(self):
+        find = self._fn()
+        existing = [{"name": "Total Revenue!", "formula": "SUM(x)"}]
+        m = find("total revenue", "SUM(y)", existing)
+        assert m and m["reason"] == "name" and m["score"] == 1.0
+
+    def test_near_name_match_above_threshold(self):
+        find = self._fn()
+        existing = [{"name": "Total Revenue", "formula": "SUM(x)"}]
+        m = find("Total Revenues", "SUM(y)", existing)
+        assert m and m["reason"] == "name"
+
+    def test_formula_overlap_match(self):
+        find = self._fn()
+        existing = [{"name": "Rev A", "formula": "SUM(revenue) / NULLIF(COUNT(orders), 0)"}]
+        # different name, essentially the same formula tokens
+        m = find("Rev B", "SUM(revenue) / NULLIF(COUNT(orders), 0)", existing)
+        assert m and m["reason"] == "formula" and m["score"] >= 0.8
+
+    def test_distinct_kpi_not_flagged(self):
+        find = self._fn()
+        existing = [{"name": "Total Revenue", "formula": "SUM(amount)"}]
+        assert find("Average Order Latency", "AVG(ship_days)", existing) is None
+
+    def test_blank_name_and_formula_no_match(self):
+        find = self._fn()
+        existing = [{"name": "Total Revenue", "formula": "SUM(amount)"}]
+        assert find("", "", existing) is None
+
+
 if __name__ == "__main__":
     pytest.main([__file__, "-v"])

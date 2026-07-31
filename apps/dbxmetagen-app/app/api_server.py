@@ -26,7 +26,7 @@ from pydantic import BaseModel, Field
 from databricks.sdk import WorkspaceClient
 from databricks.sdk.service.sql import StatementParameterListItem
 from db import pg_execute, get_engine, pg_configured
-from kpi_logic import reduce_kpi_validation, resolve_kpi_target
+from kpi_logic import find_similar_kpi, reduce_kpi_validation, resolve_kpi_target
 from dbxmetagen.ddl_bundle_utils import rewrite_ddl_catalog_schema as _rewrite_ddl_catalog_schema, dq_grade as _dq_grade
 # FK-vs-join-key constants: dependency-free, shared with the Spark library so the
 # discriminator value / SQL predicate cannot drift between the two DDL gates.
@@ -12561,6 +12561,9 @@ class KpiRequest(BaseModel):
     target_tables: list[str] = []
     domain: str = ""
     profile_id: Optional[str] = None
+    # When a likely-duplicate KPI is detected, create_kpi returns 409 with the
+    # match; the client re-POSTs with this flag to create it anyway (warn, not block).
+    override_duplicate: bool = False
 
 
 class KpiSuggestRequest(BaseModel):
@@ -12627,6 +12630,37 @@ def list_kpis(profile_id: str = None):
 @app.post("/api/kpis")
 def create_kpi(req: KpiRequest):
     _ensure_kpi_table()
+    # Dedup guard (warn, not block): if this looks like an existing KPI, return 409
+    # with the match unless the client explicitly overrides. Scoped to the same
+    # profile so unrelated profiles don't cross-warn. Best-effort — never blocks on
+    # a lookup failure.
+    if not req.override_duplicate:
+        try:
+            dwhere = (
+                f" WHERE profile_id = '{_esc_sql(req.profile_id)}'"
+                if req.profile_id else " WHERE profile_id IS NULL OR profile_id = ''"
+            )
+            existing = execute_sql(
+                f"SELECT name, formula FROM {fq('kpi_definitions')}{dwhere}", timeout=20
+            ) or []
+            match = find_similar_kpi(req.name, req.formula, existing)
+        except Exception as e:
+            logger.warning("KPI dedup check failed (allowing create): %s", e)
+            match = None
+        if match:
+            raise HTTPException(
+                status_code=409,
+                detail={
+                    "warning": (
+                        f"This looks similar to an existing KPI \"{match['kpi'].get('name')}\" "
+                        f"({'same name' if match['reason'] == 'name' else 'near-identical formula'}). "
+                        "Save anyway?"
+                    ),
+                    "existing_name": match["kpi"].get("name"),
+                    "reason": match["reason"],
+                    "score": match["score"],
+                },
+            )
     kpi_id = str(_uuid.uuid4())[:12]
     name_esc = _esc_sql(req.name)
     desc_esc = _esc_sql(req.description)
