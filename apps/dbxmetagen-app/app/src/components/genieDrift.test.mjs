@@ -100,4 +100,24 @@ test('reordered join_specs (only ids/order differ) compare equal', () => {
   assert.equal(spacesEqual(a, b), true)
 })
 
+test('reordered sample_questions ARE drift (user-ordered list)', () => {
+  const a = { config: { sample_questions: ['What is revenue?', 'How many orders?'] } }
+  const b = { config: { sample_questions: ['How many orders?', 'What is revenue?'] } }
+  assert.equal(spacesEqual(a, b), false)
+})
+
+test('identical sample_questions (same order) are NOT drift', () => {
+  const a = { config: { sample_questions: ['Q1', 'Q2'] } }
+  const b = { config: { sample_questions: ['Q1', 'Q2'] } }
+  assert.equal(spacesEqual(a, b), true)
+})
+
+test('reordered example_question_sqls ARE drift (user-ordered)', () => {
+  const a = { instructions: { example_question_sqls: [
+    { question: 'A', sql: ['SELECT 1'] }, { question: 'B', sql: ['SELECT 2'] }] } }
+  const b = { instructions: { example_question_sqls: [
+    { question: 'B', sql: ['SELECT 2'] }, { question: 'A', sql: ['SELECT 1'] }] } }
+  assert.equal(spacesEqual(a, b), false)
+})
+
 console.log(`\n${passed} passed`)

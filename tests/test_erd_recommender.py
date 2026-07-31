@@ -13,6 +13,7 @@ from dbxmetagen.erd_recommender import (
     recommend_erd,
     recommend_questions_kpis,
     _build_edges,
+    _infer_role,
     ErdRecommendation,
     GenSufficiency,
     FK_CONFIRMED_MIN,
@@ -319,3 +320,33 @@ class TestQuestionsKpisSufficiency:
         import json
         out = recommend_questions_kpis(**self._star())
         json.dumps({k: v.to_dict() for k, v in out.items()})
+
+
+class TestInferRoleTiebreak:
+    """Role ties must resolve by MEANINGFUL signal (FK topology/measures), not by
+    dict-insertion order which always picked 'fact' (review finding #5)."""
+
+    def _num(self, name):
+        return {"column_name": name, "has_numeric_stats": True}
+
+    def test_dim_named_with_outbound_fks_resolves_to_fact(self):
+        # dimension naming (+0.35) TIES fact outbound FKs (+0.35). Outbound FKs
+        # are the deciding signal -> fact.
+        role, _, _ = _infer_role(
+            "c.s.dim_activity", [self._num("a"), self._num("b")],
+            outbound_fk_count=2, inbound_fk_count=0, ontology_role=None, is_bridge=False)
+        assert role == "fact"
+
+    def test_fact_named_referenced_only_resolves_to_dimension(self):
+        # fact naming (+0.35) TIES dimension inbound-only (+0.35). Inbound-only +
+        # a grain key -> dimension wins the tie.
+        role, _, _ = _infer_role(
+            "c.s.fact_lookup", [{"column_name": "id", "is_unique": True, "has_numeric_stats": False}],
+            outbound_fk_count=0, inbound_fk_count=3, ontology_role=None, is_bridge=False)
+        assert role == "dimension"
+
+    def test_clear_winner_unaffected(self):
+        role, _, _ = _infer_role(
+            "c.s.fct_orders", [self._num("amount"), self._num("qty"), self._num("disc")],
+            outbound_fk_count=3, inbound_fk_count=0, ontology_role=None, is_bridge=False)
+        assert role == "fact"

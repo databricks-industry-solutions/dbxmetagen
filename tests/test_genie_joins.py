@@ -507,6 +507,23 @@ class TestBuildJoinSpecsComposite:
         assert specs[0]["left"]["identifier"] == "c.s.orders"
         assert specs[0]["right"]["identifier"] == "c.s.lines"
 
+    def test_composite_does_not_rewrite_source_substring_in_identifier(self):
+        # review finding #7: a bare replace("source.", ...) also rewrites a
+        # 'source.' fragment inside a larger alias like 'data_source.'. The
+        # word-boundary rewrite must leave data_source.* untouched.
+        asm = self._asm()
+        specs = asm._build_join_specs([{
+            "src_table": "c.s.events", "dst_table": "c.s.dim_source",
+            "src_column": "c.s.events.sid", "dst_column": "c.s.dim_source.id",
+            "is_composite": True,
+            "join_condition": "source.sid = data_source.id AND source.k = data_source.k",
+        }])
+        # only the standalone 'source.' alias is rewritten to 'events.';
+        # 'data_source.' is preserved intact.
+        assert specs[0]["sql"] == [
+            "events.sid = data_source.id AND events.k = data_source.k"
+        ]
+
 
 # ---------------------------------------------------------------------------
 # run_genie_agent refinement path -- regression guard for the mv_only bug.

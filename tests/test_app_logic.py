@@ -554,11 +554,23 @@ class TestKpiTargetResolution:
         # source_table doesn't match any table; formula references amount -> orders wins
         assert resolve("unknown", "SUM(amount)", tables, col_by_table) == ["cat.sch.orders"]
 
-    def test_fallback_first_table_when_no_overlap(self):
+    def test_returns_all_candidates_when_no_signal(self):
+        # No name match AND no column overlap -> hand ALL tables to any-table-valid
+        # validation rather than arbitrarily binding to table[0] (review finding #3).
         resolve = self._fn()
         tables = ["cat.sch.orders", "cat.sch.customers"]
         col_by_table = {"cat.sch.orders": [{"column_name": "amount"}]}
-        assert resolve("unknown", "SUM(mystery)", tables, col_by_table) == ["cat.sch.orders"]
+        assert resolve("unknown", "SUM(mystery)", tables, col_by_table) == tables
+
+    def test_column_overlap_still_wins_over_all_fallback(self):
+        resolve = self._fn()
+        tables = ["cat.sch.orders", "cat.sch.customers"]
+        col_by_table = {
+            "cat.sch.orders": [{"column_name": "amount"}],
+            "cat.sch.customers": [{"column_name": "name"}],
+        }
+        # formula references amount -> confidently orders, not all
+        assert resolve("unknown", "SUM(amount)", tables, col_by_table) == ["cat.sch.orders"]
 
 
 class TestKpiDedup:

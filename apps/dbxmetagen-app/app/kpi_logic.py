@@ -95,10 +95,14 @@ def resolve_kpi_target(source_table: str, formula: str, table_identifiers: List[
                        col_by_table: dict) -> List[str]:
     """Resolve a suggested KPI's source_table to a single fully-qualified table.
 
-    A KPI formula belongs to ONE table, so this returns a single-element list.
-    Resolution order: exact short-name match -> exact fq match -> short name of a
-    dotted value -> fallback to the table whose columns most overlap the formula.
-    col_by_table maps fq table -> list of {"column_name": ...} dicts.
+    A KPI formula belongs to ONE table. When we can confidently identify it (name
+    match, or a clear column-overlap winner) this returns that single table. When
+    there is NO signal at all (source_table matches nothing AND no column overlaps
+    the formula -- e.g. a literal-only formula), it returns ALL candidate tables
+    rather than an arbitrary first one: downstream any-table-valid validation
+    (_validate_kpi_formula / reduce_kpi_validation) then resolves the KPI to
+    whichever table its formula actually runs against. col_by_table maps fq table
+    -> list of {"column_name": ...} dicts.
     """
     short_to_fq = {t.split(".")[-1].lower(): t for t in table_identifiers}
     fq_to_fq = {t.lower(): t for t in table_identifiers}
@@ -111,9 +115,11 @@ def resolve_kpi_target(source_table: str, formula: str, table_identifiers: List[
         return [short_to_fq[raw.split(".")[-1]]]
     # fallback: pick table with most column overlap in the formula
     formula_lower = (formula or "").lower()
-    best, best_score = table_identifiers[:1], 0
+    best, best_score = None, 0
     for tbl_fq, cols in col_by_table.items():
         score = sum(1 for c in cols if c["column_name"].lower() in formula_lower)
         if score > best_score:
             best, best_score = [tbl_fq], score
-    return best
+    # No confident single table -> hand ALL candidates to validation instead of an
+    # arbitrary table[0], so the KPI binds to the table its formula truly resolves on.
+    return best if best is not None else list(table_identifiers)

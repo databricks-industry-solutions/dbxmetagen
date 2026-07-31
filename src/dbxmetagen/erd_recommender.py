@@ -296,11 +296,29 @@ def _infer_role(
             score["dimension"] += 0.25
             reasons.append(f"ontology role '{ontology_role}'")
 
-    role = max(score, key=score.get)
-    top = score[role]
+    top = max(score.values())
     if top == 0.0:
         # No signal at all -> treat as a standalone source table.
         return "source", 0.3, ["no FK/profiling/ontology signal"]
+    # Resolve ties with a MEANINGFUL order instead of dict-insertion order (which
+    # always picked 'fact' first -- review finding #5). FK topology decides first
+    # (outbound => fact-like, inbound-only => dimension-like), then measure count,
+    # then a stable fallback. Only roles at the top score compete.
+    tied = [r for r, v in score.items() if v == top]
+    if len(tied) == 1:
+        role = tied[0]
+    else:
+        def _tiebreak(r: str):
+            if r == "bridge":
+                return (3 if is_bridge else -1)
+            if r == "fact":
+                return (2 if outbound_fk_count >= 1 else 0) + (1 if n_measures >= 2 else 0)
+            if r == "dimension":
+                return (2 if (inbound_fk_count >= 1 and outbound_fk_count == 0) else 0) + (1 if grain else 0)
+            if r == "source":
+                return 1  # neutral standalone
+            return 0
+        role = max(tied, key=_tiebreak)
     confidence = round(min(top, 1.0), 3)
     return role, confidence, reasons
 

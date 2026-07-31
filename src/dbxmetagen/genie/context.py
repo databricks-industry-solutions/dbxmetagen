@@ -18,6 +18,17 @@ from databricks.sdk.service.sql import Format, Disposition
 logger = logging.getLogger(__name__)
 
 
+def _rewrite_alias_prefix(sql: str, old_alias: str, new_alias: str) -> str:
+    """Replace an ``old_alias.`` table-alias prefix with ``new_alias.``, only at a
+    word boundary. A bare ``sql.replace("source.", ...)`` also rewrites a
+    ``source.`` substring inside a larger identifier (e.g. ``data_source.col`` or a
+    ``data_source`` alias), producing a malformed predicate. The negative
+    lookbehind ``(?<![\\w.])`` ensures we only match the standalone alias."""
+    if not sql or not old_alias:
+        return sql
+    return re.sub(rf"(?<![\w.]){re.escape(old_alias)}\.", f"{new_alias}.", sql)
+
+
 def _run_sql(ws: WorkspaceClient, warehouse_id: str, query: str) -> list[dict]:
     """Execute SQL via Statement Execution API, return list[dict]."""
     r = ws.statement_execution.execute_statement(
@@ -968,7 +979,7 @@ class GenieContextAssembler:
             # prefix needs rewriting to the real src short name for Genie.
             composite = fk.get("join_condition") if fk.get("is_composite") else None
             if composite:
-                sql = composite.replace("source.", f"{src_short}.")
+                sql = _rewrite_alias_prefix(composite, "source", src_short)
             else:
                 src_col = fk["src_column"].split(".")[-1]
                 dst_col = fk["dst_column"].split(".")[-1]
@@ -1017,9 +1028,9 @@ class GenieContextAssembler:
                     continue
                 on_clause = j.get("on", "")
                 alias = j.get("name", right_short)
-                sql = on_clause.replace("source.", f"{left_short}.")
+                sql = _rewrite_alias_prefix(on_clause, "source", left_short)
                 if alias.lower() != right_short:
-                    sql = sql.replace(f"{alias}.", f"{right_short}.")
+                    sql = _rewrite_alias_prefix(sql, alias, right_short)
                 if sql:
                     existing_pairs.add(pair)
                     specs.append({

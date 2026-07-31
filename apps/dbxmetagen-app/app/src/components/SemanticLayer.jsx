@@ -956,7 +956,19 @@ export default function SemanticLayer({ onNavigate, pipelineStats, onRefreshPipe
   }
 
   // --- KPIs ---
+  // Retro-heal stale-'invalid' KPIs at most ONCE per mount, via the explicit POST
+  // (list is now a pure read — review finding #2). Fire-and-forget: if it heals
+  // anything, refresh the list to show the flipped statuses.
+  const kpiRevalidatedRef = useRef(false)
   const loadKpis = async () => {
+    if (!kpiRevalidatedRef.current) {
+      kpiRevalidatedRef.current = true
+      try {
+        const res = await fetch(`/api/kpis/revalidate${activeProfileId ? `?profile_id=${encodeURIComponent(activeProfileId)}` : ''}`, { method: 'POST' })
+        const d = await res.json().catch(() => ({}))
+        if (d.healed > 0) invalidateCache('/api/kpis')  // stale statuses changed
+      } catch { /* non-blocking */ }
+    }
     const { data } = await cachedFetch('/api/kpis', {}, TTL.CONFIG)
     setKpis(data || [])
   }

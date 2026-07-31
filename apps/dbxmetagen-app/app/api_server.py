@@ -12600,25 +12600,42 @@ class SuggestBusinessContextRequest(BaseModel):
 
 @app.get("/api/kpis")
 def list_kpis(profile_id: str = None):
+    """Read-only list of KPIs. A plain GET must NOT mutate or run dry-run SELECTs
+    (that made page loads slow + raced on concurrent UPDATEs -- review finding #2).
+    Stale-'invalid' retro-healing now lives in POST /api/kpis/revalidate, which the
+    UI calls explicitly (e.g. once on first load)."""
     _ensure_kpi_table()
     where = f" WHERE profile_id = '{profile_id.replace(chr(39), chr(39)*2)}'" if profile_id else ""
     rows = execute_sql(f"SELECT * FROM {fq('kpi_definitions')}{where} ORDER BY updated_at DESC")
     for row in rows:
         if row.get("formula"):
             row["formula"] = _autofix_expr(row["formula"])
-    # Retro-fix: KPIs created before the any-table-valid validation (or before the
-    # source-table picker) carry target_tables = [all selected tables] and a stale
-    # "invalid" status from the old all-or-nothing loop. validation_status is only
-    # recomputed on create/update, so re-validate the currently-invalid ones on read
-    # (capped, to avoid warehouse spam) and persist any that now resolve. This flips
-    # genuinely-fine KPIs to valid + records resolved_table without a manual re-save.
+    return rows
+
+
+@app.post("/api/kpis/revalidate")
+def revalidate_kpis(profile_id: str = None):
+    """Re-validate currently-'invalid' KPIs and persist any that now resolve.
+
+    Explicit (POST) counterpart to the old on-GET retro-heal: KPIs created before
+    the any-table-valid validation carry target_tables=[all tables] + a stale
+    'invalid' status. This dry-runs each (capped) and flips genuinely-fine ones to
+    valid, recording resolved_table. Returns the count healed."""
+    _ensure_kpi_table()
+    conds = ["validation_status = 'invalid'"]
+    if profile_id:
+        conds.append(f"profile_id = '{profile_id.replace(chr(39), chr(39)*2)}'")
+    where = " WHERE " + " AND ".join(conds)
+    rows = execute_sql(
+        f"SELECT kpi_id, formula, target_tables, validation_status "
+        f"FROM {fq('kpi_definitions')}{where} ORDER BY updated_at DESC"
+    )
     _RETRO_CAP = 8
     revalidated = 0
-    for row in rows:
+    healed = 0
+    for row in rows or []:
         if revalidated >= _RETRO_CAP:
             break
-        if (row.get("validation_status") or "").lower() != "invalid":
-            continue
         kt = row.get("target_tables") or []
         if isinstance(kt, str):
             try:
@@ -12633,9 +12650,7 @@ def list_kpis(profile_id: str = None):
         except Exception:
             continue
         if v_status != "invalid":
-            row["validation_status"] = v_status
-            row["validation_error"] = v_error
-            row["resolved_table"] = v_resolved
+            healed += 1
             try:
                 execute_sql(
                     f"UPDATE {fq('kpi_definitions')} SET validation_status = '{v_status}', "
@@ -12646,6 +12661,7 @@ def list_kpis(profile_id: str = None):
                 )
             except Exception:
                 pass
+    return {"revalidated": revalidated, "healed": healed}
     return rows
 
 

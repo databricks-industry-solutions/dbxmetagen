@@ -2040,8 +2040,16 @@ class FKPredictor:
                     ) as _rn
                     FROM {target}
                 ) WHERE _rn = 1
-                  AND src_table != dst_table
                   AND src_column != dst_column
+                  -- Drop spurious self-JOINS (a table crossed with itself), but
+                  -- KEEP declared self-referential FKs (e.g. employee.manager_id ->
+                  -- employee.id). Declared candidates carry a 'declared%' reasoning
+                  -- and are legitimately self-table; wiping them here would delete a
+                  -- steward-asserted self-FK on any scoped rerun that omits the table.
+                  AND (
+                    src_table != dst_table
+                    OR COALESCE(ai_reasoning, '') LIKE 'declared%'
+                  )
             """)
         except AnalysisException:
             pass

@@ -82,6 +82,30 @@ def _example_id(space_id: str, question_text: str, sql: str) -> str:
     return f"{space_id}::{h}"
 
 
+def _coerce_text(value: Any) -> str:
+    """Normalize a serialized-space text field to a plain string.
+
+    Serialized-space fields (question/sql/content) come back as Python-repr'd
+    LISTS of string fragments, e.g. "['SELECT x,\\n', '  FROM t\\n']". Join the
+    fragments; fall back to str(value) for plain strings/other shapes."""
+    if value is None:
+        return ""
+    if isinstance(value, list):
+        return "".join(str(v) for v in value).strip()
+    if isinstance(value, str):
+        s = value.strip()
+        if s.startswith("[") and s.endswith("]"):
+            try:
+                import ast
+                parsed = ast.literal_eval(s)
+                if isinstance(parsed, list):
+                    return "".join(str(v) for v in parsed).strip()
+            except (ValueError, SyntaxError):
+                pass
+        return s
+    return str(value).strip()
+
+
 class GenieSQLPuller:
     """Read curated example SQL + benchmarks from existing Genie spaces via REST.
 
@@ -149,12 +173,59 @@ class GenieSQLPuller:
             logger.warning("curated-questions/%s failed: %s", space_id, e)
             return []
 
+    def _serialized_space(self, space_id: str) -> Dict[str, Any]:
+        """Fetch + parse the serialized space (?include_serialized_space=true).
+
+        This carries the RICHEST curated content: instructions.example_question_sqls
+        (often dozens of question->SQL pairs), join_specs, and text_instructions --
+        far more than data-rooms/curated-questions alone. Returns {} on failure."""
+        try:
+            resp = self.ws.api_client.do(
+                "GET", f"/api/2.0/genie/spaces/{space_id}?include_serialized_space=true"
+            )
+            ss = resp.get("serialized_space")
+            if isinstance(ss, str):
+                return json.loads(ss)
+            if isinstance(ss, dict):
+                return ss
+        except Exception as e:
+            logger.warning("serialized_space/%s failed: %s", space_id, e)
+        return {}
+
     # -- Extraction -----------------------------------------------------------
 
+    @staticmethod
+    def _build_row(sid: str, title: str, question: str, sql: str,
+                   qtype: str, tables_str: str) -> Dict[str, Any]:
+        # content = what the VS index embeds: NL question + SQL + tables so a
+        # mart-description query retrieves semantically-matching exemplars.
+        content = "\n".join(filter(None, [
+            f"Question: {question}" if question else "",
+            f"Tables: {tables_str}" if tables_str else "",
+            f"SQL:\n{sql}" if sql else "",
+        ]))
+        return {
+            "example_id": _example_id(sid, question, sql),
+            "space_id": sid,
+            "space_title": title,
+            "question_text": question,
+            "sql": sql,
+            "content": content,
+            "question_type": qtype,
+            "table_identifiers": tables_str,
+            "updated_at": _now(),
+        }
+
     def extract_examples(self) -> List[Dict[str, Any]]:
-        """Pull curated SQL exemplars from the in-scope spaces."""
+        """Pull curated SQL exemplars from the in-scope spaces.
+
+        Two complementary sources per space, deduped by example_id:
+          1. serialized_space.instructions.example_question_sqls -- the richest set
+             (often dozens of curated question->SQL pairs the space owner defined).
+          2. data-rooms curated-questions BENCHMARK / BENCHMARK_SUGGESTION rows.
+        """
         cfg = self.config
-        rows: List[Dict[str, Any]] = []
+        by_id: Dict[str, Dict[str, Any]] = {}
         spaces = self._select_spaces()
         logger.info("Genie SQL pull: %d space(s) in scope", len(spaces))
         for s in spaces:
@@ -162,6 +233,22 @@ class GenieSQLPuller:
             title = s.get("title", "")
             tables = self._table_identifiers(sid)
             tables_str = ", ".join(tables)
+
+            # 1. Serialized-space example_question_sqls (richest source).
+            ss = self._serialized_space(sid)
+            instructions = ss.get("instructions") or {}
+            if isinstance(instructions, dict):
+                for eq in instructions.get("example_question_sqls") or []:
+                    if not isinstance(eq, dict):
+                        continue
+                    question = _coerce_text(eq.get("question"))
+                    sql = _coerce_text(eq.get("sql"))
+                    if not sql:
+                        continue
+                    row = self._build_row(sid, title, question, sql, "EXAMPLE_SQL", tables_str)
+                    by_id[row["example_id"]] = row
+
+            # 2. data-rooms curated-questions (BENCHMARK*), plus optional samples.
             for q in self._curated_questions(sid):
                 qtype = q.get("question_type", "")
                 sql = (q.get("answer_text") or "").strip()
@@ -170,24 +257,10 @@ class GenieSQLPuller:
                 keep_sample = cfg.include_sample_questions and qtype == "SAMPLE_QUESTION"
                 if not (keep_sql or keep_sample):
                     continue
-                # content = what the VS index embeds: NL question + SQL + tables so
-                # a mart-description query retrieves semantically-matching exemplars.
-                content = "\n".join(filter(None, [
-                    f"Question: {question}" if question else "",
-                    f"Tables: {tables_str}" if tables_str else "",
-                    f"SQL:\n{sql}" if sql else "",
-                ]))
-                rows.append({
-                    "example_id": _example_id(sid, question, sql),
-                    "space_id": sid,
-                    "space_title": title,
-                    "question_text": question,
-                    "sql": sql,
-                    "content": content,
-                    "question_type": qtype,
-                    "table_identifiers": tables_str,
-                    "updated_at": _now(),
-                })
+                row = self._build_row(sid, title, question, sql, qtype, tables_str)
+                by_id.setdefault(row["example_id"], row)
+
+        rows = list(by_id.values())
         logger.info("Genie SQL pull: extracted %d exemplar(s)", len(rows))
         return rows
 
