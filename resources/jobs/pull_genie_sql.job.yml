@@ -1,0 +1,55 @@
+resources:
+  jobs:
+    pull_genie_sql_job:
+      name: "${var.app_name}${var.app_name_suffix}_pull_genie_sql"
+      budget_policy_id: ${var.budget_policy_id}
+
+      permissions:
+        - service_principal_name: ${resources.apps.dbxmetagen_app.service_principal_client_id}
+          level: CAN_MANAGE_RUN
+
+      email_notifications:
+        on_failure:
+          - ${var.current_user}
+
+      # No schedule: this is run on demand (or from the app) with an explicit
+      # space scope. Ingesting Genie SQL is a deliberate, curated action.
+
+      parameters:
+        - name: catalog_name
+          default: ${var.catalog_name}
+        - name: schema_name
+          default: ${var.schema_name}
+        - name: endpoint_name
+          default: ${var.vs_endpoint_name}
+        # Explicit scope — at least one of space_ids / title_contains must be set
+        # (the notebook fails fast otherwise, so no accidental all-space pull).
+        - name: space_ids
+          default: ""
+        - name: title_contains
+          default: ""
+        - name: include_sample_questions
+          default: "false"
+
+      tasks:
+        - task_key: pull_genie_sql
+          max_retries: 1
+          min_retry_interval_millis: 600000
+          timeout_seconds: 3600
+          environment_key: default
+          notebook_task:
+            notebook_path: ../../notebooks/pull_genie_sql.py
+            base_parameters:
+              catalog_name: "{{job.parameters.catalog_name}}"
+              schema_name: "{{job.parameters.schema_name}}"
+              endpoint_name: "{{job.parameters.endpoint_name}}"
+              space_ids: "{{job.parameters.space_ids}}"
+              title_contains: "{{job.parameters.title_contains}}"
+              include_sample_questions: "{{job.parameters.include_sample_questions}}"
+
+      environments:
+        - environment_key: default
+          spec:
+            environment_version: "2"
+            dependencies:
+              - ../../dist/*.whl
