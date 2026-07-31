@@ -260,6 +260,14 @@ class TestFixPercentageScaling:
         _fix_percentage_scaling(defn)
         assert defn["measures"][0]["expr"] == expr
 
+    def test_does_not_corrupt_larger_numeric_literal(self):
+        # Regression: `* 100.05` previously matched `* 100` and left `.05`, and
+        # `* 1000` / `100.5 *` must never be treated as the 100 premultiply.
+        for expr in ("SUM(x) * 100.05 / total", "SUM(x) * 1000 / total", "100.5 * SUM(x)"):
+            defn = {"measures": [{"name": "r", "expr": expr, "format": {"type": "percentage"}}]}
+            _fix_percentage_scaling(defn)
+            assert defn["measures"][0]["expr"] == expr, f"corrupted: {expr}"
+
     def test_end_to_end_fraction_contract(self):
         # infer marks it percentage, fix ensures it's a fraction (0-1), not pre-scaled
         defn = {"measures": [{"name": "win_rate", "expr": "SUM(won) * 100.0 / NULLIF(COUNT(*), 0)"}]}

@@ -195,11 +195,15 @@ def _infer_format_specs(defn: dict) -> None:
 
 # Matches a stray ``100 *`` premultiply in either ordering, optionally wrapped in
 # ROUND(...). Group 1, when present, is the trailing ``* 100`` form.
+# The ``(?![\d.])`` lookahead ensures we only match the literal 100 / 100.0 and
+# never the leading digits of a larger number: without it, ``* 100.05`` matched
+# ``* 100`` and corrupted the expr into ``.05`` (leftover). Also guard the leading
+# form so ``100.05 *`` isn't misread as ``100 *``.
 _PERCENTAGE_PREMULTIPLY_LEADING = re.compile(
-    r"(?:ROUND\s*\(\s*)?100(?:\.0)?\s*\*\s*", re.IGNORECASE
+    r"(?:ROUND\s*\(\s*)?100(?:\.0)?(?![\d.])\s*\*\s*", re.IGNORECASE
 )
 _PERCENTAGE_PREMULTIPLY_TRAILING = re.compile(
-    r"\s*\*\s*100(?:\.0)?\b", re.IGNORECASE
+    r"\s*\*\s*100(?:\.0)?(?![\d.])", re.IGNORECASE
 )
 
 
