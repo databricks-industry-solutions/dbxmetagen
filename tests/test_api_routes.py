@@ -934,3 +934,106 @@ class TestIsFederatedCatalog:
             raise RuntimeError("no access")
         monkeypatch.setattr(api_server, "execute_sql", _boom)
         assert api_server._is_federated_catalog("main") is False
+
+
+class TestSelectMvTestQueries:
+    """Hard-bound + federation policy for which drills actually run (item 23)."""
+
+    def _queries(self, n_single=4):
+        q = [{"kind": "ungrouped", "label": "grand"}]
+        q += [{"kind": "single_dim", "label": f"d{i}"} for i in range(n_single)]
+        q += [{"kind": "combined_dims", "label": "combo"}]
+        return q
+
+    def test_non_federated_runs_full_set_within_cap(self):
+        q = self._queries(n_single=3)  # 1 + 3 + 1 = 5, under the cap
+        sel, note = api_server._select_mv_test_queries(q, federated=False, allow_federated_full=False)
+        assert len(sel) == 5
+        assert note is None
+
+    def test_hard_cap_clamps_large_query_count(self):
+        # 1 grand + 20 single + 1 combined = 22, must clamp to _MV_TEST_MAX_QUERIES
+        q = self._queries(n_single=20)
+        sel, _ = api_server._select_mv_test_queries(q, federated=False, allow_federated_full=False)
+        assert len(sel) == api_server._MV_TEST_MAX_QUERIES
+
+    def test_federated_default_caps_small_and_runs(self):
+        q = self._queries(n_single=4)
+        sel, note = api_server._select_mv_test_queries(q, federated=True, allow_federated_full=False)
+        # Runs (not skipped) but capped to the federated max: grand-total + 1 single-dim
+        assert len(sel) == api_server._MV_TEST_FEDERATED_MAX
+        assert [s["kind"] for s in sel] == ["ungrouped", "single_dim"]
+        assert note and "federated" in note.lower()
+
+    def test_federated_full_opt_in_runs_bounded_full_set(self):
+        q = self._queries(n_single=4)  # 6 total, under cap
+        sel, note = api_server._select_mv_test_queries(q, federated=True, allow_federated_full=True)
+        assert len(sel) == 6
+        assert note and "full set" in note.lower()
+
+    def test_federated_full_still_respects_hard_cap(self):
+        q = self._queries(n_single=20)
+        sel, _ = api_server._select_mv_test_queries(q, federated=True, allow_federated_full=True)
+        assert len(sel) == api_server._MV_TEST_MAX_QUERIES
+
+
+class TestMvTestWorkerAndPayload:
+    """Background worker + payload shaper (the endpoints themselves are decorator-mocked
+    in this harness, so we test the plain functions they delegate to -- same convention
+    as the other endpoint tests in this file)."""
+
+    def test_worker_runs_drills_and_finalizes(self, monkeypatch):
+        # cachetools is mocked in this harness, so back the task/result stores with real dicts.
+        tasks, cache = {}, {}
+        monkeypatch.setattr(api_server, "_mv_test_tasks", tasks)
+        monkeypatch.setattr(api_server, "_mv_test_result_cache", cache)
+        monkeypatch.setattr(api_server, "execute_sql",
+                            lambda sql, timeout=45: [{"m1": 5, "d0": "A"}, {"m1": 3, "d0": "B"}])
+        queries = [
+            {"kind": "ungrouped", "label": "grand", "sql": "SELECT 1"},
+            {"kind": "single_dim", "dimension": "d0", "label": "by d0", "sql": "SELECT 2"},
+        ]
+        tasks["t1"] = {
+            "status": "running", "total": 2, "done": 0, "results": [],
+            "definition_id": "def1", "cache_key": "ck1",
+        }
+        api_server._run_mv_test_queries_bg("t1", queries)
+        task = tasks["t1"]
+        assert task["status"] == "done"
+        assert task["summary"]["total"] == 2
+        assert task["summary"]["passed"] == 2
+        assert task["summary"]["failed"] == 0
+        # finished payload is cached for dedupe
+        assert "ck1" in cache
+
+    def test_worker_marks_failed_drill(self, monkeypatch):
+        tasks = {}
+        monkeypatch.setattr(api_server, "_mv_test_tasks", tasks)
+        def _boom(sql, timeout=45):
+            raise RuntimeError("bad sql")
+        monkeypatch.setattr(api_server, "execute_sql", _boom)
+        tasks["t2"] = {
+            "status": "running", "total": 1, "done": 0, "results": [],
+            "definition_id": "def1", "cache_key": None,
+        }
+        api_server._run_mv_test_queries_bg("t2", [{"kind": "ungrouped", "label": "g", "sql": "SELECT x"}])
+        task = tasks["t2"]
+        assert task["overall"] == "fail"
+        assert task["summary"]["failed"] == 1
+        assert task["results"][0]["error"]
+
+    def test_payload_shape(self):
+        task = {"definition_id": "d", "metric_view": "`c`.`s`.`mv`", "federated": True,
+                "federation_note": "note", "allow_federated_full": False, "status": "done",
+                "total": 3, "done": 3, "overall": "ok",
+                "summary": {"total": 3, "passed": 3, "failed": 0, "warned": 0}, "results": []}
+        p = api_server._mv_test_task_payload(task)
+        assert p["definition_id"] == "d"
+        assert p["federated"] is True
+        assert p["status"] == "done"
+        assert p["summary"]["passed"] == 3
+
+    def test_endpoints_and_model_exist(self):
+        assert hasattr(api_server, "run_mv_test_queries")
+        assert hasattr(api_server, "poll_mv_test_queries")
+        assert "allow_federated_full" in api_server.MvTestQueryRequest.__annotations__

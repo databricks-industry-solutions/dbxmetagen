@@ -10631,14 +10631,145 @@ def _health_from_test_result(kind: str, dimension: str | None, rows: list) -> di
     return {"status": status, "notes": notes}
 
 
-@app.post("/api/semantic-layer/definitions/{definition_id}/test-queries")
-def run_mv_test_queries(definition_id: str):
-    """Run auto-generated MEASURE() drill queries against a metric view.
+# --- Test-query runner: async task pattern + hard bounds ---------------------
+# These queries execute LIVE aggregations against a deployed view. Run them off
+# the request thread (background task + poll) so a slow/large view can't hit the
+# Databricks Apps ingress timeout, and HARD-CAP the query count so nothing --
+# federated or not -- can ever fan out into a large number of aggregations
+# unexpectedly (a single GROUP BY ALL over a huge or federated table is costly).
+_MV_TEST_MAX_QUERIES = 8        # absolute ceiling on drills per run
+_MV_TEST_FEDERATED_MAX = 2      # federated default: grand-total + 1 single-dim
+_MV_TEST_QUERY_TIMEOUT = 45     # per-query SQL timeout (s)
+_MV_TEST_WALL_TIMEOUT = 180     # task-level wall-clock backstop (s)
+_MV_TEST_WORKERS = 4            # parallel drills (bounded)
 
-    Confirms the view returns sensible results (not just that CREATE succeeded).
-    FEDERATION GUARD: when the deployed catalog is federated/foreign, these live
-    queries push down to the remote source — we cap to 1-2 lightweight drills to
-    avoid hammering Redshift/Snowflake.
+_mv_test_tasks: TTLCache = TTLCache(maxsize=64, ttl=1800)   # 30-min cleanup
+_mv_test_result_cache: TTLCache = TTLCache(maxsize=32, ttl=120)  # dedupe re-clicks
+_mv_test_lock = threading.Lock()
+
+
+def _select_mv_test_queries(queries: list, federated: bool, allow_federated_full: bool) -> tuple[list, Optional[str]]:
+    """Apply the hard bound + federation policy to the generated drills.
+
+    Non-federated: full set, capped at _MV_TEST_MAX_QUERIES.
+    Federated (default): capped at _MV_TEST_FEDERATED_MAX (grand-total + 1 dim).
+    Federated + allow_federated_full: full bounded set (explicit, warned opt-in).
+    Returns (selected_queries, note).
+    """
+    queries = queries[:_MV_TEST_MAX_QUERIES]
+    if not federated:
+        return queries, None
+    if allow_federated_full:
+        return queries, (
+            "Federated source — running the full set. Each aggregation may pull the "
+            "remote table if it does not push down."
+        )
+    # Default federated policy: grand-total + at most one single-dim drill.
+    capped = [q for q in queries if q["kind"] == "ungrouped"]
+    first_dim = next((q for q in queries if q["kind"] == "single_dim"), None)
+    if first_dim:
+        capped.append(first_dim)
+    capped = capped[:_MV_TEST_FEDERATED_MAX]
+    note = (
+        "Source is a federated catalog — aggregations may not push down. "
+        f"Limited to {len(capped)} drill(s) to avoid heavy load on the remote source. "
+        "Use \"Run full set anyway\" to run all drills."
+    )
+    return capped, note
+
+
+def _run_mv_test_queries_bg(task_id: str, queries: list):
+    """Background worker: run drills in a bounded pool, stream results into the task dict."""
+    task = _mv_test_tasks.get(task_id)
+    if task is None:
+        return
+    results: list[dict] = [None] * len(queries)
+    deadline = time.time() + _MV_TEST_WALL_TIMEOUT
+
+    def _one(q: dict) -> dict:
+        entry = {"label": q["label"], "kind": q["kind"], "sql": q["sql"]}
+        try:
+            qrows = execute_sql(q["sql"], timeout=_MV_TEST_QUERY_TIMEOUT)
+            entry["error"] = None
+            entry["row_count"] = len(qrows)
+            entry["sample_result"] = qrows[:10]
+            entry["health"] = _health_from_test_result(q["kind"], q.get("dimension"), qrows)
+        except Exception as e:
+            entry["error"] = str(e)
+            entry["row_count"] = 0
+            entry["sample_result"] = []
+            entry["health"] = {"status": "fail", "notes": ["Query failed — see error."]}
+        return entry
+
+    try:
+        with ThreadPoolExecutor(max_workers=min(_MV_TEST_WORKERS, max(1, len(queries)))) as pool:
+            futures = {pool.submit(_one, q): i for i, q in enumerate(queries)}
+            for f in as_completed(futures):
+                idx = futures[f]
+                remaining = deadline - time.time()
+                try:
+                    results[idx] = f.result(timeout=max(1, remaining))
+                except Exception as e:
+                    q = queries[idx]
+                    results[idx] = {
+                        "label": q["label"], "kind": q["kind"], "sql": q["sql"],
+                        "error": f"Timed out or failed: {e}", "row_count": 0,
+                        "sample_result": [], "health": {"status": "fail", "notes": ["Query did not complete."]},
+                    }
+                task["done"] = sum(1 for r in results if r is not None)
+    except Exception as e:
+        logger.warning("MV test-query worker error for task %s: %s", task_id, e)
+
+    final = [r for r in results if r is not None]
+    passed = sum(1 for r in final if not r["error"])
+    failed = sum(1 for r in final if r["error"])
+    warn = sum(1 for r in final if not r["error"] and r["health"]["status"] == "warn")
+    overall = "fail" if failed else ("warn" if warn else "ok")
+    task.update({
+        "status": "done",
+        "done": len(final),
+        "results": final,
+        "overall": overall,
+        "summary": {"total": len(final), "passed": passed, "failed": failed, "warned": warn},
+    })
+    # Cache the finished payload so re-clicks within the TTL don't re-hit the warehouse.
+    ck = task.get("cache_key")
+    if ck:
+        with _mv_test_lock:
+            _mv_test_result_cache[ck] = _mv_test_task_payload(task)
+
+
+def _mv_test_task_payload(task: dict) -> dict:
+    """Shape a task dict into the API response payload."""
+    return {
+        "definition_id": task.get("definition_id"),
+        "metric_view": task.get("metric_view"),
+        "federated": task.get("federated"),
+        "federation_note": task.get("federation_note"),
+        "allow_federated_full": task.get("allow_federated_full"),
+        "status": task.get("status"),
+        "total": task.get("total"),
+        "done": task.get("done", 0),
+        "overall": task.get("overall"),
+        "summary": task.get("summary"),
+        "results": task.get("results", []),
+    }
+
+
+class MvTestQueryRequest(BaseModel):
+    allow_federated_full: bool = False
+
+
+@app.post("/api/semantic-layer/definitions/{definition_id}/test-queries")
+def run_mv_test_queries(definition_id: str, req: MvTestQueryRequest | None = None):
+    """Start an async run of auto-generated MEASURE() drills against a metric view.
+
+    Returns a task_id immediately; poll the GET endpoint for progress + results.
+    The drills execute LIVE against the deployed view, so the work runs off the
+    request thread and the query count is hard-bounded. Federated sources are
+    capped to a couple of drills by default (a few full-table pulls are fine, a
+    large number is not); the full set on a federated source is an explicit,
+    warned opt-in via allow_federated_full.
     """
     _ensure_semantic_layer_tables()
     row = _fetch_definition(definition_id)
@@ -10651,58 +10782,61 @@ def run_mv_test_queries(definition_id: str):
     if not defn.get("measures"):
         raise HTTPException(400, detail="Definition has no measures to test.")
 
+    allow_federated_full = bool(req.allow_federated_full) if req else False
     mv_cat = row.get("deployed_catalog") or CATALOG
     mv_sch = row.get("deployed_schema") or SCHEMA
     fq_mv = f"`{mv_cat}`.`{mv_sch}`.`{mv_name}`"
 
     federated = _is_federated_catalog(mv_cat)
-    queries = _build_mv_test_queries(defn, fq_mv)
+    all_queries = _build_mv_test_queries(defn, fq_mv)
+    queries, federation_note = _select_mv_test_queries(all_queries, federated, allow_federated_full)
 
-    federation_note = None
-    if federated:
-        # Keep at most the grand-total + one single-dimension drill.
-        capped = [q for q in queries if q["kind"] == "ungrouped"]
-        first_dim = next((q for q in queries if q["kind"] == "single_dim"), None)
-        if first_dim:
-            capped.append(first_dim)
-        queries = capped
-        federation_note = (
-            f"'{mv_cat}' is a federated catalog — live queries push down to the remote source. "
-            f"Limited to {len(queries)} lightweight drill(s) to avoid load. "
-            f"Run the full set manually if needed."
-        )
+    # Short-TTL result cache keyed on view + definition content + policy, so
+    # re-clicking doesn't re-run the warehouse. Skip cache for the full-federated
+    # opt-in (an explicit "run it now" action).
+    import hashlib
+    cache_key = (
+        f"{definition_id}:{hashlib.md5(json.dumps(defn, sort_keys=True).encode()).hexdigest()[:12]}"
+        f":{federated}:{allow_federated_full}"
+    )
+    if not allow_federated_full:
+        with _mv_test_lock:
+            cached = _mv_test_result_cache.get(cache_key)
+        if cached:
+            return {**cached, "cached": True}
 
-    results = []
-    passed = 0
-    failed = 0
-    for q in queries:
-        entry = {"label": q["label"], "kind": q["kind"], "sql": q["sql"]}
-        try:
-            qrows = execute_sql(q["sql"], timeout=60)
-            entry["error"] = None
-            entry["row_count"] = len(qrows)
-            entry["sample_result"] = qrows[:10]
-            entry["health"] = _health_from_test_result(q["kind"], q.get("dimension"), qrows)
-            passed += 1
-        except Exception as e:
-            entry["error"] = str(e)
-            entry["row_count"] = 0
-            entry["sample_result"] = []
-            entry["health"] = {"status": "fail", "notes": ["Query failed — see error."]}
-            failed += 1
-        results.append(entry)
+    if not queries:
+        # Nothing to run (e.g. no measures survived) -- return an immediate empty result.
+        return {
+            "definition_id": definition_id, "metric_view": fq_mv, "federated": federated,
+            "federation_note": federation_note, "allow_federated_full": allow_federated_full,
+            "status": "done", "total": 0, "done": 0, "overall": "ok",
+            "summary": {"total": 0, "passed": 0, "failed": 0, "warned": 0}, "results": [],
+        }
 
-    warn = sum(1 for r in results if not r["error"] and r["health"]["status"] == "warn")
-    overall = "fail" if failed else ("warn" if warn else "ok")
-    return {
-        "definition_id": definition_id,
-        "metric_view": fq_mv,
-        "federated": federated,
-        "federation_note": federation_note,
-        "overall": overall,
-        "summary": {"total": len(results), "passed": passed, "failed": failed, "warned": warn},
-        "results": results,
+    task_id = str(_uuid.uuid4())[:12]
+    _mv_test_tasks[task_id] = {
+        "status": "running", "definition_id": definition_id, "metric_view": fq_mv,
+        "federated": federated, "federation_note": federation_note,
+        "allow_federated_full": allow_federated_full, "total": len(queries), "done": 0,
+        "results": [], "overall": None, "summary": None, "cache_key": cache_key,
     }
+    _spawn_with_obo(_run_mv_test_queries_bg, args=(task_id, queries))
+    return {
+        "task_id": task_id, "definition_id": definition_id, "metric_view": fq_mv,
+        "federated": federated, "federation_note": federation_note,
+        "allow_federated_full": allow_federated_full, "status": "running",
+        "total": len(queries), "done": 0,
+    }
+
+
+@app.get("/api/semantic-layer/definitions/{definition_id}/test-queries/{task_id}")
+def poll_mv_test_queries(definition_id: str, task_id: str):
+    """Poll a running (or finished) metric-view test-query task."""
+    task = _mv_test_tasks.get(task_id)
+    if not task:
+        raise HTTPException(404, detail="Test-query task not found (it may have expired). Re-run.")
+    return _mv_test_task_payload(task)
 
 
 class UpdateFieldRequest(BaseModel):

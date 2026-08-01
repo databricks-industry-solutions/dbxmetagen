@@ -120,29 +120,49 @@ const _testStatusStyles = {
   fail: 'text-red-700 dark:text-red-400 bg-red-100 dark:bg-red-900/30',
 }
 
-function MvTestResultsPanel({ data, onClose }) {
+function MvTestResultsPanel({ data, onClose, onRunFederatedFull, busy }) {
   const [openSql, setOpenSql] = useState(null)
   const results = data.results || []
   const summary = data.summary || {}
+  const running = data.status === 'running'
   const overallCls = _testStatusStyles[data.overall] || _testStatusStyles.warn
   return (
     <div className="mt-2 p-3 border border-teal-200 dark:border-teal-700 rounded space-y-2">
       <div className="flex items-center justify-between">
         <div className="flex items-center gap-2">
           <span className="text-xs font-medium text-slate-700 dark:text-slate-300">Test Queries</span>
-          <span className={`px-1.5 py-0.5 rounded text-[10px] font-medium ${overallCls}`}>
-            {summary.passed || 0} passed · {summary.warned || 0} warn · {summary.failed || 0} failed
-          </span>
+          {running ? (
+            <span className="px-1.5 py-0.5 rounded text-[10px] font-medium bg-blue-100 text-blue-700 dark:bg-blue-900/30 dark:text-blue-400 inline-flex items-center gap-1">
+              <svg className="animate-spin h-3 w-3" viewBox="0 0 24 24"><circle className="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" strokeWidth="4" fill="none"/><path className="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4z"/></svg>
+              Running {data.done || 0}/{data.total || 0}
+            </span>
+          ) : (
+            <span className={`px-1.5 py-0.5 rounded text-[10px] font-medium ${overallCls}`}>
+              {summary.passed || 0} passed · {summary.warned || 0} warn · {summary.failed || 0} failed
+            </span>
+          )}
         </div>
         <button onClick={onClose} className="text-xs text-slate-400 hover:text-slate-600">Close</button>
       </div>
       {data.federation_note && (
+        <div className="text-[10px] text-amber-700 dark:text-amber-400 bg-amber-50 dark:bg-amber-900/20 rounded px-2 py-1 flex items-center justify-between gap-2">
+          <span>{data.federation_note}</span>
+          {!data.allow_federated_full && onRunFederatedFull && !running && (
+            <button onClick={onRunFederatedFull} disabled={busy}
+              title="Run all drills against the federated source. Each aggregation may pull the remote table if it does not push down."
+              className="shrink-0 px-1.5 py-0.5 rounded border border-amber-400 text-amber-700 dark:text-amber-300 hover:bg-amber-100 dark:hover:bg-amber-800/30 disabled:opacity-50">
+              Run full set anyway
+            </button>
+          )}
+        </div>
+      )}
+      {data.stopped && (
         <p className="text-[10px] text-amber-700 dark:text-amber-400 bg-amber-50 dark:bg-amber-900/20 rounded px-2 py-1">
-          {data.federation_note}
+          {data.stopped}
         </p>
       )}
-      {results.length === 0 && (
-        <p className="text-xs text-slate-400">No test queries were generated (needs at least one measure).</p>
+      {!running && results.length === 0 && !data.stopped && (
+        <p className="text-xs text-slate-400">No test queries were run.</p>
       )}
       {results.map((r, i) => {
         const st = (r.health && r.health.status) || (r.error ? 'fail' : 'ok')
@@ -519,6 +539,7 @@ export default function SemanticLayer({ onNavigate, pipelineStats, onRefreshPipe
   const [mvAppliedFields, setMvAppliedFields] = useState({})
   const [mvTestResults, setMvTestResults] = useState({})
   const [mvTestExpanded, setMvTestExpanded] = useState(null)
+  const mvTestPollRef = useRef({})   // defId -> interval id, so we can stop/replace polls
   const [structuredEditing, setStructuredEditing] = useState(null)
   const [structuredDraft, setStructuredDraft] = useState(null)
   const userEditedTargetRef = useRef(false)
@@ -1248,22 +1269,69 @@ export default function SemanticLayer({ onNavigate, pipelineStats, onRefreshPipe
     setActionLoading(prev => ({ ...prev, [defId]: null }))
   }
 
-  const runTestQueries = async (defId) => {
+  // Stop any in-flight poll for a definition (re-click, unmount, or hard stop).
+  const stopMvTestPoll = (defId) => {
+    const id = mvTestPollRef.current[defId]
+    if (id) { clearInterval(id); delete mvTestPollRef.current[defId] }
+  }
+
+  // POST to start an async test-query run, then poll for progress + results.
+  // Bounded server-side; here we add a hard client stop so the UI never spins forever.
+  const runTestQueries = async (defId, allowFederatedFull = false) => {
+    stopMvTestPoll(defId)
     setActionLoading(prev => ({ ...prev, [defId]: 'test' }))
-    setMvTestResults(prev => ({ ...prev, [defId]: null }))
+    setMvTestResults(prev => ({ ...prev, [defId]: { status: 'running', done: 0, total: 0, results: [] } }))
     setMvTestExpanded(defId)
     try {
-      const res = await fetch(`/api/semantic-layer/definitions/${defId}/test-queries`, { method: 'POST' })
+      const res = await fetch(`/api/semantic-layer/definitions/${defId}/test-queries`, {
+        method: 'POST', headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ allow_federated_full: allowFederatedFull }),
+      })
       const data = await res.json().catch(() => ({}))
-      if (res.ok) {
-        setMvTestResults(prev => ({ ...prev, [defId]: data }))
-      } else {
+      if (!res.ok) {
         setError(data.detail || 'Test queries failed')
         setMvTestExpanded(null)
+        setActionLoading(prev => ({ ...prev, [defId]: null }))
+        return
       }
-    } catch (e) { setError(e.message); setMvTestExpanded(null) }
-    setActionLoading(prev => ({ ...prev, [defId]: null }))
+      setMvTestResults(prev => ({ ...prev, [defId]: data }))
+      // Synchronous completion (cached, empty, or immediate) -- no polling needed.
+      if (data.status !== 'running' || !data.task_id) {
+        setActionLoading(prev => ({ ...prev, [defId]: null }))
+        return
+      }
+      // Poll the task; hard client-side stop at ~200s so we never spin forever.
+      const startedAt = Date.now()
+      mvTestPollRef.current[defId] = setInterval(async () => {
+        if (Date.now() - startedAt > 200000) {
+          stopMvTestPoll(defId)
+          setMvTestResults(prev => ({
+            ...prev,
+            [defId]: { ...(prev[defId] || {}), status: 'done',
+              stopped: 'Stopped waiting after 200s — the queries may still be running on the warehouse. Results shown are partial.' },
+          }))
+          setActionLoading(prev => ({ ...prev, [defId]: null }))
+          return
+        }
+        try {
+          const pr = await fetch(`/api/semantic-layer/definitions/${defId}/test-queries/${data.task_id}`)
+          if (!pr.ok) return  // transient; keep polling until the hard stop
+          const pd = await pr.json()
+          setMvTestResults(prev => ({ ...prev, [defId]: pd }))
+          if (pd.status !== 'running') {
+            stopMvTestPoll(defId)
+            setActionLoading(prev => ({ ...prev, [defId]: null }))
+          }
+        } catch { /* transient; keep polling until the hard stop */ }
+      }, 2000)
+    } catch (e) {
+      setError(e.message); setMvTestExpanded(null)
+      setActionLoading(prev => ({ ...prev, [defId]: null }))
+    }
   }
+
+  // Clean up any live poll intervals on unmount.
+  useEffect(() => () => { Object.values(mvTestPollRef.current).forEach(clearInterval) }, [])
 
   const applyFieldFix = async (defId, pathOrAll, value) => {
     setActionLoading(prev => ({ ...prev, [defId]: 'apply-fix' }))
@@ -2896,7 +2964,9 @@ export default function SemanticLayer({ onNavigate, pipelineStats, onRefreshPipe
                   {/* MV Test-query results panel */}
                   {mvTestExpanded === d.definition_id && mvTestResults[d.definition_id] && (
                     <MvTestResultsPanel data={mvTestResults[d.definition_id]}
-                      onClose={() => setMvTestExpanded(null)} />
+                      busy={actionLoading[d.definition_id] === 'test'}
+                      onRunFederatedFull={() => runTestQueries(d.definition_id, true)}
+                      onClose={() => { stopMvTestPoll(d.definition_id); setMvTestExpanded(null) }} />
                   )}
                 </div>
               )
