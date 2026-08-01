@@ -21,7 +21,7 @@ human review at every step. The pipeline runs in four stages:
 
 **2. Knowledge platform** — metadata → a queryable graph
 - **Knowledge base**: Aggregated table/column/schema metadata with extended system properties
-- **Formal ontologies + entity discovery**: Map tables/columns to standard ontologies — FHIR R4, OMOP CDM, Schema.org, Dublin Core — with multiple bundles coexisting in one schema
+- **Formal ontologies + entity discovery**: Map tables/columns to standard ontologies — FHIR R4, OMOP CDM, Schema.org, Dublin Core, FIBO Foundations (financial services) — with multiple bundles coexisting in one schema
 - **Knowledge graph**: Entity-relationship model with embeddings, similarity, clustering, and quality scores
 - **FK prediction**: AI + heuristic foreign-key discovery (distinct from join-key suggestion), with column-similarity ranking and ontology hints
 - **Data profiling & quality scoring**: Automated profiling with gradient-boosted quality grades
