@@ -1,7 +1,7 @@
 import React, { useState, useEffect, useRef, useCallback, useMemo } from 'react'
 import { ErrorBanner } from '../App'
 import { PageHeader } from './ui'
-import { spacesEqual } from './genieDrift'
+import { spacesEqual, summarizeSpaceDiff } from './genieDrift'
 
 function uuid() { return crypto.randomUUID?.() || Math.random().toString(36).slice(2) }
 
@@ -529,6 +529,53 @@ function VersionHistory({ spaceId, onRestore, onClose }) {
 // Drift detection banner
 // ---------------------------------------------------------------------------
 
+// Readable, per-section summary of what an external edit changed between the
+// loaded baseline and the current live space. Replaces the old raw-JSON dump.
+function _truncate(s, n = 120) {
+  s = String(s == null ? '' : s)
+  return s.length > n ? s.slice(0, n) + '…' : s
+}
+
+function SpaceDiffView({ diff }) {
+  if (!diff || diff.length === 0) {
+    return <p className="text-xs text-slate-500 dark:text-slate-400">No field-level differences detected (only volatile fields changed).</p>
+  }
+  return (
+    <div className="space-y-2 text-xs">
+      {diff.map((d, i) => (
+        <div key={i} className="border-l-2 border-amber-300 dark:border-amber-700 pl-2">
+          <span className="font-medium text-slate-700 dark:text-slate-300">{d.section}</span>
+          {d.type === 'scalar' && (
+            <div className="mt-0.5 space-y-0.5">
+              <div className="text-red-600 dark:text-red-400">− {_truncate(d.before) || <em className="text-slate-400">(empty)</em>}</div>
+              <div className="text-emerald-600 dark:text-emerald-400">+ {_truncate(d.after) || <em className="text-slate-400">(empty)</em>}</div>
+            </div>
+          )}
+          {d.type === 'collection' && (
+            <span className="ml-2 text-slate-500 dark:text-slate-400">
+              {d.added.length > 0 && <span className="text-emerald-600 dark:text-emerald-400">+{d.added.length} added </span>}
+              {d.removed.length > 0 && <span className="text-red-600 dark:text-red-400">−{d.removed.length} removed </span>}
+              {d.changed.length > 0 && <span className="text-amber-600 dark:text-amber-400">~{d.changed.length} changed </span>}
+              {(d.added.length + d.removed.length + d.changed.length) <= 6 && (
+                <span className="text-slate-400 dark:text-slate-500">
+                  ({[...d.added.map(k => '+' + k), ...d.removed.map(k => '−' + k), ...d.changed.map(k => '~' + k)].map(_truncate).join(', ')})
+                </span>
+              )}
+            </span>
+          )}
+          {d.type === 'ordered' && (
+            <span className="ml-2 text-slate-500 dark:text-slate-400">
+              {d.added.length > 0 && <span className="text-emerald-600 dark:text-emerald-400">+{d.added.length} added </span>}
+              {d.removed.length > 0 && <span className="text-red-600 dark:text-red-400">−{d.removed.length} removed </span>}
+              {d.reordered && <span className="text-amber-600 dark:text-amber-400">reordered</span>}
+            </span>
+          )}
+        </div>
+      ))}
+    </div>
+  )
+}
+
 // Drift = the LIVE space differs from what this editor loaded (`baseline`,
 // captured from /definition at load). That covers both a later external edit
 // and a stale tracked copy that already differed from live at load. We never
@@ -568,12 +615,13 @@ function DriftBanner({ spaceId, baseline, onPullRemote }) {
         <button onClick={() => setDrift('clean')}
           className="text-xs px-2.5 py-1 text-amber-600 hover:text-amber-800">Dismiss</button>
         <button onClick={() => setShowDiff(!showDiff)}
-          className="text-xs px-2.5 py-1 text-amber-600 hover:text-amber-800">{showDiff ? 'Hide' : 'Show'} Diff</button>
+          className="text-xs px-2.5 py-1 text-amber-600 hover:text-amber-800">{showDiff ? 'Hide' : 'Show'} Changes</button>
       </div>
       {showDiff && liveSs && (
-        <pre className="text-xs font-mono bg-white dark:bg-slate-900 border border-slate-200 dark:border-slate-700 rounded p-3 overflow-auto max-h-60 text-slate-600 dark:text-slate-400">
-          {JSON.stringify(liveSs, null, 2).slice(0, 4000)}
-        </pre>
+        <div className="bg-white dark:bg-slate-900 border border-slate-200 dark:border-slate-700 rounded p-3 overflow-auto max-h-72">
+          <p className="text-[10px] text-slate-400 dark:text-slate-500 mb-2 uppercase tracking-wide">What changed remotely since you loaded (− loaded, + live)</p>
+          <SpaceDiffView diff={summarizeSpaceDiff(baseline, liveSs)} />
+        </div>
       )}
     </div>
   )
@@ -1015,6 +1063,7 @@ export default function GenieUpdater({ spaceId, onBack }) {
   // ---------------------------------------------------------------------------
 
   const [conflictWarning, setConflictWarning] = useState(null)
+  const [conflictDiff, setConflictDiff] = useState(null)
 
   const deploy = async (asNew) => {
     if (!title.trim()) { setDeployError('Enter a title'); return }
@@ -1029,7 +1078,8 @@ export default function GenieUpdater({ spaceId, onBack }) {
       if (!asNew && spaceId && loadedBaseline && !conflictWarning) {
         const liveNow = await fetchLiveSpace(spaceId)
         if (liveNow && !spacesEqual(liveNow, loadedBaseline)) {
-          setConflictWarning('This space was modified outside dbxmetagen since you loaded it. Click Update again to overwrite the external changes.')
+          setConflictWarning('This space was modified outside dbxmetagen since you loaded it. Review the remote changes below, then click Update again to overwrite them (or pull them in from the banner above first).')
+          setConflictDiff(summarizeSpaceDiff(loadedBaseline, liveNow))
           setDeploying(false)
           return
         }
@@ -1046,6 +1096,7 @@ export default function GenieUpdater({ spaceId, onBack }) {
       const result = await res.json()
       setDeployResult(result)
       setConflictWarning(null)
+      setConflictDiff(null)
       if (result.updated) setVersion(prev => prev + 1)
       // We just wrote the space, so live == what we intended. Refresh the drift
       // baseline to the new live serialization so a follow-up update in the same
@@ -1441,8 +1492,14 @@ export default function GenieUpdater({ spaceId, onBack }) {
           {rawJsonEditing && <span className="text-xs text-amber-600">Deploying from raw JSON</span>}
         </div>
         {conflictWarning && (
-          <div className="bg-amber-50 dark:bg-amber-900/20 border border-amber-300 dark:border-amber-700 rounded-lg px-4 py-2.5 text-sm text-amber-700 dark:text-amber-300">
-            {conflictWarning}
+          <div className="bg-amber-50 dark:bg-amber-900/20 border border-amber-300 dark:border-amber-700 rounded-lg px-4 py-2.5 text-sm text-amber-700 dark:text-amber-300 space-y-2">
+            <div>{conflictWarning}</div>
+            {conflictDiff && conflictDiff.length > 0 && (
+              <div className="bg-white dark:bg-slate-900 border border-slate-200 dark:border-slate-700 rounded p-2.5 overflow-auto max-h-60">
+                <p className="text-[10px] text-slate-400 dark:text-slate-500 mb-2 uppercase tracking-wide">Remote changes you'd overwrite (− your loaded copy, + live)</p>
+                <SpaceDiffView diff={conflictDiff} />
+              </div>
+            )}
           </div>
         )}
         {deployError && (
