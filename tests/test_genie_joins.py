@@ -41,6 +41,7 @@ sys.path.insert(0, "src")
 from dbxmetagen.genie import agent as agent_mod  # noqa: E402
 from dbxmetagen.genie.agent import (  # noqa: E402
     _merge_prebuilt_join_specs, _validate_output, run_genie_agent,
+    _sql_skeleton, _dedup_example_sql,
 )
 from dbxmetagen.genie.context import GenieContextAssembler  # noqa: E402
 
@@ -582,3 +583,173 @@ class TestRunGenieAgentRefinement:
         }
         result = self._run(ctx)
         assert isinstance(result, dict)
+
+
+# ---------------------------------------------------------------------------
+# Item 26: SQL-skeleton dedup, invented-join / truncation warnings, MV-only
+# fresh-generation path
+# ---------------------------------------------------------------------------
+
+class TestSqlSkeleton:
+    def test_same_shape_diff_dim_measure_is_duplicate(self):
+        a = "SELECT region, MEASURE(revenue) FROM c.s.mv GROUP BY ALL ORDER BY MEASURE(revenue) DESC"
+        b = "SELECT product, MEASURE(units) FROM c.s.mv GROUP BY ALL ORDER BY MEASURE(units) DESC"
+        assert _sql_skeleton(a) == _sql_skeleton(b)
+
+    def test_alias_and_literal_do_not_matter(self):
+        a = "SELECT region, SUM(x) FROM c.s.orders WHERE amount > 100 GROUP BY region"
+        b = "SELECT region, SUM(y) AS total FROM c.s.orders WHERE amount > 999 GROUP BY region"
+        assert _sql_skeleton(a) == _sql_skeleton(b)
+
+    def test_different_shape_is_distinct(self):
+        base = "SELECT region, MEASURE(a) FROM c.s.mv GROUP BY ALL ORDER BY MEASURE(a) DESC"
+        multi = "SELECT region, MEASURE(a), MEASURE(b) FROM c.s.mv GROUP BY ALL"
+        filtered = "SELECT region, MEASURE(a) FROM c.s.mv WHERE region = 'x' GROUP BY ALL"
+        assert _sql_skeleton(base) != _sql_skeleton(multi)
+        assert _sql_skeleton(base) != _sql_skeleton(filtered)
+
+    def test_same_shape_different_table_is_distinct(self):
+        a = "SELECT region, MEASURE(x) FROM c.s.mv1 GROUP BY ALL"
+        b = "SELECT region, MEASURE(x) FROM c.s.mv2 GROUP BY ALL"
+        assert _sql_skeleton(a) != _sql_skeleton(b)
+
+    def test_non_string_does_not_raise(self):
+        assert isinstance(_sql_skeleton(None), str)
+        assert isinstance(_sql_skeleton(123), str)
+
+
+class TestDedupExampleSql:
+    def test_keeps_first_drops_later_duplicate(self):
+        a = "SELECT region, MEASURE(revenue) FROM c.s.mv GROUP BY ALL ORDER BY MEASURE(revenue) DESC"
+        b = "SELECT product, MEASURE(units) FROM c.s.mv GROUP BY ALL ORDER BY MEASURE(units) DESC"
+        c = "SELECT region, MEASURE(a), MEASURE(b) FROM c.s.mv GROUP BY ALL"
+        raw = {"instructions": {"example_sql": [
+            {"question": "q1", "sql": a},
+            {"question": "q2", "sql": b},
+            {"question": "q3", "sql": c},
+        ]}}
+        raw, removed = _dedup_example_sql(raw)
+        assert removed == 1
+        kept = raw["instructions"]["example_sql"]
+        assert [e["question"] for e in kept] == ["q1", "q3"]
+
+    def test_handles_example_question_sqls_key(self):
+        a = "SELECT region, SUM(x) FROM c.s.t GROUP BY region"
+        raw = {"instructions": {"example_question_sqls": [
+            {"question": "q1", "sql": [a]},
+            {"question": "q2", "sql": [a]},
+        ]}}
+        raw, removed = _dedup_example_sql(raw)
+        assert removed == 1
+        assert len(raw["instructions"]["example_question_sqls"]) == 1
+
+    def test_no_examples_is_noop(self):
+        raw = {"instructions": {}}
+        raw, removed = _dedup_example_sql(raw)
+        assert removed == 0
+
+
+class TestInventedJoinWarning:
+    def test_join_to_unknown_table_warns(self):
+        raw = {
+            "data_sources": {"tables": [{"identifier": "c.s.orders"}]},
+            "instructions": {"join_specs": [
+                {"left": {"identifier": "c.s.orders"}, "right": {"identifier": "c.s.ghost"}},
+            ]},
+        }
+        warnings = _validate_output(raw)
+        assert any("not in data_sources" in w and "c.s.ghost" in w for w in warnings)
+
+    def test_all_known_tables_no_invented_warning(self):
+        raw = {
+            "data_sources": {"tables": [{"identifier": "c.s.orders"}, {"identifier": "c.s.customers"}]},
+            "instructions": {"join_specs": [
+                {"left": {"identifier": "c.s.orders"}, "right": {"identifier": "c.s.customers"}},
+            ]},
+        }
+        warnings = _validate_output(raw)
+        assert not any("not in data_sources" in w for w in warnings)
+
+
+class TestGenieAgentFreshGeneration:
+    """Exercise the fresh-generation (non-refinement) path, incl. MV-only Phase 2."""
+
+    def _run(self, context, phase_payload=None):
+        q = _queue.Queue()
+        payload = phase_payload or {
+            "description": "d", "instructions": {"text": "t"},
+            "sample_questions": ["What is revenue by region?"],
+            "join_specs": [],
+            "example_sql": [{"question": "q?", "sql": "SELECT 1"}],
+            "sql_snippets": {"measures": [], "filters": [], "expressions": []},
+        }
+
+        def _fake_phase(llm, sys_prompt, user_msg, label):
+            return payload
+
+        with patch.object(agent_mod, "ChatDatabricks", return_value=MagicMock()), \
+             patch.object(agent_mod, "_llm_phase", side_effect=_fake_phase), \
+             patch.object(agent_mod, "_validate_and_strip_sql", side_effect=lambda s, *a, **k: s):
+            return run_genie_agent(MagicMock(), "wh", context, q)
+
+    def test_mv_only_fresh_generation(self):
+        ctx = {
+            "data_sources": {"tables": [], "metric_views": [{"identifier": "c.s.mv"}]},
+            "join_specs": [], "sql_snippets": {}, "questions": [],
+            "context_text": "ctx",
+        }
+        result = self._run(ctx)
+        assert isinstance(result, dict)
+        # Phase 3 must be skipped for MV-only; result should still have instructions.
+        assert "instructions" in result
+
+    def test_table_fresh_generation_dedups_examples(self):
+        dup = "SELECT region, SUM(x) FROM c.s.orders GROUP BY region"
+        payload = {
+            "description": "d", "instructions": {"text": "t"},
+            "sample_questions": ["Q"], "join_specs": [],
+            "example_sql": [
+                {"question": "q1", "sql": dup},
+                {"question": "q2", "sql": "SELECT region, SUM(y) AS t FROM c.s.orders GROUP BY region"},
+            ],
+            "sql_snippets": {"measures": [], "filters": [], "expressions": []},
+        }
+        ctx = {
+            "data_sources": {"tables": [{"identifier": "c.s.orders"}], "metric_views": []},
+            "join_specs": [], "sql_snippets": {}, "questions": [],
+            "context_text": "ctx",
+        }
+        result = self._run(ctx, payload)
+        inst = result.get("instructions", {})
+        examples = inst.get("example_sql") or inst.get("example_question_sqls") or []
+        assert len(examples) == 1  # structural duplicate removed
+
+    def test_truncation_warning_emitted(self):
+        long_text = "\n".join(f"line {i}" for i in range(30))
+        payload = {
+            "description": "d", "instructions": {"text": long_text},
+            "sample_questions": ["Q"], "join_specs": [],
+            "example_sql": [{"question": "q", "sql": "SELECT 1"}],
+            "sql_snippets": {"measures": [], "filters": [], "expressions": []},
+        }
+        ctx = {
+            "data_sources": {"tables": [{"identifier": "c.s.orders"}], "metric_views": []},
+            "join_specs": [], "sql_snippets": {}, "questions": [],
+            "context_text": "ctx",
+        }
+        q = _queue.Queue()
+
+        def _fake_phase(llm, sys_prompt, user_msg, label):
+            return payload
+
+        with patch.object(agent_mod, "ChatDatabricks", return_value=MagicMock()), \
+             patch.object(agent_mod, "_llm_phase", side_effect=_fake_phase), \
+             patch.object(agent_mod, "_validate_and_strip_sql", side_effect=lambda s, *a, **k: s):
+            run_genie_agent(MagicMock(), "wh", ctx, q)
+
+        events = []
+        while not q.empty():
+            events.append(q.get())
+        done = [e for e in events if e.get("stage") == "done"]
+        assert done
+        assert any("truncated" in w.lower() for w in done[0].get("warnings", []))

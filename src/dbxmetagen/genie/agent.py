@@ -400,6 +400,103 @@ def _validate_and_strip_sql(
     return raw
 
 
+# SQL structure tokens kept verbatim in a skeleton. Everything that is NOT one
+# of these (and not a function name, which is detected by a trailing "(") is a
+# column/dimension/measure identifier and gets normalized to "?" -- so two
+# examples that differ only in which dim/measure they use collapse to the same
+# skeleton. This is the anti-pattern the prompts forbid (e.g. an MV space whose
+# examples are all "SELECT <dim>, MEASURE(<m>) FROM mv GROUP BY ALL ORDER BY
+# MEASURE(<m>) DESC"); this is the deterministic backstop.
+_SQL_STRUCTURE_WORDS = frozenset({
+    "select", "from", "join", "left", "right", "inner", "outer", "full", "cross",
+    "on", "where", "group", "order", "by", "having", "limit", "as", "and", "or",
+    "not", "in", "is", "null", "asc", "desc", "distinct", "all", "case", "when",
+    "then", "else", "end", "over", "partition", "union", "with", "using", "measure",
+    "between", "like", "exists",
+})
+
+
+def _sql_skeleton(sql: str) -> str:
+    """Reduce a SQL string to a normalized structural fingerprint.
+
+    Keeps SQL keywords, function names (word followed by "("), punctuation, and
+    the FROM/JOIN table identifiers; normalizes every other identifier and all
+    literals to "?". Two examples that share a skeleton are structural duplicates
+    (same tables + same shape) even if their dims/measures differ. Best-effort:
+    on any failure, falls back to the collapsed lowercased SQL.
+    """
+    import re
+
+    try:
+        s = sql.lower() if isinstance(sql, str) else str(sql).lower()
+        s = re.sub(r"'[^']*'", "?", s)           # string literals
+        s = re.sub(r":\w+", "?", s)              # :params
+        s = re.sub(r"\bas\s+[a-z0-9_`]+", "", s)  # aliases after AS
+
+        # Preserve the set of FROM/JOIN table identifiers (order-independent) so
+        # the same shape over different tables is NOT treated as a duplicate.
+        tables = sorted({
+            m.group(1).replace("`", "")
+            for m in re.finditer(r"\b(?:from|join)\s+([a-z0-9_.`]+)", s)
+        })
+
+        # Tokenize into words / numbers / punctuation and normalize identifiers.
+        out = []
+        i = 0
+        tokens = re.findall(r"[a-z_][a-z0-9_.`]*|\d+(?:\.\d+)?|\(|\)|[^\s]", s)
+        for idx, tok in enumerate(tokens):
+            if re.fullmatch(r"[a-z_][a-z0-9_.`]*", tok):
+                nxt = tokens[idx + 1] if idx + 1 < len(tokens) else ""
+                if tok in _SQL_STRUCTURE_WORDS or nxt == "(":
+                    out.append(tok)          # keyword or function name
+                else:
+                    out.append("?")          # column/dim/measure identifier
+            elif re.fullmatch(r"\d+(?:\.\d+)?", tok):
+                out.append("?")              # numeric literal
+            else:
+                out.append(tok)              # punctuation / parens
+        shape = " ".join(out)
+        shape = re.sub(r"\s+", " ", shape).strip()
+        return "T[" + ",".join(tables) + "]|" + shape
+    except Exception:
+        return re.sub(r"\s+", " ", str(sql)).strip().lower()
+
+
+def _dedup_example_sql(raw: dict) -> tuple[dict, int]:
+    """Drop example_sql entries that share a structural skeleton with an earlier one.
+
+    Keeps the first occurrence of each skeleton (order preserved). Returns the
+    (possibly mutated) dict and the number of duplicates removed.
+    """
+    inst = raw.get("instructions", {})
+    key = "example_sql" if "example_sql" in inst else (
+        "example_question_sqls" if "example_question_sqls" in inst else None
+    )
+    if not key:
+        return raw, 0
+    examples = inst.get(key) or []
+    seen: set[str] = set()
+    kept = []
+    removed = 0
+    for ex in examples:
+        sql_val = ex.get("sql", "")
+        if isinstance(sql_val, list):
+            sql_val = sql_val[0] if sql_val else ""
+        skel = _sql_skeleton(sql_val)
+        if skel and skel in seen:
+            removed += 1
+            q = ex.get("question", "?")
+            if isinstance(q, list):
+                q = q[0] if q else "?"
+            logger.info("Dropped structurally-duplicate example_sql: %s", str(q)[:60])
+            continue
+        seen.add(skel)
+        kept.append(ex)
+    inst[key] = kept
+    raw["instructions"] = inst
+    return raw, removed
+
+
 def _llm_phase(
     llm: ChatDatabricks, system_prompt: str, user_msg: str, label: str,
 ) -> Optional[dict]:
@@ -488,6 +585,10 @@ def run_genie_agent(
         }
 
     progress_queue.put({"stage": "initializing"})
+
+    # Set when Phase 1 instructions exceed Genie's 20-line limit and get trimmed;
+    # surfaced as a quality warning so the truncation isn't silent.
+    instructions_truncated = 0
 
     llm = ChatDatabricks(
         endpoint=model_endpoint, temperature=0.1, max_tokens=16384,
@@ -601,6 +702,7 @@ def run_genie_agent(
             if len(lines) > 20:
                 logger.info("Truncating instructions from %d to 20 lines", len(lines))
                 inst_text = "\n".join(lines[:20])
+                instructions_truncated = len(lines)
             serialized["instructions"] = {"text": inst_text}
             serialized["sample_questions"] = p1.get("sample_questions", [])
             extra_joins = p1.get("join_specs", [])
@@ -670,9 +772,17 @@ def run_genie_agent(
     serialized = _merge_prebuilt_snippets(serialized, context.get("sql_snippets", {}))
     serialized = _merge_prebuilt_join_specs(serialized, context.get("join_specs", []))
     serialized = _merge_prebuilt_data_sources(serialized, context.get("data_sources", {}))
+    serialized, dup_removed = _dedup_example_sql(serialized)
+    if dup_removed:
+        logger.info("Removed %d structurally-duplicate example_sql", dup_removed)
     serialized = _dedup_sample_vs_example(serialized)
     serialized = _backfill_synonyms(serialized)
     warnings = _validate_output(serialized, context)
+    if instructions_truncated:
+        warnings.append(
+            f"Text instructions were truncated from {instructions_truncated} to 20 lines "
+            "(Genie's limit) -- review that the most important guidance survived"
+        )
     if warnings:
         logger.warning("Genie output quality warnings: %s", "; ".join(warnings))
 
@@ -878,6 +988,28 @@ def _validate_output(raw: dict, context: dict | None = None) -> list[str]:
             f"Only {len(joins)} join_specs for {table_count} tables "
             f"(need {table_count - 1} for full connectivity)"
         )
+
+    # Invented-join check: a join endpoint that references a table NOT in
+    # data_sources is an LLM hallucination -- Genie would reject it. Flag so it
+    # can be pruned/reviewed rather than shipped.
+    if joins:
+        known = {t.get("identifier", "").lower() for t in ds.get("tables", []) if t.get("identifier")}
+        if known:  # only meaningful when we actually know the table set
+            def _endpoint(v):
+                if isinstance(v, dict):
+                    return (v.get("identifier") or "").lower()
+                return (v or "").lower() if isinstance(v, str) else ""
+            invented = set()
+            for j in joins:
+                for side in (_endpoint(j.get("left")), _endpoint(j.get("right"))):
+                    if side and side not in known:
+                        invented.add(side)
+            if invented:
+                warnings.append(
+                    "join_specs reference table(s) not in data_sources: "
+                    + ", ".join(sorted(invented))
+                    + " -- likely invented by the model; remove or add the table"
+                )
     return warnings
 
 
