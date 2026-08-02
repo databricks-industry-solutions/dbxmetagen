@@ -113,11 +113,15 @@ def resolve_kpi_target(source_table: str, formula: str, table_identifiers: List[
         return [fq_to_fq[raw]]
     if raw.split(".")[-1] in short_to_fq:
         return [short_to_fq[raw.split(".")[-1]]]
-    # fallback: pick table with most column overlap in the formula
+    # fallback: pick table with most column overlap in the formula. Match on
+    # whole-word tokens (not naive substring) so short/common column names like
+    # "id" or "a" don't score just because those letters appear inside another
+    # identifier or function name.
     formula_lower = (formula or "").lower()
+    formula_tokens = set(re.findall(r"[a-z_][a-z0-9_]*", formula_lower))
     best, best_score = None, 0
     for tbl_fq, cols in col_by_table.items():
-        score = sum(1 for c in cols if c["column_name"].lower() in formula_lower)
+        score = sum(1 for c in cols if c["column_name"].lower() in formula_tokens)
         if score > best_score:
             best, best_score = [tbl_fq], score
     # No confident single table -> hand ALL candidates to validation instead of an

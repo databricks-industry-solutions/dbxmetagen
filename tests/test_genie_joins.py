@@ -591,14 +591,24 @@ class TestRunGenieAgentRefinement:
 # ---------------------------------------------------------------------------
 
 class TestSqlSkeleton:
-    def test_same_shape_diff_dim_measure_is_duplicate(self):
+    def test_different_dim_or_measure_is_DISTINCT(self):
+        # Softened dedup: different dims/measures are genuinely different analytical
+        # questions and must NOT collapse (revenue-by-region vs units-by-product).
         a = "SELECT region, MEASURE(revenue) FROM c.s.mv GROUP BY ALL ORDER BY MEASURE(revenue) DESC"
         b = "SELECT product, MEASURE(units) FROM c.s.mv GROUP BY ALL ORDER BY MEASURE(units) DESC"
+        assert _sql_skeleton(a) != _sql_skeleton(b)
+
+    def test_true_duplicate_collapses(self):
+        # Same tables, same shape, same dims+measures; differ only in a LIMIT
+        # literal value (cosmetic) -> genuine duplicate.
+        a = "SELECT region, MEASURE(revenue) FROM c.s.mv GROUP BY ALL ORDER BY MEASURE(revenue) DESC LIMIT 10"
+        b = "SELECT region, MEASURE(revenue) FROM c.s.mv GROUP BY ALL ORDER BY MEASURE(revenue) DESC LIMIT 25"
         assert _sql_skeleton(a) == _sql_skeleton(b)
 
     def test_alias_and_literal_do_not_matter(self):
+        # Cosmetic-only differences (AS-alias, literal values) still collapse.
         a = "SELECT region, SUM(x) FROM c.s.orders WHERE amount > 100 GROUP BY region"
-        b = "SELECT region, SUM(y) AS total FROM c.s.orders WHERE amount > 999 GROUP BY region"
+        b = "SELECT region, SUM(x) AS total FROM c.s.orders WHERE amount > 999 GROUP BY region"
         assert _sql_skeleton(a) == _sql_skeleton(b)
 
     def test_different_shape_is_distinct(self):
@@ -620,9 +630,11 @@ class TestSqlSkeleton:
 
 class TestDedupExampleSql:
     def test_keeps_first_drops_later_duplicate(self):
-        a = "SELECT region, MEASURE(revenue) FROM c.s.mv GROUP BY ALL ORDER BY MEASURE(revenue) DESC"
-        b = "SELECT product, MEASURE(units) FROM c.s.mv GROUP BY ALL ORDER BY MEASURE(units) DESC"
-        c = "SELECT region, MEASURE(a), MEASURE(b) FROM c.s.mv GROUP BY ALL"
+        # a and b are TRUE duplicates (same dims+measures, only the LIMIT value
+        # differs); c is a distinct question (different dims/measures) and survives.
+        a = "SELECT region, MEASURE(revenue) FROM c.s.mv GROUP BY ALL ORDER BY MEASURE(revenue) DESC LIMIT 10"
+        b = "SELECT region, MEASURE(revenue) FROM c.s.mv GROUP BY ALL ORDER BY MEASURE(revenue) DESC LIMIT 25"
+        c = "SELECT product, MEASURE(units) FROM c.s.mv GROUP BY ALL ORDER BY MEASURE(units) DESC"
         raw = {"instructions": {"example_sql": [
             {"question": "q1", "sql": a},
             {"question": "q2", "sql": b},
@@ -704,13 +716,15 @@ class TestGenieAgentFreshGeneration:
         assert "instructions" in result
 
     def test_table_fresh_generation_dedups_examples(self):
-        dup = "SELECT region, SUM(x) FROM c.s.orders GROUP BY region"
+        # True duplicates: same tables/shape/dims/measures, differ only in a
+        # literal + AS-alias (both cosmetic). Softened dedup still drops one.
+        dup = "SELECT region, SUM(x) FROM c.s.orders WHERE amount > 100 GROUP BY region"
         payload = {
             "description": "d", "instructions": {"text": "t"},
             "sample_questions": ["Q"], "join_specs": [],
             "example_sql": [
                 {"question": "q1", "sql": dup},
-                {"question": "q2", "sql": "SELECT region, SUM(y) AS t FROM c.s.orders GROUP BY region"},
+                {"question": "q2", "sql": "SELECT region, SUM(x) AS t FROM c.s.orders WHERE amount > 5 GROUP BY region"},
             ],
             "sql_snippets": {"measures": [], "filters": [], "expressions": []},
         }

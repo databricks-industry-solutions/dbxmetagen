@@ -296,7 +296,15 @@ class FKPredictor:
         qmin = self.config.skip_ai_query_min_observations
         return df.withColumn(
             "skip_ai",
-            (F.col("source_rank") == F.lit(SR_DECLARED))
+            # Declared catalog FKs are ground truth; skip AI only when the
+            # skip_ai_for_declared_fk flag allows it (set false to still run
+            # declared FKs through AI validation). Column-property FKs (from OWL
+            # bundles) are declared-ish and always skip. Query-history FKs skip
+            # once they clear the observation threshold.
+            (
+                (F.col("source_rank") == F.lit(SR_DECLARED))
+                & F.lit(self.config.skip_ai_for_declared_fk)
+            )
             | (F.col("source_rank") == F.lit(SR_COL_PROP))
             | (
                 (F.col("source_rank") == F.lit(SR_QUERY))

@@ -400,64 +400,30 @@ def _validate_and_strip_sql(
     return raw
 
 
-# SQL structure tokens kept verbatim in a skeleton. Everything that is NOT one
-# of these (and not a function name, which is detected by a trailing "(") is a
-# column/dimension/measure identifier and gets normalized to "?" -- so two
-# examples that differ only in which dim/measure they use collapse to the same
-# skeleton. This is the anti-pattern the prompts forbid (e.g. an MV space whose
-# examples are all "SELECT <dim>, MEASURE(<m>) FROM mv GROUP BY ALL ORDER BY
-# MEASURE(<m>) DESC"); this is the deterministic backstop.
-_SQL_STRUCTURE_WORDS = frozenset({
-    "select", "from", "join", "left", "right", "inner", "outer", "full", "cross",
-    "on", "where", "group", "order", "by", "having", "limit", "as", "and", "or",
-    "not", "in", "is", "null", "asc", "desc", "distinct", "all", "case", "when",
-    "then", "else", "end", "over", "partition", "union", "with", "using", "measure",
-    "between", "like", "exists",
-})
-
-
 def _sql_skeleton(sql: str) -> str:
-    """Reduce a SQL string to a normalized structural fingerprint.
+    """Reduce a SQL string to a normalized fingerprint for TRUE-duplicate detection.
 
-    Keeps SQL keywords, function names (word followed by "("), punctuation, and
-    the FROM/JOIN table identifiers; normalizes every other identifier and all
-    literals to "?". Two examples that share a skeleton are structural duplicates
-    (same tables + same shape) even if their dims/measures differ. Best-effort:
-    on any failure, falls back to the collapsed lowercased SQL.
+    Keeps the tables, SQL structure, AND the dimension/measure identifiers, so two
+    examples fingerprint the same ONLY when they query the same tables with the
+    same shape AND the same dimensions/measures -- i.e. genuine duplicates. It
+    deliberately does NOT collapse different dims/measures together: "revenue by
+    region" and "units by product" are distinct, useful questions and must both
+    survive. Only cosmetic differences are normalized away: string literals,
+    :params, numeric literals (e.g. LIMIT 10 vs LIMIT 20), AS-aliases, and
+    whitespace. Best-effort: on any failure, falls back to the collapsed
+    lowercased SQL so nothing is wrongly merged.
     """
     import re
 
     try:
         s = sql.lower() if isinstance(sql, str) else str(sql).lower()
-        s = re.sub(r"'[^']*'", "?", s)           # string literals
-        s = re.sub(r":\w+", "?", s)              # :params
-        s = re.sub(r"\bas\s+[a-z0-9_`]+", "", s)  # aliases after AS
-
-        # Preserve the set of FROM/JOIN table identifiers (order-independent) so
-        # the same shape over different tables is NOT treated as a duplicate.
-        tables = sorted({
-            m.group(1).replace("`", "")
-            for m in re.finditer(r"\b(?:from|join)\s+([a-z0-9_.`]+)", s)
-        })
-
-        # Tokenize into words / numbers / punctuation and normalize identifiers.
-        out = []
-        i = 0
-        tokens = re.findall(r"[a-z_][a-z0-9_.`]*|\d+(?:\.\d+)?|\(|\)|[^\s]", s)
-        for idx, tok in enumerate(tokens):
-            if re.fullmatch(r"[a-z_][a-z0-9_.`]*", tok):
-                nxt = tokens[idx + 1] if idx + 1 < len(tokens) else ""
-                if tok in _SQL_STRUCTURE_WORDS or nxt == "(":
-                    out.append(tok)          # keyword or function name
-                else:
-                    out.append("?")          # column/dim/measure identifier
-            elif re.fullmatch(r"\d+(?:\.\d+)?", tok):
-                out.append("?")              # numeric literal
-            else:
-                out.append(tok)              # punctuation / parens
-        shape = " ".join(out)
-        shape = re.sub(r"\s+", " ", shape).strip()
-        return "T[" + ",".join(tables) + "]|" + shape
+        s = re.sub(r"'[^']*'", "?", s)            # string literals
+        s = re.sub(r":\w+", "?", s)               # :params
+        s = re.sub(r"\bas\s+[a-z0-9_`]+", "", s)   # aliases after AS
+        s = re.sub(r"\b\d+(?:\.\d+)?\b", "?", s)   # numeric literals (LIMIT, thresholds)
+        s = s.replace("`", "")
+        s = re.sub(r"\s+", " ", s).strip()
+        return s
     except Exception:
         return re.sub(r"\s+", " ", str(sql)).strip().lower()
 

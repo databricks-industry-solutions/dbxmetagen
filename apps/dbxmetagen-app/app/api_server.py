@@ -10701,24 +10701,42 @@ def _run_mv_test_queries_bg(task_id: str, queries: list):
             entry["health"] = {"status": "fail", "notes": ["Query failed — see error."]}
         return entry
 
+    def _timed_out_entry(q: dict) -> dict:
+        return {
+            "label": q["label"], "kind": q["kind"], "sql": q["sql"],
+            "error": "Query did not complete within the time budget.", "row_count": 0,
+            "sample_result": [], "health": {"status": "fail", "notes": ["Query did not complete."]},
+        }
+
+    pool = ThreadPoolExecutor(max_workers=min(_MV_TEST_WORKERS, max(1, len(queries))))
     try:
-        with ThreadPoolExecutor(max_workers=min(_MV_TEST_WORKERS, max(1, len(queries)))) as pool:
-            futures = {pool.submit(_one, q): i for i, q in enumerate(queries)}
-            for f in as_completed(futures):
+        futures = {pool.submit(_one, q): i for i, q in enumerate(queries)}
+        try:
+            # Bound the ENTIRE wait on the wall-clock deadline. as_completed raises
+            # TimeoutError once the budget elapses, even if a drill's own SQL
+            # timeout is being ignored (e.g. a slow federated pull).
+            for f in as_completed(futures, timeout=max(1, deadline - time.time())):
                 idx = futures[f]
-                remaining = deadline - time.time()
                 try:
-                    results[idx] = f.result(timeout=max(1, remaining))
+                    results[idx] = f.result()
                 except Exception as e:
-                    q = queries[idx]
-                    results[idx] = {
-                        "label": q["label"], "kind": q["kind"], "sql": q["sql"],
-                        "error": f"Timed out or failed: {e}", "row_count": 0,
-                        "sample_result": [], "health": {"status": "fail", "notes": ["Query did not complete."]},
-                    }
+                    results[idx] = {**_timed_out_entry(queries[idx]), "error": f"Query failed: {e}"}
                 task["done"] = sum(1 for r in results if r is not None)
+        except TimeoutError:
+            # Deadline hit: fill any unfinished drills as timed-out and stop waiting.
+            for i, r in enumerate(results):
+                if r is None:
+                    results[i] = _timed_out_entry(queries[i])
+            task["done"] = len(results)
+            logger.warning(
+                "MV test-query task %s hit the %ds wall-clock; %d drill(s) marked timed-out",
+                task_id, _MV_TEST_WALL_TIMEOUT, sum(1 for q in queries) - sum(1 for r in results if r and not r.get("error")),
+            )
     except Exception as e:
         logger.warning("MV test-query worker error for task %s: %s", task_id, e)
+    finally:
+        # Do NOT block on runaway query threads -- return promptly, let them drain.
+        pool.shutdown(wait=False, cancel_futures=True)
 
     final = [r for r in results if r is not None]
     passed = sum(1 for r in final if not r["error"])
@@ -12998,7 +13016,6 @@ def revalidate_kpis(profile_id: str = None):
             except Exception:
                 pass
     return {"revalidated": revalidated, "healed": healed}
-    return rows
 
 
 @app.post("/api/kpis")

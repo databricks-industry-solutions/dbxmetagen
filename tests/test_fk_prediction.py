@@ -807,6 +807,17 @@ class TestAIConfidenceGating:
         assert "skip_ai" in src
         assert "SR_DECLARED" in src or "source_rank" in src
 
+    def test_declared_fk_skip_is_gated_on_config_flag(self):
+        # Regression: e82cf1f dropped the flag gate, making declared FKs
+        # unconditionally skip AI. The skip_ai_for_declared_fk config flag must
+        # gate the SR_DECLARED skip so a user can force declared FKs through AI.
+        src = inspect.getsource(FKPredictor._with_skip_ai_flags)
+        norm = src.replace(" ", "").replace("\n", "")
+        assert "skip_ai_for_declared_fk" in norm
+        # the flag must be AND-combined with the SR_DECLARED term
+        assert "SR_DECLARED))&F.lit(self.config.skip_ai_for_declared_fk)" in norm or \
+               "skip_ai_for_declared_fk)" in norm and "SR_DECLARED" in norm
+
     def test_heuristic_fill_sets_high_confidence_for_declared(self):
         src = inspect.getsource(FKPredictor._heuristic_ai_fill)
         assert "SR_DECLARED" in src

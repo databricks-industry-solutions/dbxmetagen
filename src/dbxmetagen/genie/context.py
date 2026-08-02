@@ -973,6 +973,20 @@ class GenieContextAssembler:
         for fk in fk_rows:
             src_short = fk["src_table"].split(".")[-1]
             dst_short = fk["dst_table"].split(".")[-1]
+            # Self-referential FK (e.g. employee.manager_id -> employee.id): both
+            # sides resolve to the same short-name alias, so any predicate we build
+            # (composite or simple) is ambiguous -- "employee.a = employee.x" gives
+            # Genie no way to distinguish the two ends. This join_spec pipeline
+            # aliases both sides by the short table name (see schema.py JoinSide),
+            # so a self-join can't be represented without distinct aliases. Skip it
+            # rather than emit a broken predicate; the self-FK is still preserved in
+            # fk_predictions for review.
+            if src_short == dst_short:
+                logger.debug(
+                    "Skipping self-referential FK join_spec for %s (needs distinct aliases)",
+                    fk.get("src_table"),
+                )
+                continue
             # Composite key: the stored join_condition is authored as
             # "source.a = <dst_short>.x AND source.b = <dst_short>.y" (the ERD uses
             # the dst table's short name as the alias). Only the generic "source."

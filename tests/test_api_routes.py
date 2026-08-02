@@ -1022,6 +1022,29 @@ class TestMvTestWorkerAndPayload:
         assert task["summary"]["failed"] == 1
         assert task["results"][0]["error"]
 
+    def test_wall_clock_bounds_runaway_query(self, monkeypatch):
+        # A drill whose SQL ignores its own timeout must NOT keep the task alive
+        # past the wall-clock: the worker fills it as timed-out and returns.
+        import time as _time
+        tasks = {}
+        monkeypatch.setattr(api_server, "_mv_test_tasks", tasks)
+        monkeypatch.setattr(api_server, "_mv_test_result_cache", {})
+        monkeypatch.setattr(api_server, "_MV_TEST_WALL_TIMEOUT", 2)
+
+        def _slow(sql, timeout=45):
+            _time.sleep(30)   # ignores its own timeout (simulates a runaway pull)
+            return [{"x": 1}]
+        monkeypatch.setattr(api_server, "execute_sql", _slow)
+        tasks["tw"] = {"status": "running", "total": 1, "done": 0, "results": [],
+                       "definition_id": "d", "cache_key": None}
+        t0 = _time.time()
+        api_server._run_mv_test_queries_bg("tw", [{"kind": "ungrouped", "label": "g", "sql": "SELECT 1"}])
+        elapsed = _time.time() - t0
+        assert elapsed < 10          # ~2s wall-clock, not ~30s
+        assert tasks["tw"]["status"] == "done"
+        assert tasks["tw"]["overall"] == "fail"
+        assert tasks["tw"]["summary"]["failed"] == 1
+
     def test_payload_shape(self):
         task = {"definition_id": "d", "metric_view": "`c`.`s`.`mv`", "federated": True,
                 "federation_note": "note", "allow_federated_full": False, "status": "done",
