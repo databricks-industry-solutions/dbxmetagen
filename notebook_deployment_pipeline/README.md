@@ -89,7 +89,7 @@ with a new timestamp, so the app platform always picks up the latest code.
 This pipeline is a simplified alternative. The following features from the
 full DABs deployment are **not replicated**:
 
-### Only 8 of 16+ jobs created
+### Only 8 of 29 jobs created
 
 The notebooks create the 8 most essential jobs (6 classic + 2 serverless).
 The remaining jobs are not created:
@@ -103,7 +103,7 @@ The remaining jobs are not created:
 | `sync_graph_lakebase_job` | Graph-to-Lakebase sync |
 | `metagen_with_kb_job` | KB-enriched single-mode generation |
 | `metadata_kb_build_job` | Metadata + KB build combo |
-| `parallel_kb_build_job` | Parallel modes + KB build combo |
+| `metadata_parallel_kb_build_job` | Parallel modes + KB build combo |
 | `kb_enriched_modes_job` | KB-enriched parallel modes |
 
 The app will start and work for core features (metadata generation,
@@ -169,7 +169,7 @@ w.apps.update(name="dbxmetagen-app", app=App(
 
 ## Jobs Created
 
-The notebooks create 8 essential jobs (out of 16+ available via bundle):
+The notebooks create 8 essential jobs (out of 29 available via bundle):
 
 | Job | Purpose |
 |-----|---------|
