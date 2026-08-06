@@ -408,6 +408,53 @@ class TestFkVsJoinKey:
         assert body.kind is None
         assert api_server._normalize_fk_kind(body.kind) == "join_key"
 
+    def _fk_body(self, **kw):
+        base = dict(src_column="patient_key", dst_column="pat_id",
+                    src_table="cat.sch.fct", dst_table="cat.sch.dim")
+        base.update(kw)
+        return api_server.FKAddBody(**base)
+
+    def test_validate_fk_columns_accepts_bare_columns(self):
+        # Valid bare columns must NOT raise.
+        api_server._validate_fk_columns(self._fk_body())
+
+    def test_validate_fk_columns_rejects_catalog_as_column(self):
+        # The exact corruption: dst_column = the catalog name.
+        import pytest
+        with pytest.raises(api_server.HTTPException) as e:
+            api_server._validate_fk_columns(self._fk_body(dst_column="cat"))
+        assert e.value.status_code == 400
+
+    def test_validate_fk_columns_rejects_schema_as_column(self):
+        import pytest
+        with pytest.raises(api_server.HTTPException):
+            api_server._validate_fk_columns(self._fk_body(src_column="sch"))
+
+    def test_validate_fk_columns_rejects_qualified_column(self):
+        import pytest
+        with pytest.raises(api_server.HTTPException):
+            api_server._validate_fk_columns(self._fk_body(dst_column="dim.pat_id"))
+
+    def test_validate_fk_columns_rejects_empty(self):
+        import pytest
+        with pytest.raises(api_server.HTTPException):
+            api_server._validate_fk_columns(self._fk_body(src_column="  "))
+
+    def test_add_fk_prediction_uses_merge_not_insert(self):
+        # The write must be idempotent (MERGE), not an appending INSERT that
+        # duplicates a pair on every re-save. The endpoint is decorator-mocked so
+        # inspect.getsource won't work; read the module source text instead.
+        import os as _os
+        path = _os.path.join(APP_DIR, "api_server.py")
+        with open(path) as f:
+            src = f.read()
+        # Scope to the fk-add function body.
+        start = src.index("def add_fk_prediction(")
+        body = src[start:start + 4000]
+        assert "MERGE INTO" in body
+        assert "WHEN MATCHED THEN UPDATE" in body
+        assert "_validate_fk_columns(body)" in body
+
     def test_fetch_fk_rows_excludes_join_keys(self):
         import inspect as _inspect
         src = _inspect.getsource(api_server._fetch_fk_rows)

@@ -3154,6 +3154,35 @@ def review_fk_prediction(body: FKReviewBody):
         raise HTTPException(500, str(e)) from e
 
 
+def _validate_fk_columns(body: "FKAddBody") -> None:
+    """Reject implausible src/dst columns before writing to fk_predictions.
+
+    Guards against the ERD-designer parsing bug that sent a catalog/schema name
+    (e.g. "eswanson_demo") as a column. A valid join column here is a single bare
+    identifier (the frontend sends bare column names + fully-qualified tables), so
+    reject: empty, dotted (a qualified name leaked in), or a value equal to any
+    catalog/schema segment of either table. Raises HTTPException(400) on bad input.
+    """
+    def _segments(tbl: str) -> set:
+        # catalog + schema (everything but the final table segment), lowercased.
+        parts = [p for p in (tbl or "").split(".") if p]
+        return {p.lower() for p in parts[:-1]} if len(parts) > 1 else set()
+
+    bad_segments = _segments(body.src_table) | _segments(body.dst_table)
+    for label, col in (("src_column", body.src_column), ("dst_column", body.dst_column)):
+        c = (col or "").strip()
+        if not c:
+            raise HTTPException(400, detail=f"{label} is empty")
+        if "." in c:
+            raise HTTPException(
+                400, detail=f"{label} must be a bare column name, got qualified '{c}'")
+        if c.lower() in bad_segments:
+            raise HTTPException(
+                400,
+                detail=f"{label}='{c}' matches a catalog/schema name, not a column "
+                "(likely a join-parse error); refusing to store.")
+
+
 class FKAddBody(BaseModel):
     src_column: str
     dst_column: str
@@ -3180,6 +3209,13 @@ def add_fk_prediction(body: FKAddBody):
     rows never do."""
     _ensure_fk_relationship_columns()
     kind = _normalize_fk_kind(body.kind)
+    # --- Validate the columns BEFORE writing. A prior ERD-designer parsing bug
+    # (fixed in _parseOn) sent the CATALOG name as dst_column (e.g. "eswanson_demo"),
+    # and fk-add blindly INSERTed it at confidence=1.0/is_fk=TRUE -> hundreds of
+    # corrupt/duplicated rows that then render as bogus "col = <catalog>" joins.
+    # Reject anything that isn't a plausible bare column so a bad caller can't
+    # re-corrupt the table. _validate_fk_columns raises HTTPException(400) on bad input.
+    _validate_fk_columns(body)
     is_composite = bool(body.join_condition and body.join_condition.strip())
     join_condition = _safe_sql_str(body.join_condition) if is_composite else "NULL"
     preds_tbl = fq("fk_predictions")
@@ -3188,14 +3224,29 @@ def add_fk_prediction(body: FKAddBody):
     src_tbl = _esc_sql(body.src_table)
     dst_tbl = _esc_sql(body.dst_table)
     reasoning = _safe_sql_str(body.reasoning or "Manually added by user")
+    # MERGE (not INSERT) keyed on the full pair identity so re-saving the same
+    # join UPDATES in place instead of appending a duplicate (the old INSERT grew
+    # ~15 copies per pair across repeated ERD saves). created_at is preserved on
+    # match; only the mutable fields + updated_at change.
     sql = f"""
-        INSERT INTO {preds_tbl}
-        (src_column, dst_column, src_table, dst_table, final_confidence,
-         ai_confidence, ai_reasoning, is_fk, relationship_kind, is_composite,
-         join_condition, review_updated_at, created_at, updated_at)
-        VALUES ('{src_col}', '{dst_col}', '{src_tbl}', '{dst_tbl}', 1.0,
-                1.0, {reasoning}, TRUE, '{kind}', {str(is_composite).upper()},
-                {join_condition}, current_timestamp(), current_timestamp(), current_timestamp())
+        MERGE INTO {preds_tbl} AS t
+        USING (SELECT '{src_col}' AS src_column, '{dst_col}' AS dst_column,
+                      '{src_tbl}' AS src_table, '{dst_tbl}' AS dst_table) AS s
+        ON t.src_column = s.src_column AND t.dst_column = s.dst_column
+           AND t.src_table = s.src_table AND t.dst_table = s.dst_table
+        WHEN MATCHED THEN UPDATE SET
+            t.final_confidence = 1.0, t.ai_confidence = 1.0,
+            t.ai_reasoning = {reasoning}, t.is_fk = TRUE,
+            t.relationship_kind = '{kind}', t.is_composite = {str(is_composite).upper()},
+            t.join_condition = {join_condition},
+            t.review_updated_at = current_timestamp(), t.updated_at = current_timestamp()
+        WHEN NOT MATCHED THEN INSERT
+            (src_column, dst_column, src_table, dst_table, final_confidence,
+             ai_confidence, ai_reasoning, is_fk, relationship_kind, is_composite,
+             join_condition, review_updated_at, created_at, updated_at)
+            VALUES ('{src_col}', '{dst_col}', '{src_tbl}', '{dst_tbl}', 1.0,
+                    1.0, {reasoning}, TRUE, '{kind}', {str(is_composite).upper()},
+                    {join_condition}, current_timestamp(), current_timestamp(), current_timestamp())
     """
     try:
         execute_sql(sql, timeout=45)
