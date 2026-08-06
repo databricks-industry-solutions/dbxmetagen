@@ -93,14 +93,21 @@ def seed_customer_context(config):
     yaml_dir = getattr(config, "customer_context_yaml_dir", "") or ""
     if not yaml_dir:
         return
-    from pyspark.sql import SparkSession
-    from dbxmetagen.customer_context import seed_customer_context_table
+    # Optional enrichment: a bad YAML dir or a transient seed failure must NOT abort
+    # core metadata generation (same non-fatal treatment as grant_permissions_*).
+    try:
+        from pyspark.sql import SparkSession
+        from dbxmetagen.customer_context import seed_customer_context_table
 
-    spark = SparkSession.builder.getOrCreate()
-    n = seed_customer_context_table(
-        spark, config.catalog_name, config.schema_name, yaml_dir
-    )
-    print(f"Seeded {n} customer context entries from {yaml_dir}")
+        spark = SparkSession.builder.getOrCreate()
+        n = seed_customer_context_table(
+            spark, config.catalog_name, config.schema_name, yaml_dir
+        )
+        print(f"Seeded {n} customer context entries from {yaml_dir}")
+    except Exception as e:
+        _logger.warning("Customer-context seeding failed (non-fatal): %s", e)
+        print(f"WARNING: customer-context seeding from {yaml_dir} failed ({e}); "
+              "continuing without it.")
 
 
 def initialize_infrastructure(config):

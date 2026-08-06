@@ -62,10 +62,20 @@ for t in tables:
 import os
 
 USE_CUSTOMER_CONTEXT = False  # set True after filling in customer_context.yaml
-# The YAML lives next to this notebook; resolve the folder for the seeder.
-CONTEXT_DIR = os.path.dirname(
-    os.path.abspath("customer_context.yaml")
-) if USE_CUSTOMER_CONTEXT else ""
+
+# The YAML lives next to this notebook. A notebook's CWD is NOT its workspace
+# folder (it's usually /databricks/driver), so os.path.abspath("...") would point
+# at the wrong dir and silently seed nothing. Derive the notebook's own folder
+# from the Databricks notebook context instead. Set CONTEXT_DIR manually if you
+# keep the YAML elsewhere (e.g. a /Volumes path or repo checkout).
+def _notebook_dir():
+    ctx = dbutils.notebook.entry_point.getDbutils().notebook().getContext()
+    nb_path = ctx.notebookPath().get()          # e.g. /Workspace/Users/me/examples/01_...
+    return "/Workspace" + os.path.dirname(nb_path)
+
+CONTEXT_DIR = _notebook_dir() if USE_CUSTOMER_CONTEXT else ""
+if USE_CUSTOMER_CONTEXT:
+    print(f"Customer-context YAML dir: {CONTEXT_DIR}")
 
 # COMMAND ----------
 
