@@ -4,7 +4,7 @@ import logging
 import os
 import tempfile
 import unittest
-from unittest.mock import MagicMock
+from unittest.mock import MagicMock, patch
 
 import yaml
 
@@ -274,6 +274,79 @@ class TestPromptEnrichment(unittest.TestCase):
         if ctx:
             p.prompt_content["customer_context"] = ctx
         self.assertNotIn("customer_context", p.prompt_content)
+
+
+class TestExampleCustomerContextYaml(unittest.TestCase):
+    """The pip-install example YAML must parse and use valid scope types."""
+
+    def test_examples_yaml_parses(self):
+        example = os.path.join(
+            os.path.dirname(__file__), "..", "examples", "customer_context.yaml"
+        )
+        if not os.path.exists(example):
+            self.skipTest("examples/customer_context.yaml not found")
+        with open(example) as f:
+            data = yaml.safe_load(f)
+        self.assertIn("contexts", data)
+        # Shipped file is fully commented -> contexts is None (a valid "no entries"
+        # state the seeder tolerates). If a user uncomments, types must be valid.
+        valid_types = {"catalog", "schema", "table", "pattern"}
+        for entry in (data.get("contexts") or []):
+            self.assertIn(entry["scope_type"], valid_types)
+
+
+class TestSeedCustomerContextGating(unittest.TestCase):
+    """main.seed_customer_context only seeds when BOTH the flag and dir are set."""
+
+    def _import(self):
+        try:
+            from dbxmetagen.main import seed_customer_context
+        except Exception as e:  # heavy deps unavailable under some harnesses
+            self.skipTest(f"dbxmetagen.main not importable: {e}")
+        return seed_customer_context
+
+    def _config(self, **attrs):
+        cfg = MagicMock()
+        # MagicMock returns truthy mocks for any attr; set explicit values so
+        # getattr(config, ..., default) reflects the test's intent.
+        cfg.use_customer_context = attrs.get("use_customer_context", False)
+        cfg.customer_context_yaml_dir = attrs.get("customer_context_yaml_dir", "")
+        cfg.catalog_name = "cat"
+        cfg.schema_name = "sch"
+        return cfg
+
+    def test_noop_when_flag_off(self):
+        seed = self._import()
+        with patch(
+            "dbxmetagen.customer_context.seed_customer_context_table"
+        ) as m:
+            seed(self._config(use_customer_context=False,
+                              customer_context_yaml_dir="/tmp/x"))
+            m.assert_not_called()
+
+    def test_noop_when_dir_missing(self):
+        seed = self._import()
+        with patch(
+            "dbxmetagen.customer_context.seed_customer_context_table"
+        ) as m:
+            seed(self._config(use_customer_context=True,
+                              customer_context_yaml_dir=""))
+            m.assert_not_called()
+
+    def test_seeds_when_both_set(self):
+        seed = self._import()
+        with patch(
+            "dbxmetagen.customer_context.seed_customer_context_table",
+            return_value=3,
+        ) as m:
+            seed(self._config(use_customer_context=True,
+                              customer_context_yaml_dir="/tmp/ctx"))
+            m.assert_called_once()
+            # positional: (spark, catalog, schema, yaml_dir)
+            args = m.call_args[0]
+            self.assertEqual(args[1], "cat")
+            self.assertEqual(args[2], "sch")
+            self.assertEqual(args[3], "/tmp/ctx")
 
 
 if __name__ == "__main__":

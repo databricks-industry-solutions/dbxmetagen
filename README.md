@@ -174,6 +174,42 @@ main({
 
 Use `"my_catalog.my_schema.*"` to process all tables in a schema.
 
+#### Customer context (optional)
+
+Inject your own business meaning into every prompt — glossary terms, column
+semantics, "what this schema really is" — so generated comments and classifications
+reflect domain knowledge, not just the data shape. Write a YAML file with a
+top-level `contexts:` list (see `examples/customer_context.yaml`):
+
+```yaml
+# ./contexts/my_context.yaml
+contexts:
+  - scope: my_catalog.my_schema        # catalog | schema | table | pattern (glob)
+    scope_type: schema
+    context_text: >-
+      Investment-ops warehouse. "Position" = a portfolio holding, not a job role.
+      Amounts are USD unless a currency column says otherwise.
+```
+
+Then point `main()` at the folder — it seeds the `customer_context` table (a MERGE,
+so re-runs are idempotent) before generating. **Both keys are required:**
+
+```python
+main({
+    "catalog_name": "my_catalog",
+    "table_names": "my_catalog.my_schema.*",
+    "mode": "comment",
+    "schema_name": "metadata_results",
+    "table_names_source": "parameter",
+    "use_customer_context": "true",
+    "customer_context_yaml_dir": "./contexts",   # folder of *.yaml files
+})
+```
+
+More specific scopes win (table > pattern > schema > catalog); matches are
+concatenated in that order. This is the same `customer_context` table the app UI
+manages, so context seeded here also shows up there.
+
 ### 3. Run analytics (optional)
 
 After metadata generation, build the knowledge base and graph:
