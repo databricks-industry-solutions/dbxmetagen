@@ -33,7 +33,12 @@ include:
   - resources/jobs/*.yml
   - resources/apps/*.yml
   #- resources/dashboards.yml
-  # Uncomment to include test jobs (kept outside jobs/ glob):
+  # Test / eval / fixture-builder jobs live in resources/tests/ and are
+  # DELIBERATELY excluded from the default deploy so they never ship in a
+  # customer's bundle. This includes the eval harness (eval_e2e / eval_setup /
+  # eval_compare) and the synthetic-data builders (build_uat_scenarios,
+  # build_challenging_ls). To run any of them (e.g. `bundle run eval_e2e_job`),
+  # uncomment the include below in your LOCAL checkout only -- do not commit it.
   #- resources/tests/*.yml
   - variables.yml
   - variables.advanced.yml

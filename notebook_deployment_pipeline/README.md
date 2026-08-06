@@ -89,7 +89,7 @@ with a new timestamp, so the app platform always picks up the latest code.
 This pipeline is a simplified alternative. The following features from the
 full DABs deployment are **not replicated**:
 
-### Only 8 of 29 jobs created
+### Only 8 of 24 jobs created
 
 The notebooks create the 8 most essential jobs (6 classic + 2 serverless).
 The remaining jobs are not created:
@@ -169,7 +169,7 @@ w.apps.update(name="dbxmetagen-app", app=App(
 
 ## Jobs Created
 
-The notebooks create 8 essential jobs (out of 29 available via bundle):
+The notebooks create 8 essential jobs (out of 24 available via bundle):
 
 | Job | Purpose |
 |-----|---------|

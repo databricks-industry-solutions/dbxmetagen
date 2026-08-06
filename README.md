@@ -80,9 +80,9 @@ from any tool: notebooks, dashboards, Genie spaces, agents, or your own applicat
 
    | Path | Use when | Creates | Notes |
    |------|----------|---------|-------|
-   | **A. CLI bundle deploy** | You can run the Databricks CLI locally / in CI | **All 29 jobs** + app | Recommended. Grants automated via a script. |
-   | **B. Workspace-UI bundle deploy** | No local machine, but you have the workspace UI | **All 29 jobs** + app | First-class peer to the CLI (same bundle + build hook). Grants are manual. |
-   | **C. Notebook pipeline** | You can run **neither** the CLI nor the UI Deploy button | **8 of 29 jobs** (core only) | True fallback — see [`notebook_deployment_pipeline/README.md`](notebook_deployment_pipeline/README.md). Some dashboard features unavailable. |
+   | **A. CLI bundle deploy** | You can run the Databricks CLI locally / in CI | **All 24 jobs** + app | Recommended. Grants automated via a script. |
+   | **B. Workspace-UI bundle deploy** | No local machine, but you have the workspace UI | **All 24 jobs** + app | First-class peer to the CLI (same bundle + build hook). Grants are manual. |
+   | **C. Notebook pipeline** | You can run **neither** the CLI nor the UI Deploy button | **8 of 24 jobs** (core only) | True fallback — see [`notebook_deployment_pipeline/README.md`](notebook_deployment_pipeline/README.md). Some dashboard features unavailable. |
 
    Paths **A** and **B** run the same bundle, build the wheel via the
    `artifacts.build` hook, and register jobs + the app — they are equivalent.
