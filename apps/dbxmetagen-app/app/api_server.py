@@ -8106,13 +8106,23 @@ def _load_saved_erd(project_id: Optional[str]) -> Optional[dict]:
         return None
 
 
-def _erd_edge_key(src: Optional[str], dst: Optional[str]) -> tuple[str, str]:
-    """Case-insensitive, order-preserving key for an ERD edge (directional).
+def _erd_edge_key(
+    src: Optional[str], dst: Optional[str], on: Optional[str] = None
+) -> tuple[str, str, str]:
+    """Case-insensitive, order-preserving identity for an ERD edge.
 
-    src->dst and dst->src are kept distinct on purpose: the recommender emits
-    directional joins (fact->dim), so a saved edge must match the same direction.
+    Includes the join condition (`on`), because the recommender dedupes edges by
+    (src, dst, src_col, dst_col) -- a single table PAIR can carry MULTIPLE edges
+    on different column pairs (common between two fact tables). Keying on the
+    table pair alone would let deleting ONE of those edges fail to stick: the
+    other surviving edge's (src,dst) would keep re-admitting the deleted one on
+    reload. `on` encodes the columns, so it distinguishes them. Whitespace is
+    normalized so cosmetic formatting differences don't break the match.
+
+    src->dst and dst->src stay distinct: the recommender emits directional joins.
     """
-    return ((src or "").lower(), (dst or "").lower())
+    on_norm = " ".join((on or "").split()).lower()
+    return ((src or "").lower(), (dst or "").lower(), on_norm)
 
 
 def _overlay_saved_erd(rec: dict, saved: Optional[dict]) -> dict:
@@ -8156,13 +8166,13 @@ def _overlay_saved_erd(rec: dict, saved: Optional[dict]) -> dict:
     saved_edges = saved.get("edges")
     if saved_edges is not None:
         kept = {
-            _erd_edge_key(e.get("src"), e.get("dst"))
+            _erd_edge_key(e.get("src"), e.get("dst"), e.get("on"))
             for e in saved_edges
             if e.get("src") and e.get("dst")
         }
         rec["edges"] = [
             e for e in (rec.get("edges") or [])
-            if _erd_edge_key(e.get("src"), e.get("dst")) in kept
+            if _erd_edge_key(e.get("src"), e.get("dst"), e.get("on")) in kept
         ]
     return rec
 

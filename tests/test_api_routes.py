@@ -1073,8 +1073,8 @@ class TestOverlaySavedErdEdges:
             "nodes": [{"table": "c.s.fct", "role": "fact"},
                       {"table": "c.s.dim", "role": "dimension"}],
             "edges": [
-                {"src": "c.s.fct", "dst": "c.s.dim", "on": "fk=id", "source": "recommended"},
-                {"src": "c.s.fct", "dst": "c.s.dim2", "on": "fk2=id", "source": "recommended"},
+                {"src": "c.s.fct", "dst": "c.s.dim", "on": "src.fk = dim.id", "source": "recommended"},
+                {"src": "c.s.fct", "dst": "c.s.dim2", "on": "src.fk2 = dim2.id", "source": "recommended"},
             ],
         }
 
@@ -1090,10 +1090,33 @@ class TestOverlaySavedErdEdges:
 
     def test_saved_edge_subset_drops_deleted_edge(self):
         # User kept only the first edge -> the second must not be re-derived back in.
-        saved = {"nodes": [], "edges": [{"src": "c.s.fct", "dst": "c.s.dim"}]}
+        saved = {"nodes": [], "edges": [{"src": "c.s.fct", "dst": "c.s.dim", "on": "src.fk = dim.id"}]}
         out = api_server._overlay_saved_erd(self._rec(), saved)
         keys = {(e["src"], e["dst"]) for e in out["edges"]}
         assert keys == {("c.s.fct", "c.s.dim")}
+
+    def test_multiple_edges_same_pair_delete_one(self):
+        # Two edges between the SAME table pair on different columns (the fact-to-fact
+        # case). Deleting ONE must not re-admit it just because the OTHER shares (src,dst).
+        rec = {
+            "nodes": [{"table": "c.s.f1", "role": "fact"}, {"table": "c.s.f2", "role": "fact"}],
+            "edges": [
+                {"src": "c.s.f1", "dst": "c.s.f2", "on": "src.a_id = f2.id", "source": "predicted"},
+                {"src": "c.s.f1", "dst": "c.s.f2", "on": "src.b_id = f2.id", "source": "predicted"},
+            ],
+        }
+        # User kept only the second column-pair edge.
+        saved = {"edges": [{"src": "c.s.f1", "dst": "c.s.f2", "on": "src.b_id = f2.id"}]}
+        out = api_server._overlay_saved_erd(rec, saved)
+        ons = [e["on"] for e in out["edges"]]
+        assert ons == ["src.b_id = f2.id"]   # the deleted a_id edge stays gone
+
+    def test_on_whitespace_normalized_in_match(self):
+        # Cosmetic whitespace differences between saved `on` and recommended `on`
+        # must still match (so a kept edge isn't wrongly dropped).
+        saved = {"edges": [{"src": "c.s.fct", "dst": "c.s.dim", "on": "src.fk  =  dim.id"}]}
+        out = api_server._overlay_saved_erd(self._rec(), saved)
+        assert [e["dst"] for e in out["edges"]] == ["c.s.dim"]
 
     def test_empty_edge_list_drops_all_edges(self):
         saved = {"nodes": [], "edges": []}
@@ -1101,19 +1124,19 @@ class TestOverlaySavedErdEdges:
         assert out["edges"] == []
 
     def test_edge_match_is_case_insensitive(self):
-        saved = {"edges": [{"src": "C.S.FCT", "dst": "C.S.DIM"}]}
+        saved = {"edges": [{"src": "C.S.FCT", "dst": "C.S.DIM", "on": "SRC.FK = DIM.ID"}]}
         out = api_server._overlay_saved_erd(self._rec(), saved)
         assert len(out["edges"]) == 1
 
     def test_edge_direction_is_respected(self):
         # A saved reverse-direction edge must NOT match a forward recommendation.
-        saved = {"edges": [{"src": "c.s.dim", "dst": "c.s.fct"}]}
+        saved = {"edges": [{"src": "c.s.dim", "dst": "c.s.fct", "on": "src.fk = dim.id"}]}
         out = api_server._overlay_saved_erd(self._rec(), saved)
         assert out["edges"] == []
 
     def test_node_roles_still_overlay(self):
         saved = {"nodes": [{"table": "c.s.dim", "role": "fact", "grain": "day"}],
-                 "edges": [{"src": "c.s.fct", "dst": "c.s.dim"}]}
+                 "edges": [{"src": "c.s.fct", "dst": "c.s.dim", "on": "src.fk = dim.id"}]}
         out = api_server._overlay_saved_erd(self._rec(), saved)
         dim = next(n for n in out["nodes"] if n["table"] == "c.s.dim")
         assert dim["role"] == "fact"
