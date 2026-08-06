@@ -76,13 +76,20 @@ from any tool: notebooks, dashboards, Genie spaces, agents, or your own applicat
    - **Azure:** `Standard_D8s_v3`
    - **GCP:** `n2-highmem-8`
 
-3. Deploy. There are two supported paths — the **CLI** and the **workspace UI** —
-   and they are equivalent (both run the same bundle, build the wheel via the
-   `artifacts.build` hook, and register jobs + the app). Databricks Asset Bundles
-   deliberately separate *deploying* an app from *starting* it (starting consumes
-   app compute), so **both paths are two steps: deploy, then deploy-source-and-start
-   the app.** There is no `deploy.sh` and no single-command shortcut — this is a
-   platform behavior, not a project choice.
+3. Deploy. **Pick the path that matches your environment:**
+
+   | Path | Use when | Creates | Notes |
+   |------|----------|---------|-------|
+   | **A. CLI bundle deploy** | You can run the Databricks CLI locally / in CI | **All 29 jobs** + app | Recommended. Grants automated via a script. |
+   | **B. Workspace-UI bundle deploy** | No local machine, but you have the workspace UI | **All 29 jobs** + app | First-class peer to the CLI (same bundle + build hook). Grants are manual. |
+   | **C. Notebook pipeline** | You can run **neither** the CLI nor the UI Deploy button | **8 of 29 jobs** (core only) | True fallback — see [`notebook_deployment_pipeline/README.md`](notebook_deployment_pipeline/README.md). Some dashboard features unavailable. |
+
+   Paths **A** and **B** run the same bundle, build the wheel via the
+   `artifacts.build` hook, and register jobs + the app — they are equivalent.
+   Databricks Asset Bundles deliberately separate *deploying* an app from
+   *starting* it (starting consumes app compute), so **both are two steps:
+   deploy, then deploy-source-and-start the app.** There is no `deploy.sh` and no
+   single-command shortcut — this is a platform behavior, not a project choice.
 
    **Option A — CLI** (scriptable, best for CI):
    ```bash
@@ -102,6 +109,18 @@ from any tool: notebooks, dashboards, Genie spaces, agents, or your own applicat
    4. For OBO / app-SP catalog access, run `scripts/grant_app_permissions.sh` (or
       grant the app service principal UC access manually — see
       [`docs/MANUAL_DEPLOYMENT.md`](docs/MANUAL_DEPLOYMENT.md)).
+
+   > **Only using On-Behalf-Of (OBO) user auth?** (Default is off — skip this if
+   > you deploy with `enable_obo=false`.) Two OBO-specific gotchas:
+   > - **After enabling or re-scoping OBO, re-consent in the browser.** The app
+   >   requests the user's authorization on first visit; a stale cached consent
+   >   shows up as auth/scope errors. Open the app in an **incognito window** (or
+   >   sign out/in) to force a fresh consent after any OBO change.
+   > - **Set `user_api_scopes` alongside `enable_obo: true`.** With OBO on but no
+   >   scopes, the token carries no permissions and SQL fails with
+   >   `Provided OAuth token does not have required scopes: sql`. Set both in the
+   >   **same** override file, per target:
+   >   `"user_api_scopes": ["files.files", "sql.statement-execution", "dashboards.genie"]`.
 
    Notes:
    - The React frontend is **prebuilt and committed** (`apps/dbxmetagen-app/app/src/dist/`).

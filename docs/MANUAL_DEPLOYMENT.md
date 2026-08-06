@@ -119,6 +119,16 @@ complex variables (see `example.env` for all keys):
 }
 ```
 
+> **OBO gotchas** (only if `enable_obo: true` — default is off):
+> - **Re-consent after any OBO change.** The app asks the user to authorize on
+>   first visit; a stale cached consent surfaces as auth/scope errors. Open the
+>   app in an **incognito window** (or sign out/in) to force a fresh consent.
+> - **Set `user_api_scopes` with it.** OBO on but no scopes → the token carries
+>   no permissions and SQL fails with
+>   `Provided OAuth token does not have required scopes: sql`. Set both together
+>   (as above); scopes are per-target — set them in the override file for the
+>   target you actually deploy.
+
 The workspace **host** is not a bundle variable -- the Deploy button uses the
 workspace you're in.
 
