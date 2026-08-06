@@ -67,10 +67,17 @@ function _withJoinCondition(data, targetTable) {
   }
 }
 
-// Parse "src.col = alias.col" -> {src_column, dst_column}
+// Parse the first "<qualified> = <qualified>" pair of an ON clause into
+// {src_column, dst_column}. The column is the LAST dotted segment on each side,
+// so this works whether a side is `alias.col`, `table.col`, or fully-qualified
+// `catalog.schema.table.col` (the old regex grabbed the first two segments, so a
+// fully-qualified right side reported the CATALOG as the column). For a
+// composite `a.x = b.y AND a.z = b.w`, only the first pair is used for the label.
 function _parseOn(on) {
-  const m = /(\w+)\.(\w+)\s*=\s*(\w+)\.(\w+)/.exec(on || '')
-  return m ? { src_column: m[2], dst_column: m[4] } : { src_column: '', dst_column: '' }
+  const m = /([\w.]+)\s*=\s*([\w.]+)/.exec(on || '')
+  if (!m) return { src_column: '', dst_column: '' }
+  const lastSeg = s => (s.split('.').pop() || '').trim()
+  return { src_column: lastSeg(m[1]), dst_column: lastSeg(m[2]) }
 }
 
 // --- Custom table node --------------------------------------------------------
