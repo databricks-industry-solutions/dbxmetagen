@@ -1060,3 +1060,62 @@ class TestMvTestWorkerAndPayload:
         assert hasattr(api_server, "run_mv_test_queries")
         assert hasattr(api_server, "poll_mv_test_queries")
         assert "allow_federated_full" in api_server.MvTestQueryRequest.__annotations__
+
+
+class TestOverlaySavedErdEdges:
+    """_overlay_saved_erd must persist edge DELETIONS: a saved edge set is
+    authoritative, but a saved ERD with no `edges` key leaves recommendations
+    untouched (backward compatible with node-only saves)."""
+
+    def _rec(self):
+        return {
+            "schema_type": "STAR",
+            "nodes": [{"table": "c.s.fct", "role": "fact"},
+                      {"table": "c.s.dim", "role": "dimension"}],
+            "edges": [
+                {"src": "c.s.fct", "dst": "c.s.dim", "on": "fk=id", "source": "recommended"},
+                {"src": "c.s.fct", "dst": "c.s.dim2", "on": "fk2=id", "source": "recommended"},
+            ],
+        }
+
+    def test_no_saved_leaves_edges_untouched(self):
+        out = api_server._overlay_saved_erd(self._rec(), None)
+        assert len(out["edges"]) == 2
+
+    def test_saved_without_edges_key_preserves_recommendations(self):
+        # A node-only save (pre-edges-field, or role-only edit) must NOT wipe edges.
+        saved = {"nodes": [{"table": "c.s.fct", "role": "fact"}]}
+        out = api_server._overlay_saved_erd(self._rec(), saved)
+        assert len(out["edges"]) == 2
+
+    def test_saved_edge_subset_drops_deleted_edge(self):
+        # User kept only the first edge -> the second must not be re-derived back in.
+        saved = {"nodes": [], "edges": [{"src": "c.s.fct", "dst": "c.s.dim"}]}
+        out = api_server._overlay_saved_erd(self._rec(), saved)
+        keys = {(e["src"], e["dst"]) for e in out["edges"]}
+        assert keys == {("c.s.fct", "c.s.dim")}
+
+    def test_empty_edge_list_drops_all_edges(self):
+        saved = {"nodes": [], "edges": []}
+        out = api_server._overlay_saved_erd(self._rec(), saved)
+        assert out["edges"] == []
+
+    def test_edge_match_is_case_insensitive(self):
+        saved = {"edges": [{"src": "C.S.FCT", "dst": "C.S.DIM"}]}
+        out = api_server._overlay_saved_erd(self._rec(), saved)
+        assert len(out["edges"]) == 1
+
+    def test_edge_direction_is_respected(self):
+        # A saved reverse-direction edge must NOT match a forward recommendation.
+        saved = {"edges": [{"src": "c.s.dim", "dst": "c.s.fct"}]}
+        out = api_server._overlay_saved_erd(self._rec(), saved)
+        assert out["edges"] == []
+
+    def test_node_roles_still_overlay(self):
+        saved = {"nodes": [{"table": "c.s.dim", "role": "fact", "grain": "day"}],
+                 "edges": [{"src": "c.s.fct", "dst": "c.s.dim"}]}
+        out = api_server._overlay_saved_erd(self._rec(), saved)
+        dim = next(n for n in out["nodes"] if n["table"] == "c.s.dim")
+        assert dim["role"] == "fact"
+        assert dim["grain"] == "day"
+        assert dim["user_confirmed"] is True

@@ -8106,16 +8106,31 @@ def _load_saved_erd(project_id: Optional[str]) -> Optional[dict]:
         return None
 
 
-def _overlay_saved_erd(rec: dict, saved: Optional[dict]) -> dict:
-    """Overlay a user's saved ERD (node roles/grain + schema_type) onto a fresh
-    recommendation so the visual builder shows what the user confirmed, not a
-    re-derived heuristic. Only the fields the user actually edits and that have no
-    other persistence home are overridden -- confirmed *joins* already round-trip
-    through fk_predictions (source='confirmed'), so edges are left untouched.
+def _erd_edge_key(src: Optional[str], dst: Optional[str]) -> tuple[str, str]:
+    """Case-insensitive, order-preserving key for an ERD edge (directional).
 
-    Node matching is by fully-qualified table name (case-insensitive). Saved nodes
-    for tables no longer in scope are ignored; recommended nodes with no saved role
-    keep their heuristic role, so newly-added tables still get a sensible default.
+    src->dst and dst->src are kept distinct on purpose: the recommender emits
+    directional joins (fact->dim), so a saved edge must match the same direction.
+    """
+    return ((src or "").lower(), (dst or "").lower())
+
+
+def _overlay_saved_erd(rec: dict, saved: Optional[dict]) -> dict:
+    """Overlay a user's saved ERD (node roles/grain, schema_type, and edge set)
+    onto a fresh recommendation so the visual builder shows what the user
+    confirmed, not a re-derived heuristic.
+
+    Nodes: matched by fully-qualified table name (case-insensitive). Saved nodes
+    for tables no longer in scope are ignored; recommended nodes with no saved
+    role keep their heuristic role, so newly-added tables still get a default.
+
+    Edges: if the saved ERD carries an explicit ``edges`` list, it is treated as
+    AUTHORITATIVE -- the recommendation's edges are filtered to only those the
+    user kept, so a deleted edge stays deleted instead of being re-derived. A
+    saved ERD with NO ``edges`` key (e.g. saved before this field existed, or a
+    node-only save) leaves recommended edges untouched, preserving prior
+    behavior and first-load recommendations. An explicit empty list means the
+    user removed every edge and is honored as such.
     """
     if not saved:
         return rec
@@ -8124,11 +8139,6 @@ def _overlay_saved_erd(rec: dict, saved: Optional[dict]) -> dict:
         for n in (saved.get("nodes") or [])
         if n.get("table")
     }
-    if not saved_nodes:
-        # schema_type may still have been set even with no node overrides.
-        if saved.get("schema_type"):
-            rec["schema_type"] = saved["schema_type"]
-        return rec
     for node in rec.get("nodes") or []:
         sn = saved_nodes.get((node.get("table") or "").lower())
         if not sn:
@@ -8141,6 +8151,19 @@ def _overlay_saved_erd(rec: dict, saved: Optional[dict]) -> dict:
         node["user_confirmed"] = True
     if saved.get("schema_type"):
         rec["schema_type"] = saved["schema_type"]
+    # Edge overlay: only when the user has an explicit saved edge set. `is not
+    # None` (not truthiness) so an intentional empty list drops all edges.
+    saved_edges = saved.get("edges")
+    if saved_edges is not None:
+        kept = {
+            _erd_edge_key(e.get("src"), e.get("dst"))
+            for e in saved_edges
+            if e.get("src") and e.get("dst")
+        }
+        rec["edges"] = [
+            e for e in (rec.get("edges") or [])
+            if _erd_edge_key(e.get("src"), e.get("dst")) in kept
+        ]
     return rec
 
 
@@ -13567,9 +13590,13 @@ def list_genie_available_spaces():
     the 'pull curated SQL' action at metric-view build time."""
     from dbxmetagen.genie_sql_puller import GenieSQLPuller, GenieSQLPullerConfig
     try:
+        # Use the OBO-aware client: listing Genie spaces needs the caller's
+        # dashboards.genie scope. The app service principal has no Genie access,
+        # so get_workspace_client() returns an empty list even when the user can
+        # see many spaces. Every other Genie endpoint uses _get_effective_client().
         puller = GenieSQLPuller(
             GenieSQLPullerConfig(catalog_name=CATALOG, schema_name=SCHEMA),
-            ws=get_workspace_client(),
+            ws=_get_effective_client(),
         )
         spaces = puller.list_spaces()
     except Exception as e:

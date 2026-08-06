@@ -312,6 +312,16 @@ export default function ErdDesigner({ tables, projectId, profileId, businessCont
           table: n.id, role: roleRef.current[n.id] || n.data.role,
           position: n.position, grain: n.data.grain || null,
         })),
+        // Persist the current edge set so deletions stick. On reload the backend
+        // treats a saved edge set as authoritative (a removed edge is simply
+        // absent here) instead of re-deriving every recommended join, which is
+        // what made deleted edges reappear. Same shape the recommender emits.
+        edges: edges.map(e => ({
+          src: e.source, dst: e.target,
+          on: e.data?.on || '',
+          confidence: e.data?.confidence ?? null,
+          source: e.data?.source || 'recommended',
+        })),
       }
       const r = await fetch(`/api/semantic-layer/projects/${projectId}/erd`, {
         method: 'PATCH', headers: { 'Content-Type': 'application/json' },

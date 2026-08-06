@@ -499,7 +499,7 @@ export default function SemanticLayer({ onNavigate, pipelineStats, onRefreshPipe
   const [questionsText, setQuestionsText] = useState('')
   const [businessContext, setBusinessContext] = useState('')
   const [bizCtxLoading, setBizCtxLoading] = useState(false)
-  const [bizCtxUseKb, setBizCtxUseKb] = useState(false)
+  const [bizCtxUseKb, setBizCtxUseKb] = useState(true)
   // Genie SQL pull (items 14/15): pick an existing Genie space and pull its
   // curated example SQL to seed metric-view generation with proven query patterns.
   const [genieSpaces, setGenieSpaces] = useState(null)  // null=unloaded, []=loaded-empty
@@ -935,8 +935,9 @@ export default function SemanticLayer({ onNavigate, pipelineStats, onRefreshPipe
   }
 
   // Draft a business-context paragraph from the project's table descriptions.
-  // Default source is the live UC table comments; bizCtxUseKb switches to the
-  // knowledge-base descriptions. Replaces the field's contents (editable after).
+  // Default source is the knowledge-base descriptions (richer, dbxmetagen-generated);
+  // unchecking bizCtxUseKb falls back to the live UC table comments. Replaces the
+  // field's contents (editable after).
   const suggestBusinessContext = async () => {
     if (!selectedTables.length) { setError('Select tables first'); return }
     if (businessContext.trim() && !confirm('Replace the current business context with an AI-drafted one?')) return
@@ -2087,7 +2088,7 @@ export default function SemanticLayer({ onNavigate, pipelineStats, onRefreshPipe
                 {genSufficiency.kpis.reasons?.length > 0 && <> ({genSufficiency.kpis.reasons.join(', ')})</>}.
               </p>
             ) : (
-              <p className="text-xs text-amber-600 dark:text-amber-400 mt-1">Aim for at least 2-3 KPIs per fact table to ensure adequate metric view coverage across your schema.</p>
+              <p className="text-xs text-amber-600 dark:text-amber-400 mt-1">The more validated KPIs per fact table, the richer the generated metric views will be.</p>
             )}
           </div>
           <div className="flex gap-2">
