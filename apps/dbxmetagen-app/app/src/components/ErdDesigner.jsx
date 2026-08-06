@@ -2,6 +2,7 @@ import React, { useState, useEffect, useCallback, useMemo, useRef } from 'react'
 import {
   ReactFlow, Background, Controls, MiniMap,
   useNodesState, useEdgesState, addEdge, Handle, Position,
+  BaseEdge, EdgeLabelRenderer, getBezierPath,
 } from '@xyflow/react'
 import '@xyflow/react/dist/style.css'
 import dagre from 'dagre'
@@ -98,6 +99,51 @@ function TableNode({ data }) {
 
 const nodeTypes = { table: TableNode }
 
+// Custom edge that separates PARALLEL joins between the same table pair. Two
+// fact tables (or a fact and dim) can be joined on more than one column pair;
+// the default bezier draws every such edge on the identical path, so they hide
+// each other. We fan them out by offsetting the control point by the edge's
+// index among its siblings (parallelIndex / parallelCount, injected in
+// buildGraph), and always render the join columns as a small label so each
+// edge is individually visible and clickable.
+function ParallelEdge({ id, sourceX, sourceY, targetX, targetY,
+                        sourcePosition, targetPosition, style, markerEnd, data }) {
+  const count = data?.parallelCount || 1
+  const idx = data?.parallelIndex || 0
+  // Symmetric offset: for count=1 -> 0; count=2 -> [-1,+1]*step; etc.
+  const step = 26
+  const offset = count > 1 ? (idx - (count - 1) / 2) * step : 0
+  const [path, labelX, labelY] = getBezierPath({
+    sourceX, sourceY, sourcePosition, targetX, targetY, targetPosition,
+    // Bow the curve outward proportional to the offset so parallels separate.
+    curvature: 0.25 + Math.abs(offset) / 200,
+  })
+  const label = data?.on
+    ? `${data.src_column || '?'} = ${data.dst_column || '?'}`
+    : null
+  return (
+    <>
+      <BaseEdge id={id} path={path} style={style} markerEnd={markerEnd} />
+      {label && (
+        <EdgeLabelRenderer>
+          <div
+            className="nodrag nopan absolute px-1 py-0.5 rounded bg-white/90 dark:bg-dbx-navy-600
+                       text-[9px] font-mono text-slate-600 dark:text-slate-300 border
+                       border-slate-200 dark:border-slate-600 pointer-events-none"
+            style={{
+              transform: `translate(-50%, -50%) translate(${labelX}px, ${labelY + offset}px)`,
+            }}
+          >
+            {label}
+          </div>
+        </EdgeLabelRenderer>
+      )}
+    </>
+  )
+}
+
+const edgeTypes = { parallel: ParallelEdge }
+
 // --- dagre auto-layout --------------------------------------------------------
 function layout(nodes, edges) {
   const g = new dagre.graphlib.Graph()
@@ -158,13 +204,29 @@ export default function ErdDesigner({ tables, projectId, profileId, businessCont
       return { id: n.table, type: 'table', position: { x: 0, y: 0 }, data: { ...n } }
     })
     roleRef.current = roles
-    const flowEdges = (rec.edges || []).map((e, i) => {
+    // Group edges by unordered table pair so PARALLEL joins (multiple column
+    // pairs between the same two tables) can be fanned out and all shown.
+    const recEdges = rec.edges || []
+    const pairCounts = {}
+    recEdges.forEach(e => {
+      const pk = [e.src, e.dst].map(s => (s || '').toLowerCase()).sort().join('::')
+      pairCounts[pk] = (pairCounts[pk] || 0) + 1
+    })
+    const pairSeen = {}
+    const flowEdges = recEdges.map((e, i) => {
       const cols = _parseOn(e.on)
+      const pk = [e.src, e.dst].map(s => (s || '').toLowerCase()).sort().join('::')
+      const parallelIndex = pairSeen[pk] || 0
+      pairSeen[pk] = parallelIndex + 1
       return {
         id: `${e.src}::${e.dst}::${i}`,
         source: e.src, target: e.dst,
+        type: 'parallel',
         style: _edgeStyle(e.source),
-        data: { on: e.on, confidence: e.confidence, source: e.source, ...cols },
+        data: {
+          on: e.on, confidence: e.confidence, source: e.source, ...cols,
+          parallelIndex, parallelCount: pairCounts[pk] || 1,
+        },
       }
     })
     setNodes(layout(flowNodes, flowEdges))
@@ -214,6 +276,7 @@ export default function ErdDesigner({ tables, projectId, profileId, businessCont
     const id = `${conn.source}::${conn.target}::manual::${manualEdgeSeq.current++}`
     setEdges(eds => addEdge({
       ...conn, id,
+      type: 'parallel',
       style: _edgeStyle('confirmed'),
       data: { on: '', confidence: 1.0, source: 'confirmed', src_column: '', dst_column: '' },
     }, eds))
@@ -301,6 +364,36 @@ export default function ErdDesigner({ tables, projectId, profileId, businessCont
     setNodes(nds => nds.map(n => n.data._selected === (n.id === selectedNodeId)
       ? n : { ...n, data: { ...n.data, _selected: n.id === selectedNodeId } }))
   }, [selectedNodeId, setNodes])
+
+  // Keep parallel-edge fan-out metadata correct as edges are added/removed.
+  // Recompute parallelIndex/parallelCount per unordered table pair; only write
+  // back when a value actually changed so we don't loop. Depends on the pair
+  // signature (not the whole array) to avoid churn on unrelated edge edits.
+  const edgePairSig = edges
+    .map(e => [e.source, e.target].map(s => (s || '').toLowerCase()).sort().join('::'))
+    .sort().join('|')
+  useEffect(() => {
+    const counts = {}
+    edges.forEach(e => {
+      const pk = [e.source, e.target].map(s => (s || '').toLowerCase()).sort().join('::')
+      counts[pk] = (counts[pk] || 0) + 1
+    })
+    const seen = {}
+    let changed = false
+    const next = edges.map(e => {
+      const pk = [e.source, e.target].map(s => (s || '').toLowerCase()).sort().join('::')
+      const idx = seen[pk] || 0
+      seen[pk] = idx + 1
+      const cnt = counts[pk] || 1
+      if (e.data?.parallelIndex !== idx || e.data?.parallelCount !== cnt || e.type !== 'parallel') {
+        changed = true
+        return { ...e, type: 'parallel', data: { ...e.data, parallelIndex: idx, parallelCount: cnt } }
+      }
+      return e
+    })
+    if (changed) setEdges(next)
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [edgePairSig])
 
   const save = useCallback(async () => {
     if (!projectId) { setError('Select a project to save the model.'); return }
@@ -464,6 +557,7 @@ export default function ErdDesigner({ tables, projectId, profileId, businessCont
           onEdgeMouseLeave={() => setHoverEdge(null)}
           onPaneClick={() => { setSelectedNodeId(null); setSelectedEdgeId(null) }}
           nodeTypes={nodeTypes}
+          edgeTypes={edgeTypes}
           fitView proOptions={{ hideAttribution: true }}
         >
           <Background />
