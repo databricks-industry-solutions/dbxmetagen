@@ -1189,3 +1189,174 @@ class TestOverlaySavedErdEdges:
         assert dim["role"] == "fact"
         assert dim["grain"] == "day"
         assert dim["user_confirmed"] is True
+
+
+# ---------------------------------------------------------------------------
+# _compute_view_cap -- fact-grain metric-view count cap
+# ---------------------------------------------------------------------------
+class TestComputeViewCap:
+    """The ERD recommendation is the fact-grain-aware floor for the cap; the old
+    num_eligible//2 hard_cap crushed it (4 facts -> 2 overlapping views)."""
+
+    def test_erd_recommendation_is_respected_for_facts(self):
+        # 4 fact tables selected, ERD recommends 4. Old code capped to 2.
+        recommended, hard_cap, effective = api_server._compute_view_cap(
+            num_eligible=4, erd_recommended=4, max_views=None
+        )
+        assert recommended == 4
+        assert hard_cap >= 4
+        assert effective == 4
+
+    def test_no_erd_falls_back_to_half_tables_heuristic(self):
+        recommended, hard_cap, effective = api_server._compute_view_cap(
+            num_eligible=4, erd_recommended=0, max_views=None
+        )
+        # Without an ERD we cannot know the fact count -> conservative heuristic.
+        assert hard_cap == 2
+        assert effective <= 2
+
+    def test_user_max_views_clamped_to_hard_cap(self):
+        _, hard_cap, effective = api_server._compute_view_cap(
+            num_eligible=4, erd_recommended=4, max_views=99
+        )
+        assert effective == hard_cap
+
+    def test_user_max_views_below_recommended_is_honored(self):
+        _, _, effective = api_server._compute_view_cap(
+            num_eligible=8, erd_recommended=6, max_views=3
+        )
+        assert effective == 3
+
+    def test_capped_at_global_max(self):
+        _, hard_cap, effective = api_server._compute_view_cap(
+            num_eligible=200, erd_recommended=50, max_views=None
+        )
+        assert hard_cap <= 15
+        assert effective <= 15
+
+    def test_effective_never_below_one(self):
+        _, _, effective = api_server._compute_view_cap(
+            num_eligible=0, erd_recommended=0, max_views=None
+        )
+        assert effective >= 1
+
+
+# ---------------------------------------------------------------------------
+# _coverage_factor -- richness vs source-column-count
+# ---------------------------------------------------------------------------
+class TestCoverageFactor:
+    def test_unknown_columns_is_noop(self):
+        for missing in (None, 0, -1):
+            cov = api_server._coverage_factor(3, 3, missing)
+            assert cov["penalty"] == 0
+            assert cov["level"] == "unknown"
+
+    def test_thin_view_over_wide_table_penalized(self):
+        # 3 dims + 3 measures over 40 columns -> ratio 0.15 -> heavy penalty.
+        cov = api_server._coverage_factor(3, 3, 40)
+        assert cov["level"] == "thin"
+        assert cov["penalty"] == 10
+        assert cov["thin_dims"] is True
+        assert cov["thin_measures"] is True
+
+    def test_comprehensive_view_no_penalty(self):
+        cov = api_server._coverage_factor(30, 12, 40)
+        assert cov["level"] == "comprehensive"
+        assert cov["penalty"] == 0
+
+    def test_penalty_lowers_complexity_score(self):
+        defn = {
+            "source": "c.s.fct",
+            "joins": [{"name": "d", "source": "c.s.dim", "on": "source.k = d.k"}],
+            "measures": [{"name": f"m{i}", "expr": "SUM(x)"} for i in range(3)],
+            "dimensions": [{"name": f"dm{i}", "expr": "col"} for i in range(3)],
+        }
+        rich = api_server._score_definition_complexity(defn, available_cols=None)
+        thin = api_server._score_definition_complexity(defn, available_cols=60)
+        assert thin["complexity_score"] < rich["complexity_score"]
+        assert thin["coverage_level"] == "thin"
+
+
+# ---------------------------------------------------------------------------
+# _mv_defn_tables -- source + join table extraction
+# ---------------------------------------------------------------------------
+class TestMvDefnTables:
+    def test_collects_source_and_nested_joins(self):
+        defn = {
+            "source": "c.s.fct",
+            "joins": [
+                {"source": "c.s.dim_a", "joins": [{"source": "c.s.dim_b"}]},
+                {"source": "c.s.dim_c"},
+            ],
+        }
+        tables = api_server._mv_defn_tables(defn)
+        assert tables == ["c.s.fct", "c.s.dim_a", "c.s.dim_b", "c.s.dim_c"]
+
+    def test_dedups_preserving_order(self):
+        defn = {"source": "c.s.fct", "joins": [{"source": "c.s.fct"}, {"source": "c.s.dim"}]}
+        assert api_server._mv_defn_tables(defn) == ["c.s.fct", "c.s.dim"]
+
+    def test_empty_defn(self):
+        assert api_server._mv_defn_tables({}) == []
+
+
+# ---------------------------------------------------------------------------
+# _compute_mv_health -- coverage dimension + refinement actions
+# ---------------------------------------------------------------------------
+class TestMvHealthCoverage:
+    def _defn(self):
+        return {
+            "source": "c.s.fct",
+            "comment": "cv",
+            "dimensions": [{"name": "d1", "expr": "c1", "comment": "x"}],
+            "measures": [{"name": "m1", "expr": "SUM(x)", "comment": "x"}],
+        }
+
+    def test_coverage_absent_when_cols_unknown(self):
+        r = api_server._compute_mv_health(self._defn(), available_cols=None)
+        assert r["max"] == 10
+        assert "coverage" not in r["dimensions"]
+
+    def test_coverage_present_and_actions_emitted_for_thin_view(self):
+        r = api_server._compute_mv_health(self._defn(), available_cols=40)
+        assert r["max"] == 12
+        assert "coverage" in r["dimensions"]
+        actions = {i.get("action") for i in r["issues"]}
+        assert "add_measures" in actions
+        assert "add_dimensions" in actions
+        assert "check_filters" in actions
+
+    def test_check_filters_not_emitted_when_filter_present(self):
+        defn = self._defn()
+        defn["filter"] = "c1 IS NOT NULL"
+        # Make it non-thin so only the filter action is in question.
+        defn["dimensions"] = [{"name": f"d{i}", "expr": "c", "comment": "x"} for i in range(20)]
+        defn["measures"] = [{"name": f"m{i}", "expr": "SUM(x)", "comment": "x"} for i in range(10)]
+        r = api_server._compute_mv_health(defn, available_cols=25)
+        actions = {i.get("action") for i in r["issues"]}
+        assert "check_filters" not in actions
+
+
+# ---------------------------------------------------------------------------
+# improve focus directives
+# ---------------------------------------------------------------------------
+class TestImproveFocusDirectives:
+    def test_all_three_actions_have_directives(self):
+        for focus in ("add_measures", "add_dimensions", "check_filters"):
+            assert focus in api_server._IMPROVE_FOCUS_DIRECTIVES
+            assert api_server._IMPROVE_FOCUS_DIRECTIVES[focus].strip()
+
+    def test_improve_request_accepts_focus(self):
+        req = api_server.ImproveRequest(focus="add_measures")
+        assert req.focus == "add_measures"
+
+
+# ---------------------------------------------------------------------------
+# KPI status filter / bulk delete constants
+# ---------------------------------------------------------------------------
+class TestKpiStatusValues:
+    def test_invalid_is_a_recognized_status(self):
+        assert "invalid" in api_server._KPI_STATUS_VALUES
+
+    def test_expected_statuses_present(self):
+        assert {"valid", "invalid", "empty", "unchecked", "skipped"} <= api_server._KPI_STATUS_VALUES

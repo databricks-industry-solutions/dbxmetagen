@@ -8431,11 +8431,125 @@ _COMPUTED_DIM_RE = re.compile(r"CASE\b|DATE_TRUNC\b|CONCAT\b|EXTRACT\b", re.IGNO
 _ALIAS_REF_RE = re.compile(r"\b([A-Za-z_]\w*)\.\w+")
 
 
-def _score_definition_complexity(defn: dict) -> dict:
+_MAX_RECOMMENDED_VIEWS = 15
+
+
+def _compute_view_cap(num_eligible: int, erd_recommended: int = 0,
+                      max_views: int | None = None) -> tuple[int, int, int]:
+    """Resolve (recommended, hard_cap, effective_max) for metric-view generation.
+
+    The ERD recommender's count is fact-grain-aware (~1 view per fact table +
+    uncovered/KPI needs), so when present it is BOTH the default recommendation
+    and the floor of the anti-runaway hard_cap. The prior `num_eligible // 2`
+    hard_cap silently crushed the fact-grain strategy whenever facts dominated
+    the selection (e.g. 4 facts -> hard_cap 2 -> the LLM was forced to merge 4
+    grains into 2 overlapping views that then flag as duplicates). Without an ERD
+    we can't know the fact count pre-plan, so we keep the half-tables heuristic.
+
+    - recommended: the pre-filled "recommended" count (ERD count, else ~1/3 tables)
+    - hard_cap: the ceiling a user's explicit max_views is clamped to
+    - effective_max: the count actually used = clamp(max_views or recommended, 1, hard_cap)
+    """
+    num_eligible = max(0, int(num_eligible))
+    erd_recommended = max(0, int(erd_recommended or 0))
+    hard_cap = min(max(num_eligible // 2, erd_recommended, 2), _MAX_RECOMMENDED_VIEWS)
+    recommended = erd_recommended or min(max(num_eligible // 3, 2), _MAX_RECOMMENDED_VIEWS)
+    effective_max = min(max(max_views or recommended, 1), hard_cap)
+    return recommended, hard_cap, effective_max
+
+
+def _coverage_factor(n_dims: int, n_measures: int, available_cols: int | None) -> dict:
+    """Score how well a metric view exploits its available source+join columns.
+
+    A production-quality view over complex data should surface MOST source
+    columns as dimensions and expose a healthy set of measures -- a 3-dim/3-measure
+    view over a 40-column fact table is thin, not "rich", even if every expression
+    is sophisticated. `available_cols` is the distinct column count across the
+    source table and every joined table (from column_knowledge_base).
+
+    Returns {ratio, penalty, level, detail, thin_dims, thin_measures}. `penalty`
+    (0..COVERAGE_MAX_PENALTY) is subtracted from the complexity score so thin views
+    stop scoring in the "rich"/"production" band. When `available_cols` is unknown
+    (None or <=0) this is a no-op (penalty 0) -- fully backward compatible.
+    """
+    if not available_cols or available_cols <= 0:
+        return {"ratio": None, "penalty": 0, "level": "unknown",
+                "detail": "source column count unavailable", "thin_dims": False,
+                "thin_measures": False}
+    covered = n_dims + n_measures
+    ratio = covered / available_cols
+    # Dimensions should cover most columns; measures should be a healthy fraction.
+    thin_dims = n_dims < 0.5 * available_cols
+    thin_measures = n_measures < max(3, 0.15 * available_cols)
+    if ratio >= 0.8:
+        penalty, level = 0, "comprehensive"
+    elif ratio >= 0.5:
+        penalty, level = 3, "adequate"
+    elif ratio >= 0.3:
+        penalty, level = 6, "partial"
+    else:
+        penalty, level = 10, "thin"
+    detail = (f"{covered} fields (dims {n_dims} + measures {n_measures}) vs "
+              f"{available_cols} source+join columns ({ratio:.0%})")
+    return {"ratio": ratio, "penalty": penalty, "level": level, "detail": detail,
+            "thin_dims": thin_dims, "thin_measures": thin_measures}
+
+
+def _mv_defn_tables(defn: dict) -> list[str]:
+    """All source + joined table identifiers referenced by a definition."""
+    tables = []
+    if defn.get("source"):
+        tables.append(defn["source"])
+
+    def _walk(jlist):
+        for j in jlist or []:
+            if j.get("source"):
+                tables.append(j["source"])
+            _walk(j.get("joins"))
+
+    _walk(defn.get("joins"))
+    # Dedup preserving order.
+    seen, out = set(), []
+    for t in tables:
+        if t and t not in seen:
+            seen.add(t)
+            out.append(t)
+    return out
+
+
+def _mv_available_cols(defn: dict) -> int | None:
+    """Distinct column count across a definition's source + joined tables.
+
+    Reads the local column_knowledge_base (no source-table access, federation-safe).
+    Returns None on any error / no rows so scoring degrades to the column-agnostic
+    behavior instead of penalizing a view we simply can't measure.
+    """
+    tables = _mv_defn_tables(defn)
+    if not tables:
+        return None
+    try:
+        table_list = ", ".join(f"'{_esc_sql(t)}'" for t in tables)
+        rows = execute_sql(
+            f"SELECT COUNT(*) AS c FROM {fq('column_knowledge_base')} "
+            f"WHERE table_name IN ({table_list})",
+            timeout=30,
+        )
+        c = int(rows[0]["c"]) if rows else 0
+        return c or None
+    except Exception as e:
+        logger.debug("MV available-column count skipped: %s", e)
+        return None
+
+
+def _score_definition_complexity(defn: dict, available_cols: int | None = None) -> dict:
     """Score a metric view definition's analytical richness and agent readiness.
 
     Returns complexity_score (0-30) / complexity_level and
     quality_score (0-20) / quality_level.  Combined max = 50.
+
+    When `available_cols` (distinct source+join column count) is provided, a
+    coverage penalty is applied to the complexity score so thin views over wide
+    tables no longer score as "rich" -- see _coverage_factor.
     """
     # --- Complexity sub-score (0-30) ---
 
@@ -8487,7 +8601,8 @@ def _score_definition_complexity(defn: dict) -> dict:
     if len(defn.get("dimensions", [])) >= 4:
         struct_score += 1
 
-    cx_score = join_score + meas_score + dim_score + struct_score
+    cov = _coverage_factor(len(defn.get("dimensions", [])), len(measures), available_cols)
+    cx_score = max(0, join_score + meas_score + dim_score + struct_score - cov["penalty"])
     if cx_score >= 20:
         cx_level = "rich"
     elif cx_score >= 10:
@@ -8569,6 +8684,9 @@ def _score_definition_complexity(defn: dict) -> dict:
         "complexity_level": cx_level,
         "quality_score": q_score,
         "quality_level": q_level,
+        "coverage_ratio": cov["ratio"],
+        "coverage_level": cov["level"],
+        "coverage_detail": cov["detail"],
     }
 
 
@@ -9117,15 +9235,16 @@ def _run_sl_generation(
 
         # Compute effective max_views cap based on eligible (uncovered) tables.
         # When a confirmed ERD exists, its coverage-aware sufficiency count is the
-        # default recommendation (still clamped by the same hard_cap).
+        # authoritative recommendation AND the floor for the anti-runaway hard_cap.
         num_eligible = len(uncovered) if (existing_mvs and mode != "replace_all" and uncovered) else len(tables)
-        hard_cap = max(num_eligible // 2, 2)
-        recommended = min(max(num_eligible // 3, 2), 15)
+        erd_recommended = 0
         if erd:
-            erd_recommended = (erd.get("sufficiency") or {}).get("metric_views_recommended")
-            if isinstance(erd_recommended, int) and erd_recommended > 0:
-                recommended = min(erd_recommended, 15)
-        effective_max = min(max(max_views or recommended, 1), hard_cap)
+            er = (erd.get("sufficiency") or {}).get("metric_views_recommended")
+            if isinstance(er, int) and er > 0:
+                erd_recommended = min(er, 15)
+        recommended, hard_cap, effective_max = _compute_view_cap(
+            num_eligible, erd_recommended, max_views
+        )
         logger.info("max_views cap: user=%s recommended=%d hard_cap=%d effective=%d (eligible=%d, erd=%s)",
                      max_views, recommended, hard_cap, effective_max, num_eligible, bool(erd))
         task["effective_max"] = effective_max
@@ -9396,7 +9515,7 @@ def _run_sl_generation(
             _strip_kpi_references(defn)
             _drop_broken_measures(defn)
             _drop_placeholder_dimensions(defn)
-            cx = _score_definition_complexity(defn)
+            cx = _score_definition_complexity(defn, available_cols=_mv_available_cols(defn))
 
             if materialize:
                 defn["materialization"] = _build_materialization(defn, materialization_schedule)
@@ -9662,7 +9781,7 @@ def _update_definition_row(definition_id: str, defn: dict, status: str, errors: 
     _strip_kpi_references(defn)
     _drop_broken_measures(defn)
     _drop_placeholder_dimensions(defn)
-    cx = _score_definition_complexity(defn)
+    cx = _score_definition_complexity(defn, available_cols=_mv_available_cols(defn))
     json_str = json.dumps(defn)
     execute_sql(
         f"INSERT INTO {fq('metric_view_definitions')} VALUES ("
@@ -10122,11 +10241,43 @@ def export_metric_views_sql(catalog: Optional[str] = None, schema: Optional[str]
 
 class ImproveRequest(BaseModel):
     analysis_issues: list | None = None
+    # Optional targeted directive from an Analyze refinement button. One of
+    # "add_measures" / "add_dimensions" / "check_filters"; None = general improve.
+    focus: str | None = None
+
+
+# Focus directives injected into the improve prompt so an Analyze button ("Add
+# measures", "Add dimensions", "Check filters") steers what the LLM expands, while
+# still going through the same validated re-generation + persistence path.
+_IMPROVE_FOCUS_DIRECTIVES = {
+    "add_measures": (
+        "PRIMARY GOAL: substantially expand the MEASURES. This view is under-measured "
+        "for its grain. Add every analytically useful aggregate the source+join columns "
+        "support -- sums, counts, count-distincts, averages, ratios (with NULLIF guards), "
+        "conditional FILTER aggregates, and rates. Keep all existing valid measures."
+    ),
+    "add_dimensions": (
+        "PRIMARY GOAL: substantially expand the DIMENSIONS. Most source columns are not "
+        "yet exposed for slicing. Add dimensions for the categorical/attribute/date "
+        "columns available on the source and joined tables (including DATE_TRUNC "
+        "time buckets and sensible categorizations). Keep all existing valid dimensions."
+    ),
+    "check_filters": (
+        "PRIMARY GOAL: review the FILTER. Determine from the column metadata whether this "
+        "grain needs a scope filter (e.g. active/valid records, a status flag, non-null "
+        "keys). Add or correct the top-level `filter` if warranted; otherwise leave it. "
+        "Do not remove valid measures or dimensions."
+    ),
+}
 
 
 @app.post("/api/semantic-layer/definitions/{definition_id}/improve")
 def improve_definition(definition_id: str, req: ImproveRequest | None = None):
-    """Ask AI to improve an existing validated/applied metric view definition."""
+    """Ask AI to improve an existing validated/applied metric view definition.
+
+    An optional `focus` ("add_measures"/"add_dimensions"/"check_filters") from an
+    Analyze refinement button steers what the LLM expands.
+    """
     _ensure_semantic_layer_tables()
     row = _fetch_definition(definition_id)
     if row.get("status") == "applied":
@@ -10148,7 +10299,12 @@ KNOWN ISSUES -- you MUST fix ALL of these:
 {issues_summary}
 """
 
+    focus_block = ""
+    if req and req.focus and req.focus in _IMPROVE_FOCUS_DIRECTIVES:
+        focus_block = f"\n{_IMPROVE_FOCUS_DIRECTIVES[req.focus]}\n"
+
     prompt = f"""You are improving a metric view definition. Make it more comprehensive and useful.
+{focus_block}
 
 CURRENT DEFINITION:
 {json.dumps(defn, indent=2)}
@@ -10249,8 +10405,15 @@ Fix the definition so it deploys successfully. Rules:
 # ---------------------------------------------------------------------------
 
 
-def _compute_mv_health(defn: dict) -> dict:
-    """Compute a health score (0-10) for a single metric view definition."""
+def _compute_mv_health(defn: dict, available_cols: int | None = None) -> dict:
+    """Compute a health score for a single metric view definition.
+
+    Base is 0-10 (measures, dimensions, metadata, expression validity, richness).
+    When `available_cols` (distinct source+join column count) is known, a coverage
+    factor adds 2 more points (max 12) rewarding views that surface most source
+    columns, and emits actionable "add measures"/"add dimensions" issues for thin
+    views. Coverage is a no-op when the column count is unavailable.
+    """
     dims = defn.get("dimensions", [])
     measures = defn.get("measures", [])
     joins = defn.get("joins", [])
@@ -10449,7 +10612,38 @@ def _compute_mv_health(defn: dict) -> dict:
                     "suggestion": f"Remove the join to '{join_short}' or create a separate metric view sourced from it.",
                 })
 
-    return {"score": score_total, "max": 10, "dimensions": dimensions_map, "issues": issues}
+    # Coverage (0-2, only when source column count is known): reward views that
+    # exploit most of their source+join columns, and surface actionable refinement
+    # issues (with an `action` the UI turns into a button) for thin views.
+    max_score = 10
+    if available_cols and available_cols > 0:
+        cov = _coverage_factor(len(dims), len(measures), available_cols)
+        max_score = 12
+        cov_pts = {"comprehensive": 2, "adequate": 1, "partial": 1, "thin": 0}.get(cov["level"], 0)
+        dimensions_map["coverage"] = {"score": cov_pts, "max": 2, "detail": cov["detail"]}
+        score_total += cov_pts
+        if cov["thin_measures"]:
+            issues.append({
+                "field": "measures", "severity": "medium", "action": "add_measures",
+                "message": (f"Only {len(measures)} measure(s) for {available_cols} source+join "
+                            f"columns -- likely under-measured for this grain."),
+                "suggestion": "Add measures covering more numeric/aggregatable columns.",
+            })
+        if cov["thin_dims"]:
+            issues.append({
+                "field": "dimensions", "severity": "medium", "action": "add_dimensions",
+                "message": (f"Only {len(dims)} dimension(s) for {available_cols} source+join "
+                            f"columns -- most columns are not exposed for slicing."),
+                "suggestion": "Add dimensions so analysts can group/filter by more attributes.",
+            })
+        if not (filt and filt.strip()):
+            issues.append({
+                "field": "filter", "severity": "low", "action": "check_filters",
+                "message": "No filter defined -- verify whether the grain needs a scope filter.",
+                "suggestion": "Review candidate filter columns from the source data.",
+            })
+
+    return {"score": score_total, "max": max_score, "dimensions": dimensions_map, "issues": issues}
 
 
 @app.post("/api/semantic-layer/definitions/{definition_id}/health-check")
@@ -10458,7 +10652,7 @@ def mv_health_check(definition_id: str):
     _ensure_semantic_layer_tables()
     row = _fetch_definition(definition_id)
     defn = json.loads(row["json_definition"]) if isinstance(row["json_definition"], str) else row["json_definition"]
-    return _compute_mv_health(defn)
+    return _compute_mv_health(defn, available_cols=_mv_available_cols(defn))
 
 
 @app.post("/api/semantic-layer/definitions/{definition_id}/analyze")
@@ -10467,7 +10661,7 @@ def mv_analyze(definition_id: str):
     _ensure_semantic_layer_tables()
     row = _fetch_definition(definition_id)
     defn = json.loads(row["json_definition"]) if isinstance(row["json_definition"], str) else row["json_definition"]
-    health = _compute_mv_health(defn)
+    health = _compute_mv_health(defn, available_cols=_mv_available_cols(defn))
 
     # --- FK-based dim-source detection ---
     dim_source_issues: list[dict] = []
@@ -13036,14 +13230,26 @@ class SuggestBusinessContextRequest(BaseModel):
     model_endpoint: str = _LLM_MODEL
 
 
+# KPI validation_status values the UI can filter on. "invalid" = formula failed to
+# resolve against every target table (reason is stored in validation_error).
+_KPI_STATUS_VALUES = {"valid", "invalid", "empty", "unchecked", "skipped"}
+
+
 @app.get("/api/kpis")
-def list_kpis(profile_id: str = None):
+def list_kpis(profile_id: str = None, status: str = None):
     """Read-only list of KPIs. A plain GET must NOT mutate or run dry-run SELECTs
     (that made page loads slow + raced on concurrent UPDATEs -- review finding #2).
     Stale-'invalid' retro-healing now lives in POST /api/kpis/revalidate, which the
-    UI calls explicitly (e.g. once on first load)."""
+    UI calls explicitly (e.g. once on first load).
+
+    `status` optionally filters by validation_status (valid/invalid/empty/...)."""
     _ensure_kpi_table()
-    where = f" WHERE profile_id = '{profile_id.replace(chr(39), chr(39)*2)}'" if profile_id else ""
+    conds = []
+    if profile_id:
+        conds.append(f"profile_id = '{profile_id.replace(chr(39), chr(39)*2)}'")
+    if status and status.lower() in _KPI_STATUS_VALUES:
+        conds.append(f"LOWER(validation_status) = '{status.lower()}'")
+    where = (" WHERE " + " AND ".join(conds)) if conds else ""
     rows = execute_sql(f"SELECT * FROM {fq('kpi_definitions')}{where} ORDER BY updated_at DESC")
     for row in rows:
         if row.get("formula"):
@@ -13187,10 +13393,19 @@ def update_kpi(kpi_id: str, req: KpiRequest):
 
 
 @app.delete("/api/kpis")
-def delete_all_kpis():
+def delete_all_kpis(status: str = None, profile_id: str = None):
+    """Delete KPIs. With no args, deletes ALL. `status` (e.g. 'invalid') scopes the
+    delete to that validation_status -- powering the UI's "Delete all invalid"
+    action -- and `profile_id` further scopes to one profile."""
     _ensure_kpi_table()
-    execute_sql(f"DELETE FROM {fq('kpi_definitions')}", timeout=30)
-    return {"ok": True}
+    conds = []
+    if status and status.lower() in _KPI_STATUS_VALUES:
+        conds.append(f"LOWER(validation_status) = '{status.lower()}'")
+    if profile_id:
+        conds.append(f"profile_id = '{profile_id.replace(chr(39), chr(39)*2)}'")
+    where = (" WHERE " + " AND ".join(conds)) if conds else ""
+    execute_sql(f"DELETE FROM {fq('kpi_definitions')}{where}", timeout=30)
+    return {"ok": True, "status": status, "profile_id": profile_id}
 
 
 @app.delete("/api/kpis/{kpi_id}")

@@ -57,7 +57,14 @@ const _issueSevStyles = {
   low: 'text-slate-700 dark:text-slate-400 bg-slate-100 dark:bg-slate-900/30',
 }
 
-function MvAnalysisPanel({ issues, onClose, onApplyFix, appliedFields, busy }) {
+// Refinement actions Analyze can surface (issue.action -> button label + focus).
+const _REFINE_ACTIONS = {
+  add_measures: { label: 'Add measures', focus: 'add_measures' },
+  add_dimensions: { label: 'Add dimensions', focus: 'add_dimensions' },
+  check_filters: { label: 'Check filters', focus: 'check_filters' },
+}
+
+function MvAnalysisPanel({ issues, onClose, onApplyFix, onRefine, appliedFields, busy }) {
   const applied = appliedFields || new Set()
   if (!issues || issues.length === 0) return (
     <div className="mt-2 p-3 bg-emerald-50 dark:bg-emerald-900/20 border border-emerald-200 dark:border-emerald-700 rounded text-xs text-emerald-700 dark:text-emerald-400">
@@ -66,20 +73,39 @@ function MvAnalysisPanel({ issues, onClose, onApplyFix, appliedFields, busy }) {
     </div>
   )
   const fixable = issues.filter(iss => iss.field && iss.fix_value && !applied.has(iss.field))
+  // `busy` is the raw actionLoading value (a string like 'apply-fix' / a focus, or
+  // falsy). applyBusy is true only while an Apply-fix is in flight.
+  const applyBusy = busy === 'apply-fix'
+  const anyBusy = !!busy
+  // Distinct refinement actions present in the issues, in a stable order.
+  const refineActions = onRefine
+    ? Object.keys(_REFINE_ACTIONS).filter(a => issues.some(iss => iss.action === a))
+    : []
   return (
     <div className="mt-2 p-3 border border-cyan-200 dark:border-cyan-700 rounded space-y-2">
       <div className="flex items-center justify-between">
         <span className="text-xs font-medium text-slate-700 dark:text-slate-300">Analysis Issues ({issues.length})</span>
         <div className="flex items-center gap-2">
           {fixable.length > 0 && onApplyFix && (
-            <button onClick={() => onApplyFix('__all__')} disabled={busy}
+            <button onClick={() => onApplyFix('__all__')} disabled={anyBusy}
               className="px-2 py-0.5 text-[10px] bg-cyan-600 text-white rounded hover:bg-cyan-700 disabled:opacity-50">
-              {busy ? 'Applying...' : `Apply All (${fixable.length})`}
+              {applyBusy ? 'Applying...' : `Apply All (${fixable.length})`}
             </button>
           )}
           <button onClick={onClose} className="text-xs text-slate-400 hover:text-slate-600">Close</button>
         </div>
       </div>
+      {refineActions.length > 0 && (
+        <div className="flex flex-wrap items-center gap-2 pb-1 border-b border-slate-100 dark:border-slate-700">
+          <span className="text-[10px] text-slate-400 dark:text-slate-500">Refine:</span>
+          {refineActions.map(a => (
+            <button key={a} onClick={() => onRefine(_REFINE_ACTIONS[a].focus)} disabled={!!busy}
+              className="px-2 py-0.5 text-[10px] rounded border border-cyan-400 text-cyan-700 dark:text-cyan-300 hover:bg-cyan-50 dark:hover:bg-cyan-900/30 disabled:opacity-50">
+              {busy === _REFINE_ACTIONS[a].focus ? 'Working…' : _REFINE_ACTIONS[a].label}
+            </button>
+          ))}
+        </div>
+      )}
       {issues.map((iss, i) => {
         const isApplied = iss.field && applied.has(iss.field)
         return (
@@ -96,9 +122,9 @@ function MvAnalysisPanel({ issues, onClose, onApplyFix, appliedFields, busy }) {
                 <div className="flex items-center gap-2 mt-1">
                   <p className="text-slate-500 dark:text-slate-400 italic flex-1">{iss.suggestion}</p>
                   {iss.field && iss.fix_value && onApplyFix && (
-                    <button onClick={() => onApplyFix(iss.field, iss.fix_value)} disabled={busy}
+                    <button onClick={() => onApplyFix(iss.field, iss.fix_value)} disabled={anyBusy}
                       className="shrink-0 px-1.5 py-0.5 text-[10px] bg-cyan-600 text-white rounded hover:bg-cyan-700 disabled:opacity-50">
-                      {busy ? '...' : 'Apply'}</button>
+                      {applyBusy ? '...' : 'Apply'}</button>
                   )}
                 </div>
               )}
@@ -565,6 +591,7 @@ export default function SemanticLayer({ onNavigate, pipelineStats, onRefreshPipe
 
   // KPI Library
   const [kpis, setKpis] = useState([])
+  const [kpiFilter, setKpiFilter] = useState('all')  // all | valid | invalid | empty
   const [showKpiForm, setShowKpiForm] = useState(false)
   const [kpiDraft, setKpiDraft] = useState({ name: '', description: '', formula: '', domain: '', target_tables: [] })
   const [kpiEditId, setKpiEditId] = useState(null)
@@ -1121,6 +1148,16 @@ export default function SemanticLayer({ onNavigate, pipelineStats, onRefreshPipe
       loadKpis()
     } catch (e) { setError(e.message || 'Delete all KPIs failed') }
   }
+  const deleteInvalidKpis = async () => {
+    const n = kpis.filter(k => (k.validation_status || '').toLowerCase() === 'invalid').length
+    if (!n || !confirm(`Delete all ${n} invalid KPI(s)? This cannot be undone.`)) return
+    try {
+      const res = await fetch('/api/kpis?status=invalid', { method: 'DELETE' })
+      if (!res.ok) { const d = await res.json().catch(() => ({})); setError(d.detail || 'Delete invalid KPIs failed'); return }
+      invalidateCache('/api/kpis')
+      loadKpis()
+    } catch (e) { setError(e.message || 'Delete invalid KPIs failed') }
+  }
   const suggestKpis = async () => {
     if (!selectedTables.length) return
     setKpiSuggesting(true); setError(null)
@@ -1222,15 +1259,17 @@ export default function SemanticLayer({ onNavigate, pipelineStats, onRefreshPipe
     setActionLoading(prev => ({ ...prev, [defId]: null }))
   }
 
-  const improveDefinition = async (defId) => {
-    setActionLoading(prev => ({ ...prev, [defId]: 'improve' }))
+  // `focus` (add_measures | add_dimensions | check_filters) comes from an Analyze
+  // refinement button and steers what the LLM expands; null = general improve.
+  const improveDefinition = async (defId, focus = null) => {
+    setActionLoading(prev => ({ ...prev, [defId]: focus || 'improve' }))
     setError(null)
     try {
       const analysisIssues = mvAnalysis[defId] || null
       const res = await fetch(`/api/semantic-layer/definitions/${defId}/improve`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ analysis_issues: analysisIssues }),
+        body: JSON.stringify({ analysis_issues: analysisIssues, focus }),
       })
       const data = await res.json()
       if (!res.ok) setError(data.detail || 'Improve failed')
@@ -2098,13 +2137,54 @@ export default function SemanticLayer({ onNavigate, pipelineStats, onRefreshPipe
             </button>
             <button onClick={() => { setShowKpiForm(true); setKpiEditId(null); setKpiDraft({ name: '', description: '', formula: '', domain: '', target_tables: [] }) }}
               className="px-3 py-1.5 bg-dbx-blue text-white rounded text-xs hover:bg-blue-700">+ Add KPI</button>
+            {kpis.some(k => (k.validation_status || '').toLowerCase() === 'invalid') && (
+              <button onClick={deleteInvalidKpis}
+                title="Delete every KPI whose formula failed to validate against its source table(s)."
+                className="px-3 py-1.5 bg-amber-600 text-white rounded text-xs hover:bg-amber-700">
+                Delete all invalid ({kpis.filter(k => (k.validation_status || '').toLowerCase() === 'invalid').length})
+              </button>
+            )}
             {kpis.length > 0 && (
               <button onClick={deleteAllKpis}
                 className="px-3 py-1.5 bg-red-600 text-white rounded text-xs hover:bg-red-700">Delete All</button>
             )}
           </div>
         </div>
-        
+
+        {/* Validation-status filter. Counts reflect the full library; selecting a
+            filter narrows what's rendered below (invalid KPIs carry their failure
+            reason in the status-badge tooltip). */}
+        {kpis.length > 0 && (() => {
+          const counts = kpis.reduce((acc, k) => {
+            const s = (k.validation_status || '').toLowerCase()
+            acc.all += 1
+            if (s === 'valid') acc.valid += 1
+            else if (s === 'invalid') acc.invalid += 1
+            else if (s === 'empty') acc.empty += 1
+            return acc
+          }, { all: 0, valid: 0, invalid: 0, empty: 0 })
+          const tabs = [
+            ['all', 'All', counts.all],
+            ['valid', 'Valid', counts.valid],
+            ['invalid', 'Invalid', counts.invalid],
+            ['empty', 'No data', counts.empty],
+          ]
+          return (
+            <div className="flex gap-1 mb-3">
+              {tabs.map(([key, label, n]) => (
+                <button key={key} onClick={() => setKpiFilter(key)}
+                  className={`px-2.5 py-1 text-xs rounded-full border ${
+                    kpiFilter === key
+                      ? 'bg-slate-800 text-white border-slate-800 dark:bg-slate-200 dark:text-slate-900 dark:border-slate-200'
+                      : 'border-slate-300 dark:border-slate-600 text-slate-600 dark:text-slate-300 hover:bg-slate-100 dark:hover:bg-slate-700'
+                  }`}>
+                  {label} <span className="opacity-70">({n})</span>
+                </button>
+              ))}
+            </div>
+          )
+        })()}
+
         {showKpiForm && (
           <div className="border border-slate-200 dark:border-slate-700 rounded-lg p-4 mb-3 space-y-2 bg-slate-50 dark:bg-slate-800/50">
             <input value={kpiDraft.name} onChange={e => setKpiDraft(d => ({ ...d, name: e.target.value }))}
@@ -2171,19 +2251,27 @@ export default function SemanticLayer({ onNavigate, pipelineStats, onRefreshPipe
             next.has(key) ? next.delete(key) : next.add(key)
             return next
           })
+          // Apply the validation-status filter to what's rendered (counts above
+          // stay full-library). 'all' is the identity filter.
+          const visibleKpis = kpiFilter === 'all'
+            ? kpis
+            : kpis.filter(k => (k.validation_status || '').toLowerCase() === kpiFilter)
+          if (visibleKpis.length === 0) return (
+            <p className="text-xs text-slate-400 dark:text-slate-500">No {kpiFilter} KPIs.</p>
+          )
           if (!profiles.length) return (
             <div>
               <p className="text-xs text-slate-400 dark:text-slate-500 mb-2">Create a Question Profile above to organize KPIs.</p>
-              <div className="space-y-1.5">{kpis.map(k => <KpiRow key={k.kpi_id} k={k} />)}</div>
+              <div className="space-y-1.5">{visibleKpis.map(k => <KpiRow key={k.kpi_id} k={k} />)}</div>
             </div>
           )
           const assigned = new Set()
           const sections = profiles.map(p => {
-            const matched = kpis.filter(k => k.profile_id === p.profile_id)
+            const matched = visibleKpis.filter(k => k.profile_id === p.profile_id)
             matched.forEach(k => assigned.add(k.kpi_id))
             return { key: p.profile_id, label: p.profile_name, kpis: matched }
           }).filter(s => s.kpis.length > 0)
-          const unassigned = kpis.filter(k => !assigned.has(k.kpi_id))
+          const unassigned = visibleKpis.filter(k => !assigned.has(k.kpi_id))
           return (
             <div className="space-y-3">
               {sections.map(s => {
@@ -2311,17 +2399,13 @@ export default function SemanticLayer({ onNavigate, pipelineStats, onRefreshPipe
         <p className="text-sm text-gray-500 dark:text-gray-400 mb-3">
           Uses AI to analyze your questions against the catalog metadata for the selected tables and generate metric view definitions.
         </p>
-        <label className="flex items-center gap-2 mb-4 cursor-pointer select-none">
-          <input type="checkbox" checked={generationStyle === 'targeted'}
-            onChange={e => setGenerationStyle(e.target.checked ? 'targeted' : 'comprehensive')}
-            className="accent-dbx-lava w-4 h-4" />
-          <span className="text-sm font-medium text-slate-700 dark:text-slate-200">Targeted (theme-based)</span>
-          <span className="text-xs text-slate-400 dark:text-slate-500 ml-1">
-            {generationStyle === 'targeted'
-              ? 'Creates smaller views organized by analytical theme'
-              : 'Best practice: one comprehensive view per fact-table grain'}
-          </span>
-        </label>
+        {/* Targeted (theme-based) generation is hidden for now -- the fact-grain
+            ("comprehensive") strategy is the recommended approach and the one we're
+            hardening. generationStyle stays 'comprehensive' (its default) so the
+            payload is unchanged; restore this toggle to re-expose the theme mode. */}
+        <p className="text-xs text-slate-400 dark:text-slate-500 mb-4">
+          Best practice: one comprehensive metric view per fact-table grain.
+        </p>
         {(() => {
           const recommended = erdSufficiency?.metric_views_recommended
             || Math.min(Math.max(Math.floor(selectedTables.length / 3), 2), 15)
@@ -2958,8 +3042,9 @@ export default function SemanticLayer({ onNavigate, pipelineStats, onRefreshPipe
                     <MvAnalysisPanel issues={mvAnalysis[d.definition_id]}
                       onClose={() => setMvAnalysisExpanded(null)}
                       appliedFields={mvAppliedFields[d.definition_id]}
-                      busy={actionLoading[d.definition_id] === 'apply-fix'}
-                      onApplyFix={(path, value) => applyFieldFix(d.definition_id, path, value)} />
+                      busy={actionLoading[d.definition_id]}
+                      onApplyFix={(path, value) => applyFieldFix(d.definition_id, path, value)}
+                      onRefine={(focus) => improveDefinition(d.definition_id, focus)} />
                   )}
 
                   {/* MV Test-query results panel */}
