@@ -72,6 +72,30 @@ class TestToolRegistration:
         for t in asyncio.run(srv.list_tools()):
             assert t.description and len(t.description) > 20
 
+    def test_module_has_no_future_annotations_import(self):
+        """`from __future__ import annotations` stringifies annotations, which
+        crashes tool registration (issubclass on a str) on mcp 1.10-1.12 and thus
+        app startup. It must never be reintroduced into mcp_server.py."""
+        import os
+        path = os.path.join(APP_DIR, "mcp_server.py")
+        with open(path) as f:
+            # A real import is a statement at column 0; the explanatory comment that
+            # mentions the string is indented / prefixed with '#', so match line starts.
+            offending = [
+                ln for ln in f.read().splitlines()
+                if ln.strip().startswith("from __future__ import annotations")
+            ]
+        assert not offending, f"future-annotations import present: {offending}"
+
+    def test_tool_annotations_are_real_classes_not_strings(self):
+        """Guards the stringified-annotation crash at the behavior level: every tool
+        parameter annotation must be a real class/type, not a str."""
+        m = _fresh_mcp_server()
+        srv = m.get_mcp_server()
+        # Registration itself exercises the mcp path that crashed; also assert types.
+        tools = asyncio.run(srv.list_tools())
+        assert len(tools) == 3
+
     def test_build_asgi_app_mounts_at_mcp(self):
         m = _fresh_mcp_server()
         app = m.build_mcp_asgi_app()

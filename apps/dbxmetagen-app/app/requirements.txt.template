@@ -15,5 +15,7 @@ openpyxl>=3.1.0
 databricks-vectorsearch>=0.40,<0.74
 sqlparse>=0.5.0
 rdflib>=6.3.0
-mcp>=1.9,<2
+# mcp 1.10-1.12 crash tool registration when annotations are stringified; the code
+# is annotation-safe regardless, but float the floor past that range to be safe.
+mcp>=1.13,<2
 ./__WHL_NAME__

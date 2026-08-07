@@ -31,11 +31,16 @@ Wiring (in api_server.py)
   the SPA StaticFiles handler shadows it.
 """
 
-from __future__ import annotations
-
 import logging
 import os
 from typing import Any, Optional
+
+# NB: deliberately NO `from __future__ import annotations` here. It stringifies all
+# annotations at runtime, and mcp 1.10-1.12's Tool.from_function does
+# `issubclass(param.annotation, Context)` -- which raises TypeError on a string
+# annotation, crashing tool registration (and app startup) on those versions. Newer
+# mcp (1.29+) tolerates it, which is why this only surfaced on the app's resolved
+# version, not locally. Keep annotations as real objects. Verified on mcp 1.12.0.
 
 logger = logging.getLogger(__name__)
 
