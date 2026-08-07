@@ -2,7 +2,7 @@ import React, { useState, useEffect, useCallback, useMemo, useRef } from 'react'
 import {
   ReactFlow, Background, Controls, MiniMap,
   useNodesState, useEdgesState, addEdge, Handle, Position,
-  BaseEdge, EdgeLabelRenderer, getBezierPath,
+  BaseEdge, getBezierPath,
 } from '@xyflow/react'
 import '@xyflow/react/dist/style.css'
 import dagre from 'dagre'
@@ -81,72 +81,97 @@ function _parseOn(on) {
 }
 
 // --- Custom table node --------------------------------------------------------
+// Node geometry -- fixed metrics so per-column handles can be positioned by row
+// index deterministically (rather than relying on DOM measurement of nested rows).
+const NODE_HEADER_H = 24    // colored title bar
+const NODE_KEYROW_H = 18    // each join-key column row
+const NODE_META_H = 16      // measures line
+
+// Estimated node height for the dagre layout, given the join-key column count.
+function _nodeHeight(keyCount, hasMeta) {
+  return NODE_HEADER_H + keyCount * NODE_KEYROW_H + (hasMeta ? NODE_META_H : 0) + 4
+}
+
+// A table node rendered like an ERD entity: the join-key columns are listed UNDER
+// the table name (one row each), and each column has its own left/right connection
+// handle so relationship lines attach column-to-column. "Chosen" keys (columns that
+// participate in a confirmed join) are highlighted. `data._keyCols` = [{col, chosen}]
+// is derived from the current edge set (see the key-derivation effect).
 function TableNode({ data }) {
   const style = ROLE_STYLES[data.role] || ROLE_STYLES.source
+  const keyCols = data._keyCols || []
   return (
-    <div className={`rounded-md border shadow-sm bg-white dark:bg-dbx-navy-500 min-w-[150px] max-w-[220px] ${data._selected ? 'ring-2 ring-dbx-lava border-dbx-lava' : 'dark:border-slate-600'}`}>
-      <Handle type="target" position={Position.Left} className="!bg-slate-400" />
-      <div className="px-2 py-1 rounded-t-md text-white text-xs font-semibold flex items-center justify-between gap-1"
-        style={{ background: style.bg }}>
+    <div className={`rounded-md border shadow-sm bg-white dark:bg-dbx-navy-500 min-w-[160px] max-w-[240px] ${data._selected ? 'ring-2 ring-dbx-lava border-dbx-lava' : 'dark:border-slate-600'}`}>
+      {/* Default (id-less) handles: fallback for edges whose join columns are not
+          set yet, so a freshly-drawn edge never vanishes. Pinned to the header. */}
+      <Handle type="target" position={Position.Left} style={{ top: NODE_HEADER_H / 2 }} className="!bg-slate-400" />
+      <Handle type="source" position={Position.Right} style={{ top: NODE_HEADER_H / 2 }} className="!bg-slate-400" />
+      {/* Per-column handles, positioned by row so lines attach to the exact column. */}
+      {keyCols.map((k, i) => {
+        const top = NODE_HEADER_H + i * NODE_KEYROW_H + NODE_KEYROW_H / 2
+        return (
+          <React.Fragment key={`h-${k.col}`}>
+            <Handle type="target" position={Position.Left} id={k.col} style={{ top }} className={k.chosen ? '!bg-amber-500' : '!bg-slate-400'} />
+            <Handle type="source" position={Position.Right} id={k.col} style={{ top }} className={k.chosen ? '!bg-amber-500' : '!bg-slate-400'} />
+          </React.Fragment>
+        )
+      })}
+      <div className="rounded-t-md text-white text-xs font-semibold flex items-center justify-between gap-1 px-2"
+        style={{ background: style.bg, height: NODE_HEADER_H }}>
         <span className="truncate" title={data.table}>{_short(data.table)}</span>
         <span className="text-[9px] uppercase tracking-wide opacity-90">{style.label}</span>
       </div>
-      <div className="px-2 py-1 text-[10px] text-slate-500 dark:text-slate-400 leading-snug">
-        {data.grain && <div>key: <span className="font-mono">{data.grain}</span></div>}
-        {data.measurable_columns?.length > 0 && (
-          <div className="truncate" title={data.measurable_columns.join(', ')}>
-            {data.measurable_columns.length} measure{data.measurable_columns.length === 1 ? '' : 's'}
-          </div>
-        )}
-      </div>
-      <Handle type="source" position={Position.Right} className="!bg-slate-400" />
+      {keyCols.length > 0 && (
+        <div className="border-t border-slate-100 dark:border-slate-600">
+          {keyCols.map(k => (
+            <div key={k.col}
+              className={`flex items-center gap-1 px-2 font-mono text-[10px] truncate ${
+                k.chosen
+                  ? 'bg-amber-50 dark:bg-amber-900/30 text-amber-800 dark:text-amber-300 font-semibold'
+                  : 'text-slate-500 dark:text-slate-400'
+              }`}
+              style={{ height: NODE_KEYROW_H }}
+              title={`${k.col}${k.chosen ? ' (chosen join key)' : ' (candidate join key)'}`}>
+              <span className="w-2 text-center">{k.chosen ? '◈' : '○'}</span>
+              <span className="truncate">{k.col}</span>
+            </div>
+          ))}
+        </div>
+      )}
+      {data.measurable_columns?.length > 0 && (
+        <div className="px-2 text-[10px] text-slate-400 dark:text-slate-500 truncate border-t border-slate-100 dark:border-slate-600"
+          style={{ height: NODE_META_H, lineHeight: `${NODE_META_H}px` }}
+          title={data.measurable_columns.join(', ')}>
+          {data.measurable_columns.length} measure{data.measurable_columns.length === 1 ? '' : 's'}
+        </div>
+      )}
     </div>
   )
 }
 
 const nodeTypes = { table: TableNode }
 
-// Custom edge that separates PARALLEL joins between the same table pair. Two
-// fact tables (or a fact and dim) can be joined on more than one column pair;
-// the default bezier draws every such edge on the identical path, so they hide
-// each other. We fan them out by offsetting the control point by the edge's
-// index among its siblings (parallelIndex / parallelCount, injected in
-// buildGraph), and always render the join columns as a small label so each
-// edge is individually visible and clickable.
+// Custom edge for the column-to-column ERD. Now that each join line attaches to a
+// specific column handle on each table (sourceHandle/targetHandle = the column
+// name), the line itself shows which columns join, so the persistent src=dst label
+// is gone (it survives as a hover tooltip on the canvas). We still fan out any
+// residual PARALLEL joins between the same pair whose column handles could not be
+// resolved (e.g. columns not set yet), so they don't perfectly overlap.
 function ParallelEdge({ id, sourceX, sourceY, targetX, targetY,
                         sourcePosition, targetPosition, style, markerEnd, data }) {
   const count = data?.parallelCount || 1
   const idx = data?.parallelIndex || 0
-  // Symmetric offset: for count=1 -> 0; count=2 -> [-1,+1]*step; etc.
+  // Only offset when handles are unresolved (both column ends known -> the handles
+  // already separate the lines, so draw straight beziers). data._resolved is set in
+  // buildGraph / on column edits.
+  const resolved = data?._resolved
   const step = 26
-  const offset = count > 1 ? (idx - (count - 1) / 2) * step : 0
-  const [path, labelX, labelY] = getBezierPath({
+  const offset = (!resolved && count > 1) ? (idx - (count - 1) / 2) * step : 0
+  const [path] = getBezierPath({
     sourceX, sourceY, sourcePosition, targetX, targetY, targetPosition,
-    // Bow the curve outward proportional to the offset so parallels separate.
     curvature: 0.25 + Math.abs(offset) / 200,
   })
-  const label = data?.on
-    ? `${data.src_column || '?'} = ${data.dst_column || '?'}`
-    : null
-  return (
-    <>
-      <BaseEdge id={id} path={path} style={style} markerEnd={markerEnd} />
-      {label && (
-        <EdgeLabelRenderer>
-          <div
-            className="nodrag nopan absolute px-1 py-0.5 rounded bg-white/90 dark:bg-dbx-navy-600
-                       text-[9px] font-mono text-slate-600 dark:text-slate-300 border
-                       border-slate-200 dark:border-slate-600 pointer-events-none"
-            style={{
-              transform: `translate(-50%, -50%) translate(${labelX}px, ${labelY + offset}px)`,
-            }}
-          >
-            {label}
-          </div>
-        </EdgeLabelRenderer>
-      )}
-    </>
-  )
+  return <BaseEdge id={id} path={path} style={style} markerEnd={markerEnd} />
 }
 
 const edgeTypes = { parallel: ParallelEdge }
@@ -155,13 +180,19 @@ const edgeTypes = { parallel: ParallelEdge }
 function layout(nodes, edges) {
   const g = new dagre.graphlib.Graph()
   g.setDefaultEdgeLabel(() => ({}))
-  g.setGraph({ rankdir: 'LR', nodesep: 40, ranksep: 90 })
-  nodes.forEach(n => g.setNode(n.id, { width: 200, height: 70 }))
+  g.setGraph({ rankdir: 'LR', nodesep: 40, ranksep: 110 })
+  const W = 200
+  const heights = {}
+  nodes.forEach(n => {
+    const h = _nodeHeight((n.data._keyCols || []).length, (n.data.measurable_columns || []).length > 0)
+    heights[n.id] = h
+    g.setNode(n.id, { width: W, height: h })
+  })
   edges.forEach(e => g.setEdge(e.source, e.target))
   dagre.layout(g)
   return nodes.map(n => {
     const p = g.node(n.id)
-    return { ...n, position: { x: p.x - 100, y: p.y - 35 } }
+    return { ...n, position: { x: p.x - W / 2, y: p.y - heights[n.id] / 2 } }
   })
 }
 
@@ -171,6 +202,42 @@ function _edgeStyle(source) {
     strokeWidth: 1.5,
     strokeDasharray: source === 'predicted' ? '4 3' : undefined,
   }
+}
+
+// All column pairs an edge encodes (primary + composite extras), as
+// [{src, dst}]. Reads the structured pairs when present, else parses `on`.
+function _edgePairs(data) {
+  if (!data) return []
+  const pairs = []
+  if (data.src_column && data.dst_column) pairs.push({ src: data.src_column, dst: data.dst_column })
+  for (const p of (data.extra_pairs || [])) {
+    if (p.src && p.dst) pairs.push({ src: p.src, dst: p.dst })
+  }
+  return pairs
+}
+
+// Derive, for every table, the join-key columns to list under it and whether each
+// is "chosen" (participates in a CONFIRMED join) vs a candidate (predicted only).
+// Returns { [table]: [{col, chosen}] } with chosen keys first, then candidates,
+// each group sorted for stable rendering.
+function deriveKeyCols(nodes, edges) {
+  const map = {}   // table -> { col -> chosen(bool) }
+  const ensure = (t) => (map[t] = map[t] || {})
+  for (const e of edges) {
+    const chosen = e.data?.source === 'confirmed'
+    for (const p of _edgePairs(e.data)) {
+      const s = ensure(e.source); s[p.src] = (s[p.src] || false) || chosen
+      const d = ensure(e.target); d[p.dst] = (d[p.dst] || false) || chosen
+    }
+  }
+  const out = {}
+  for (const n of nodes) {
+    const cols = map[n.id] || {}
+    const rows = Object.entries(cols).map(([col, chosen]) => ({ col, chosen }))
+    rows.sort((a, b) => (b.chosen - a.chosen) || a.col.localeCompare(b.col))
+    out[n.id] = rows
+  }
+  return out
 }
 
 // Simple client cache for the (costly) AI explanation, keyed on project + model hash.
@@ -225,18 +292,24 @@ export default function ErdDesigner({ tables, projectId, profileId, businessCont
       const pk = [e.src, e.dst].map(s => (s || '').toLowerCase()).sort().join('::')
       const parallelIndex = pairSeen[pk] || 0
       pairSeen[pk] = parallelIndex + 1
+      const resolved = !!(cols.src_column && cols.dst_column)
       return {
         id: `${e.src}::${e.dst}::${i}`,
         source: e.src, target: e.dst,
+        // Attach each end to its column handle so the line is column-to-column.
+        sourceHandle: cols.src_column || null,
+        targetHandle: cols.dst_column || null,
         type: 'parallel',
         style: _edgeStyle(e.source),
         data: {
           on: e.on, confidence: e.confidence, source: e.source, ...cols,
-          parallelIndex, parallelCount: pairCounts[pk] || 1,
+          parallelIndex, parallelCount: pairCounts[pk] || 1, _resolved: resolved,
         },
       }
     })
-    setNodes(layout(flowNodes, flowEdges))
+    const keyCols = deriveKeyCols(flowNodes, flowEdges)
+    const nodesWithKeys = flowNodes.map(n => ({ ...n, data: { ...n.data, _keyCols: keyCols[n.id] || [] } }))
+    setNodes(layout(nodesWithKeys, flowEdges))
     setEdges(flowEdges)
     setSufficiency(rec.sufficiency || null)
     setSchemaType(rec.schema_type || 'SIMPLE')
@@ -281,11 +354,16 @@ export default function ErdDesigner({ tables, projectId, profileId, businessCont
     // Monotonic id so add/remove/re-add between the same pair never collides
     // (a length-based suffix can repeat after a removal).
     const id = `${conn.source}::${conn.target}::manual::${manualEdgeSeq.current++}`
+    // If the user dragged from a specific column handle to another, pre-fill the
+    // join columns (handle id == column name) so the ERD line and editor agree.
+    const srcCol = conn.sourceHandle || ''
+    const dstCol = conn.targetHandle || ''
+    const base = { on: '', confidence: 1.0, source: 'confirmed', src_column: srcCol, dst_column: dstCol }
     setEdges(eds => addEdge({
       ...conn, id,
       type: 'parallel',
       style: _edgeStyle('confirmed'),
-      data: { on: '', confidence: 1.0, source: 'confirmed', src_column: '', dst_column: '' },
+      data: (srcCol && dstCol) ? _withJoinCondition(base, conn.target) : base,
     }, eds))
     setSelectedEdgeId(id)   // open the join editor immediately
     ensureColumns(conn.source); ensureColumns(conn.target)
@@ -401,6 +479,47 @@ export default function ErdDesigner({ tables, projectId, profileId, businessCont
     if (changed) setEdges(next)
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [edgePairSig])
+
+  // Keep the ERD column view in sync with the edges: (1) each edge's
+  // source/target Handle follows its current join columns so the line attaches to
+  // the right column rows, and (2) every node's `_keyCols` (the columns listed
+  // under it + which are chosen) is re-derived. Keyed on a signature of endpoints
+  // + columns + confirmed-ness so it only runs on a real change (no render loop).
+  const edgeColSig = edges
+    .map(e => `${e.source}>${e.target}:${e.data?.src_column || ''}=${e.data?.dst_column || ''}:${e.data?.source || ''}:${(e.data?.extra_pairs || []).map(p => `${p.src}=${p.dst}`).join('+')}`)
+    .join('|')
+  useEffect(() => {
+    // (1) Sync handles + _resolved on edges.
+    let edgeChanged = false
+    const nextEdges = edges.map(e => {
+      const sh = e.data?.src_column || null
+      const th = e.data?.dst_column || null
+      const resolved = !!(sh && th)
+      if (e.sourceHandle !== sh || e.targetHandle !== th || e.data?._resolved !== resolved) {
+        edgeChanged = true
+        return { ...e, sourceHandle: sh, targetHandle: th, data: { ...e.data, _resolved: resolved } }
+      }
+      return e
+    })
+    if (edgeChanged) setEdges(nextEdges)
+
+    // (2) Re-derive per-node key columns and write back only on change.
+    const keyCols = deriveKeyCols(nodes, nextEdges)
+    setNodes(nds => {
+      let nodeChanged = false
+      const out = nds.map(n => {
+        const nextKeys = keyCols[n.id] || []
+        const prevKeys = n.data._keyCols || []
+        const same = prevKeys.length === nextKeys.length &&
+          prevKeys.every((k, i) => k.col === nextKeys[i].col && k.chosen === nextKeys[i].chosen)
+        if (same) return n
+        nodeChanged = true
+        return { ...n, data: { ...n.data, _keyCols: nextKeys } }
+      })
+      return nodeChanged ? out : nds
+    })
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [edgeColSig])
 
   const save = useCallback(async () => {
     if (!projectId) { setError('Select a project to save the model.'); return }
