@@ -96,11 +96,15 @@ class TestToolRegistration:
         tools = asyncio.run(srv.list_tools())
         assert len(tools) == 1
 
-    def test_build_asgi_app_mounts_at_mcp(self):
+    def test_build_asgi_app_uses_clean_root_route(self):
+        """streamable_http_path must be '/' so the sub-app's internal route is '/'.
+        Mounted at '/mcp' in api_server, that yields a clean '/mcp' endpoint instead
+        of the doubled '/mcp/mcp' the default ('/mcp') would produce."""
         m = _fresh_mcp_server()
         app = m.build_mcp_asgi_app()
         paths = [getattr(r, "path", "") for r in app.routes]
-        assert any("/mcp" in p for p in paths)
+        assert "/" in paths
+        assert "/mcp" not in paths  # the internal doubled route must be gone
 
 
 class TestTransportSecurity:

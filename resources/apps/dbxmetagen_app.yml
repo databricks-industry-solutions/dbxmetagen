@@ -62,7 +62,7 @@ resources:
             value: "databricks-claude-sonnet-4-6"
           - name: ENABLE_OBO
             value: "${var.enable_obo}"
-          # ENABLE_AGENT_MCP: mount a custom MCP server at /mcp/mcp exposing the
+          # ENABLE_AGENT_MCP: mount a custom MCP server at /mcp/ exposing the
           # metadata research AGENT (single ask_metadata_agent tool -- not just the
           # managed UC-function/vector-search MCP servers) so another agent can
           # delegate whole metadata questions. Off by default. Runs under the invoking

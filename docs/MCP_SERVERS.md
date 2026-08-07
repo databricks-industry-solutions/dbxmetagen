@@ -240,7 +240,7 @@ The dashboard agent uses **free-form SQL** tools (`execute_metadata_sql`, `execu
 
 The two managed servers above expose the metadata *data* as purpose-built query tools. They cannot expose the metadata **agent's reasoning** -- the multi-hop GraphRAG research pipeline. When you want *another agent* (e.g. a Databricks Model Serving / Agent Bricks agent) to delegate a whole metadata question and get a synthesized answer, dbxmetagen can host a **custom MCP server on the app itself** that surfaces the research agent behind a single tool.
 
-**Route:** `https://<app-hostname>/mcp/mcp` (streamable-HTTP transport; the `/mcp` app mount + FastMCP's internal `/mcp` route)
+**Route:** `https://<app-hostname>/mcp/` (streamable-HTTP transport). Use the trailing slash -- `/mcp` returns a 307 redirect to `/mcp/` (fine for redirect-following MCP clients, incl. the standard SDK).
 
 **Tool:**
 
@@ -257,6 +257,6 @@ Off by default. Set the bundle variable `enable_agent_mcp=true` (env `ENABLE_AGE
 The custom server runs each tool call under the **invoking user's** Unity Catalog identity via the app's existing OBO path -- the agent's tools resolve identity through the same `_get_effective_client()` chokepoint used everywhere else, reading the `x-forwarded-access-token` the app receives. So:
 
 - Set `enable_obo=true` and the OBO `user_api_scopes` (see [PERMISSIONS.md](PERMISSIONS.md)) so the app is allowed to act for the user.
-- **The calling agent must forward the end user's token** to `/mcp/mcp`. Whether a Databricks Model Serving agent can propagate the invoking user's token to a downstream App-hosted MCP server is **not currently documented by Databricks** -- validate this against your caller before relying on end-to-end user identity. If the token is absent, calls fall back to the app service principal (same semantics as every other route).
+- **The calling agent must forward the end user's token** to `/mcp/`. Whether a Databricks Model Serving agent can propagate the invoking user's token to a downstream App-hosted MCP server is **not currently documented by Databricks** -- validate this against your caller before relying on end-to-end user identity. If the token is absent, calls fall back to the app service principal (same semantics as every other route).
 
 **Host pinning:** By default the `/mcp` route disables MCP's DNS-rebinding host check, because Databricks Apps ingress already terminates TLS and authenticates the caller (the default localhost-only allowlist would otherwise reject every request behind ingress with `421`). To pin to specific hostnames, set `MCP_ALLOWED_HOSTS` (comma-separated).

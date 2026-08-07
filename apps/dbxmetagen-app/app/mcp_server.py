@@ -111,6 +111,11 @@ def get_mcp_server() -> "FastMCP":
         ),
         stateless_http=True,
         transport_security=_transport_security(),
+        # FastMCP routes its handler at streamable_http_path (default "/mcp") INSIDE the
+        # sub-app. Since we mount the sub-app at "/mcp" in api_server, the default would
+        # produce a doubled "/mcp/mcp". Set it to "/" so the effective endpoint is a
+        # clean "/mcp". Accepted across the mcp 1.x range (incl. 1.12 via settings).
+        streamable_http_path="/",
     )
     _register_tools(server)
     _mcp_singleton = server
