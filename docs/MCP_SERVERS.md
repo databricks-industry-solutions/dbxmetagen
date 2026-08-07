@@ -2,6 +2,8 @@
 
 dbxmetagen exposes its metadata assets -- knowledge base, knowledge graph, and vector index -- as [Databricks Managed MCP servers](https://docs.databricks.com/aws/en/generative-ai/mcp). This lets any MCP-compatible client (Cursor, Claude Code, AI Playground, custom agents) query your metadata catalog using natural tool invocations.
 
+There are **two managed servers** (data/query tools) plus an **optional custom server** that exposes the metadata *agent* itself. See [Custom agent MCP server](#custom-agent-mcp-server-optional) below for the agent surface.
+
 ## Architecture
 
 ```mermaid
@@ -233,3 +235,30 @@ The dashboard agent uses **free-form SQL** tools (`execute_metadata_sql`, `execu
 | `fk_predictions` | AI-predicted foreign key relationships with confidence scores, join rates, and reasoning |
 | `ontology_entities` | Discovered business entities mapped to ontology types (FHIR, OMOP, Schema.org, etc.) |
 | `metadata_vs_index` | Vector Search index over all metadata documents (tables, columns, entities, FKs, metric views) |
+
+## Custom agent MCP server (optional)
+
+The two managed servers above expose the metadata *data* as purpose-built query tools. They cannot expose the metadata **agent's reasoning** -- the intent-routed ReAct agent and the multi-hop GraphRAG deep-analysis pipeline. When you want *another agent* (e.g. a Databricks Model Serving / Agent Bricks agent) to delegate a whole metadata question and get a synthesized answer, dbxmetagen can host a **custom MCP server on the app itself** at `/mcp`.
+
+**Route:** `https://<app-hostname>/mcp` (streamable-HTTP transport)
+
+**Tools:**
+
+| Tool | Arguments | Description |
+|------|-----------|-------------|
+| `metadata_agent_query` | `question`, `mode?` | Run the intent-routed metadata agent (vector search + KB SQL + graph) and return its synthesized answer. `mode` = `quick` (default) or `graphrag`. |
+| `deep_analysis_submit` | `question`, `mode?` | Start a long-running GraphRAG deep analysis as a background task; returns `{task_id}`. `mode` = `graphrag` (default) or `baseline`. |
+| `deep_analysis_poll` | `task_id` | Poll a `deep_analysis_submit` task until `status` is `done` or `error`. |
+
+**Enabling it:**
+
+Off by default. Set the bundle variable `enable_agent_mcp=true` (env `ENABLE_AGENT_MCP=true`) and redeploy. The `mcp` package is included in the app requirements.
+
+**Authentication (on-behalf-of user):**
+
+The custom server runs each tool call under the **invoking user's** Unity Catalog identity via the app's existing OBO path -- the agent's tools resolve identity through the same `_get_effective_client()` chokepoint used everywhere else, reading the `x-forwarded-access-token` the app receives. So:
+
+- Set `enable_obo=true` and the OBO `user_api_scopes` (see [PERMISSIONS.md](PERMISSIONS.md)) so the app is allowed to act for the user.
+- **The calling agent must forward the end user's token** to `/mcp`. Whether a Databricks Model Serving agent can propagate the invoking user's token to a downstream App-hosted MCP server is **not currently documented by Databricks** -- validate this against your caller before relying on end-to-end user identity. If the token is absent, calls fall back to the app service principal (same semantics as every other route).
+
+**Host pinning:** By default the `/mcp` route disables MCP's DNS-rebinding host check, because Databricks Apps ingress already terminates TLS and authenticates the caller (the default localhost-only allowlist would otherwise reject every request behind ingress with `421`). To pin to specific hostnames, set `MCP_ALLOWED_HOSTS` (comma-separated).

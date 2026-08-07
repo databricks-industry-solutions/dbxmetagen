@@ -129,6 +129,13 @@ _genie_tasks: dict[str, dict] = {}
 
 _ws: Optional[WorkspaceClient] = None
 _OBO_ENABLED = os.environ.get("ENABLE_OBO", "false").lower() == "true"
+# Custom agent MCP route (mcp_server.py). Off by default -- opt-in via env so it
+# never ships enabled to customers. Also requires the `mcp` package to be present.
+try:
+    from mcp_server import mcp_enabled as _mcp_enabled
+    _AGENT_MCP_ENABLED = _mcp_enabled()
+except Exception:  # mcp_server import issues must never block app startup
+    _AGENT_MCP_ENABLED = False
 _obo_token_var: contextvars.ContextVar[Optional[str]] = contextvars.ContextVar(
     "_obo_token_var", default=None
 )
@@ -670,6 +677,16 @@ async def lifespan(app: FastAPI):
     for r in app.routes:
         if hasattr(r, "methods"):
             logger.info("  %s %s", r.methods, r.path)
+
+    # Custom agent MCP route (gated on ENABLE_AGENT_MCP): the mounted streamable-HTTP
+    # sub-app needs its session manager driven by the parent app's lifespan.
+    if _AGENT_MCP_ENABLED:
+        from mcp_server import get_mcp_server
+        logger.info("Custom agent MCP route enabled -- starting MCP session manager at /mcp")
+        async with get_mcp_server().session_manager.run():
+            yield
+        return
+
     yield
 
 
@@ -15549,6 +15566,16 @@ def metric_view_agent_stream(req: dict):
 # ---------------------------------------------------------------------------
 # Serve React static files (production build)
 # ---------------------------------------------------------------------------
+
+# Custom agent MCP route -- MUST mount before the "/" static catch-all below, or
+# the SPA StaticFiles handler shadows it. Gated on ENABLE_AGENT_MCP (+ mcp installed).
+if _AGENT_MCP_ENABLED:
+    try:
+        from mcp_server import build_mcp_asgi_app
+        app.mount("/mcp", build_mcp_asgi_app(), name="agent-mcp")
+        logger.info("Mounted custom agent MCP server at /mcp")
+    except Exception as e:
+        logger.error("Failed to mount agent MCP route (continuing without it): %s", e)
 
 static_dir = os.path.join(os.path.dirname(__file__), "src", "dist")
 if os.path.isdir(static_dir):

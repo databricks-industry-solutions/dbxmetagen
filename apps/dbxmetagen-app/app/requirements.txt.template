@@ -15,4 +15,5 @@ openpyxl>=3.1.0
 databricks-vectorsearch>=0.40,<0.74
 sqlparse>=0.5.0
 rdflib>=6.3.0
+mcp>=1.9,<2
 ./__WHL_NAME__

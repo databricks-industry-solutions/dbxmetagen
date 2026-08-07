@@ -328,3 +328,6 @@ variables:
   enable_obo:
     description: "Enable On-Behalf-Of user authentication for the app. When true, catalog browsing and SQL queries run under the logged-in user's identity (requires workspace admin to enable user auth for the app). When false, all operations use the app service principal."
     default: false
+  enable_agent_mcp:
+    description: "Mount a custom MCP server at /mcp exposing the metadata AGENT (metadata_agent_query + deep_analysis_submit/poll) so another agent can delegate whole metadata questions. Off by default. Runs under the invoking user's identity via OBO (set enable_obo=true + user_api_scopes). See docs/MCP_SERVERS.md."
+    default: false
