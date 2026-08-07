@@ -62,13 +62,14 @@ resources:
             value: "databricks-claude-sonnet-4-6"
           - name: ENABLE_OBO
             value: "${var.enable_obo}"
-          # ENABLE_AGENT_MCP: mount a custom MCP server at /mcp exposing the
-          # metadata AGENT (not just the managed UC-function/vector-search MCP
-          # servers) so another agent can delegate whole metadata questions. Off by
-          # default. Runs under the invoking user's identity via OBO -- set enable_obo
-          # true and the OBO user_api_scopes too. Optional MCP_ALLOWED_HOSTS pins the
-          # route to specific app hostnames (default: host check disabled, since Apps
-          # ingress authenticates). See docs/MCP_SERVERS.md.
+          # ENABLE_AGENT_MCP: mount a custom MCP server at /mcp/mcp exposing the
+          # metadata research AGENT (single ask_metadata_agent tool -- not just the
+          # managed UC-function/vector-search MCP servers) so another agent can
+          # delegate whole metadata questions. Off by default. Runs under the invoking
+          # user's identity via OBO -- set enable_obo true and the OBO user_api_scopes
+          # too. Optional MCP_ALLOWED_HOSTS pins the route to specific app hostnames
+          # (default: host check disabled, since Apps ingress authenticates). See
+          # docs/MCP_SERVERS.md.
           - name: ENABLE_AGENT_MCP
             value: "${var.enable_agent_mcp}"
           # APP_DISPLAY_NAME is intentionally omitted: DAB config.env cannot carry an

@@ -56,11 +56,11 @@ class TestMcpGating:
 # Tool registration
 # ---------------------------------------------------------------------------
 class TestToolRegistration:
-    def test_all_three_tools_registered(self):
+    def test_single_research_tool_registered(self):
         m = _fresh_mcp_server()
         srv = m.get_mcp_server()
         names = {t.name for t in asyncio.run(srv.list_tools())}
-        assert names == {"metadata_agent_query", "deep_analysis_submit", "deep_analysis_poll"}
+        assert names == {"ask_metadata_agent"}
 
     def test_server_is_singleton(self):
         m = _fresh_mcp_server()
@@ -88,13 +88,13 @@ class TestToolRegistration:
         assert not offending, f"future-annotations import present: {offending}"
 
     def test_tool_annotations_are_real_classes_not_strings(self):
-        """Guards the stringified-annotation crash at the behavior level: every tool
-        parameter annotation must be a real class/type, not a str."""
+        """Guards the stringified-annotation crash at the behavior level: the tool
+        must register (which exercises the mcp path that crashed on stringified
+        annotations)."""
         m = _fresh_mcp_server()
         srv = m.get_mcp_server()
-        # Registration itself exercises the mcp path that crashed; also assert types.
         tools = asyncio.run(srv.list_tools())
-        assert len(tools) == 3
+        assert len(tools) == 1
 
     def test_build_asgi_app_mounts_at_mcp(self):
         m = _fresh_mcp_server()
@@ -131,72 +131,73 @@ class TestTransportSecurity:
 
 
 # ---------------------------------------------------------------------------
-# Delegation to api_server (mocked) -- tools reuse the exact HTTP paths
+# ask_metadata_agent delegation to the research agent (run_deep_analysis, stubbed)
 # ---------------------------------------------------------------------------
-class TestDelegation:
-    def _install_fake_api_server(self, monkeypatch, submit=None, poll=None):
-        fake = types.ModuleType("api_server")
-
-        class AgentChatRequest:  # mirror the real pydantic model shape
-            def __init__(self, message="", history=None, mode="quick", session_id=""):
-                self.message = message
-                self.mode = mode
-                self.history = history or []
-                self.session_id = session_id
-
-        fake.AgentChatRequest = AgentChatRequest
-        fake.agent_deep_submit = submit or (lambda req: {"task_id": "abc123"})
-
-        def _default_poll(task_id):
-            return {"status": "done", "answer": "ok", "task_id": task_id}
-
-        fake.agent_deep_poll = poll or _default_poll
-        monkeypatch.setitem(sys.modules, "api_server", fake)
-        return fake
+class TestAskMetadataAgent:
+    def _install_agent_stubs(self, monkeypatch, run=None, validate=None):
+        """Stub agent.deep_analysis.run_deep_analysis + agent.guardrails.validate_input,
+        which ask_metadata_agent imports at call time."""
+        da = types.ModuleType("agent.deep_analysis")
+        da.run_deep_analysis = run or (lambda q, mode: {"answer": "ok", "mode": mode})
+        gr = types.ModuleType("agent.guardrails")
+        gr.validate_input = validate or (lambda q: (True, ""))
+        # Ensure the parent package exists so submodule import resolves.
+        if "agent" not in sys.modules:
+            monkeypatch.setitem(sys.modules, "agent", types.ModuleType("agent"))
+        monkeypatch.setitem(sys.modules, "agent.deep_analysis", da)
+        monkeypatch.setitem(sys.modules, "agent.guardrails", gr)
 
     def _call_tool(self, srv, name, **kwargs):
         return asyncio.run(srv.call_tool(name, kwargs))
 
-    def test_deep_submit_forwards_to_api_server(self, monkeypatch):
+    def test_forwards_question_to_run_deep_analysis(self, monkeypatch):
         captured = {}
 
-        def _submit(req):
-            captured["message"] = req.message
-            captured["mode"] = req.mode
-            return {"task_id": "xyz"}
+        def _run(question, mode):
+            captured["question"] = question
+            captured["mode"] = mode
+            return {"answer": "PHI in 3 tables", "mode": mode}
 
-        self._install_fake_api_server(monkeypatch, submit=_submit)
+        self._install_agent_stubs(monkeypatch, run=_run)
         m = _fresh_mcp_server()
         srv = m.get_mcp_server()
-        self._call_tool(srv, "deep_analysis_submit", question="which tables hold PHI?", mode="graphrag")
-        assert captured["message"] == "which tables hold PHI?"
+        self._call_tool(srv, "ask_metadata_agent", question="which tables hold PHI?")
+        assert captured["question"] == "which tables hold PHI?"
+        # Default mode is the research pipeline.
         assert captured["mode"] == "graphrag"
 
-    def test_deep_poll_forwards_task_id(self, monkeypatch):
-        seen = {}
-        self._install_fake_api_server(monkeypatch, poll=lambda tid: seen.setdefault("id", tid) or {"status": "running"})
+    def test_baseline_mode_forwarded(self, monkeypatch):
+        captured = {}
+        self._install_agent_stubs(monkeypatch, run=lambda q, mode: captured.update(mode=mode) or {"answer": "x"})
         m = _fresh_mcp_server()
         srv = m.get_mcp_server()
-        self._call_tool(srv, "deep_analysis_poll", task_id="task-42")
-        assert seen["id"] == "task-42"
+        self._call_tool(srv, "ask_metadata_agent", question="q", mode="baseline")
+        assert captured["mode"] == "baseline"
 
-    def test_deep_poll_unknown_task_returns_error_not_raise(self, monkeypatch):
-        class _HTTPExc(Exception):
-            def __init__(self):
-                self.detail = "Task not found"
-
-        def _poll(task_id):
-            raise _HTTPExc()
-
-        self._install_fake_api_server(monkeypatch, poll=_poll)
+    def test_invalid_mode_falls_back_to_graphrag(self, monkeypatch):
+        captured = {}
+        self._install_agent_stubs(monkeypatch, run=lambda q, mode: captured.update(mode=mode) or {"answer": "x"})
         m = _fresh_mcp_server()
         srv = m.get_mcp_server()
-        # Must not raise -- surfaced as a normal tool result.
-        result = self._call_tool(srv, "deep_analysis_poll", task_id="nope")
-        # call_tool returns (content, structured) in mcp 1.x; check the structured payload.
+        self._call_tool(srv, "ask_metadata_agent", question="q", mode="quick")  # not a research mode
+        assert captured["mode"] == "graphrag"
+
+    def test_guardrail_rejection_short_circuits(self, monkeypatch):
+        ran = {"called": False}
+
+        def _run(question, mode):
+            ran["called"] = True
+            return {"answer": "should not run"}
+
+        self._install_agent_stubs(
+            monkeypatch, run=_run, validate=lambda q: (False, "blocked by guardrail")
+        )
+        m = _fresh_mcp_server()
+        srv = m.get_mcp_server()
+        result = self._call_tool(srv, "ask_metadata_agent", question="bad")
+        assert ran["called"] is False
         structured = result[1] if isinstance(result, tuple) else result
-        text = str(structured)
-        assert "error" in text.lower() and "Task not found" in text
+        assert "blocked by guardrail" in str(structured)
 
 
 if __name__ == "__main__":
