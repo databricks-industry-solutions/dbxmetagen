@@ -240,7 +240,7 @@ The dashboard agent uses **free-form SQL** tools (`execute_metadata_sql`, `execu
 
 The two managed servers above expose the metadata *data* as purpose-built query tools. They cannot expose the metadata **agent's reasoning** -- the multi-hop GraphRAG research pipeline. When you want *another agent* (e.g. a Databricks Model Serving / Agent Bricks agent) to delegate a whole metadata question and get a synthesized answer, dbxmetagen can host a **custom MCP server on the app itself** that surfaces the research agent behind a single tool.
 
-**Route:** `https://<app-hostname>/mcp/` (streamable-HTTP transport). Use the trailing slash -- `/mcp` returns a 307 redirect to `/mcp/` (fine for redirect-following MCP clients, incl. the standard SDK).
+**Route:** `https://<app-hostname>/mcp/` (streamable-HTTP transport). **Use the trailing slash.** Behind Databricks Apps ingress, `/mcp` without the slash returns `405` (the local-Starlette 307 redirect does not happen through the proxy), so clients must target `/mcp/` exactly.
 
 **Tool:**
 
