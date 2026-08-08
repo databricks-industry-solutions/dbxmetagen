@@ -171,7 +171,15 @@ function ParallelEdge({ id, sourceX, sourceY, targetX, targetY,
     sourceX, sourceY, sourcePosition, targetX, targetY, targetPosition,
     curvature: 0.25 + Math.abs(offset) / 200,
   })
-  return <BaseEdge id={id} path={path} style={style} markerEnd={markerEnd} />
+  // A confirmed join with only one column set is "incomplete": it can't attach to
+  // both column rows (one handle falls back to the header) and won't be persisted
+  // as an fk-add. Flag it amber+dashed so the half-set state reads as intentional
+  // work-in-progress rather than a broken line.
+  const incomplete = data?.source === 'confirmed' && !resolved
+  const effStyle = incomplete
+    ? { ...style, stroke: '#d97706', strokeDasharray: '5 3' }
+    : style
+  return <BaseEdge id={id} path={path} style={effStyle} markerEnd={markerEnd} />
 }
 
 const edgeTypes = { parallel: ParallelEdge }
@@ -503,9 +511,12 @@ export default function ErdDesigner({ tables, projectId, profileId, businessCont
     })
     if (edgeChanged) setEdges(nextEdges)
 
-    // (2) Re-derive per-node key columns and write back only on change.
-    const keyCols = deriveKeyCols(nodes, nextEdges)
+    // (2) Re-derive per-node key columns and write back only on change. Derive
+    // against the CURRENT node list from the setNodes updater (not the closure
+    // `nodes`, which can be stale if a node-only change landed without retriggering
+    // this edge-keyed effect) so keyCols never lag the actual node set.
     setNodes(nds => {
+      const keyCols = deriveKeyCols(nds, nextEdges)
       let nodeChanged = false
       const out = nds.map(n => {
         const nextKeys = keyCols[n.id] || []

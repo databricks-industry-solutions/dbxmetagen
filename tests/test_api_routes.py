@@ -1175,11 +1175,28 @@ class TestOverlaySavedErdEdges:
         out = api_server._overlay_saved_erd(self._rec(), saved)
         assert len(out["edges"]) == 1
 
-    def test_edge_direction_is_respected(self):
-        # A saved reverse-direction edge must NOT match a forward recommendation.
+    def test_edge_direction_is_distinct(self):
+        # A saved reverse-direction edge does NOT match the forward recommendation
+        # (direction is part of the key), so it is not the SAME edge -- but because
+        # the saved set is authoritative, the user-asserted reverse edge is ADDED
+        # BACK (not silently dropped), and the unmatched forward recommendation is
+        # not re-admitted.
         saved = {"edges": [{"src": "c.s.dim", "dst": "c.s.fct", "on": "src.fk = dim.id"}]}
         out = api_server._overlay_saved_erd(self._rec(), saved)
-        assert out["edges"] == []
+        pairs = {(e["src"], e["dst"]) for e in out["edges"]}
+        assert pairs == {("c.s.dim", "c.s.fct")}   # only the saved reverse edge, kept
+
+    def test_user_only_edge_survives_reload(self):
+        # An edge the recommender never proposed (hand-drawn, or columns cleared so
+        # its `on` no longer matches) MUST survive overlay -- previously it vanished.
+        saved = {"edges": [
+            {"src": "c.s.fct", "dst": "c.s.dim", "on": "src.fk = dim.id"},   # matches a rec edge
+            {"src": "c.s.dim", "dst": "c.s.dim2", "on": ""},                 # user-only, no cols yet
+        ]}
+        out = api_server._overlay_saved_erd(self._rec(), saved)
+        pairs = {(e["src"], e["dst"]) for e in out["edges"]}
+        assert ("c.s.dim", "c.s.dim2") in pairs   # the user-only edge is kept
+        assert ("c.s.fct", "c.s.dim") in pairs
 
     def test_node_roles_still_overlay(self):
         saved = {"nodes": [{"table": "c.s.dim", "role": "fact", "grain": "day"}],

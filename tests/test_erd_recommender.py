@@ -14,9 +14,11 @@ from dbxmetagen.erd_recommender import (
     recommend_questions_kpis,
     _build_edges,
     _infer_role,
+    _recommend_view_count,
     ErdRecommendation,
     GenSufficiency,
     FK_CONFIRMED_MIN,
+    MAX_RECOMMENDED_VIEWS,
     QUESTIONS_PER_FACT,
 )
 
@@ -350,3 +352,30 @@ class TestInferRoleTiebreak:
             "c.s.fct_orders", [self._num("amount"), self._num("qty"), self._num("disc")],
             outbound_fk_count=3, inbound_fk_count=0, ontology_role=None, is_bridge=False)
         assert role == "fact"
+
+
+class TestRecommendViewCountFloor:
+    """_recommend_view_count must never recommend FEWER views than already exist,
+    even when the existing count exceeds MAX_RECOMMENDED_VIEWS (the old min(max(...))
+    could pull the recommendation below current_views and misreport the gap)."""
+
+    def test_never_below_current_when_over_cap(self):
+        rec, _ = _recommend_view_count(
+            facts=["c.s.fct"], uncovered_tables=[], missing_kpis=[],
+            current_views=MAX_RECOMMENDED_VIEWS + 5,
+        )
+        assert rec >= MAX_RECOMMENDED_VIEWS + 5   # not clamped below what exists
+
+    def test_normal_case_still_capped(self):
+        rec, _ = _recommend_view_count(
+            facts=["c.s.f1", "c.s.f2"], uncovered_tables=[], missing_kpis=[],
+            current_views=0,
+        )
+        assert rec == 2   # 2 facts x 1 view, under the cap
+
+    def test_fact_base_is_floor(self):
+        rec, _ = _recommend_view_count(
+            facts=["c.s.f1", "c.s.f2", "c.s.f3"], uncovered_tables=[], missing_kpis=[],
+            current_views=1,
+        )
+        assert rec >= 3   # never below the fact base

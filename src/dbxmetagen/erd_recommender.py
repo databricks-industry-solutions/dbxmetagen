@@ -350,10 +350,12 @@ def _recommend_view_count(
     if missing_kpis:
         reasons.append(f"{len(missing_kpis)} KPI(s) with no implementing measure")
 
-    recommended = min(
-        max(base, current_views + uncovered_need + kpi_need),
-        MAX_RECOMMENDED_VIEWS,
-    )
+    # Floor at the fact base AND at the count already present (a recommendation
+    # should never suggest FEWER views than exist), then cap -- but never let the
+    # cap pull the recommendation below current_views, or the derived gap would go
+    # negative-clamped-to-zero and misreport "fully covered" when it isn't.
+    target = max(base, current_views + uncovered_need + kpi_need)
+    recommended = max(min(target, MAX_RECOMMENDED_VIEWS), current_views)
     return recommended, reasons
 
 

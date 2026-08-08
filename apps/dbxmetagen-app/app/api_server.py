@@ -8231,17 +8231,33 @@ def _overlay_saved_erd(rec: dict, saved: Optional[dict]) -> dict:
         rec["schema_type"] = saved["schema_type"]
     # Edge overlay: only when the user has an explicit saved edge set. `is not
     # None` (not truthiness) so an intentional empty list drops all edges.
+    #
+    # The saved edge set is AUTHORITATIVE in both directions:
+    #  - a recommended edge NOT in the saved set is dropped (deletion sticks), and
+    #  - a saved edge NOT in the recommendation is ADDED BACK. Without the add-back,
+    #    any user-asserted edge the recommender never proposed -- a hand-drawn join
+    #    (onConnect) or an edge whose join columns were cleared so its `on` no longer
+    #    matches a recommended edge's key -- would silently vanish on reload.
     saved_edges = saved.get("edges")
     if saved_edges is not None:
-        kept = {
-            _erd_edge_key(e.get("src"), e.get("dst"), e.get("on"))
-            for e in saved_edges
-            if e.get("src") and e.get("dst")
+        valid_saved = [e for e in saved_edges if e.get("src") and e.get("dst")]
+        kept = {_erd_edge_key(e.get("src"), e.get("dst"), e.get("on")) for e in valid_saved}
+        rec_by_key = {
+            _erd_edge_key(e.get("src"), e.get("dst"), e.get("on")): e
+            for e in (rec.get("edges") or [])
         }
-        rec["edges"] = [
-            e for e in (rec.get("edges") or [])
-            if _erd_edge_key(e.get("src"), e.get("dst"), e.get("on")) in kept
-        ]
+        merged = []
+        seen = set()
+        for e in valid_saved:
+            k = _erd_edge_key(e.get("src"), e.get("dst"), e.get("on"))
+            if k in seen:
+                continue
+            seen.add(k)
+            # Prefer the recommendation's richer edge object (confidence, source,
+            # reasoning) when it exists; otherwise keep the saved edge as-is so a
+            # user-only edge survives.
+            merged.append(rec_by_key.get(k, e))
+        rec["edges"] = merged
     return rec
 
 
