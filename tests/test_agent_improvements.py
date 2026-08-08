@@ -370,3 +370,32 @@ class TestStructuredRetrievalSQLRetry:
 
         assert result.success
         assert mock_writer.call_count == 2
+
+
+class TestKbSchemaDocsAccurate:
+    """Regression guard: agent prompts/tool-docs must NOT tell the LLM that
+    table_knowledge_base has a `row_count` column -- it does not (row_count lives
+    in profiling_snapshots). A phantom column makes the agent emit failing SQL
+    (BAD_REQUEST) and drop table-count answers in baseline mode."""
+
+    _APP = os.path.join(os.path.dirname(__file__), "..", "apps", "dbxmetagen-app", "app")
+    _FILES = [
+        "agent/intent.py",
+        "agent/metadata_tools.py",
+        "agent/metadata_agent.py",
+        "agent/deep_analysis.py",
+    ]
+
+    def test_no_phantom_row_count_on_kb(self):
+        offenders = []
+        for rel in self._FILES:
+            path = os.path.join(self._APP, rel)
+            if not os.path.exists(path):
+                continue
+            for i, line in enumerate(open(path), 1):
+                # A doc line describing the KB table columns that also lists row_count
+                # BEFORE any disclaiming "NO row_count"/"not in" note.
+                if "table_knowledge_base:" in line and "row_count" in line:
+                    if "NO row_count" not in line and "not in table_knowledge_base" not in line:
+                        offenders.append(f"{rel}:{i}: {line.strip()}")
+        assert not offenders, "Phantom row_count on table_knowledge_base:\n" + "\n".join(offenders)

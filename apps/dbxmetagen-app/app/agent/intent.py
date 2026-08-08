@@ -66,12 +66,13 @@ DOMAIN_KEYWORDS: dict[str, list[str]] = {
 }
 
 KB_TABLE_CONTEXT = f"""Available knowledge base tables in {CATALOG}.{SCHEMA}:
-- table_knowledge_base: table_name, comment, domain, subdomain, has_pii, has_phi, row_count
+- table_knowledge_base: table_name, catalog, `schema`, comment, domain, subdomain, has_pii, has_phi
 - column_knowledge_base: table_name, column_name, comment, data_type, classification
 - ontology_entities: entity_id, entity_name, entity_type, description, source_tables, confidence, entity_uri, source_ontology
 - fk_predictions: src_table, src_column, dst_table, dst_column, final_confidence, cardinality
 - metric_view_definitions: metric_view_name, source_table, json_definition, status
 - profiling_results: table_name, column_name, distinct_count, null_count
+- profiling_snapshots: table_name, snapshot_time, row_count, table_size_bytes (row_count is HERE, not in table_knowledge_base)
 - graph_nodes: id, node_type, ontology_type, display_name, short_description, quality_score, source_system
 - graph_edges: src, dst, relationship, edge_type, weight, source_system"""
 

@@ -1377,3 +1377,44 @@ class TestKpiStatusValues:
 
     def test_expected_statuses_present(self):
         assert {"valid", "invalid", "empty", "unchecked", "skipped"} <= api_server._KPI_STATUS_VALUES
+
+
+class TestDedupKpiSuggestions:
+    """_dedup_kpi_suggestions: algorithmic dedup that fixes the repeated-suggest
+    plateau (was prompt-reliant only). Drops matches vs existing KPIs and intra-batch
+    near-dupes; keeps distinct ones; skips already-invalid suggestions."""
+
+    def test_drops_exact_name_dupe_of_existing(self):
+        kpis = [{"name": "Total Revenue", "formula": "SUM(amt)"}]
+        out = api_server._dedup_kpi_suggestions(kpis, ["Total Revenue"])
+        assert out == []
+
+    def test_keeps_distinct_new_kpis(self):
+        kpis = [
+            {"name": "Total Revenue", "formula": "SUM(amt)"},
+            {"name": "Order Count", "formula": "COUNT(order_id)"},
+        ]
+        out = api_server._dedup_kpi_suggestions(kpis, ["Average Discount"])
+        assert len(out) == 2
+
+    def test_drops_intra_batch_near_dupe(self):
+        # Two suggestions with (near-)identical names in the same batch -> keep first.
+        kpis = [
+            {"name": "Total Revenue", "formula": "SUM(amount)"},
+            {"name": "total revenue", "formula": "SUM(amount)"},
+        ]
+        out = api_server._dedup_kpi_suggestions(kpis, [])
+        assert len(out) == 1
+        assert out[0]["name"] == "Total Revenue"   # order preserved, first kept
+
+    def test_skips_invalid_suggestions(self):
+        kpis = [
+            {"name": "Bad KPI", "formula": "SUM(nope)", "validation_status": "invalid"},
+            {"name": "Good KPI", "formula": "COUNT(id)"},
+        ]
+        out = api_server._dedup_kpi_suggestions(kpis, [])
+        assert [k["name"] for k in out] == ["Good KPI"]
+
+    def test_empty_inputs(self):
+        assert api_server._dedup_kpi_suggestions([], []) == []
+        assert api_server._dedup_kpi_suggestions(None, None) == []

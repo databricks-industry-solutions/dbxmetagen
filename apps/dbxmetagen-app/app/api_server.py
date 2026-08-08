@@ -13650,6 +13650,31 @@ def _build_kpi_context(assembler, table_identifiers: list[str]) -> tuple[str, st
     return "\n".join(parts), dominant_domain, col_by_table
 
 
+def _dedup_kpi_suggestions(kpis: list[dict], existing_names: list[str]) -> list[dict]:
+    """Drop KPI suggestions that duplicate an existing KPI or an earlier suggestion
+    in the same batch, using the same find_similar_kpi the manual create path uses.
+
+    Repeated auto-suggest passes plateau (~12 KPIs) because the LLM regenerates close
+    variants and the only dedup was the soft prompt hint + the reviewer. This removes:
+      (a) suggestions matching an EXISTING KPI the user already has (name-based -- the
+          suggest request carries existing names only, not formulas), and
+      (b) intra-batch near-duplicates (keep the first of each cluster).
+    Skips suggestions already marked validation_status='invalid'. Order-preserving.
+    """
+    existing_dicts = [{"name": n, "formula": ""} for n in (existing_names or [])]
+    deduped: list[dict] = []
+    for k in kpis or []:
+        if k.get("validation_status") == "invalid":
+            continue
+        name, formula = k.get("name", ""), k.get("formula", "")
+        if find_similar_kpi(name, formula, existing_dicts):
+            continue  # already have this one
+        if find_similar_kpi(name, formula, deduped):
+            continue  # near-dup of one accepted earlier this batch
+        deduped.append(k)
+    return deduped
+
+
 @app.post("/api/kpis/suggest")
 def suggest_kpis(req: KpiSuggestRequest):
     wh = os.environ.get("WAREHOUSE_ID", "")
@@ -13683,7 +13708,13 @@ EXISTING KPIs (do NOT regenerate these or close variants -- suggest DIFFERENT me
     if dominant_domain:
         domain_block = f"\nDOMAIN FOCUS: Generate KPIs only for the '{dominant_domain}' domain. Do not mix in unrelated domains.\n"
 
-    prompt = f"""You are a business intelligence architect. Given the data model below, suggest {req.count} concrete KPIs.
+    # Over-generate: repeated suggest passes plateau (~12 KPIs) because the LLM
+    # regenerates close variants of what already exists and the only dedup was the
+    # soft prompt hint + the reviewer. Ask for MORE than requested so that after
+    # algorithmic dedup (intra-batch + vs existing) we still net ~req.count NEW ones.
+    gen_count = min(max(req.count * 2, req.count + 5), 40)
+
+    prompt = f"""You are a business intelligence architect. Given the data model below, suggest {gen_count} concrete KPIs.
 {biz_ctx_block}{domain_block}
 {kpi_context}
 {questions_block}
@@ -13747,8 +13778,15 @@ Return ONLY a JSON array of objects with keys: name, description, formula, domai
         kpi["validation_error"] = ""
         kpi["target_tables"] = target
 
-    # Second LLM pass: review KPI semantic correctness
-    valid_kpis = [k for k in kpis if k.get("validation_status") != "invalid"][:req.count]
+    # Algorithmic dedup (was prompt-reliant only, which let close variants through
+    # and caused the repeated-suggest plateau).
+    deduped = _dedup_kpi_suggestions(kpis, req.existing_kpi_names or [])
+
+    # Second LLM pass: review KPI semantic correctness. Review a bounded slice of the
+    # deduped set (a bit more than req.count) so that if the reviewer rejects some as
+    # "wrong", enough survive to still return ~req.count -- the final [:req.count] slice
+    # happens AFTER review, not before (otherwise rejections shrink the result).
+    valid_kpis = deduped[:min(len(deduped), req.count + 5)]
     if valid_kpis:
         review_prompt = f"""Review these KPIs for correctness. For each, answer: does the formula actually measure what the name/description claims?
 
