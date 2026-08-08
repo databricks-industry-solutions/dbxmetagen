@@ -40,8 +40,10 @@ All open work items from every roadmap and plan document, organized by theme. Ea
 | MG-14 | Presidio `diagnosis_code` regex too broad -- raise threshold or gate | OPEN | P2 | S | PI precision analysis |
 | MG-15 | Preserve `type` field downstream instead of collapsing to `protected` | OPEN | P2 | S | PI precision analysis |
 | MG-16 | PI confidence threshold gating (discard low-confidence classifications) | OPEN | P2 | S | PI precision analysis |
-| MG-17 | SWIFT/BIC code lost to LOCATION NER collision -> classified None instead of PCI | OPEN | P2 | S | UAT PI scenario |
+| MG-17 | SWIFT/BIC dropped: `swift`/`iban` patterns were under supported_entity=CREDIT_CARD -> hit the card Luhn gate -> SWIFT (non-numeric) always dropped. Fixed: own recognizers emitting SWIFT_CODE/IBAN_CODE (bypass Luhn). | DONE | P2 | S | UAT PI scenario |
 | MG-18 | UAT PI gold not normalized for equivalent classes (pi/pii, phi/medical_information) | OPEN | P3 | S | UAT PI scenario |
+| FK-11 | Provably-disjoint FK pair (join probe ran, join_matched=0 AND ri_score=0) still scored final_confidence ~0.6. Fixed: collapse final_confidence 0.25x on the same never_joins signal, so it drops below threshold (not just is_fk=false). | DONE | P2 | S | UAT FK scenario (uat_fk_hard region_id trap) |
+| MG-19 | `luhn_checksum(res.score)` in classify_column passes the SCORE (float) not the matched TEXT -> always False -> every deterministic CREDIT_CARD match dropped. Needs matched-text plumbing + presidio to verify (risk: order_ref trap). Not fixed blind. | OPEN | P2 | S | UAT PI scenario (deep-dive during MG-17) |
 
 ### MG-1: Chat client garbage fallback on JSON parse failure
 

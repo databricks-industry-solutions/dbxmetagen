@@ -262,6 +262,36 @@ class TestNeverJoinsVeto:
         assert self._never_joins(0, 0.5, SR_COL_PROP) is False
 
 
+class TestNeverJoinsConfidenceCollapse:
+    """FK-11: a provably-disjoint pair (never_joins) has final_confidence collapsed
+    by 0.25x, not just is_fk flipped -- so it drops below the display/review
+    threshold instead of lingering at ~0.6 (name+dtype match alone). Gated on the
+    SAME never_joins signal, so it only fires when the join probe actually ran."""
+
+    def _final_conf(self, base_score, join_matched, ri_score, source_rank=SR_COL_PROP):
+        # Mirror the final_confidence multiplier in run()'s projection.
+        never_joins = (join_matched == 0) and (ri_score == 0.0) and (source_rank != SR_DECLARED)
+        mult = 0.25 if never_joins else 1.0
+        return max(0.0, min(1.0, base_score * mult))
+
+    def test_disjoint_pair_confidence_collapsed(self):
+        # The uat_fk_hard region_id trap: base ~0.6, probe ran and found disjoint.
+        assert self._final_conf(0.603, join_matched=0, ri_score=0.0) < 0.2
+
+    def test_real_join_confidence_unchanged(self):
+        # A pair that actually joins keeps its full score.
+        assert self._final_conf(0.85, join_matched=10, ri_score=1.0) == 0.85
+
+    def test_unprobed_pair_confidence_unchanged(self):
+        # Absent probe -> ri coalesces to 0.5, not 0.0 -> NOT collapsed (no false
+        # penalty on federation/large-table/sampling-off pairs).
+        assert self._final_conf(0.7, join_matched=0, ri_score=0.5) == 0.7
+
+    def test_declared_fk_confidence_unchanged(self):
+        # Steward-declared FKs are exempt from the collapse.
+        assert self._final_conf(0.6, join_matched=0, ri_score=0.0, source_rank=SR_DECLARED) == 0.6
+
+
 class TestOneFkPerChildColumn:
     """A single fully-qualified child column (src_column, always the FK side after
     _enforce_direction) cannot be a referential FK to more than one parent table.

@@ -2077,6 +2077,11 @@ class FKPredictor:
         # present in the sample. Absent probes leave ri coalesced to 0.5, so the
         # veto only fires on a genuine 0.0 from a probe that ran.
         is_fk_col = F.col("ai_is_fk")
+        # `never_joins`: the join probe ACTUALLY RAN and found zero overlap
+        # (join_matched=0) with referential integrity exactly 0. Absent probes
+        # coalesce ri to 0.5, so this fires only on a genuine 0.0 from a probe that
+        # ran -- never on a skipped/federation/large-table probe. Declared FKs exempt.
+        never_joins = F.lit(False)
         if "join_matched" in df.columns:
             never_joins = (
                 (F.coalesce(F.col("join_matched"), F.lit(0)) == F.lit(0))
@@ -2105,13 +2110,19 @@ class FKPredictor:
             F.col("join_matched").cast("long").alias("join_matched"),
             pk_uniq.alias("pk_uniqueness"),
             ri.alias("ri_score"),
+            # FK-11: a provably-disjoint pair (probe ran, join_matched=0 AND ri=0)
+            # is not just demoted to is_fk=false -- its final_confidence is collapsed
+            # by 0.25x so it drops well below the display/review threshold instead of
+            # lingering at ~0.6 (name+dtype match alone). Gated on the SAME never_joins
+            # signal as the is_fk veto, so it can only fire when the probe actually ran.
             F.greatest(F.lit(0.0), F.least(F.lit(1.0),
-                F.col("col_similarity") * 0.15
-                + F.col("rule_score") * 0.15
-                + F.col("ai_confidence") * 0.25
-                + capped_join * 0.15
-                + pk_uniq * 0.15
-                + ri * 0.15
+                (F.col("col_similarity") * 0.15
+                 + F.col("rule_score") * 0.15
+                 + F.col("ai_confidence") * 0.25
+                 + capped_join * 0.15
+                 + pk_uniq * 0.15
+                 + ri * 0.15)
+                * F.when(never_joins, F.lit(0.25)).otherwise(F.lit(1.0))
             )).alias("final_confidence"),
             F.current_timestamp().alias("created_at"),
             F.current_timestamp().alias("updated_at"),
