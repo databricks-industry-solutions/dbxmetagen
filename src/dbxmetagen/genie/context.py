@@ -945,11 +945,26 @@ class GenieContextAssembler:
             ent_type = ent_info["entity_type"] if ent_info else ""
 
             cols = col_by_table.get(tname, [])
-            id_cols = [c["column_name"] for c in cols if c["column_name"].endswith("_id") or c["column_name"] == "id"]
+            # PQ-5: key columns preferentially from FK PREDICTIONS (data-driven), not just
+            # the _id suffix -- so a suffix-less key like `npi`/`ndc` that FK prediction
+            # found is recognized as a key. Fall back to the _id/`id` heuristic too (union).
+            short = tname.split(".")[-1]
+            fk_key_cols = set()
+            for fk in fk_rows:
+                if fk.get("src_table", "").split(".")[-1] == short and fk.get("src_column"):
+                    fk_key_cols.add(fk["src_column"])
+                if fk.get("dst_table", "").split(".")[-1] == short and fk.get("dst_column"):
+                    fk_key_cols.add(fk["dst_column"])
+            id_cols = [
+                c["column_name"] for c in cols
+                if c["column_name"].endswith("_id") or c["column_name"] == "id"
+                or c["column_name"] in fk_key_cols
+            ]
             date_cols = [c["column_name"] for c in cols if c.get("data_type", "").upper() in ("DATE", "TIMESTAMP", "DATETIME")]
             numeric_cols = [c["column_name"] for c in cols
                            if c.get("data_type", "").upper().split("(")[0] in ("DECIMAL", "DOUBLE", "FLOAT", "INT", "BIGINT")
-                           and not c["column_name"].endswith("_id") and c["column_name"] != "id"]
+                           and not c["column_name"].endswith("_id") and c["column_name"] != "id"
+                           and c["column_name"] not in fk_key_cols]  # PQ-5: a FK key isn't a measure
             string_cols = [c["column_name"] for c in cols if c.get("data_type", "").upper() in ("STRING", "VARCHAR")]
 
             # Classify: fact (has numeric measure columns + FK refs) vs dimension (mostly descriptive)

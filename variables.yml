@@ -319,6 +319,24 @@ variables:
   fk_generic_column_names:
     description: "Comma-separated generic column names (e.g. id, code, status, type) that are low-information for FK inference. A candidate pair whose BOTH sides are generic is dropped unless corroborated by a matching table/entity or a high-trust source. Prevents 'id'-column over-matching, especially in federation mode where real-data validation is limited. Empty string uses sensible defaults."
     default: ""
+  enable_data_overlap_candidates:
+    description: "PQ-1: enable name-INDEPENDENT FK candidate generation from column VALUE OVERLAP (catches keys with no _id/_key/_code suffix like npi, ndc, email). Reads only cached column_profiling_stats (no new source reads; federation-safe). Additive + guarded; set false to disable."
+    default: true
+  fk_data_overlap_min_containment:
+    description: "PQ-1: minimum directional value containment (child values found in parent, 0.0-1.0) for a value-overlap FK candidate. Higher = stricter (fewer false positives)."
+    default: 0.85
+  fk_data_overlap_min_containment_ontology:
+    description: "PQ-1: relaxed containment bar used when the ontology corroborates the pair (both columns share a linked_entity_type). Ontology as a strong prior, never a gate."
+    default: 0.60
+  fk_data_overlap_min_distinct:
+    description: "PQ-1: small-domain veto -- if BOTH columns have fewer than this many distinct values, value overlap is uninformative (e.g. status/type enums) and the pair is not emitted."
+    default: 8
+  fk_data_overlap_weight:
+    description: "PQ-1: weight of the value-overlap (containment) signal in rule_score, letting a name-free key clear the AI-judge threshold on data merit."
+    default: 0.25
+  fk_data_overlap_max_candidates:
+    description: "PQ-1: global ceiling on value-overlap candidate pairs emitted, bounding cost/scale on wide catalogs (hundreds of tables x columns)."
+    default: 2000
   use_customer_context:
     description: "When true, enrich prompts with customer-provided context from the customer_context Delta table. Context is scoped hierarchically (catalog > schema > pattern > table). Requires the customer_context table to exist (seed from YAML or create via the app)."
     default: false

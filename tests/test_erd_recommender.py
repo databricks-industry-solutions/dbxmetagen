@@ -353,6 +353,24 @@ class TestInferRoleTiebreak:
             outbound_fk_count=3, inbound_fk_count=0, ontology_role=None, is_bridge=False)
         assert role == "fact"
 
+    def test_suffixless_measure_heavy_table_is_fact(self):
+        # PQ-5: a table with NO fct_/dim_ prefix but 3+ measures + outbound FKs must
+        # still classify as fact purely on structure (naming is only a tie-breaker now).
+        role, _, _ = _infer_role(
+            "c.s.transactions",  # no prefix
+            [self._num("amount"), self._num("quantity"), self._num("discount")],
+            outbound_fk_count=2, inbound_fk_count=0, ontology_role=None, is_bridge=False)
+        assert role == "fact"
+
+    def test_fk_topology_outweighs_misleading_name(self):
+        # PQ-5: a table misleadingly named like a dimension but that references many
+        # tables (outbound FKs) + has measures resolves to fact -- data beats naming.
+        role, _, _ = _infer_role(
+            "c.s.dim_sales_event",  # dim-prefixed but behaves like a fact
+            [self._num("revenue"), self._num("units"), self._num("cost")],
+            outbound_fk_count=3, inbound_fk_count=0, ontology_role=None, is_bridge=False)
+        assert role == "fact"
+
 
 class TestRecommendViewCountFloor:
     """_recommend_view_count must never recommend FEWER views than already exist,

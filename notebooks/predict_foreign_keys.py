@@ -36,6 +36,13 @@ dbutils.widgets.text("cross_schema_penalty", "-0.10", "Cross-schema FK score pen
 dbutils.widgets.text("system_column_exclude_patterns", "", "Regex patterns to exclude system columns from FK boosting (comma-separated, empty=defaults)")
 dbutils.widgets.text("generic_column_names", "", "Generic column names (e.g. id,code,status) that need corroboration to form an FK (comma-separated, empty=defaults)")
 dbutils.widgets.text("sweep_stale_edges", "false", "Sweep stale edges")
+# PQ-1: data-driven (value-overlap) FK candidates -- catch keys with no _id/_key/_code suffix.
+dbutils.widgets.text("enable_data_overlap_candidates", "true", "Enable value-overlap FK candidates")
+dbutils.widgets.text("fk_data_overlap_min_containment", "0.85", "Value-overlap min containment")
+dbutils.widgets.text("fk_data_overlap_min_containment_ontology", "0.60", "Value-overlap min containment (ontology-corroborated)")
+dbutils.widgets.text("fk_data_overlap_min_distinct", "8", "Value-overlap small-domain veto (min distinct)")
+dbutils.widgets.text("fk_data_overlap_weight", "0.25", "Value-overlap rule_score weight")
+dbutils.widgets.text("fk_data_overlap_max_candidates", "2000", "Value-overlap global candidate ceiling")
 dbutils.widgets.text("table_names", "", "Table Names")
 dbutils.widgets.dropdown("federation_mode", "false", ["true", "false"], "Federation Mode")
 
@@ -64,6 +71,12 @@ system_column_patterns = tuple(p.strip() for p in _sys_col_raw.split(",") if p.s
 _generic_raw = dbutils.widgets.get("generic_column_names").strip()
 generic_column_names = tuple(p.strip().lower() for p in _generic_raw.split(",") if p.strip()) if _generic_raw else None
 sweep_stale = dbutils.widgets.get("sweep_stale_edges").strip().lower() in ("true", "1", "yes")
+enable_data_overlap_candidates = dbutils.widgets.get("enable_data_overlap_candidates").strip().lower() in ("true", "1", "yes")
+fk_data_overlap_min_containment = float(dbutils.widgets.get("fk_data_overlap_min_containment"))
+fk_data_overlap_min_containment_ontology = float(dbutils.widgets.get("fk_data_overlap_min_containment_ontology"))
+fk_data_overlap_min_distinct = int(dbutils.widgets.get("fk_data_overlap_min_distinct"))
+fk_data_overlap_weight = float(dbutils.widgets.get("fk_data_overlap_weight"))
+fk_data_overlap_max_candidates = int(dbutils.widgets.get("fk_data_overlap_max_candidates"))
 
 federation_mode = dbutils.widgets.get("federation_mode").lower() == "true"
 
@@ -117,6 +130,12 @@ _fk_kwargs = dict(
     same_schema_bonus=same_schema_bonus,
     cross_schema_penalty=cross_schema_penalty,
     federation_mode=federation_mode,
+    enable_data_overlap_candidates=enable_data_overlap_candidates,
+    fk_data_overlap_min_containment=fk_data_overlap_min_containment,
+    fk_data_overlap_min_containment_ontology=fk_data_overlap_min_containment_ontology,
+    fk_data_overlap_min_distinct=fk_data_overlap_min_distinct,
+    fk_data_overlap_weight=fk_data_overlap_weight,
+    fk_data_overlap_max_candidates=fk_data_overlap_max_candidates,
 )
 if system_column_patterns is not None:
     _fk_kwargs["system_column_patterns"] = system_column_patterns

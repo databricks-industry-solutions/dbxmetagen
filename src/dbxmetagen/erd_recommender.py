@@ -42,6 +42,14 @@ FACT_MIN_OUTBOUND_FKS = 2         # a fact typically references >=2 dimensions
 FK_CONFIDENCE_MIN = 0.5           # mirror /api/coverage/holistic's threshold
 FK_CONFIRMED_MIN = 0.85           # mirror _inject_fk_joins auto-injection floor
 
+# PQ-5: role-inference signal weights, lifted to constants so naming is a tie-BREAKER,
+# not a decider. Customers don't universally use fct_/dim_ prefixes, so naming is now
+# weighted BELOW the data/structure signals (FK topology, profiling shape, ontology).
+ROLE_NAMING_WEIGHT = 0.20         # was 0.35 -- naming prefix hint (fact/dim)
+ROLE_MART_NAMING_WEIGHT = 0.20    # was 0.30 -- mart/summary naming hint
+ROLE_FK_TOPOLOGY_WEIGHT = 0.35    # outbound/inbound FK degree (data-driven)
+ROLE_ONTOLOGY_WEIGHT = 0.25       # ontology entity_role (steward/AI attribution)
+
 # Sufficiency: how many metric views a schema "wants". A fact table typically
 # warrants ~1 broad view; extra views cover distinct grains / uncovered KPIs.
 VIEWS_PER_FACT = 1
@@ -237,29 +245,29 @@ def _infer_role(
     reasons: list[str] = []
     score = {"fact": 0.0, "dimension": 0.0, "source": 0.0, "bridge": 0.0}
 
-    # 1. Naming conventions. A strong hint WHEN PRESENT, but many real schemas
-    #    (marts, denormalized/OBT tables) aren't named fct_/dim_ -- so naming is
-    #    weighted comparably to the structural signals below, not above them.
+    # 1. Naming conventions. A tie-BREAKER hint WHEN PRESENT (PQ-5). Many real schemas
+    #    (marts, denormalized/OBT tables) aren't named fct_/dim_, so naming is weighted
+    #    BELOW the data/structure signals below -- see ROLE_*_WEIGHT constants.
     if _looks_like_fact(short):
-        score["fact"] += 0.35
+        score["fact"] += ROLE_NAMING_WEIGHT
         reasons.append("fact naming prefix")
     if _looks_like_dim(short):
-        score["dimension"] += 0.35
+        score["dimension"] += ROLE_NAMING_WEIGHT
         reasons.append("dimension naming prefix")
     if _looks_like_mart(short):
-        score["source"] += 0.3
+        score["source"] += ROLE_MART_NAMING_WEIGHT
         reasons.append("mart/summary naming")
 
-    # 2. FK topology. Facts reference many dims (outbound); dims are referenced
-    #    by many (inbound); a table that is both src and dst is a bridge.
+    # 2. FK topology (data-driven). Facts reference many dims (outbound); dims are
+    #    referenced by many (inbound); a table that is both src and dst is a bridge.
     if is_bridge:
         score["bridge"] += 0.5
         reasons.append("bridges FK chains (both src and dst)")
     if outbound_fk_count >= FACT_MIN_OUTBOUND_FKS:
-        score["fact"] += 0.35
+        score["fact"] += ROLE_FK_TOPOLOGY_WEIGHT
         reasons.append(f"{outbound_fk_count} outbound FKs")
     if inbound_fk_count >= 1 and outbound_fk_count == 0:
-        score["dimension"] += 0.35
+        score["dimension"] += ROLE_FK_TOPOLOGY_WEIGHT
         reasons.append(f"referenced by {inbound_fk_count} table(s), no outbound FKs")
 
     # 3. Profiling shape (naming-independent -- this is what lets an unlabeled
@@ -290,10 +298,10 @@ def _infer_role(
     if ontology_role:
         r = ontology_role.lower()
         if r in ("primary", "fact"):
-            score["fact"] += 0.25
+            score["fact"] += ROLE_ONTOLOGY_WEIGHT
             reasons.append(f"ontology role '{ontology_role}'")
         elif r in ("referenced", "dimension", "contextual"):
-            score["dimension"] += 0.25
+            score["dimension"] += ROLE_ONTOLOGY_WEIGHT
             reasons.append(f"ontology role '{ontology_role}'")
 
     top = max(score.values())
