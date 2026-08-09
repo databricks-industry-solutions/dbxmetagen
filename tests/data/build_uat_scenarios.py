@@ -17,6 +17,7 @@
 # MAGIC | `uat_snowflake_health` | SNOWFLAKE + bridge → multi-hop FK / join generation |
 # MAGIC | `uat_datamart`         | Pre-aggregated marts → SIMPLE single-table metric views |
 # MAGIC | `uat_fk_hard`          | FK stressors: generic id↔id, named-but-non-joining, role-prefix, dedup |
+# MAGIC | `uat_fk_suffixless`    | FK keys with NO _id/_key/_code suffix (npi/ndc/email) + _code-not-FK traps |
 # MAGIC | `uat_pii`              | PII/PHI/PCI detection + false-positive traps |
 # MAGIC | `uat_domains`          | Domain classification incl. ambiguous / misnamed tables |
 # MAGIC | `uat_types`            | Databricks data-type coverage (BINARY/VARIANT/TIMESTAMP/complex) |
@@ -444,6 +445,89 @@ def build_fk_hard():
 
 if "uat_fk_hard" not in skip_scenarios:
     build_fk_hard()
+
+# COMMAND ----------
+
+
+def build_fk_suffixless():
+    """FK cases where the real join key has NO _id/_key/_code suffix (npi, ndc, email)
+    -- these must be caught by DATA (value overlap), not naming -- plus _code-that-is-
+    NOT-a-FK precision traps. This is the measurement gate for the data-overlap
+    generator (PQ-1/PQ-6): pre-change these RECALL cases are all missed."""
+    schema = "uat_fk_suffixless"
+    drop_schema(schema)
+    import pandas as pd
+
+    # Parents with SUFFIX-LESS natural keys.
+    providers = pd.DataFrame([
+        {"npi": f"1{700000000 + i}", "provider_name": fake.name(),
+         "specialty": random.choice(["Cardiology", "Oncology", "Neurology"])}
+        for i in range(1, 41)
+    ])  # npi: 10-digit, no _id suffix
+    drugs = pd.DataFrame([
+        {"ndc": f"{50000 + i:05d}-{random.randint(1000,9999)}-{random.randint(10,99)}",
+         "drug_name": fake.word(), "form": random.choice(["tablet", "injection"])}
+        for i in range(1, 21)
+    ])  # ndc: formatted, no _id suffix
+    members = pd.DataFrame([
+        {"email": f"member{i}@example.com", "member_name": fake.name()}
+        for i in range(1, 61)
+    ])  # email: natural key, no _id suffix
+
+    npis = providers["npi"].tolist()
+    ndcs = drugs["ndc"].tolist()
+    emails = members["email"].tolist()
+
+    # Precision-trap enums: low-cardinality, symmetric, same-named across tables but
+    # NOT foreign keys. status_code/type_code overlap by value coincidence only.
+    status_vals = ["A", "B", "C"]
+    type_vals = ["A", "B", "C"]  # deliberately same domain as status -> coincidental overlap
+
+    claims = pd.DataFrame([{
+        "claim_id": i,
+        "npi": random.choice(npis),               # RECALL: real FK to providers.npi (no suffix)
+        "ndc": random.choice(ndcs),               # RECALL: real FK to drugs.ndc (no suffix)
+        "member_email": random.choice(emails),    # RECALL: real FK to members.email (no suffix)
+        "status_code": random.choice(status_vals),  # TRAP: enum, not a FK
+        "type_code": random.choice(type_vals),       # TRAP: enum, coincidental overlap w/ status
+        "region_code": f"R{random.randint(900, 999)}",  # TRAP: disjoint from any region table
+        "claim_amount": round(random.uniform(50, 5000), 2),
+    } for i in range(1, 401)])
+
+    # A regions table whose region_code values are DISJOINT from claims.region_code
+    # (claims use R900-R999, regions use R1-R50) -> named-ish match but never joins.
+    regions = pd.DataFrame([{"region_code": f"R{i}", "region_name": fake.state()}
+                            for i in range(1, 51)])
+
+    write_pandas(providers, schema, "providers")
+    write_pandas(drugs, schema, "drugs")
+    write_pandas(members, schema, "members")
+    write_pandas(regions, schema, "regions")
+    write_pandas(claims, schema, "claims")
+
+    # Integrity assertions (real joins clean; region decoy has orphans).
+    assert_fk_joins(schema, "claims", "npi", "providers", "npi")
+    assert_fk_joins(schema, "claims", "ndc", "drugs", "ndc")
+    assert_fk_joins(schema, "claims", "member_email", "members", "email")
+    assert_fk_joins(schema, "claims", "region_code", "regions", "region_code", expect_orphans=True)
+
+    # Gold: RECALL (suffix-less real keys, True) + PRECISION traps (False).
+    gold_fk.append((schema, "claims", "npi", "providers", "npi", True))
+    gold_fk.append((schema, "claims", "ndc", "drugs", "ndc", True))
+    gold_fk.append((schema, "claims", "member_email", "members", "email", True))
+    gold_fk.append((schema, "claims", "status_code", "claims", "type_code", False))  # enum coincidence
+    gold_fk.append((schema, "claims", "region_code", "regions", "region_code", False))  # disjoint values
+
+    readme(schema, "capability", "FK keys with NO _id/_key/_code suffix -- must be caught by DATA (value overlap), not naming")
+    readme(schema, "keep", "claims.npi -> providers.npi (10-digit NPI, no suffix, full overlap)")
+    readme(schema, "keep", "claims.ndc -> drugs.ndc (formatted NDC, no suffix, full overlap)")
+    readme(schema, "keep", "claims.member_email -> members.email (email natural key, no suffix)")
+    readme(schema, "drop", "claims.status_code <-> claims.type_code (low-card enums, coincidental value overlap, NOT a FK)")
+    readme(schema, "drop", "claims.region_code <-> regions.region_code (name-ish match but DISJOINT values)")
+
+
+if "uat_fk_suffixless" not in skip_scenarios:
+    build_fk_suffixless()
 
 # COMMAND ----------
 
