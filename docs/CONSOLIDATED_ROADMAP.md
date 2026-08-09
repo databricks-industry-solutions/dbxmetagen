@@ -58,13 +58,13 @@ what's broken/missing — the current approach works fairly well. Full design:
 
 | ID | Item | Status | Priority | Effort | Source |
 |----|------|--------|----------|--------|--------|
-| PQ-1 | Data-driven FK candidate generator (value-overlap/containment, name-independent; tiered from CACHED profiling; SR_DATA_OVERLAP lowest trust; federation = LIMIT+collect local compute) | OPEN | P1 | L | UAT two-ontology + fk_hard |
-| PQ-2 | Extend existing `_detect_pattern` (profiling.py, already persists `pattern_detected`) with npi/ndc/cusip; consume in FK Tier-1 bucketing (NOT a new library) | OPEN | P2 | S | UAT |
-| PQ-3 | `_sample_categorical_values` (genie/context.py:709) does `SELECT DISTINCT` on source (federated full-scan storm); read cached `column_profiling_stats.sample_values` instead | OPEN | P1 | S | federation audit |
-| PQ-4 | `_validate_kpi_formula` runs LIMIT-1 per KPI×table with NO federation guard (~40 source queries in revalidate); add guard + N×M cap/dedup | OPEN | P1 | S | federation audit |
-| PQ-5 | Role inference + Genie `id_cols` naming reduction (`_infer_role` naming 0.35->0.20 as constants; genie prefer FK/ontology PK signals over `_id` suffix) | OPEN | P2 | M | UAT |
-| PQ-6 | Suffix-less + `_code`-not-FK benchmark scenario (`uat_fk_suffixless`) + eval_compare harness extension; the measurement gate for PQ-1 | OPEN | P1 | M | UAT |
-| PQ-7 | Bound MV `_validate_expr`/`_yaml_dry_run` federation round-trip counts (LIMIT 0/schema-only, lower sev) | OPEN | P3 | S | federation audit |
+| PQ-1 | Data-driven FK candidate generator (value-overlap/containment, name-independent; tiered from CACHED profiling; SR_DATA_OVERLAP lowest trust; federation = LIMIT+collect local compute) | DONE | P1 | L | UAT two-ontology + fk_hard |
+| PQ-2 | Extend existing `_detect_pattern` (profiling.py, already persists `pattern_detected`) with npi/ndc/cusip; consume in FK Tier-1 bucketing (NOT a new library) | DONE | P2 | S | UAT |
+| PQ-3 | `_sample_categorical_values` (genie/context.py:709) does `SELECT DISTINCT` on source (federated full-scan storm); read cached `column_profiling_stats.sample_values` instead | DONE | P1 | S | federation audit |
+| PQ-4 | `_validate_kpi_formula` runs LIMIT-1 per KPI×table with NO federation guard (~40 source queries in revalidate); add guard + N×M cap/dedup | DONE | P1 | S | federation audit |
+| PQ-5 | Role inference + Genie `id_cols` naming reduction (`_infer_role` naming 0.35->0.20 as constants; genie prefer FK/ontology PK signals over `_id` suffix) | DONE | P2 | M | UAT |
+| PQ-6 | Suffix-less + `_code`-not-FK benchmark scenario (`uat_fk_suffixless`) + eval_compare harness extension; the measurement gate for PQ-1 | DONE | P1 | M | UAT |
+| PQ-7 | Bound MV `_validate_expr`/`_yaml_dry_run` federation round-trip counts (LIMIT 0/schema-only, lower sev) | DONE | P3 | S | federation audit |
 
 ### MG-1: Chat client garbage fallback on JSON parse failure
 
