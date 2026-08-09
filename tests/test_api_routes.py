@@ -1418,3 +1418,43 @@ class TestDedupKpiSuggestions:
     def test_empty_inputs(self):
         assert api_server._dedup_kpi_suggestions([], []) == []
         assert api_server._dedup_kpi_suggestions(None, None) == []
+
+
+class TestValidateKpiFormulaCaps:
+    """PQ-4: KPI formula validation must not fan out into a source-query storm.
+    Dedup target tables, cap probes at _KPI_VALIDATE_MAX_TABLES, stop at first resolve."""
+
+    def _run(self, monkeypatch, tables, ok_tables):
+        probed = []
+        def fake_execute_sql(sql, timeout=30):
+            # crude: find which table this probe hit
+            for t in tables:
+                if t in sql:
+                    probed.append(t)
+                    return [{"kpi_val": 1}] if t in ok_tables else []
+            return []
+        monkeypatch.setattr(api_server, "execute_sql", fake_execute_sql)
+        status, err, resolved = api_server._validate_kpi_formula("SUM(x)", tables)
+        return status, resolved, probed
+
+    def test_stops_at_first_resolving_table(self, monkeypatch):
+        # First table resolves -> the rest must NOT be probed.
+        status, resolved, probed = self._run(
+            monkeypatch, ["c.s.a", "c.s.b", "c.s.c"], ok_tables={"c.s.a"})
+        assert status == "valid"
+        assert probed == ["c.s.a"]   # only one probe
+
+    def test_dedups_target_tables(self, monkeypatch):
+        status, resolved, probed = self._run(
+            monkeypatch, ["c.s.a", "c.s.a", "c.s.a"], ok_tables=set())
+        assert probed == ["c.s.a"]   # deduped to a single probe
+
+    def test_caps_probe_count(self, monkeypatch):
+        many = [f"c.s.t{i}" for i in range(20)]  # none resolve
+        status, resolved, probed = self._run(monkeypatch, many, ok_tables=set())
+        assert len(probed) <= api_server._KPI_VALIDATE_MAX_TABLES
+
+    def test_empty_is_skipped(self, monkeypatch):
+        monkeypatch.setattr(api_server, "execute_sql", lambda *a, **k: [])
+        assert api_server._validate_kpi_formula("", ["c.s.a"])[0] == "skipped"
+        assert api_server._validate_kpi_formula("SUM(x)", [])[0] == "skipped"

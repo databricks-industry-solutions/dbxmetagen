@@ -767,3 +767,53 @@ class TestGenieAgentFreshGeneration:
         done = [e for e in events if e.get("stage") == "done"]
         assert done
         assert any("truncated" in w.lower() for w in done[0].get("warnings", []))
+
+
+# ---------------------------------------------------------------------------
+# _sample_categorical_values -- PQ-3 federation safety (prefer cached samples)
+# ---------------------------------------------------------------------------
+class TestSampleCategoricalValuesCache:
+    """PQ-3: must read cached column_profiling_stats.sample_values, NOT run
+    SELECT DISTINCT against the (possibly federated) source."""
+
+    def _asm(self):
+        asm = object.__new__(GenieContextAssembler)
+        asm.ws = MagicMock()
+        asm.wh = "wh"
+        asm.catalog = "c"
+        asm.schema = "s"
+        return asm
+
+    def test_reads_cache_no_source_query(self, monkeypatch):
+        from dbxmetagen.genie import context as ctx
+        calls = []
+        def fake_safe_sql(ws, wh, query, *a, **k):
+            calls.append(query)
+            if "column_profiling_stats" in query:
+                return [{"table_name": "c.s.orders", "column_name": "status",
+                         "sample_values": json.dumps(["open", "closed", "open", None, "closed"])}]
+            return []  # any source query would land here
+        monkeypatch.setattr(ctx, "_safe_sql", fake_safe_sql)
+        asm = self._asm()
+        cols = [{"table_name": "c.s.orders", "column_name": "status", "data_type": "STRING"}]
+        out = asm._sample_categorical_values(cols)
+        # got the cached values, locally de-duped, nulls dropped
+        assert out["c.s.orders"]["status"] == ["open", "closed"]
+        # and NO SELECT DISTINCT was issued against the source
+        assert not any("SELECT DISTINCT" in q.upper() for q in calls)
+        assert any("column_profiling_stats" in q for q in calls)
+
+    def test_federated_no_source_fallback(self, monkeypatch):
+        from dbxmetagen.genie import context as ctx
+        monkeypatch.setenv("FEDERATION_MODE", "true")
+        calls = []
+        def fake_safe_sql(ws, wh, query, *a, **k):
+            calls.append(query)
+            return []  # cache empty
+        monkeypatch.setattr(ctx, "_safe_sql", fake_safe_sql)
+        asm = self._asm()
+        cols = [{"table_name": "fed.s.orders", "column_name": "status", "data_type": "STRING"}]
+        out = asm._sample_categorical_values(cols)
+        # cache miss + federated -> NO source read at all
+        assert out == {}
+        assert not any("FROM `fed`" in q or "FROM fed" in q for q in calls if "profiling_stats" not in q)

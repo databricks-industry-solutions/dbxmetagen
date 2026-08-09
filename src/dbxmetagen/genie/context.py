@@ -199,6 +199,30 @@ class GenieContextAssembler:
     def _fq(self, table: str) -> str:
         return f"`{self.catalog}`.`{self.schema}`.`{table}`"
 
+    def _any_federated(self, tables: List[str]) -> bool:
+        """True if any of the given fully-qualified tables lives in a federated/foreign
+        catalog. Env FEDERATION_MODE forces true. Best-effort: a lookup failure returns
+        False (the LIMIT+non-DISTINCT fallback is itself bounded), matching
+        api_server._is_federated_catalog's fail-open-to-safe-bounded behavior."""
+        if os.environ.get("FEDERATION_MODE", "false").lower() == "true":
+            return True
+        catalogs = {t.split(".")[0] for t in tables if "." in t}
+        if not catalogs:
+            return False
+        try:
+            cat_list = ", ".join(f"'{c}'" for c in sorted(catalogs))
+            rows = _safe_sql(
+                self.ws, self.wh,
+                f"SELECT catalog_type FROM system.information_schema.catalogs "
+                f"WHERE catalog_name IN ({cat_list})",
+            ) or []
+            return any(
+                (r.get("catalog_type") or "").upper() in ("FOREIGN", "FOREIGN_CATALOG", "EXTERNAL")
+                for r in rows
+            )
+        except Exception:
+            return False
+
     def assemble(
         self,
         table_identifiers: List[str],
@@ -687,9 +711,15 @@ class GenieContextAssembler:
     def _sample_categorical_values(
         self, columns: list[dict]
     ) -> dict[str, dict[str, list]]:
-        """Sample distinct values for STRING columns (useful for filter suggestions)."""
-        from concurrent.futures import ThreadPoolExecutor, as_completed
+        """Sample values for STRING columns (useful for filter suggestions).
 
+        FEDERATION-SAFE (PQ-3): profiling already persists per-column `sample_values`
+        into `column_profiling_stats`. Read that CACHE first -- a `SELECT DISTINCT col`
+        against the source forces a full-column scan/dedup that does NOT push down and
+        can hammer a federated source (the previous behavior). Only when the cache has
+        nothing for a column do we fall back to a bounded, non-DISTINCT source read, and
+        NEVER against a federated catalog. Distinct-ing is done locally on the sample.
+        """
         samples: dict[str, dict[str, list]] = {}
         string_cols = [
             c
@@ -700,25 +730,77 @@ class GenieContextAssembler:
         if not capped:
             return samples
 
-        def _fetch(col):
-            tbl = col["table_name"]
-            cn = col["column_name"]
-            fq_tbl = self._qualify(tbl)
+        # 1. Cached path: read persisted sample_values (JSON arrays) in ONE query.
+        want = {(c["table_name"], c["column_name"]) for c in capped}
+        tables = sorted({t for t, _ in want})
+        tbl_list = ", ".join(f"'{t}'" for t in tables)
+        try:
             rows = _safe_sql(
                 self.ws, self.wh,
-                f"SELECT DISTINCT `{cn}` AS val FROM {fq_tbl} WHERE `{cn}` IS NOT NULL LIMIT 8",
-            )
-            return tbl, cn, [r["val"] for r in rows] if rows else []
+                f"SELECT table_name, column_name, sample_values "
+                f"FROM {self._fq('column_profiling_stats')} "
+                f"WHERE table_name IN ({tbl_list})",
+            ) or []
+        except Exception:
+            rows = []
+        for r in rows:
+            key = (r.get("table_name"), r.get("column_name"))
+            if key not in want:
+                continue
+            raw = r.get("sample_values")
+            try:
+                vals = json.loads(raw) if isinstance(raw, str) else (raw or [])
+            except (ValueError, TypeError):
+                vals = []
+            # Local distinct, drop nulls, cap to 8 -- no source scan.
+            seen, out = set(), []
+            for v in vals:
+                if v is None or v in seen:
+                    continue
+                seen.add(v)
+                out.append(v)
+                if len(out) >= 8:
+                    break
+            if out:
+                samples.setdefault(key[0], {})[key[1]] = out
 
-        with ThreadPoolExecutor(max_workers=8) as pool:
-            futures = {pool.submit(_fetch, c): c for c in capped}
-            for f in as_completed(futures):
-                try:
-                    tbl, cn, vals = f.result(timeout=30)
-                    if vals:
-                        samples.setdefault(tbl, {})[cn] = vals
-                except Exception:
-                    pass  # skip failed columns silently
+        # 2. Fallback ONLY for columns with no cached samples, and NEVER on federated
+        #    catalogs (a source read there is the exact blow-up risk). Non-DISTINCT +
+        #    LIMIT so it pushes down; dedup locally.
+        missing = [
+            c for c in capped
+            if c["column_name"] not in samples.get(c["table_name"], {})
+        ]
+        if missing and not self._any_federated(tables):
+            from concurrent.futures import ThreadPoolExecutor, as_completed
+
+            def _fetch(col):
+                tbl, cn = col["table_name"], col["column_name"]
+                fq_tbl = self._qualify(tbl)
+                rows = _safe_sql(
+                    self.ws, self.wh,
+                    f"SELECT `{cn}` AS val FROM {fq_tbl} WHERE `{cn}` IS NOT NULL LIMIT 200",
+                )
+                seen, out = set(), []
+                for row in (rows or []):
+                    v = row.get("val")
+                    if v is None or v in seen:
+                        continue
+                    seen.add(v)
+                    out.append(v)
+                    if len(out) >= 8:
+                        break
+                return tbl, cn, out
+
+            with ThreadPoolExecutor(max_workers=8) as pool:
+                futures = {pool.submit(_fetch, c): c for c in missing}
+                for f in as_completed(futures):
+                    try:
+                        tbl, cn, vals = f.result(timeout=30)
+                        if vals:
+                            samples.setdefault(tbl, {})[cn] = vals
+                    except Exception:
+                        pass  # skip failed columns silently
         return samples
 
     # -- Synonym helpers -------------------------------------------------------

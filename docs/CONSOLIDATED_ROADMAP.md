@@ -45,6 +45,27 @@ All open work items from every roadmap and plan document, organized by theme. Ea
 | FK-11 | Provably-disjoint FK pair (join probe ran, join_matched=0 AND ri_score=0) still scored final_confidence ~0.6. Fixed: collapse final_confidence 0.25x on the same never_joins signal, so it drops below threshold (not just is_fk=false). | DONE | P2 | S | UAT FK scenario (uat_fk_hard region_id trap) |
 | MG-19 | `luhn_checksum(res.score)` in classify_column passes the SCORE (float) not the matched TEXT -> always False -> every deterministic CREDIT_CARD match dropped. Needs matched-text plumbing + presidio to verify (risk: order_ref trap). Not fixed blind. | OPEN | P2 | S | UAT PI scenario (deep-dive during MG-17) |
 
+### Prediction Quality — name-independence + federation-safe scale (PQ)
+
+Make FK/join prediction, fact/dim role inference, metric-view patterns, and Genie rooms
+work GENERALLY (customers don't use `_id/_key/_code` or `fct_/dim_` universally; a `_code`
+is sometimes NOT a FK). Improve recall (catch npi/ndc/mrn/email with no suffix) AND
+precision, federation-safely and at scale. Root cause: FK SCORING is data-rich but
+CANDIDATE GENERATION is name-gated, so suffix-less keys never reach the data probe (proven:
+npi 20/20, ndc 10/10 → zero FK predictions in a live UAT). Guiding principle: only change
+what's broken/missing — the current approach works fairly well. Full design:
+`.claude/plans/let-s-move-the-advanced-gleaming-moler.md`.
+
+| ID | Item | Status | Priority | Effort | Source |
+|----|------|--------|----------|--------|--------|
+| PQ-1 | Data-driven FK candidate generator (value-overlap/containment, name-independent; tiered from CACHED profiling; SR_DATA_OVERLAP lowest trust; federation = LIMIT+collect local compute) | OPEN | P1 | L | UAT two-ontology + fk_hard |
+| PQ-2 | Extend existing `_detect_pattern` (profiling.py, already persists `pattern_detected`) with npi/ndc/cusip; consume in FK Tier-1 bucketing (NOT a new library) | OPEN | P2 | S | UAT |
+| PQ-3 | `_sample_categorical_values` (genie/context.py:709) does `SELECT DISTINCT` on source (federated full-scan storm); read cached `column_profiling_stats.sample_values` instead | OPEN | P1 | S | federation audit |
+| PQ-4 | `_validate_kpi_formula` runs LIMIT-1 per KPI×table with NO federation guard (~40 source queries in revalidate); add guard + N×M cap/dedup | OPEN | P1 | S | federation audit |
+| PQ-5 | Role inference + Genie `id_cols` naming reduction (`_infer_role` naming 0.35->0.20 as constants; genie prefer FK/ontology PK signals over `_id` suffix) | OPEN | P2 | M | UAT |
+| PQ-6 | Suffix-less + `_code`-not-FK benchmark scenario (`uat_fk_suffixless`) + eval_compare harness extension; the measurement gate for PQ-1 | OPEN | P1 | M | UAT |
+| PQ-7 | Bound MV `_validate_expr`/`_yaml_dry_run` federation round-trip counts (LIMIT 0/schema-only, lower sev) | OPEN | P3 | S | federation audit |
+
 ### MG-1: Chat client garbage fallback on JSON parse failure
 
 **Status: DONE** -- `chat_client.py` now raises `ValueError` with context on `json.JSONDecodeError`, providing the raw text snippet for debugging. The hard-fail path is implemented.

@@ -7987,6 +7987,9 @@ def _validate_expr(expr: str, source_table: str, joins: list[dict] | None = None
     from_clause = _build_from_clause(source_table, joins)
     sql_expr = _dotpath_to_leaf(expr, joins)
     try:
+        # PQ-7: LIMIT 0 is schema/plan-only -- returns no rows and does not scan the
+        # source (federation-safe). The per-generation call count is bounded by the
+        # capped view count + expressions per view; no source-data read here.
         execute_sql(f"SELECT {sql_expr} FROM {from_clause} LIMIT 0")
         return None, expr
     except Exception as e:
@@ -13212,6 +13215,11 @@ def _ensure_kpi_table():
         pass
 
 
+# PQ-4: cap how many target tables a single KPI-formula validation probes, so a KPI
+# bound to many tables can't fan out into a source-query storm (esp. federated).
+_KPI_VALIDATE_MAX_TABLES = 5
+
+
 def _validate_kpi_formula(formula: str, target_tables: list[str]) -> tuple[str, str, str]:
     """Dry-run a KPI formula to check syntax and column existence.
 
@@ -13222,11 +13230,21 @@ def _validate_kpi_formula(formula: str, target_tables: list[str]) -> tuple[str, 
     """
     if not formula or not target_tables:
         return "skipped", "", ""
+    # PQ-4 federation safety: each probe is a bounded `LIMIT 1` (pushes down, cheap),
+    # so the risk is the N×M COUNT of probes (KPIs × target tables), which can hammer a
+    # federated source. Dedup tables (order-preserving), cap how many we probe, and
+    # STOP at the first table the formula resolves against (any-table-valid semantics --
+    # extra probes add nothing once one succeeds).
+    seen: set = set()
+    deduped = [t for t in target_tables if not (t in seen or seen.add(t))]
+    probed = deduped[:_KPI_VALIDATE_MAX_TABLES]
     results = []
-    for table in target_tables:
+    for table in probed:
         try:
             rows = execute_sql(f"SELECT {formula} AS kpi_val FROM {table} LIMIT 1", timeout=30)
             results.append(("ok" if rows else "empty", table, ""))
+            if rows:
+                break  # resolved -> no need to probe the rest
         except Exception as e:
             results.append(("error", table, str(e)))
     return reduce_kpi_validation(results)
