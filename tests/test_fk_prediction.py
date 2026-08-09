@@ -18,18 +18,21 @@ from dbxmetagen.fk_prediction import (
     _dtype_excluded,
     _DEFAULT_SYSTEM_COL_PATTERNS,
     predict_foreign_keys,
+    _dtype_family,
+    _data_overlap_decision,
     SR_COL_PROP,
     SR_DECLARED,
     SR_EMBEDDING,
     SR_NAME,
     SR_ONTOLOGY,
     SR_QUERY,
+    SR_DATA_OVERLAP,
 )
 
 
 def test_source_rank_ordering():
-    """Lower number = higher trust for dedup."""
-    assert SR_DECLARED < SR_QUERY < SR_COL_PROP < SR_NAME < SR_ONTOLOGY < SR_EMBEDDING
+    """Lower number = higher trust for dedup. SR_DATA_OVERLAP is LOWEST trust (PQ-1)."""
+    assert SR_DECLARED < SR_QUERY < SR_COL_PROP < SR_NAME < SR_ONTOLOGY < SR_EMBEDDING < SR_DATA_OVERLAP
 
 
 def test_dedup_sort_key_tuple():
@@ -1837,3 +1840,80 @@ class TestGenericGuardLogic:
         # 'code' on table 'status' vs 'status' col elsewhere: table_a 'status'
         # token-matches short_b 'status' -> corroborated, kept.
         assert self._dropped("code", "status", table_a="c.s.status", table_b="c.s.x") is False
+
+
+class TestDtypeFamily:
+    def test_int_family(self):
+        assert _dtype_family("BIGINT") == "int" == _dtype_family("int")
+    def test_string_family(self):
+        assert _dtype_family("STRING") == "string" == _dtype_family("varchar(20)")
+    def test_other_passthrough(self):
+        assert _dtype_family("DECIMAL(10,2)") == "decimal(10,2)"
+
+
+class TestDataOverlapDecision:
+    """PQ-1 precision guards for the value-overlap FK candidate generator (pure logic)."""
+
+    def _npi(self, n):  # helper: n distinct npi-like values
+        return {f"1{700000000 + i}" for i in range(n)}
+
+    def test_suffixless_key_recall(self):
+        # child fully contained in a key-like parent -> EMIT (this is the npi case)
+        child = self._npi(30)
+        parent = self._npi(40)          # superset, unique key
+        score = _data_overlap_decision(
+            child, parent, child_distinct=30, parent_distinct=40,
+            parent_unique=True, parent_card=1.0, ontology_typed=False,
+            min_containment=0.85, min_containment_ontology=0.60, min_distinct=8)
+        assert score is not None and score >= 0.85
+
+    def test_symmetric_enum_trap_rejected(self):
+        # status_code <-> type_code: same small domain, neither key-like -> REJECT
+        vals = {"A", "B", "C"}
+        score = _data_overlap_decision(
+            vals, vals, child_distinct=3, parent_distinct=3,
+            parent_unique=False, parent_card=0.01, ontology_typed=False,
+            min_containment=0.85, min_containment_ontology=0.60, min_distinct=8)
+        assert score is None
+
+    def test_small_domain_veto(self):
+        # both sides tiny distinct -> REJECT even if parent looks unique
+        vals = {"X", "Y"}
+        score = _data_overlap_decision(
+            vals, vals, child_distinct=2, parent_distinct=2,
+            parent_unique=True, parent_card=1.0, ontology_typed=False,
+            min_containment=0.85, min_containment_ontology=0.60, min_distinct=8)
+        assert score is None
+
+    def test_no_intersection_rejected(self):
+        score = _data_overlap_decision(
+            self._npi(30), {f"2{i}" for i in range(30)},
+            child_distinct=30, parent_distinct=30,
+            parent_unique=True, parent_card=1.0, ontology_typed=False,
+            min_containment=0.85, min_containment_ontology=0.60, min_distinct=8)
+        assert score is None
+
+    def test_parent_must_be_key_like(self):
+        # good containment but parent NOT key-like -> REJECT (asymmetry guard)
+        child = self._npi(20)
+        parent = self._npi(40)
+        score = _data_overlap_decision(
+            child, parent, child_distinct=20, parent_distinct=40,
+            parent_unique=False, parent_card=0.3, ontology_typed=False,
+            min_containment=0.85, min_containment_ontology=0.60, min_distinct=8)
+        assert score is None
+
+    def test_ontology_relaxes_containment_bar(self):
+        # 0.70 containment: below the 0.85 default bar, but ABOVE the 0.60 ontology bar
+        child = self._npi(10) | {"MISS1", "MISS2", "MISS3"}   # 13 vals, 10 in parent -> 0.77
+        parent = self._npi(40)
+        base = _data_overlap_decision(
+            child, parent, child_distinct=13, parent_distinct=40,
+            parent_unique=True, parent_card=1.0, ontology_typed=False,
+            min_containment=0.85, min_containment_ontology=0.60, min_distinct=8)
+        ont = _data_overlap_decision(
+            child, parent, child_distinct=13, parent_distinct=40,
+            parent_unique=True, parent_card=1.0, ontology_typed=True,
+            min_containment=0.85, min_containment_ontology=0.60, min_distinct=8)
+        assert base is None            # rejected at default bar
+        assert ont is not None         # accepted when ontology corroborates

@@ -12,7 +12,7 @@ import logging
 import threading
 import warnings
 from dataclasses import dataclass, field
-from typing import Any, Dict, Tuple
+from typing import Any, Dict, Optional, Tuple
 
 from pyspark.sql import DataFrame, SparkSession
 from pyspark.sql import functions as F
@@ -29,6 +29,9 @@ SR_COL_PROP = 2
 SR_NAME = 3
 SR_ONTOLOGY = 4
 SR_EMBEDDING = 5
+SR_DATA_OVERLAP = 6  # PQ-1: name-independent value-overlap candidates. LOWEST trust so
+                     # dedup lets any corroborated source win; it purely ADDS pairs that
+                     # naming/embedding/ontology missed (e.g. npi, ndc, email -- no suffix).
 
 _DEFAULT_SYSTEM_COL_PATTERNS: Tuple[str, ...] = (
     r"^_",
@@ -75,6 +78,48 @@ def _not_join_key():
 def _dtype_exclusion_sql() -> str:
     """SQL IN-list for data types that can never be foreign keys."""
     return ", ".join(f"'{d}'" for d in _FK_EXCLUDED_DTYPES)
+
+
+def _dtype_family(dtype: str) -> str:
+    """Coarse dtype family for value-overlap bucketing (PQ-1): only pair columns whose
+    types could plausibly join. 'int' (any integer width), 'string', else the raw lower."""
+    dt = (dtype or "").lower()
+    if any(x in dt for x in ("int", "long", "short", "byte")):
+        return "int"
+    if "string" in dt or "varchar" in dt or "char" in dt:
+        return "string"
+    return dt or "unknown"
+
+
+def _data_overlap_decision(
+    child_vals: set, parent_vals: set,
+    child_distinct: int, parent_distinct: int,
+    parent_unique: bool, parent_card: float,
+    ontology_typed: bool,
+    min_containment: float, min_containment_ontology: float, min_distinct: int,
+) -> Optional[float]:
+    """Pure decision for a directional (child -> parent) value-overlap FK candidate (PQ-1).
+
+    Returns the containment score to EMIT, or None to REJECT. Precision guards, in order:
+      1. small-domain veto: both sides < min_distinct -> overlap is uninformative
+      2. must have SOME value intersection
+      3. parent must look key-like (unique OR cardinality >= 0.9) -- the asymmetry that
+         rejects symmetric enum<->enum coincidences (e.g. status_code <-> type_code)
+      4. directional containment |child ∩ parent| / |child| >= bar; the bar is RELAXED
+         to min_containment_ontology when the ontology corroborates the pair (strong signal)
+    """
+    if child_distinct < min_distinct and parent_distinct < min_distinct:
+        return None
+    inter = child_vals & parent_vals
+    if not inter:
+        return None
+    if not (parent_unique or parent_card >= 0.9):
+        return None
+    containment = len(inter) / max(len(child_vals), 1)
+    bar = min_containment_ontology if ontology_typed else min_containment
+    if containment < bar:
+        return None
+    return round(containment, 4)
 
 
 def _generic_names_sql(names: Tuple[str, ...]) -> str:
@@ -161,6 +206,15 @@ class FKPredictionConfig:
     generic_column_names: Tuple[str, ...] = field(default_factory=lambda: _DEFAULT_GENERIC_COL_NAMES)
     table_names: list = field(default_factory=list)
     federation_mode: bool = False
+    # PQ-1: data-driven (value-overlap) FK candidate generation. Additive + guarded;
+    # all inputs come from CACHED column_profiling_stats (federation cost already paid),
+    # so this issues NO new source reads.
+    enable_data_overlap_candidates: bool = True
+    fk_data_overlap_min_containment: float = 0.85       # directional containment bar
+    fk_data_overlap_min_containment_ontology: float = 0.60  # relaxed bar when ontology corroborates
+    fk_data_overlap_min_distinct: int = 8               # small-domain veto (both sides < N -> skip)
+    fk_data_overlap_weight: float = 0.25                # rule_score contribution
+    fk_data_overlap_max_candidates: int = 2000          # global emitted-pair ceiling
 
     def __post_init__(self):
         if self.federation_mode and self.apply_ddl:
@@ -559,6 +613,179 @@ class FKPredictor:
                 "table_a STRING, table_b STRING, dtype_a STRING, dtype_b STRING, "
                 "table_similarity DOUBLE, source_rank INT, query_hit_count INT"
             )
+
+    def _empty_candidate_df(self) -> DataFrame:
+        return self.spark.createDataFrame(
+            [], "col_a STRING, col_b STRING, col_similarity DOUBLE, "
+            "table_a STRING, table_b STRING, dtype_a STRING, dtype_b STRING, "
+            "table_similarity DOUBLE, source_rank INT, query_hit_count INT, "
+            "_data_overlap DOUBLE"
+        )
+
+    def get_value_overlap_candidates(self) -> DataFrame:
+        """PQ-1: name-INDEPENDENT FK candidates from column VALUE OVERLAP.
+
+        The scoring stack is data-rich but the other generators are name-gated, so a real
+        key without an _id/_key/_code suffix (npi, ndc, email, mrn) never becomes a
+        candidate. This generator finds pairs by directional value CONTAINMENT, using ONLY
+        the CACHED column_profiling_stats (sample_values / distinct_count / cardinality /
+        pattern_detected) -- profiling already paid the (federation-safe) cost, so this
+        issues NO new source reads. Emits SR_DATA_OVERLAP (lowest trust): purely additive.
+
+        Tiered to survive hundreds of tables x columns:
+          Tier 0  keep key-eligible cols only (dtype ok, non-system, plausible key shape)
+          Tier 1  bucket by (dtype family, pattern_detected) -> pair only within buckets
+          Tier 2  directional containment on cached sample_values; keep >= threshold
+                  (relaxed when both columns share an ontology entity/property type)
+        """
+        if not self.config.enable_data_overlap_candidates:
+            return self._empty_candidate_df()
+        try:
+            import json as _json
+
+            stats_tbl = self.config.fq("column_profiling_stats")
+            snaps_tbl = self.config.fq("profiling_snapshots")
+            # Latest snapshot per table; only columns with samples + non-excluded dtype.
+            df = self.spark.sql(f"""
+                WITH latest AS (
+                  SELECT snapshot_id, table_name FROM (
+                    SELECT snapshot_id, table_name, ROW_NUMBER() OVER
+                      (PARTITION BY table_name ORDER BY snapshot_time DESC) rn
+                    FROM {snaps_tbl}
+                  ) WHERE rn = 1
+                )
+                SELECT cs.table_name, cs.column_name, cs.data_type,
+                       cs.distinct_count, cs.cardinality_ratio, cs.is_unique_candidate,
+                       cs.null_rate, cs.pattern_detected, cs.sample_values
+                FROM {stats_tbl} cs
+                INNER JOIN latest ON cs.snapshot_id = latest.snapshot_id
+                  AND cs.table_name = latest.table_name
+                WHERE cs.sample_values IS NOT NULL
+            """)
+            rows = list(df.toLocalIterator())
+        except Exception as e:
+            logger.warning("Value-overlap candidate generation skipped (no profiling?): %s", e)
+            return self._empty_candidate_df()
+
+        # Optional table_names scoping: keep a column only if its table matches a
+        # configured pattern (supports `catalog.schema.*` wildcards, case-insensitive).
+        scope_pats = None
+        if self.config.table_names:
+            scope_pats = [str(t).lower().rstrip("*") for t in self.config.table_names]
+
+        def _in_scope(tbl: str) -> bool:
+            if scope_pats is None:
+                return True
+            t = (tbl or "").lower()
+            return any(t == p or t.startswith(p) for p in scope_pats)
+
+        def _excluded_dtype(dt: str) -> bool:
+            dt = (dt or "").lower()
+            return any(x in dt for x in _FK_EXCLUDED_DTYPES)
+
+        sys_re = re.compile("|".join(self.config.system_column_patterns), re.IGNORECASE) \
+            if self.config.system_column_patterns else None
+
+        # Tier 0: key-eligible columns only.
+        cols = []
+        for r in rows:
+            short = (r.column_name or "").lower()
+            if _excluded_dtype(r.data_type):
+                continue
+            if sys_re and sys_re.search(short):
+                continue
+            if not _in_scope(r.table_name):
+                continue
+            try:
+                vals = _json.loads(r.sample_values) if isinstance(r.sample_values, str) else (r.sample_values or [])
+            except (ValueError, TypeError):
+                vals = []
+            valset = {str(v) for v in vals if v is not None}
+            if len(valset) < 2:   # need at least a couple of distinct sampled values
+                continue
+            card = float(r.cardinality_ratio or 0.0)
+            cols.append({
+                "table": r.table_name, "col": r.column_name, "dtype": r.data_type or "",
+                "vals": valset, "card": card, "unique": bool(r.is_unique_candidate),
+                "distinct": int(r.distinct_count or 0),
+                "pattern": (r.pattern_detected or "unknown"),
+                "dfam": _dtype_family(r.data_type or ""),
+            })
+
+        # Tier 1: bucket by (dtype family, pattern) -> only pair within a bucket.
+        from collections import defaultdict
+        buckets: dict = defaultdict(list)
+        for c in cols:
+            buckets[(c["dfam"], c["pattern"])].append(c)
+
+        min_c = self.config.fk_data_overlap_min_containment
+        min_c_ont = self.config.fk_data_overlap_min_containment_ontology
+        min_distinct = self.config.fk_data_overlap_min_distinct
+        ceiling = self.config.fk_data_overlap_max_candidates
+        ont_pairs = self._ontology_typed_column_pairs()
+
+        emitted = []
+        for _, members in buckets.items():
+            for i in range(len(members)):
+                for j in range(len(members)):
+                    if i == j:
+                        continue
+                    a, b = members[i], members[j]   # a=child candidate, b=parent candidate
+                    if a["table"] == b["table"]:
+                        continue
+                    ont_ok = (a["table"], a["col"], b["table"], b["col"]) in ont_pairs
+                    containment = _data_overlap_decision(
+                        a["vals"], b["vals"], a["distinct"], b["distinct"],
+                        b["unique"], b["card"], ont_ok,
+                        min_c, min_c_ont, min_distinct,
+                    )
+                    if containment is None:
+                        continue
+                    emitted.append((a["col"], b["col"], a["table"], b["table"],
+                                    a["dtype"], b["dtype"], containment))
+                    if len(emitted) >= ceiling:
+                        break
+                if len(emitted) >= ceiling:
+                    break
+            if len(emitted) >= ceiling:
+                break
+
+        if not emitted:
+            return self._empty_candidate_df()
+
+        out = self.spark.createDataFrame(
+            emitted,
+            "col_a STRING, col_b STRING, table_a STRING, table_b STRING, "
+            "dtype_a STRING, dtype_b STRING, _data_overlap DOUBLE",
+        ).withColumn("col_similarity", F.lit(0.0)) \
+         .withColumn("table_similarity", F.lit(0.0)) \
+         .withColumn("source_rank", F.lit(SR_DATA_OVERLAP)) \
+         .withColumn("query_hit_count", F.lit(0))
+        logger.info("Value-overlap FK candidates: %d", len(emitted))
+        return out
+
+    def _ontology_typed_column_pairs(self) -> set:
+        """Set of (ta, ca, tb, cb) column pairs whose BOTH columns resolve to the same
+        ontology entity/property type -- used to RELAX the containment bar (ontology as a
+        strong corroborating signal, never a gate). Best-effort; empty on any failure."""
+        pairs: set = set()
+        try:
+            cp = self.config.fq(self.config.column_properties_table)
+            rows = self.spark.sql(
+                f"SELECT table_name, column_name, linked_entity_type FROM {cp} "
+                f"WHERE linked_entity_type IS NOT NULL"
+            ).collect()
+            by_type: dict = {}
+            for r in rows:
+                by_type.setdefault(r.linked_entity_type, []).append((r.table_name, r.column_name))
+            for _t, members in by_type.items():
+                for (ta, ca) in members:
+                    for (tb, cb) in members:
+                        if ta != tb:
+                            pairs.add((ta, ca, tb, cb))
+        except Exception:
+            pass
+        return pairs
 
     # ------------------------------------------------------------------
     # Step 1b: Ontology-driven FK candidates
@@ -1662,6 +1889,7 @@ class FKPredictor:
             .when(F.col("source_rank") == F.lit(SR_COL_PROP), 0.20)
             .when(F.col("source_rank") == F.lit(SR_NAME), 0.15)
             .when(F.col("source_rank") == F.lit(SR_ONTOLOGY), 0.10)
+            .when(F.col("source_rank") == F.lit(SR_DATA_OVERLAP), 0.10)
             .otherwise(0.0)
         )
 
@@ -1708,6 +1936,15 @@ class FKPredictor:
             1.0,
         ).otherwise(0.0)
 
+        # PQ-1: data-overlap (value containment) signal carried by the value-overlap
+        # generator. Lets a name-free key (npi/ndc/email) clear rule_score_min_for_ai on
+        # data merit. Guarded: absent column -> 0.0 (no effect on other code paths).
+        data_overlap_sig = (
+            F.coalesce(F.col("_data_overlap"), F.lit(0.0))
+            if "_data_overlap" in candidates.columns else F.lit(0.0)
+        )
+        data_overlap_w = self.config.fk_data_overlap_weight
+
         return (
             candidates.withColumn(
                 "rule_score",
@@ -1724,7 +1961,8 @@ class FKPredictor:
                     + schema_signal * not_system
                     + same_domain * 0.05 * not_system
                     + sim_floor * not_system * not_both_generic
-                    + pk_match * 0.10 * not_system * not_both_generic,
+                    + pk_match * 0.10 * not_system * not_both_generic
+                    + data_overlap_sig * data_overlap_w,
                     4,
                 ),
             )
@@ -2429,6 +2667,7 @@ class FKPredictor:
         col_prop_cands = self.get_column_property_candidates()
         declared_cands = self.get_declared_fk_candidates()
         query_cands = self.get_query_join_candidates()
+        overlap_cands = self.get_value_overlap_candidates()  # PQ-1 (additive, lowest trust)
 
         candidates = (
             embedding_cands.unionByName(name_cands, allowMissingColumns=True)
@@ -2436,6 +2675,7 @@ class FKPredictor:
             .unionByName(col_prop_cands, allowMissingColumns=True)
             .unionByName(declared_cands, allowMissingColumns=True)
             .unionByName(query_cands, allowMissingColumns=True)
+            .unionByName(overlap_cands, allowMissingColumns=True)
         )
 
         candidates = candidates.filter(
@@ -2654,6 +2894,12 @@ def predict_foreign_keys(
     sweep_stale: bool = False,
     table_names: list = None,
     federation_mode: bool = False,
+    enable_data_overlap_candidates: bool = True,
+    fk_data_overlap_min_containment: float = 0.85,
+    fk_data_overlap_min_containment_ontology: float = 0.60,
+    fk_data_overlap_min_distinct: int = 8,
+    fk_data_overlap_weight: float = 0.25,
+    fk_data_overlap_max_candidates: int = 2000,
 ) -> Dict[str, Any]:
     """Convenience function to run FK prediction."""
     from dbxmetagen.processing import _check_federation_guard
@@ -2684,6 +2930,12 @@ def predict_foreign_keys(
         generic_column_names=generic_column_names,
         table_names=table_names or [],
         federation_mode=federation_mode,
+        enable_data_overlap_candidates=enable_data_overlap_candidates,
+        fk_data_overlap_min_containment=fk_data_overlap_min_containment,
+        fk_data_overlap_min_containment_ontology=fk_data_overlap_min_containment_ontology,
+        fk_data_overlap_min_distinct=fk_data_overlap_min_distinct,
+        fk_data_overlap_weight=fk_data_overlap_weight,
+        fk_data_overlap_max_candidates=fk_data_overlap_max_candidates,
     )
     predictor = FKPredictor(spark, config)
     return predictor.run(sweep_stale=sweep_stale)

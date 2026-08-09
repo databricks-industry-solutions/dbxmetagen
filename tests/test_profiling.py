@@ -172,6 +172,22 @@ class TestProfilingBuilder:
         assert builder.DATE_PATTERN.match("2024/01/15")
         assert not builder.DATE_PATTERN.match("January 15, 2024")
 
+    def test_npi_ndc_cusip_patterns(self, builder):
+        # PQ-2: domain identifier formats used by the value-overlap FK bucketing.
+        assert builder.NPI_PATTERN.match("1700000037")       # 10-digit NPI
+        assert not builder.NPI_PATTERN.match("170000")        # too short
+        assert builder.NDC_PATTERN.match("50001-1234-56")     # NDC 5-4-2
+        assert builder.CUSIP_PATTERN.match("037833100")       # 9-char alnum
+        assert builder.CUSIP_PATTERN.match("30303M102")
+
+    def test_npi_classified_as_npi_not_numeric_id(self, builder):
+        # A 10-digit NPI must dominant-classify as 'npi', not swallowed by numeric_id.
+        assert builder._detect_pattern(["1700000037", "1700000044", "1700000051"]) == "npi"
+        # A generic short integer id still classes as numeric_id.
+        assert builder._detect_pattern(["1", "2", "3", "42"]) == "numeric_id"
+        # NDC dominant.
+        assert builder._detect_pattern(["50001-1234-56", "50002-1000-10"]) == "ndc"
+
 
 class TestDeltaSinglePass:
     """Tests for _profile_table_delta single-pass SQL generation."""

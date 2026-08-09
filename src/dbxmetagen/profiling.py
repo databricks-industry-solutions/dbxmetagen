@@ -63,6 +63,12 @@ class ProfilingBuilder:
     UUID_PATTERN = re.compile(r'^[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}$')
     EMAIL_PATTERN = re.compile(r'^[a-zA-Z0-9._%+-]+@[a-zA-Z0-9.-]+\.[a-zA-Z]{2,}$')
     DATE_PATTERN = re.compile(r'^\d{4}[-/]\d{2}[-/]\d{2}')
+    # PQ-2: domain-standard identifier formats (checked BEFORE the generic numeric_id
+    # fallback so e.g. a 10-digit NPI classes as 'npi', not 'numeric_id'). These feed the
+    # value-overlap FK generator's bucketing so same-format keys across tables get paired.
+    NPI_PATTERN = re.compile(r'^\d{10}$')                       # National Provider Identifier
+    NDC_PATTERN = re.compile(r'^\d{4,5}-\d{3,4}-\d{1,2}$')      # National Drug Code
+    CUSIP_PATTERN = re.compile(r'^[0-9A-Z]{9}$')                # security identifier
     NUMERIC_ID_PATTERN = re.compile(r'^\d+$')
     
     # Explicit schema for snapshots table
@@ -267,8 +273,9 @@ class ProfilingBuilder:
         if not sample_values:
             return "unknown"
         
-        patterns = {"uuid": 0, "email": 0, "date": 0, "numeric_id": 0, "other": 0}
-        
+        patterns = {"uuid": 0, "email": 0, "date": 0, "npi": 0, "ndc": 0,
+                    "cusip": 0, "numeric_id": 0, "other": 0}
+
         for val in sample_values:
             if val is None:
                 continue
@@ -279,6 +286,12 @@ class ProfilingBuilder:
                 patterns["email"] += 1
             elif self.DATE_PATTERN.match(val_str):
                 patterns["date"] += 1
+            elif self.NDC_PATTERN.match(val_str):
+                patterns["ndc"] += 1
+            elif self.NPI_PATTERN.match(val_str):
+                patterns["npi"] += 1     # 10-digit; checked before generic numeric_id
+            elif self.CUSIP_PATTERN.match(val_str) and not val_str.isdigit():
+                patterns["cusip"] += 1   # alnum 9-char (pure-digit handled by numeric_id)
             elif self.NUMERIC_ID_PATTERN.match(val_str):
                 patterns["numeric_id"] += 1
             else:
