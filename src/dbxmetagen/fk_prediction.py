@@ -2394,8 +2394,16 @@ class FKPredictor:
         # column-property (higher-trust), which stay exempt. Requires both card ratios
         # present and >= threshold.
         mirror_pair = F.lit(False)
-        if "_card_ratio_a" in df.columns and "_card_ratio_b" in df.columns \
-                and "source_rank" in df.columns:
+        _mirror_cols_present = (
+            "_card_ratio_a" in df.columns and "_card_ratio_b" in df.columns
+            and "source_rank" in df.columns
+        )
+        logger.info(
+            "Mirror veto: cols_present=%s (has_card_a=%s has_card_b=%s has_source_rank=%s)",
+            _mirror_cols_present, "_card_ratio_a" in df.columns,
+            "_card_ratio_b" in df.columns, "source_rank" in df.columns,
+        )
+        if _mirror_cols_present:
             m_thresh = F.lit(self.config.fk_mirror_uniqueness_threshold)
             low_trust = F.col("source_rank").isin(SR_NAME, SR_EMBEDDING, SR_DATA_OVERLAP)
             mirror_pair = (
