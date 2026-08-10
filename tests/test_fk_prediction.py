@@ -1918,6 +1918,38 @@ class TestDataOverlapDecision:
         assert base is None            # rejected at default bar
         assert ont is not None         # accepted when ontology corroborates
 
+    def test_distinctive_format_relaxes_containment_bar(self):
+        # Large-domain natural key: only partial SAMPLE overlap (cached samples don't
+        # cover the whole domain), so containment ~0.40 -- below the 0.85 default bar but
+        # above the 0.30 distinctive bar. This is the email case that got zero candidates.
+        # 25-value child, 10 of them shared with a 59-value key parent -> containment 0.40.
+        child = self._npi(25)
+        parent = self._npi(10) | {f"9{i}" for i in range(49)}   # 59-value key domain, 10 shared
+        base = _data_overlap_decision(
+            child, parent, child_distinct=59, parent_distinct=59,
+            parent_unique=True, parent_card=0.98, ontology_typed=False,
+            min_containment=0.85, min_containment_ontology=0.60, min_distinct=8,
+            distinctive_format=False, min_containment_distinctive=0.30)
+        dist = _data_overlap_decision(
+            child, parent, child_distinct=59, parent_distinct=59,
+            parent_unique=True, parent_card=0.98, ontology_typed=False,
+            min_containment=0.85, min_containment_ontology=0.60, min_distinct=8,
+            distinctive_format=True, min_containment_distinctive=0.30)
+        assert base is None            # rejected at strict bar (partial sample overlap)
+        assert dist is not None        # accepted for a distinctive registered format
+
+    def test_distinctive_format_still_needs_key_like_parent(self):
+        # A distinctive format does NOT waive the parent-key-like asymmetry guard: a
+        # symmetric non-unique overlap stays rejected even with the relaxed bar.
+        child = self._npi(25)
+        parent = self._npi(10) | {f"9{i}" for i in range(49)}
+        score = _data_overlap_decision(
+            child, parent, child_distinct=59, parent_distinct=59,
+            parent_unique=False, parent_card=0.2, ontology_typed=False,
+            min_containment=0.85, min_containment_ontology=0.60, min_distinct=8,
+            distinctive_format=True, min_containment_distinctive=0.30)
+        assert score is None
+
 
 class TestValueOverlapGeneratorSmoke:
     """Exercise get_value_overlap_candidates end-to-end with a mocked spark so runtime

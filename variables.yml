@@ -328,6 +328,9 @@ variables:
   fk_data_overlap_min_containment_ontology:
     description: "PQ-1: relaxed containment bar used when the ontology corroborates the pair (both columns share a linked_entity_type). Ontology as a strong prior, never a gate."
     default: 0.60
+  fk_data_overlap_min_containment_distinctive:
+    description: "PQ-1: relaxed containment bar for pairs sharing a distinctive REGISTERED value format (email/npi/ndc/cusip/uuid). Cached samples under-cover large key domains, so a genuine natural-key FK shows only partial sample overlap; the format is a strong prior and the downstream join probe + never_joins veto enforce precision. Generic codes keep the strict bar."
+    default: 0.30
   fk_data_overlap_min_distinct:
     description: "PQ-1: small-domain veto -- if BOTH columns have fewer than this many distinct values, value overlap is uninformative (e.g. status/type enums) and the pair is not emitted."
     default: 8

@@ -129,6 +129,7 @@ class MetadataConfig:
             "enable_data_overlap_candidates",
             "fk_data_overlap_min_containment",
             "fk_data_overlap_min_containment_ontology",
+            "fk_data_overlap_min_containment_distinctive",
             "fk_data_overlap_min_distinct",
             "fk_data_overlap_weight",
             "fk_data_overlap_max_candidates",

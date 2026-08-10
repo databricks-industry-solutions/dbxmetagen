@@ -47,6 +47,14 @@ _FK_EXCLUDED_DTYPES = (
     "timestamp_ntz", "binary", "variant", "struct", "array", "map",
 )
 
+# Distinctive REGISTERED value formats (from profiling's _detect_pattern). A column
+# matching one of these is far more likely a real entity identifier than a generic
+# string/code, so the value-overlap FK generator relaxes its containment bar for a pair
+# whose SHARED bucket pattern is distinctive (see _data_overlap_decision). Deliberately
+# EXCLUDES generic 'numeric_id'/'code'/'string'/'unknown' -- those keep the strict bar so
+# coincidental enum overlaps (status_code<->type_code) stay rejected.
+_DISTINCTIVE_PATTERNS: Tuple[str, ...] = ("email", "npi", "ndc", "cusip", "uuid")
+
 # Whole-name (lowercased) generic/low-information column names. Unlike the regex
 # system_column_patterns, these are exact column-name matches. A column named
 # exactly one of these carries no entity semantics on its own, so a candidate FK
@@ -98,6 +106,8 @@ def _data_overlap_decision(
     parent_unique: bool, parent_card: float,
     ontology_typed: bool,
     min_containment: float, min_containment_ontology: float, min_distinct: int,
+    distinctive_format: bool = False,
+    min_containment_distinctive: float = 0.30,
 ) -> Optional[float]:
     """Pure decision for a directional (child -> parent) value-overlap FK candidate (PQ-1).
 
@@ -106,8 +116,17 @@ def _data_overlap_decision(
       2. must have SOME value intersection
       3. parent must look key-like (unique OR cardinality >= 0.9) -- the asymmetry that
          rejects symmetric enum<->enum coincidences (e.g. status_code <-> type_code)
-      4. directional containment |child ∩ parent| / |child| >= bar; the bar is RELAXED
-         to min_containment_ontology when the ontology corroborates the pair (strong signal)
+      4. directional containment |child ∩ parent| / |child| >= bar. The bar is RELAXED
+         when the pair carries a strong prior:
+           - ontology corroboration (both columns share an entity/property type), OR
+           - a distinctive REGISTERED format on both sides (email/npi/ndc/cusip/uuid --
+             NOT generic strings or codes).
+         The relaxation exists because sample-set containment under-estimates true
+         containment on large domains (only SAMPLE_VALUE_COUNT distinct values are cached
+         per column, so a genuine natural-key FK over a big domain shows partial sample
+         overlap). This generator only PROPOSES; the downstream live join probe + FK-11
+         never_joins veto enforce precision, so a lower proposal bar is safe for pairs
+         with a strong structural prior. Generic-format pairs keep the strict bar.
     """
     if child_distinct < min_distinct and parent_distinct < min_distinct:
         return None
@@ -117,7 +136,11 @@ def _data_overlap_decision(
     if not (parent_unique or parent_card >= 0.9):
         return None
     containment = len(inter) / max(len(child_vals), 1)
-    bar = min_containment_ontology if ontology_typed else min_containment
+    bar = min_containment
+    if ontology_typed:
+        bar = min(bar, min_containment_ontology)
+    if distinctive_format:
+        bar = min(bar, min_containment_distinctive)
     if containment < bar:
         return None
     return round(containment, 4)
@@ -213,6 +236,7 @@ class FKPredictionConfig:
     enable_data_overlap_candidates: bool = True
     fk_data_overlap_min_containment: float = 0.85       # directional containment bar
     fk_data_overlap_min_containment_ontology: float = 0.60  # relaxed bar when ontology corroborates
+    fk_data_overlap_min_containment_distinctive: float = 0.30  # relaxed bar for distinctive formats (email/npi/ndc/cusip/uuid)
     fk_data_overlap_min_distinct: int = 8               # small-domain veto (both sides < N -> skip)
     fk_data_overlap_weight: float = 0.25                # rule_score contribution
     fk_data_overlap_max_candidates: int = 2000          # global emitted-pair ceiling
@@ -725,8 +749,14 @@ class FKPredictor:
         ceiling = self.config.fk_data_overlap_max_candidates
         ont_pairs = self._ontology_typed_column_pairs()
 
+        min_c_dist = self.config.fk_data_overlap_min_containment_distinctive
         emitted = []
-        for _, members in buckets.items():
+        for (_dfam, _pattern), members in buckets.items():
+            # Both members of a bucket share the same pattern, so a distinctive registered
+            # format (email/npi/ndc/cusip/uuid) qualifies the whole bucket for the relaxed
+            # containment bar -- large-domain natural keys only partially overlap in cached
+            # samples, and the downstream join probe + never_joins veto enforce precision.
+            distinctive = _pattern in _DISTINCTIVE_PATTERNS
             for i in range(len(members)):
                 for j in range(len(members)):
                     if i == j:
@@ -739,6 +769,8 @@ class FKPredictor:
                         a["vals"], b["vals"], a["distinct"], b["distinct"],
                         b["unique"], b["card"], ont_ok,
                         min_c, min_c_ont, min_distinct,
+                        distinctive_format=distinctive,
+                        min_containment_distinctive=min_c_dist,
                     )
                     if containment is None:
                         continue
@@ -2905,6 +2937,7 @@ def predict_foreign_keys(
     enable_data_overlap_candidates: bool = True,
     fk_data_overlap_min_containment: float = 0.85,
     fk_data_overlap_min_containment_ontology: float = 0.60,
+    fk_data_overlap_min_containment_distinctive: float = 0.30,
     fk_data_overlap_min_distinct: int = 8,
     fk_data_overlap_weight: float = 0.25,
     fk_data_overlap_max_candidates: int = 2000,
@@ -2941,6 +2974,7 @@ def predict_foreign_keys(
         enable_data_overlap_candidates=enable_data_overlap_candidates,
         fk_data_overlap_min_containment=fk_data_overlap_min_containment,
         fk_data_overlap_min_containment_ontology=fk_data_overlap_min_containment_ontology,
+        fk_data_overlap_min_containment_distinctive=fk_data_overlap_min_containment_distinctive,
         fk_data_overlap_min_distinct=fk_data_overlap_min_distinct,
         fk_data_overlap_weight=fk_data_overlap_weight,
         fk_data_overlap_max_candidates=fk_data_overlap_max_candidates,

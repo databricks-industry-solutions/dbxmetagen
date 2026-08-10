@@ -70,7 +70,16 @@ class ProfilingBuilder:
     NDC_PATTERN = re.compile(r'^\d{4,5}-\d{3,4}-\d{1,2}$')      # National Drug Code
     CUSIP_PATTERN = re.compile(r'^[0-9A-Z]{9}$')                # security identifier
     NUMERIC_ID_PATTERN = re.compile(r'^\d+$')
-    
+
+    # Number of distinct sample values persisted to column_profiling_stats.sample_values.
+    # The value-overlap FK generator (fk_prediction.py) computes directional containment
+    # on these cached samples, so it must be large enough that two columns drawing from
+    # the same ~tens-of-values domain actually intersect even when sampled independently
+    # (5 was too small: random draws from a 60-value email domain rarely overlapped, so a
+    # real natural-key FK produced no candidate). The underlying scan is already LIMIT 100,
+    # so persisting more of what was pulled is free and federation-safe -- no extra reads.
+    SAMPLE_VALUE_COUNT = 25
+
     # Explicit schema for snapshots table
     SNAPSHOT_SCHEMA = StructType([
         StructField("snapshot_id", StringType(), False),
@@ -462,7 +471,7 @@ class ProfilingBuilder:
                 "mode_value": "",
                 "mode_frequency": 0,
                 "entropy": 0.0,
-                "sample_values": json.dumps(sample_map.get(c, [])[:5]),
+                "sample_values": json.dumps(sample_map.get(c, [])[:self.SAMPLE_VALUE_COUNT]),
                 "value_distribution": "{}",
                 "pattern_detected": "unknown",
                 "has_numeric_stats": is_numeric,
@@ -621,7 +630,7 @@ class ProfilingBuilder:
                 "mode_value": "",
                 "mode_frequency": 0,
                 "entropy": 0.0,
-                "sample_values": json.dumps(sample_map.get(c, [])[:5]),
+                "sample_values": json.dumps(sample_map.get(c, [])[:self.SAMPLE_VALUE_COUNT]),
                 "value_distribution": "{}",
                 "pattern_detected": self._detect_pattern(sample_map.get(c, [])) if is_string else "unknown",
                 "has_numeric_stats": is_numeric,
@@ -680,10 +689,17 @@ class ProfilingBuilder:
             sel = ", ".join(f"CAST(`{c}` AS STRING) AS `{c}`" for c in columns)
             sample_rows = self.spark.sql(f"SELECT {sel} FROM {table_name} LIMIT 100").collect()
             result: Dict[str, List[str]] = {c: [] for c in columns}
+            # Collect DISTINCT values (not raw rows): the value-overlap FK generator needs
+            # value coverage of the column's domain, and a FK child column repeats its
+            # parent's keys, so raw sampling wastes slots on duplicates. Dedup maximizes
+            # distinct coverage from the same LIMIT-100 pull (still zero extra source reads).
+            seen: Dict[str, set] = {c: set() for c in columns}
             for r in sample_rows:
                 for c in columns:
                     v = r[c]
-                    if v is not None and len(result[c]) < 5:
+                    if v is not None and len(result[c]) < self.SAMPLE_VALUE_COUNT \
+                            and v not in seen[c]:
+                        seen[c].add(v)
                         result[c].append(v)
             return result
         except Exception as e:
