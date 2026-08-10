@@ -108,6 +108,7 @@ def _data_overlap_decision(
     min_containment: float, min_containment_ontology: float, min_distinct: int,
     distinctive_format: bool = False,
     min_containment_distinctive: float = 0.30,
+    child_unique: bool = False,
 ) -> Optional[float]:
     """Pure decision for a directional (child -> parent) value-overlap FK candidate (PQ-1).
 
@@ -116,7 +117,14 @@ def _data_overlap_decision(
       2. must have SOME value intersection
       3. parent must look key-like (unique OR cardinality >= 0.9) -- the asymmetry that
          rejects symmetric enum<->enum coincidences (e.g. status_code <-> type_code)
-      4. directional containment |child ∩ parent| / |child| >= bar. The bar is RELAXED
+      4. mirror veto: a FK is many-to-one, so the CHILD (FK side) repeats parent keys and
+         is NON-unique. When BOTH sides are unique the relationship is 1:1 -- almost always
+         a table mirror/staging copy (dim_customer vs dim_customer_staging) sharing a unique
+         column, NOT a FK. Reject unless the ontology corroborates a legitimate 1:1 link.
+         This is the value-overlap generator's own precision call; a real 1:1 FK is better
+         asserted by a declared constraint or ontology (higher-trust sources), not by blind
+         value containment.
+      5. directional containment |child ∩ parent| / |child| >= bar. The bar is RELAXED
          when the pair carries a strong prior:
            - ontology corroboration (both columns share an entity/property type), OR
            - a distinctive REGISTERED format on both sides (email/npi/ndc/cusip/uuid --
@@ -134,6 +142,8 @@ def _data_overlap_decision(
     if not inter:
         return None
     if not (parent_unique or parent_card >= 0.9):
+        return None
+    if child_unique and not ontology_typed:
         return None
     containment = len(inter) / max(len(child_vals), 1)
     bar = min_containment
@@ -771,6 +781,7 @@ class FKPredictor:
                         min_c, min_c_ont, min_distinct,
                         distinctive_format=distinctive,
                         min_containment_distinctive=min_c_dist,
+                        child_unique=a["unique"],
                     )
                     if containment is None:
                         continue

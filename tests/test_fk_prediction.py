@@ -1938,6 +1938,38 @@ class TestDataOverlapDecision:
         assert base is None            # rejected at strict bar (partial sample overlap)
         assert dist is not None        # accepted for a distinctive registered format
 
+    def test_table_mirror_rejected(self):
+        # dim_customer.customer_name vs dim_customer_staging.customer_name: BOTH unique
+        # (1:1 copy), 100% containment -> a table mirror, NOT a FK. Reject.
+        vals = {f"name{i}" for i in range(50)}
+        score = _data_overlap_decision(
+            vals, vals, child_distinct=50, parent_distinct=50,
+            parent_unique=True, parent_card=1.0, ontology_typed=False,
+            min_containment=0.85, min_containment_ontology=0.60, min_distinct=8,
+            child_unique=True)
+        assert score is None
+
+    def test_table_mirror_allowed_when_ontology_corroborates(self):
+        # A genuine 1:1 link that the ontology asserts is exempt from the mirror veto.
+        vals = {f"name{i}" for i in range(50)}
+        score = _data_overlap_decision(
+            vals, vals, child_distinct=50, parent_distinct=50,
+            parent_unique=True, parent_card=1.0, ontology_typed=True,
+            min_containment=0.85, min_containment_ontology=0.60, min_distinct=8,
+            child_unique=True)
+        assert score is not None
+
+    def test_real_fk_child_is_non_unique(self):
+        # The real npi/email case: child repeats parent keys (non-unique) -> NOT vetoed.
+        child = self._npi(20)
+        parent = self._npi(40)
+        score = _data_overlap_decision(
+            child, parent, child_distinct=20, parent_distinct=40,
+            parent_unique=True, parent_card=1.0, ontology_typed=False,
+            min_containment=0.85, min_containment_ontology=0.60, min_distinct=8,
+            child_unique=False)
+        assert score is not None
+
     def test_distinctive_format_still_needs_key_like_parent(self):
         # A distinctive format does NOT waive the parent-key-like asymmetry guard: a
         # symmetric non-unique overlap stays rejected even with the relaxed bar.
