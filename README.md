@@ -671,7 +671,10 @@ You may need to try a couple different node types if your organization doesn't h
 
 ## Dependencies
 
-All packages use permissive licenses (Apache 2.0, MIT, BSD, PSF). See [docs/DEPENDENCIES.md](docs/DEPENDENCIES.md) for the full package analysis.
+The core library and all frontend packages use permissive licenses (Apache 2.0, MIT, BSD, PSF).
+The one exception is the app's Postgres/Lakebase driver `psycopg2-binary` (**LGPL v3 with
+exceptions**, used unmodified as a dynamically-linked app dependency). See
+[docs/DEPENDENCIES.md](docs/DEPENDENCIES.md) for the full package/version/license table.
 
 ## License
 
