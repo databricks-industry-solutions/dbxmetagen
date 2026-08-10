@@ -131,7 +131,7 @@ class ExtendedMetadataBuilder:
 
         for catalog in catalogs:
             try:
-                rows = self.spark.sql(f"DESCRIBE CATALOG EXTENDED {catalog}").collect()
+                rows = self.spark.sql(f"DESCRIBE CATALOG EXTENDED {quote_fqn(catalog)}").collect()
                 info = {r["info_name"]: r["info_value"] for r in rows}
                 if info.get("Catalog Type", "").lower() == "foreign":
                     conn_name = info.get("Connection Name", "")

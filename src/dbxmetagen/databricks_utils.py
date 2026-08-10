@@ -57,10 +57,11 @@ def quote_fqn(fqn: str) -> str:
 
     ``quote_fqn("cat.sch.tbl$raw")`` -> ``` `cat`.`sch`.`tbl$raw` ```
 
-    Note: the DataFrame reader ``spark.read.table(name)`` accepts an unparsed multipart
-    name and already tolerates ``$``; only the SQL-parser path (``spark.table`` /
-    ``spark.sql`` f-strings) needs this. Use it at every site that reads a *customer
-    source table* by name.
+    Note: BOTH ``spark.table(name)`` and ``spark.read.table(name)`` parse the identifier
+    through ``parseTableIdentifier`` and raise on a special char, so neither is safe for
+    a ``$``-containing name. Read such tables via a backtick-quoted
+    ``spark.sql(f"SELECT * FROM {quote_fqn(name)}")`` instead. Use ``quote_fqn`` at every
+    site that references a *customer source table* by name in SQL.
     """
     if not fqn:
         return fqn

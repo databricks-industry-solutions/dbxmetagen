@@ -345,9 +345,10 @@ class ProfilingBuilder:
 
     def _profile_table_delta(self, table_name: str, drift_baselines: Dict[str, Dict[str, int]] = None) -> Optional[Dict[str, Any]]:
         snapshot_id = str(uuid.uuid4())
-        # spark.read.table() takes an unparsed multipart name (tolerates $, spaces);
-        # spark.table() parses the identifier and breaks on special chars -- avoid it.
-        df = self.spark.read.table(table_name)
+        # Read via quoted SQL: both spark.table() AND spark.read.table() parse the
+        # identifier and raise on a special char (e.g. `$` in a federated tbl$raw);
+        # a backtick-quoted SELECT is parse-safe for any legal identifier (MG-22).
+        df = self.spark.sql(f"SELECT * FROM {quote_fqn(table_name)}")
         schema = df.schema
         columns = [f.name for f in schema.fields[:50]]
         column_count = len(schema.fields)
@@ -546,7 +547,7 @@ class ProfilingBuilder:
 
     def _profile_table_federated(self, table_name: str, drift_baselines: Dict[str, Dict[str, int]] = None) -> Optional[Dict[str, Any]]:
         snapshot_id = str(uuid.uuid4())
-        df = self.spark.read.table(table_name)
+        df = self.spark.sql(f"SELECT * FROM {quote_fqn(table_name)}")
         schema = df.schema
         columns = [f.name for f in schema.fields[:50]]
         column_count = len(schema.fields)

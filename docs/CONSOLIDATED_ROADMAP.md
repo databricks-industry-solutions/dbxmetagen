@@ -44,7 +44,8 @@ All open work items from every roadmap and plan document, organized by theme. Ea
 | MG-18 | UAT PI gold not normalized for equivalent classes (pi/pii, phi/medical_information) | OPEN | P3 | S | UAT PI scenario |
 | FK-11 | Provably-disjoint FK pair (join probe ran, join_matched=0 AND ri_score=0) still scored final_confidence ~0.6. Fixed: collapse final_confidence 0.25x on the same never_joins signal, so it drops below threshold (not just is_fk=false). | DONE | P2 | S | UAT FK scenario (uat_fk_hard region_id trap) |
 | MG-19 | `luhn_checksum(res.score)` in classify_column passes the SCORE (float) not the matched TEXT -> always False -> every deterministic CREDIT_CARD match dropped. Needs matched-text plumbing + presidio to verify (risk: order_ref trap). Not fixed blind. | OPEN | P2 | S | UAT PI scenario (deep-dive during MG-17) |
-| MG-20 | Special-char table identifiers (e.g. a `$` in a federated Redshift table name like `…1$raw`) break profiling: `spark.table()` / `spark.sql` sites parse `{table_name}` bare -> `PARSE_SYNTAX_ERROR at '$'` -> the analytics pipeline task dies. **DONE (v0.10.61):** shared `quote_fqn()` in `databricks_utils.py` backtick-quotes each dotted segment; applied to profiling (5 SQL sites; 2 `spark.table()`->`spark.read.table()` which takes an unparsed name), FK source sampling (5 sites), `extended_metadata` DESCRIBE DETAIL, and the latent `processing.py` special-types read + DESCRIBE EXTENDED. Comment/PI generation was NOT affected (its default read is `spark.read.table()`, which already tolerates `$`) -- only the pipeline failed, matching the customer report. | DONE | P1 | M | Customer log (federated Redshift) |
+| MG-20 | Special-char table identifiers (e.g. a `$` in a federated Redshift table name like `…1$raw`) break SQL that interpolates the FQN bare -> `PARSE_SYNTAX_ERROR at '$'`. **DONE (v0.10.61-64):** shared `quote_fqn()` (`databricks_utils.py`) backtick-quotes each dotted segment; applied to every customer-source-table SQL site -- profiling, FK source sampling, `extended_metadata` DESCRIBE DETAIL + DESCRIBE CATALOG, `processing.get_column_types_from_describe` (DESCRIBE TABLE), the type-conversion read, DESCRIBE EXTENDED (processing + `prompts.py`). The final gap (the actual data read) was MG-22. **Verified live on `uat_ddl_edges.dollar$raw`:** generation "Table processed" + 4 metadata rows; profiling covers it. `very_wide_table` (120 cols) also clean (242 rows -> ON-19 confirmed). | DONE | P1 | M | Customer log + live UAT |
+| MG-22 | **Silent `$`-table skip (the read path, sub-bug of MG-20).** `read_table_with_type_conversion` read the table via `spark.read.table(fqn)` in the no-special-types branch. `spark.read.table` parses the identifier through the SAME `parseTableIdentifier` as `spark.table()`, so `$` raised `PARSE_SYNTAX_ERROR`; the exception was caught in `get_generated_metadata_data_aware` -> returned `[]` -> `review_and_generate_metadata` -> `(None,None)` -> "Skipped - No metadata generated", yet `mark_table_completed` still ran (control=`completed`, zero metadata rows). An earlier assumption that `spark.read.table` tolerates `$` was WRONG. **DONE (v0.10.64):** route ALL source reads through `spark.sql(f"SELECT * FROM {quote_fqn(name)}")` (parse-safe) -- `read_table_with_type_conversion` (both branches), profiling `_profile_table_delta`/`_federated`, and the override source-col check; corrected the `quote_fqn` docstring. Verified live: `dollar$raw` now processes with 4 metadata rows. Regression scenario `uat_ddl_edges.dollar$raw` + `TestGenerationPathIdentifierQuoting` guard against reintroduction. | DONE | P1 | M | Live UAT (uat_ddl_edges) |
 | MG-21 | Log spam: `[NOTICE] Using a notebook authentication token` repeats ~90x in a single run, burying real errors. **DONE (v0.10.61):** shared `new_workspace_client()` passes `product='dbxmetagen', disable_notice=True` (graceful fallback for older SDKs), routed through the hot-path `chat_client` auth-fallback + secret-fetch sites. Deliberately NOT a shared singleton -- each call gets its own client so concurrent LLM calls don't contend on shared SDK auth/HTTP state (per Eli: singleton would add latency at 50-100+ concurrent calls). | DONE | P3 | S | Customer log |
 
 ### Prediction Quality — name-independence + federation-safe scale (PQ)
@@ -399,6 +400,40 @@ pragmatically).
 **Status: DONE** -- `_validate_output()` in `genie/agent.py` warns when `source_count > 1` and joins are empty or insufficient (`< source_count - 1`).
 
 ---
+
+## 4c. Metric-View Reverse-Sync (externally-authored / externally-edited MVs)
+
+**Problem.** dbxmetagen treats `metric_view_definitions` as the source of truth and pushes
+OUTWARD (definition -> UC `WITH METRICS` view -> `semantic_graph` nodes/edges -> `vector_index`
+`metadata_documents`). Metric views can also be **created or edited outside dbxmetagen** (a
+different owner, the same name, or a same-source/overlapping-content view). Those never flow
+BACK, so the knowledge graph / semantic graph / VS index silently drift from what is actually
+deployed in UC. This cluster closes the round-trip.
+
+**What already exists (build on, don't rebuild):** `semantic_graph.SemanticGraphBuilder`
+decomposes MVs into `metric_view`/`measure`/`dimension` nodes+edges from `json_definition`;
+`vector_index` builds MV summary/measures/dimensions docs from the same; `api_server` (~L6737)
+ALREADY discovers UC MVs from `information_schema.tables` (`table_type='METRIC_VIEW'`) not present
+in `metric_view_definitions` -- but only surfaces name+catalog+schema in a list (no definition
+captured, no downstream sync). `transfer_metric_view_ownership` makes owner a first-class concept.
+The missing middle is: read a deployed MV's definition back from UC, normalize to `json_definition`,
+upsert with provenance, then let the existing graph/VS builders consume it.
+
+| ID | Item | Status | Priority | Effort | Source |
+|----|------|--------|----------|--------|--------|
+| SL-1 | **MV definition read-back parser.** Read a deployed MV's YAML body from UC (`information_schema.views.view_definition` / DESCRIBE) and parse it into the internal `json_definition` shape -- the inverse of `metric_view_core._serialize_to_yaml`. Must tolerate constructs dbxmetagen never emits (hand-authored YAML). This is the core new primitive everything else depends on. | OPEN | P2 | L | Reverse-sync feature |
+| SL-2 | **Provenance + drift columns on `metric_view_definitions`.** Add `source_origin` (`dbxmetagen`/`external_import`/`external_edit`), `deployed_owner`, `last_synced_at`, and a drift flag. Analogous to `graph_edges.source_system` + entity `auto_discovered`. Lets graph/VS attribute sources and lets re-generation avoid clobbering imported defs. | OPEN | P2 | S | Reverse-sync feature |
+| SL-3 | **Reconcile pass (exact match).** For each UC MV, match on `metric_view_name` + `deployed_catalog.deployed_schema` (name is unique within a UC schema; a *different owner* is the SAME object -> record owner, don't fork). Import unknown MVs as `source_origin=external_import`. **Authority: UC is truth for imports; for a dbxmetagen-authored MV edited outside, do NOT silently overwrite the stored def -- flag drift for review** (mirrors the `review_updated_at` steward-lock). Never destructive. | OPEN | P2 | M | Reverse-sync feature |
+| SL-4 | **Sync imported/updated MVs to the three consumers.** Once SL-3 upserts a definition, drive `semantic_graph` (metric_view/measure/dimension nodes+edges) and `vector_index` (`metadata_documents` + VS) off it -- reuse existing builders; add MV `source_origin` attribution to nodes/docs. Confirm `merge_edges`/doc sweeps treat imported MVs like any other source (no orphan/clobber). | OPEN | P2 | M | Reverse-sync feature |
+| SL-5 | **Fuzzy 'possibly-related' suggestions (NOT auto-merge).** Same source table + measure/dimension overlap but a DIFFERENT name is surfaced as a review-UI suggestion only -- never auto-merged into one node (auto-merge risks collapsing two genuinely-distinct views / corrupting the graph). Preserves the human-in-the-loop contract. | OPEN | P3 | M | Reverse-sync feature |
+| SL-6 | **Drift dashboard / review surface.** Show UC MVs missing from the graph, dbxmetagen MVs whose deployed YAML has drifted from the stored def, and orphaned graph/VS entries for MVs deleted in UC. The human decides import/overwrite/ignore per row. | OPEN | P3 | M | Reverse-sync feature |
+
+**Sequencing:** SL-1 (parser) + SL-2 (columns) are prerequisites; SL-3 (reconcile) then SL-4 (sync)
+deliver the core value; SL-5/SL-6 are follow-on precision/UX. **Design decisions locked with Eli:**
+exact name+schema auto-reconciles, fuzzy is suggest-only (SL-5), UC-is-truth-for-imports with
+drift-flagging for steward-authored defs (SL-3). A deleted-in-UC MV should sweep its graph/VS
+entries the same way `sweep_stale_docs`/`merge_edges` sweep other sources (steward-locked defs
+preserved).
 
 ## 4b. App UX / Onboarding
 

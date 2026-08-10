@@ -1371,6 +1371,7 @@ class TestPreLLMExclusionWiring:
             mock_schema.fields = [self._make_field("cust_id")]
             mock_spark.table.return_value.schema = mock_schema
             mock_spark.read.table.return_value.schema = mock_schema
+            mock_spark.sql.return_value.schema = mock_schema
             SparkSession.builder.getOrCreate.return_value = mock_spark
 
             pm.review_and_generate_metadata(config, "cat.sch.t")
@@ -1420,6 +1421,7 @@ class TestPreLLMExclusionWiring:
             mock_schema.fields = [self._make_field(f"col_{i}") for i in range(10)]
             mock_spark.table.return_value.schema = mock_schema
             mock_spark.read.table.return_value.schema = mock_schema
+            mock_spark.sql.return_value.schema = mock_schema
             SparkSession.builder.getOrCreate.return_value = mock_spark
 
             pm.review_and_generate_metadata(config, "cat.sch.t")
@@ -1497,6 +1499,7 @@ class TestPreLLMExclusionWiring:
             ]
             mock_spark.table.return_value.schema = mock_schema
             mock_spark.read.table.return_value.schema = mock_schema
+            mock_spark.sql.return_value.schema = mock_schema
             SparkSession.builder.getOrCreate.return_value = mock_spark
 
             pm.review_and_generate_metadata(config, "cat.sch.t")
@@ -1565,6 +1568,7 @@ class TestPreLLMExclusionWiring:
             mock_schema.fields = [self._make_field("Customer_ID")]
             mock_spark.table.return_value.schema = mock_schema
             mock_spark.read.table.return_value.schema = mock_schema
+            mock_spark.sql.return_value.schema = mock_schema
             SparkSession.builder.getOrCreate.return_value = mock_spark
 
             pm.review_and_generate_metadata(config, "cat.sch.t")

@@ -243,7 +243,7 @@ def get_column_types_from_describe(spark: SparkSession, full_table_name: str) ->
     Returns:
         dict: {column_name: data_type_string}
     """
-    describe_df = spark.sql(f"DESCRIBE TABLE {full_table_name}")
+    describe_df = spark.sql(f"DESCRIBE TABLE {quote_fqn(full_table_name)}")
     columns = {}
     for row in describe_df.collect():
         col_name = row["col_name"]
@@ -330,14 +330,18 @@ def read_table_with_type_conversion(
         else:
             select_exprs.append(f"`{col_name}`")
 
+    # Always read via quoted SQL. `spark.read.table(name)` parses the identifier
+    # through the same parseTableIdentifier path as spark.table(), so a special
+    # char in a segment (e.g. `$` in a federated `tbl$raw`) raises
+    # PARSE_SYNTAX_ERROR -- which the caller catches and turns into a silent skip
+    # (MG-22). A backtick-quoted `SELECT * FROM {fqn}` is parse-safe for any legal
+    # identifier, so both branches go through it.
     if has_special_types:
-        # Use SQL query with conversions
         select_clause = ", ".join(select_exprs)
-        query = f"SELECT {select_clause} FROM {quote_fqn(full_table_name)}"
-        return spark.sql(query)
     else:
-        # No special types - read normally
-        return spark.read.table(full_table_name)
+        select_clause = "*"
+    query = f"SELECT {select_clause} FROM {quote_fqn(full_table_name)}"
+    return spark.sql(query)
 
 
 def convert_special_types_to_string(df: DataFrame) -> DataFrame:
@@ -2538,7 +2542,8 @@ def review_and_generate_metadata(
             # Validate against actual source table columns
             spark = SparkSession.builder.getOrCreate()
             source_cols_lower = {
-                f.name.lower() for f in spark.read.table(full_table_name).schema.fields
+                f.name.lower()
+                for f in spark.sql(f"SELECT * FROM {quote_fqn(full_table_name)}").schema.fields
             }
             for col_name, values in override_data.items():
                 if col_name.lower() not in source_cols_lower:
