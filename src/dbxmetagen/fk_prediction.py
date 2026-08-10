@@ -76,6 +76,7 @@ _FEDERATION_MAX_WORKERS = 4
 # fk_constants module so the Spark-free app imports the identical literals (no drift).
 # Re-exported here for existing importers of dbxmetagen.fk_prediction.
 from dbxmetagen.fk_constants import JOIN_KEY, FOREIGN_KEY, NOT_JOIN_KEY_SQL  # noqa: E402,F401
+from dbxmetagen.databricks_utils import quote_fqn  # noqa: E402
 
 
 def _not_join_key():
@@ -1521,7 +1522,7 @@ class FKPredictor:
             result = {}
             try:
                 tbl_rows = self.spark.sql(
-                    f"SELECT {selects} FROM {tbl_id} LIMIT {n * 3}"
+                    f"SELECT {selects} FROM {quote_fqn(tbl_id)} LIMIT {n * 3}"
                 ).collect()
                 for fq_id, short in col_list:
                     vals = list({getattr(r, short) for r in tbl_rows if getattr(r, short, None) is not None})[:n]
@@ -1638,10 +1639,10 @@ class FKPredictor:
                 if self.config.federation_mode:
                     col_selects = ", ".join(f"`{cs}`" for _, cs in cols_list)
                     sample_n = _FEDERATION_SAMPLE_ROWS
-                    sample_sql = f"SELECT COUNT(*) AS total, {count_exprs} FROM (SELECT {col_selects} FROM {tbl} LIMIT {sample_n})"
+                    sample_sql = f"SELECT COUNT(*) AS total, {count_exprs} FROM (SELECT {col_selects} FROM {quote_fqn(tbl)} LIMIT {sample_n})"
                 else:
                     sample_n = self.config.cardinality_sample_rows
-                    sample_sql = f"SELECT COUNT(*) AS total, {count_exprs} FROM {tbl} TABLESAMPLE ({sample_n} ROWS) REPEATABLE (42)"
+                    sample_sql = f"SELECT COUNT(*) AS total, {count_exprs} FROM {quote_fqn(tbl)} TABLESAMPLE ({sample_n} ROWS) REPEATABLE (42)"
                 row = self.spark.sql(sample_sql).collect()[0]
                 total = max(row.total, 1)
                 for ci, cs in cols_list:
@@ -1710,7 +1711,7 @@ class FKPredictor:
                     n = _FEDERATION_SAMPLE_ROWS
                     self.spark.sql(
                         f"SELECT CAST(`{col_short}` AS STRING) AS val "
-                        f"FROM {table} "
+                        f"FROM {quote_fqn(table)} "
                         f"WHERE `{col_short}` IS NOT NULL "
                         f"LIMIT {n}"
                     ).createOrReplaceTempView(view_name)
@@ -1718,7 +1719,7 @@ class FKPredictor:
                     n = self.config.cardinality_sample_rows
                     self.spark.sql(
                         f"SELECT CAST(`{col_short}` AS STRING) AS val "
-                        f"FROM {table} TABLESAMPLE ({n} ROWS) REPEATABLE (42) "
+                        f"FROM {quote_fqn(table)} TABLESAMPLE ({n} ROWS) REPEATABLE (42) "
                         f"WHERE `{col_short}` IS NOT NULL"
                     ).createOrReplaceTempView(view_name)
             except Exception as e:
@@ -1761,7 +1762,7 @@ class FKPredictor:
             where = " OR ".join(f"`{c}` IS NOT NULL" for c in cols)
             try:
                 df = self.spark.sql(
-                    f"SELECT {selects} FROM {tbl} "
+                    f"SELECT {selects} FROM {quote_fqn(tbl)} "
                     f"WHERE {where} LIMIT {_FEDERATION_SAMPLE_ROWS}"
                 )
                 _schema = df.schema

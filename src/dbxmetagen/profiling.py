@@ -23,6 +23,7 @@ from pyspark.sql.types import (
 )
 
 from dbxmetagen.table_filter import table_filter_sql
+from dbxmetagen.databricks_utils import quote_fqn
 
 logger = logging.getLogger(__name__)
 
@@ -344,7 +345,9 @@ class ProfilingBuilder:
 
     def _profile_table_delta(self, table_name: str, drift_baselines: Dict[str, Dict[str, int]] = None) -> Optional[Dict[str, Any]]:
         snapshot_id = str(uuid.uuid4())
-        df = self.spark.table(table_name)
+        # spark.read.table() takes an unparsed multipart name (tolerates $, spaces);
+        # spark.table() parses the identifier and breaks on special chars -- avoid it.
+        df = self.spark.read.table(table_name)
         schema = df.schema
         columns = [f.name for f in schema.fields[:50]]
         column_count = len(schema.fields)
@@ -401,14 +404,14 @@ class ProfilingBuilder:
             agg_parts.append(f"CAST(MIN({qc}) AS STRING) AS `{c}__dt_min`")
             agg_parts.append(f"CAST(MAX({qc}) AS STRING) AS `{c}__dt_max`")
 
-        sql = f"SELECT {', '.join(agg_parts)} FROM {table_name}"
+        sql = f"SELECT {', '.join(agg_parts)} FROM {quote_fqn(table_name)}"
         row = self.spark.sql(sql).collect()[0]
         row_count = int(row["_row_count"])
 
         # DESCRIBE DETAIL (instant for Delta)
         table_size, num_files, last_modified = None, None, None
         try:
-            detail = self.spark.sql(f"DESCRIBE DETAIL {table_name}").collect()[0]
+            detail = self.spark.sql(f"DESCRIBE DETAIL {quote_fqn(table_name)}").collect()[0]
             table_size = getattr(detail, "sizeInBytes", None)
             num_files = getattr(detail, "numFiles", None)
             last_modified = getattr(detail, "lastModified", None)
@@ -543,7 +546,7 @@ class ProfilingBuilder:
 
     def _profile_table_federated(self, table_name: str, drift_baselines: Dict[str, Dict[str, int]] = None) -> Optional[Dict[str, Any]]:
         snapshot_id = str(uuid.uuid4())
-        df = self.spark.table(table_name)
+        df = self.spark.read.table(table_name)
         schema = df.schema
         columns = [f.name for f in schema.fields[:50]]
         column_count = len(schema.fields)
@@ -577,7 +580,7 @@ class ProfilingBuilder:
             qc = f"`{c}`"
             agg_parts.append(f"AVG({qc}) AS `{c}__mean`")
 
-        sql = f"SELECT {', '.join(agg_parts)} FROM {table_name}"
+        sql = f"SELECT {', '.join(agg_parts)} FROM {quote_fqn(table_name)}"
         row = self.spark.sql(sql).collect()[0]
         row_count = int(row["_row_count"])
 
@@ -687,7 +690,7 @@ class ProfilingBuilder:
         """Single LIMIT query to get sample values for all columns."""
         try:
             sel = ", ".join(f"CAST(`{c}` AS STRING) AS `{c}`" for c in columns)
-            sample_rows = self.spark.sql(f"SELECT {sel} FROM {table_name} LIMIT 100").collect()
+            sample_rows = self.spark.sql(f"SELECT {sel} FROM {quote_fqn(table_name)} LIMIT 100").collect()
             result: Dict[str, List[str]] = {c: [] for c in columns}
             # Collect DISTINCT values (not raw rows): the value-overlap FK generator needs
             # value coverage of the column's domain, and a FK child column repeats its
@@ -717,7 +720,7 @@ class ProfilingBuilder:
                 qc = f"`{c}`"
                 parts.append(
                     f"SELECT '{c}' AS col_name, CAST({qc} AS STRING) AS val, COUNT(*) AS cnt "
-                    f"FROM {table_name} GROUP BY {qc}"
+                    f"FROM {quote_fqn(table_name)} GROUP BY {qc}"
                 )
             sql = " UNION ALL ".join(parts)
             mode_rows = self.spark.sql(sql).collect()

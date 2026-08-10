@@ -17,6 +17,7 @@ from typing import List, Dict, Any, Type
 from openai import OpenAI
 from databricks_langchain import ChatDatabricks
 from databricks.sdk import WorkspaceClient
+from dbxmetagen.databricks_utils import new_workspace_client
 from pydantic import BaseModel, ValidationError
 
 logger = logging.getLogger(__name__)
@@ -27,6 +28,39 @@ from openai.types.chat.chat_completion_message import ChatCompletionMessage
 # ---------------------------------------------------------------------------
 # Structured output with automatic fallback
 # ---------------------------------------------------------------------------
+
+
+class StructuredTruncationError(ValueError):
+    """The LLM response was cut off at the token limit (``finish_reason='length'``).
+
+    Distinct from a genuine parse failure: the output is not malformed, just
+    incomplete. Callers that batch N items into one response (ontology / geo
+    column classification) should catch this and RETRY WITH A SMALLER CHUNK (or a
+    higher ``max_tokens``) rather than giving up on the content. See ON-19/ON-20.
+    """
+
+
+class StructuredEmptyResponseError(ValueError):
+    """The LLM returned an empty / ``{}`` body despite ``finish_reason='stop'``.
+
+    A transient empty completion, not unparseable garbage -- a bare retry (same
+    inputs) usually succeeds, so this is surfaced as its own retryable case
+    rather than a hard parse failure. See ON-20.
+    """
+
+
+def _extract_finish_reason(raw) -> str:
+    """Best-effort pull of the finish_reason from a langchain AIMessage.
+
+    ChatDatabricks puts it in ``response_metadata['finish_reason']`` (OpenAI-style:
+    'stop', 'length', 'content_filter', ...). Returns '' when unavailable so
+    callers can treat unknown as 'not a known truncation'.
+    """
+    try:
+        meta = getattr(raw, "response_metadata", None) or {}
+        return (meta.get("finish_reason") or "").lower()
+    except Exception:
+        return ""
 
 
 def _extract_and_validate_json(text: str, response_model: Type[BaseModel]) -> BaseModel:
@@ -129,6 +163,7 @@ def invoke_structured(
         )
         msgs = _append_json_instruction(messages, response_model)
         raw = llm.invoke(msgs)
+        finish_reason = _extract_finish_reason(raw)
         content = raw.content if hasattr(raw, "content") else str(raw)
         if isinstance(content, list):
             text = "\n".join(
@@ -137,12 +172,37 @@ def invoke_structured(
             )
         else:
             text = str(content)
+
+        # Classify the failure by finish_reason BEFORE attempting the parse, so a
+        # retryable truncation/empty response isn't misreported as unparseable.
+        if finish_reason == "length":
+            # The model hit max_tokens mid-object -> the JSON is incomplete, not
+            # malformed. Signal the caller to sub-chunk or raise max_tokens.
+            logger.warning(
+                "structured output truncated for %s (finish_reason=length, "
+                "%d chars, max_tokens=%d)", endpoint, len(text), max_tokens,
+            )
+            raise StructuredTruncationError(
+                f"{response_model.__name__} response truncated at max_tokens={max_tokens} "
+                f"(finish_reason=length, {len(text)} chars). Retry with a smaller chunk "
+                f"or higher max_tokens."
+            )
+        if not text.strip() or text.strip() == "{}":
+            logger.warning(
+                "structured output empty for %s (finish_reason=%s)",
+                endpoint, finish_reason or "unknown",
+            )
+            raise StructuredEmptyResponseError(
+                f"{response_model.__name__} returned an empty response "
+                f"(finish_reason={finish_reason or 'unknown'})"
+            )
         try:
             return _extract_and_validate_json(text, response_model)
         except ValueError:
             print(
                 f"[structured_output] JSON fallback also failed for {endpoint} "
-                f"(response length: {len(text)} chars, max_tokens: {max_tokens}). "
+                f"(response length: {len(text)} chars, max_tokens: {max_tokens}, "
+                f"finish_reason: {finish_reason or 'unknown'}). "
                 f"If response looks truncated, increase max_tokens."
             )
             raise
@@ -186,7 +246,7 @@ class DatabricksClient(ChatClient):
 
         if not api_key or not base_url:
             try:
-                w = WorkspaceClient()
+                w = new_workspace_client()
                 if not base_url:
                     base_url = w.config.host.rstrip("/")
                 if not api_key:
@@ -587,7 +647,7 @@ class ChatClientFactory:
             )
 
         try:
-            w = WorkspaceClient()
+            w = new_workspace_client()
             secret_value = w.secrets.get_secret(scope=scope, key=key)
             return secret_value.value
         except Exception as e:

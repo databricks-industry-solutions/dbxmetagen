@@ -12,6 +12,7 @@ from pyspark.sql import SparkSession, DataFrame
 from pyspark.sql import functions as F
 
 from dbxmetagen.table_filter import table_filter_sql
+from dbxmetagen.databricks_utils import quote_fqn
 
 logger = logging.getLogger(__name__)
 
@@ -409,7 +410,7 @@ class ExtendedMetadataBuilder:
         results = []
         for table in tables[:100]:
             try:
-                detail_df = self.spark.sql(f"DESCRIBE DETAIL {table}")
+                detail_df = self.spark.sql(f"DESCRIBE DETAIL {quote_fqn(table)}")
                 row = detail_df.collect()[0]
                 
                 clustering = None

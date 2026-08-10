@@ -75,6 +75,15 @@ class ColumnClassificationItem(BaseModel):
     confidence: float = Field(ge=0.0, le=1.0, description="Confidence 0.0-1.0")
 
 
+# ON-19: cap columns per batch-classify LLM call by expected OUTPUT size, not just
+# count. Each column emits one {"column_name","entity_type","confidence"} object
+# (~75-80 tokens with names/whitespace). At max_tokens=8192 (_get_batch_column_llm),
+# ~100 objects is a safe ceiling with headroom; 60 keeps a comfortable margin and
+# bounds the sub-chunk depth. This REPLACES the old `metadata_cols_per_chunk` (120)
+# + `*1.25` merge (which admitted up to 150 columns -> truncation at 4096).
+_COLS_PER_CLASSIFY_CHUNK = 60
+
+
 class BatchColumnClassificationResult(BaseModel):
     """Batch response for classifying all columns of a single table."""
     classifications: List[ColumnClassificationItem] = Field(
@@ -1473,9 +1482,13 @@ class EntityDiscoverer:
 
     def _get_batch_column_llm(self):
         from dbxmetagen.chat_client import invoke_structured
+        # ON-19: raised 4096 -> 8192. One column emits ~75-80 output tokens of JSON;
+        # a wide chunk (see _COLS_PER_CLASSIFY_CHUNK) plus headroom must fit under
+        # this. A truncation still surfaces as StructuredTruncationError and drives
+        # a sub-chunk retry, but the higher ceiling makes that rare.
         return _StructuredInvoker(
             invoke_structured, self._model_endpoint,
-            BatchColumnClassificationResult, 0.0, 4096, 2,
+            BatchColumnClassificationResult, 0.0, 8192, 2,
         )
 
     def _get_batch_table_llm(self):
@@ -2766,47 +2779,71 @@ class EntityDiscoverer:
         """Classify all columns for a single table, chunking if needed.
 
         Returns list of (column_name, entity_type, confidence).
-        Falls back to ai_query batch classification on chunk failure.
-        """
-        n = self.config.metadata_cols_per_chunk
-        # Merge small remainder into last chunk to avoid wasteful splits
-        if len(columns) <= n or (len(columns) <= n * 1.25):
-            try:
-                return self._classify_column_chunk(short_name, columns)
-            except Exception as e:
-                msg = (
-                    f"Batch column classification failed for {table_name} ({len(columns)} cols): "
-                    f"{type(e).__name__}: {e}. Retrying with sub-chunks before ai_query fallback."
-                )
-                logger.warning(msg)
-                # Sub-chunk retry: split in half
-                mid = len(columns) // 2
-                results = []
-                for sub in (columns[:mid], columns[mid:]):
-                    try:
-                        results.extend(self._classify_column_chunk(short_name, sub))
-                    except Exception as sub_e:
-                        msg = (
-                            f"Sub-chunk ({len(sub)} cols) also failed for {table_name}: "
-                            f"{type(sub_e).__name__}. Falling back to ai_query."
-                        )
-                        logger.warning(msg)
-                        results.extend(self._ai_query_classify_columns(sub))
-                return results
 
+        Columns are split into token-budget-sized chunks (`_COLS_PER_CLASSIFY_CHUNK`);
+        a chunk that truncates at the token limit is bisected and retried (ON-19),
+        falling back to ai_query only when even a single-column chunk fails.
+        """
+        n = _COLS_PER_CLASSIFY_CHUNK
         num_chunks = -(-len(columns) // n)
         all_results = []
         for i in range(0, len(columns), n):
             chunk = columns[i : i + n]
-            chunk_idx = i // n + 1
-            logger.info(f"Classifying {table_name}: chunk {chunk_idx}/{num_chunks} ({len(chunk)} cols)")
-            try:
-                all_results.extend(self._classify_column_chunk(short_name, chunk))
-            except Exception as e:
-                msg = f"Chunk {chunk_idx} failed for {table_name} ({len(chunk)} cols), using ai_query fallback: {type(e).__name__}"
-                logger.warning(msg)
-                all_results.extend(self._ai_query_classify_columns(chunk))
+            if num_chunks > 1:
+                logger.info(
+                    f"Classifying {table_name}: chunk {i // n + 1}/{num_chunks} ({len(chunk)} cols)"
+                )
+            all_results.extend(self._classify_column_chunk_resilient(table_name, short_name, chunk))
         return all_results
+
+    def _classify_column_chunk_resilient(
+        self, table_name: str, short_name: str, columns: List
+    ) -> List[Tuple[str, str, float]]:
+        """Classify one chunk; on truncation bisect and retry, else ai_query fallback.
+
+        A `StructuredTruncationError` means the batch was too large for the output
+        budget -- bisecting and retrying recovers the content (ON-19). Any other
+        failure on an already-small chunk falls back to per-column ai_query.
+        """
+        from dbxmetagen.chat_client import StructuredTruncationError
+        try:
+            return self._classify_column_chunk(short_name, columns)
+        except StructuredTruncationError as e:
+            if len(columns) <= 1:
+                _cn = getattr(columns[0], "column_name", "?") if columns else "?"
+                logger.warning(
+                    f"Single-column chunk still truncated for {table_name} "
+                    f"({_cn}); falling back to ai_query: {e}"
+                )
+                return self._ai_query_classify_columns(columns)
+            mid = len(columns) // 2
+            logger.warning(
+                f"Batch column classification truncated for {table_name} "
+                f"({len(columns)} cols); bisecting into {mid}+{len(columns) - mid}."
+            )
+            results = []
+            for sub in (columns[:mid], columns[mid:]):
+                results.extend(self._classify_column_chunk_resilient(table_name, short_name, sub))
+            return results
+        except Exception as e:
+            if len(columns) <= 1:
+                logger.warning(
+                    f"Chunk failed for {table_name} ({len(columns)} cols), "
+                    f"ai_query fallback: {type(e).__name__}: {e}"
+                )
+                return self._ai_query_classify_columns(columns)
+            # A non-truncation error on a multi-column chunk: try one bisection
+            # before giving the whole chunk to ai_query (a single bad column
+            # shouldn't sink its neighbors).
+            mid = len(columns) // 2
+            logger.warning(
+                f"Chunk classification failed for {table_name} ({len(columns)} cols): "
+                f"{type(e).__name__}: {e}. Bisecting before ai_query fallback."
+            )
+            results = []
+            for sub in (columns[:mid], columns[mid:]):
+                results.extend(self._classify_column_chunk_resilient(table_name, short_name, sub))
+            return results
 
     def _ai_classify_column(self, col_row) -> Tuple[str, float]:
         """AI classification for a single column using structured output."""

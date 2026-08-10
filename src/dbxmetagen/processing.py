@@ -53,6 +53,7 @@ import pandas as pd
 
 from grpc._channel import _InactiveRpcError, _MultiThreadedRendezvous
 from dbxmetagen.config import MetadataConfig
+from dbxmetagen.databricks_utils import quote_fqn
 from dbxmetagen.table_filter import is_infrastructure_table
 from dbxmetagen.sampling import determine_sampling_ratio
 from dbxmetagen.prompts import Prompt, PIPrompt, CommentPrompt, PromptFactory
@@ -229,7 +230,8 @@ def get_extended_metadata_for_column(config, table_name, column_name):
     if getattr(config, "federation_mode", False):
         return None
     spark = SparkSession.builder.getOrCreate()
-    query = f"""DESCRIBE EXTENDED {config.catalog_name}.{config.schema_name}.{table_name} `{column_name}`;"""
+    fq = quote_fqn(f"{config.catalog_name}.{config.schema_name}.{table_name}")
+    query = f"""DESCRIBE EXTENDED {fq} `{column_name}`;"""
     return spark.sql(query)
 
 
@@ -331,7 +333,7 @@ def read_table_with_type_conversion(
     if has_special_types:
         # Use SQL query with conversions
         select_clause = ", ".join(select_exprs)
-        query = f"SELECT {select_clause} FROM {full_table_name}"
+        query = f"SELECT {select_clause} FROM {quote_fqn(full_table_name)}"
         return spark.sql(query)
     else:
         # No special types - read normally
@@ -2536,7 +2538,7 @@ def review_and_generate_metadata(
             # Validate against actual source table columns
             spark = SparkSession.builder.getOrCreate()
             source_cols_lower = {
-                f.name.lower() for f in spark.table(full_table_name).schema.fields
+                f.name.lower() for f in spark.read.table(full_table_name).schema.fields
             }
             for col_name, values in override_data.items():
                 if col_name.lower() not in source_cols_lower:

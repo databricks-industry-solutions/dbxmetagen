@@ -29,7 +29,7 @@ All open work items from every roadmap and plan document, organized by theme. Ea
 | MG-3 | Hardcoded entity suggestions in semantic layer | OPEN | P2 | S | RC 1.3 |
 | MG-4 | Quality metrics exposed to users | OPEN | P2 | L | RC 1.4 |
 | MG-5 | Day-2 re-run lifecycle / `_review_status` tracking | OPEN | P1 | M | RC 1.5 |
-| MG-6 | Structured output vs regex JSON recovery | OPEN | P2 | M | RC 2.1 |
+| MG-6 | Structured output vs regex JSON recovery | PARTIAL (v0.10.61) | P2 | M | RC 2.1 |
 | MG-7 | Schema-level PII reconciliation via FK graph | OPEN | P2 | M | RC 2.3 |
 | MG-8 | Ontology as generation context (inject entity type into prompts) | OPEN | P2 | M | RC 2.4 |
 | MG-9 | Audit trail for metadata state transitions | OPEN | P2 | M | RC 2.5 |
@@ -44,8 +44,8 @@ All open work items from every roadmap and plan document, organized by theme. Ea
 | MG-18 | UAT PI gold not normalized for equivalent classes (pi/pii, phi/medical_information) | OPEN | P3 | S | UAT PI scenario |
 | FK-11 | Provably-disjoint FK pair (join probe ran, join_matched=0 AND ri_score=0) still scored final_confidence ~0.6. Fixed: collapse final_confidence 0.25x on the same never_joins signal, so it drops below threshold (not just is_fk=false). | DONE | P2 | S | UAT FK scenario (uat_fk_hard region_id trap) |
 | MG-19 | `luhn_checksum(res.score)` in classify_column passes the SCORE (float) not the matched TEXT -> always False -> every deterministic CREDIT_CARD match dropped. Needs matched-text plumbing + presidio to verify (risk: order_ref trap). Not fixed blind. | OPEN | P2 | S | UAT PI scenario (deep-dive during MG-17) |
-| MG-20 | Special-char table identifiers (e.g. a `$` in a federated Redshift table name like `…1$raw`) break profiling: `spark.sql` sites interpolate `{table_name}` bare -> `PARSE_SYNTAX_ERROR at '$'` -> profiling fails ALL affected tables -> `RuntimeError` kills the task. Backtick-quote every identifier interpolated into SQL (per-segment) in `profiling.py` (`FROM {table_name}`, `DESCRIBE DETAIL`, sample/mode queries) and audit other f-string SQL sites. | OPEN | P1 | M | Customer log (federated Redshift) |
-| MG-21 | Log spam: `[NOTICE] Using a notebook authentication token` repeats ~90x in a single run, burying real errors in customer logs. Pass `disable_notice=True` on the SDK `WorkspaceClient` (and/or document SP auth) so the pipeline log stays readable. | OPEN | P3 | S | Customer log |
+| MG-20 | Special-char table identifiers (e.g. a `$` in a federated Redshift table name like `…1$raw`) break profiling: `spark.table()` / `spark.sql` sites parse `{table_name}` bare -> `PARSE_SYNTAX_ERROR at '$'` -> the analytics pipeline task dies. **DONE (v0.10.61):** shared `quote_fqn()` in `databricks_utils.py` backtick-quotes each dotted segment; applied to profiling (5 SQL sites; 2 `spark.table()`->`spark.read.table()` which takes an unparsed name), FK source sampling (5 sites), `extended_metadata` DESCRIBE DETAIL, and the latent `processing.py` special-types read + DESCRIBE EXTENDED. Comment/PI generation was NOT affected (its default read is `spark.read.table()`, which already tolerates `$`) -- only the pipeline failed, matching the customer report. | DONE | P1 | M | Customer log (federated Redshift) |
+| MG-21 | Log spam: `[NOTICE] Using a notebook authentication token` repeats ~90x in a single run, burying real errors. **DONE (v0.10.61):** shared `new_workspace_client()` passes `product='dbxmetagen', disable_notice=True` (graceful fallback for older SDKs), routed through the hot-path `chat_client` auth-fallback + secret-fetch sites. Deliberately NOT a shared singleton -- each call gets its own client so concurrent LLM calls don't contend on shared SDK auth/HTTP state (per Eli: singleton would add latency at 50-100+ concurrent calls). | DONE | P3 | S | Customer log |
 
 ### Prediction Quality — name-independence + federation-safe scale (PQ)
 
@@ -116,15 +116,17 @@ what's broken/missing — the current approach works fairly well. Full design:
 
 ### MG-6: Structured output vs regex JSON recovery
 
-**Status: OPEN** -- Uses `re.search(r"\{.*\}", ...)` for JSON extraction. Works pragmatically but fragile.
+**Status: PARTIAL (v0.10.61)** -- The recovery path now classifies failures by `finish_reason`
+(see ON-20): `invoke_structured` distinguishes truncation (`length`) and empty (`{}`/blank)
+from genuine parse failures, validates against the Pydantic schema before accepting, and logs
+finish_reason + response length. Still uses `re.search`/`raw_decode` for extraction (works
+pragmatically).
 
-**Work:**
-- For endpoints that support it, add `response_format={"type": "json_object"}`
-- Keep regex as fallback
-- Validate recovered structure matches expected schema before accepting
-- Log recovered vs failed entries in `_parse_individual_objects()`
+**Remaining work:**
+- For endpoints that support it, add `response_format={"type": "json_object"}` on the fallback invoke
+- Apply the same finish_reason-aware recovery to `semantic_layer.py`'s ad-hoc JSON parsing
 
-**Files:** `src/dbxmetagen/chat_client.py`, `src/dbxmetagen/semantic_layer.py`
+**Files:** `src/dbxmetagen/chat_client.py` (done), `src/dbxmetagen/semantic_layer.py` (remaining)
 
 ### MG-7: Schema-level PII reconciliation via FK graph
 
@@ -257,8 +259,9 @@ what's broken/missing — the current approach works fairly well. Full design:
 | ON-16 | Cardinality validation on relationships | DEFERRED | P3 | M | OF, OE |
 | ON-17 | Feedback loop from steward overrides | DEFERRED | P3 | L | OF, OU 6 |
 | ON-18 | Multi-ontology / crosswalk mode (secondary URIs vs canonical bundle) | OPEN | P2 | L | Provenance plan |
-| ON-19 | Batch column classification truncates on WIDE tables: a 144-col table produced an 11424-char response cut off at `max_tokens=4096` -> invalid/partial JSON -> whole-table classification fails to ai_query fallback. The `len(columns) <= n*1.25` remainder-merge (n=`metadata_cols_per_chunk`=120 -> admits up to 150 cols in ONE call) sends oversized batches, and truncation isn't detected as truncation. Fix: size chunks by expected output tokens (or lower the merge ceiling), raise `max_tokens` for the classification LLM, and detect truncation (finish_reason=length) to trigger sub-chunk retry BEFORE the JSON parse fails. | OPEN | P1 | M | Customer log (wide biotech tables) |
-| ON-20 | `_safe_parse_response` / structured-output receives empty or `{}` responses (`Expecting value: line 1 column 1`; `classifications Field required`) with no truncation/finish-reason context logged, so a retryable empty response looks identical to genuinely-unparseable output. Related to MG-6 (structured output vs regex recovery). Fix: log finish_reason + response length, treat empty/`{}` as a distinct retryable case, and confirm the sub-chunk/ai_query fallback path always yields a result. | OPEN | P2 | S | Customer log |
+| ON-19 | Batch column classification truncates on WIDE tables: a 144-col table produced an 11424-char response cut off at `max_tokens=4096` -> invalid/partial JSON. The `len(columns) <= n*1.25` remainder-merge (n=120 -> up to 150 cols in ONE call) sent oversized batches, and truncation wasn't detected as truncation. **DONE (v0.10.61):** replaced count-merge with output-token-budget chunking (`_COLS_PER_CLASSIFY_CHUNK=60`), raised `max_tokens` 4096->8192, and `_classify_column_chunk_resilient` recursively BISECTS on `StructuredTruncationError` (ai_query only as last resort on a single column) so no column is lost. | DONE | P1 | M | Customer log (wide biotech tables) |
+| ON-20 | Empty/`{}` responses (`Expecting value: line 1 column 1`; `classifications Field required`) parse-failed with no finish-reason context, so a retryable empty/truncated response looked identical to genuine garbage. **DONE (v0.10.61)** with MG-6: `invoke_structured` now reads `finish_reason` and raises `StructuredTruncationError` (length) or `StructuredEmptyResponseError` (empty/`{}`) -- both `ValueError` subclasses (backward compatible) -- and logs finish_reason + length. This is the signal ON-19/ON-21 bisect on. | DONE | P2 | S | Customer log |
+| ON-21 | **geo_classifier has the SAME truncation bug as ON-19, worse**: `max_tokens=2048`, called `with_structured_output` directly (no fallback), and SILENTLY defaulted every column to non_geographic on any failure -> wide tables mis-classified with no error. **DONE (v0.10.61):** routed through `invoke_structured` (gains truncation signal), output-token chunking (`_GEO_COLS_PER_CHUNK=60`), `max_tokens` 2048->8192, and `_classify_geo_chunk_resilient` bisects on truncation -- defaulting only as a true last resort on a single column. | DONE | P1 | S | ON-19 sibling audit |
 
 ### ON-4: Remove legacy `link` SQL filter
 

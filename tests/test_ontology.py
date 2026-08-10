@@ -4392,3 +4392,73 @@ def test_generate_bundle_properties_script_reexports():
         assert hasattr(mod, fn)
 
 
+
+
+class TestResilientColumnClassification:
+    """ON-19: batch column classification chunks by token budget and BISECTS on
+    truncation (StructuredTruncationError) instead of losing columns or defaulting."""
+
+    def _discoverer(self):
+        ontology_config = {"entities": {"discovery_confidence_threshold": 0.5, "definitions": {}}}
+        return EntityDiscoverer(MagicMock(), MagicMock(), ontology_config)
+
+    def _cols(self, n):
+        cols = []
+        for i in range(n):
+            c = MagicMock()
+            c.column_name = f"col_{i}"
+            cols.append(c)
+        return cols
+
+    def test_no_truncation_single_call(self):
+        d = self._discoverer()
+        cols = self._cols(10)
+        with patch.object(d, "_classify_column_chunk",
+                          return_value=[("x", "Entity", 0.9)]) as m:
+            d._classify_column_chunk_resilient("cat.sch.t", "t", cols)
+        m.assert_called_once()
+
+    def test_truncation_bisects(self):
+        from dbxmetagen.chat_client import StructuredTruncationError
+        d = self._discoverer()
+        cols = self._cols(4)
+        calls = []
+
+        def fake(short, chunk):
+            calls.append(len(chunk))
+            if len(chunk) > 2:
+                raise StructuredTruncationError("truncated")
+            return [(c.column_name, "Entity", 0.8) for c in chunk]
+
+        with patch.object(d, "_classify_column_chunk", side_effect=fake):
+            out = d._classify_column_chunk_resilient("cat.sch.t", "t", cols)
+        # 4 (fail) -> 2 + 2 (succeed): all 4 columns recovered, none lost.
+        assert len(out) == 4
+        assert calls[0] == 4 and 2 in calls[1:]
+
+    def test_single_column_truncation_falls_back_to_ai_query(self):
+        from dbxmetagen.chat_client import StructuredTruncationError
+        d = self._discoverer()
+        cols = self._cols(1)
+        with patch.object(d, "_classify_column_chunk",
+                          side_effect=StructuredTruncationError("t")), \
+             patch.object(d, "_ai_query_classify_columns",
+                          return_value=[("col_0", "Entity", 0.5)]) as m:
+            out = d._classify_column_chunk_resilient("cat.sch.t", "t", cols)
+        m.assert_called_once()
+        assert len(out) == 1
+
+    def test_chunking_uses_token_budget_constant(self):
+        from dbxmetagen.ontology import _COLS_PER_CLASSIFY_CHUNK
+        # The wide-table case from the customer log (144 cols) must split, not
+        # go in one call at the old 120+*1.25 ceiling.
+        assert _COLS_PER_CLASSIFY_CHUNK <= 100
+        d = self._discoverer()
+        cols = self._cols(144)
+        seen = []
+        with patch.object(d, "_classify_column_chunk",
+                          side_effect=lambda s, ch: seen.append(len(ch)) or
+                          [(c.column_name, "E", 0.7) for c in ch]):
+            out = d._ai_classify_columns_for_table("cat.sch.t", "t", cols)
+        assert len(out) == 144
+        assert max(seen) <= _COLS_PER_CLASSIFY_CHUNK

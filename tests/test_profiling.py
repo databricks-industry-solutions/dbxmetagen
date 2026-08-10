@@ -10,6 +10,34 @@ from dbxmetagen.profiling import (
     ProfilingBuilder,
     run_profiling
 )
+from dbxmetagen.databricks_utils import quote_fqn
+
+
+class TestQuoteFqn:
+    """MG-20: backtick-quote dotted identifiers so special chars (e.g. `$` in
+    federated Redshift names like `schema.tbl$raw`) don't break the SQL parser."""
+
+    def test_plain_fqn(self):
+        assert quote_fqn("cat.sch.tbl") == "`cat`.`sch`.`tbl`"
+
+    def test_dollar_sign_the_reported_bug(self):
+        # rdl_redshift_prod.vitrain_dwh.rz_hybridoma1$raw -> each segment quoted
+        assert quote_fqn("c.s.rz_hybridoma1$raw") == "`c`.`s`.`rz_hybridoma1$raw`"
+
+    def test_embedded_backtick_escaped(self):
+        assert quote_fqn("c.s.a`b") == "`c`.`s`.`a``b`"
+
+    def test_already_quoted_segment_idempotent(self):
+        assert quote_fqn("`cat`.`sch`.`tbl`") == "`cat`.`sch`.`tbl`"
+
+    def test_mixed_quoted_and_bare(self):
+        assert quote_fqn("cat.`sch`.tbl$x") == "`cat`.`sch`.`tbl$x`"
+
+    def test_single_segment(self):
+        assert quote_fqn("tbl$raw") == "`tbl$raw`"
+
+    def test_empty_passthrough(self):
+        assert quote_fqn("") == ""
 
 
 # Since pyspark.sql.types is mocked globally by conftest, we need real-ish
@@ -203,6 +231,7 @@ class TestDeltaSinglePass:
         mock_df = MagicMock()
         mock_df.schema = schema
         spark.table.return_value = mock_df
+        spark.read.table.return_value = mock_df
         return spark
 
     @pytest.fixture
@@ -352,6 +381,7 @@ class TestFederatedSinglePass:
         mock_df = MagicMock()
         mock_df.schema = schema
         spark.table.return_value = mock_df
+        spark.read.table.return_value = mock_df
         return spark
 
     @pytest.fixture
@@ -489,6 +519,7 @@ class TestNonOrderableTypes:
         mock_df = MagicMock()
         mock_df.schema = schema
         spark.table.return_value = mock_df
+        spark.read.table.return_value = mock_df
         return spark
 
     @pytest.fixture
