@@ -1917,3 +1917,54 @@ class TestDataOverlapDecision:
             min_containment=0.85, min_containment_ontology=0.60, min_distinct=8)
         assert base is None            # rejected at default bar
         assert ont is not None         # accepted when ontology corroborates
+
+
+class TestValueOverlapGeneratorSmoke:
+    """Exercise get_value_overlap_candidates end-to-end with a mocked spark so runtime
+    NameErrors (e.g. a missing `import re`) and the tiering/emit path are covered --
+    the pure _data_overlap_decision tests alone missed the module-import bug."""
+
+    def _row(self, table, col, dtype, distinct, card, unique, pattern, vals):
+        import json as _json
+        return SimpleNamespace(
+            table_name=table, column_name=col, data_type=dtype,
+            distinct_count=distinct, cardinality_ratio=card,
+            is_unique_candidate=unique, null_rate=0.0,
+            pattern_detected=pattern, sample_values=_json.dumps(vals),
+        )
+
+    def test_runs_and_emits_overlap_pair(self):
+        cfg = _cfg()
+        spark = MagicMock()
+        # profiling rows: providers.npi (parent, unique) + claims.npi (child) overlap fully
+        npis = [f"1{700000000+i}" for i in range(30)]
+        rows = [
+            self._row("c.s.providers", "npi", "string", 30, 1.0, True, "npi", npis),
+            self._row("c.s.claims", "npi", "string", 30, 0.3, False, "npi", npis[:20]),
+        ]
+        spark.sql.return_value.toLocalIterator.return_value = iter(rows)
+        captured = {}
+
+        def _mk_df(data, schema=None):
+            captured["emitted"] = data
+            chain = MagicMock()
+            chain.withColumn.return_value = chain
+            return chain
+        spark.createDataFrame.side_effect = _mk_df
+        p = FKPredictor(spark, cfg)
+        p._ontology_typed_column_pairs = lambda: set()   # no ontology corroboration
+        with _patch_fk_functions_for_run():
+            result = p.get_value_overlap_candidates()
+        # A candidate pair was emitted (child claims.npi -> parent providers.npi).
+        emitted = captured.get("emitted", [])
+        assert any(e[0] == "npi" and e[2] == "c.s.claims" and e[3] == "c.s.providers" for e in emitted)
+
+    def test_disabled_flag_returns_empty(self):
+        cfg = _cfg()
+        cfg.enable_data_overlap_candidates = False
+        spark = MagicMock()
+        p = FKPredictor(spark, cfg)
+        with _patch_fk_functions_for_run():
+            p.get_value_overlap_candidates()
+        # When disabled, no profiling query is issued.
+        assert not spark.sql.called

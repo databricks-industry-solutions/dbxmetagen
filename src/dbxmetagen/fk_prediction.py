@@ -9,6 +9,7 @@ as a tie-breaker, with optional skip-AI for high-trust declared/query pairs.
 """
 
 import logging
+import re
 import threading
 import warnings
 from dataclasses import dataclass, field
