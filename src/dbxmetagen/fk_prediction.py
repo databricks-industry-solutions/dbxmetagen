@@ -2171,7 +2171,14 @@ class FKPredictor:
             )
 
         if not fragments:
-            if self.config.federation_mode:
+            # Only a genuine federation failure: we HAD candidate pairs to
+            # validate (rows) but couldn't build any sample views for them.
+            # Zero candidate pairs (rows empty) is NOT an error -- there is simply
+            # nothing to join-validate (e.g. a schema with no cross-table key
+            # overlap), so fall through to the graceful zero-join result like the
+            # non-federation path. (Previously this raised whenever fragments was
+            # empty, killing the task on an empty candidate set.)
+            if rows and self.config.federation_mode:
                 raise RuntimeError(
                     "join_validate: no federation sample views for "
                     f"{len(rows)} candidate pair(s)"

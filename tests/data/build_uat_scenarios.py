@@ -805,13 +805,35 @@ def build_ddl_edges():
     spark.sql(f"CREATE TABLE {t_single} (id INT, name STRING) USING DELTA")
     spark.sql(f"INSERT INTO {t_single} VALUES (1, 'only row')")
 
-    print(f"  {schema}: tricky_chars(3), wide_table(1x30col), empty_table(0), single_row_table(1)")
+    # (5) MG-20: table name containing a `$` (common in federated Redshift names
+    #     like `tbl$raw`). Every SQL site that interpolates the FQN must backtick-
+    #     quote it or the parser raises PARSE_SYNTAX_ERROR. Backticks required in
+    #     the CREATE too. Profiling/FK/extended-metadata must read this cleanly.
+    t_dollar = f"{catalog_name}.`{schema}`.`dollar$raw`"
+    spark.sql(f"DROP TABLE IF EXISTS {t_dollar}")
+    spark.sql(f"CREATE TABLE {t_dollar} (id INT, amount DOUBLE, note STRING) USING DELTA")
+    spark.sql(f"INSERT INTO {t_dollar} VALUES (1, 10.5, 'a'), (2, 20.0, 'b'), (3, 30.0, 'c')")
+
+    # (6) ON-19: very wide table (120 cols) to force batch column classification to
+    #     chunk by output-token budget and (if a chunk truncates) sub-chunk, instead
+    #     of truncating one oversized LLM response into invalid JSON.
+    verywide_cols = ", ".join(f"attr_{i:03d} STRING" for i in range(1, 121))
+    t_verywide = f"{catalog_name}.{schema}.very_wide_table"
+    spark.sql(f"DROP TABLE IF EXISTS {t_verywide}")
+    spark.sql(f"CREATE TABLE {t_verywide} ({verywide_cols}) USING DELTA")
+    vw_vals = ", ".join(f"'x{i:03d}'" for i in range(1, 121))
+    spark.sql(f"INSERT INTO {t_verywide} VALUES ({vw_vals})")
+
+    print(f"  {schema}: tricky_chars(3), wide_table(1x30col), empty_table(0), "
+          f"single_row_table(1), dollar$raw(3), very_wide_table(1x120col)")
 
     gold_domain.append((schema, "tricky_chars", "ANY", "", "DDL round-trip edge case"))
-    readme(schema, "capability", "DDL/comment round-trip + sampling edges")
+    readme(schema, "capability", "DDL/comment round-trip + sampling edges + special-char/wide identifiers")
     readme(schema, "expect", "tricky_chars: apostrophes/quotes/semicolons/emoji survive generation + apply-DDL")
     readme(schema, "expect", "wide_table (30 cols): chunk_df splits into >1 chunk; all columns get comments")
     readme(schema, "expect", "empty_table (0 rows) and single_row_table (1 row) generate without sampling errors")
+    readme(schema, "expect", "dollar$raw: `$` in table name must NOT break profiling/FK/extended-metadata (MG-20)")
+    readme(schema, "expect", "very_wide_table (120 cols): ontology batch classification chunks/sub-chunks, no truncation (ON-19)")
 
 
 if "uat_ddl_edges" not in skip_scenarios:
