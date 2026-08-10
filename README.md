@@ -41,6 +41,16 @@ The core value is **metadata generation and a governed knowledge graph**. The da
 full lifecycle, but every output is a standard Delta table or Vector Search index you can consume
 from any tool: notebooks, dashboards, Genie spaces, agents, or your own applications.
 
+> [!IMPORTANT]
+> **dbxmetagen is a Solutions Accelerator, not a turnkey product, and it is not autonomous.**
+> Every output — comments, PII/PHI/PCI tags, domain classifications, ontology mappings, FK
+> predictions, metric views, and Genie spaces — is **AI-generated and probabilistic**, and can be
+> wrong or incomplete. **Human-in-the-loop review is required at every step** before any output is
+> trusted or applied to Unity Catalog. dbxmetagen is designed to *accelerate* a human governance
+> workflow, not replace human judgment. Nothing touches your catalog until you explicitly review
+> and apply it (`apply_ddl=false` by default). Do not wire any dbxmetagen output into a downstream
+> system as ground truth without a human approving it first. See [Human Review](#human-review).
+
 
 ## Quickstart
 
@@ -370,7 +380,11 @@ The ontology and graph system is inspired by semantic web standards (RDF, OWL, S
 
 ## Human Review
 
-Every pipeline step produces AI-generated output that should be reviewed before applying to Unity Catalog. By default, `apply_ddl=false` -- nothing touches your catalog until you explicitly review and apply.
+**Human review is required for every pipeline step.** dbxmetagen is a Solutions Accelerator: every
+step produces AI-generated, probabilistic output that **must be reviewed and approved by a human
+before it is trusted or applied to Unity Catalog** — there is no step that is safe to accept
+unreviewed. By default, `apply_ddl=false` -- nothing touches your catalog until you explicitly
+review and apply. Treat the guidance below as a floor, not a ceiling.
 
 Review guidance by step:
 

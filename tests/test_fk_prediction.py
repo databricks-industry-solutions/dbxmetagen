@@ -938,6 +938,45 @@ class TestJoinRateCapping:
         assert ai * (0.6 + 0.4 * jr) > ai * 0.6
 
 
+class TestStalePredictionSweep:
+    """The FK stale-prediction sweep mirrors the ontology sweep_stale_entities
+    contract: sweep_stale AND non-incremental, table-scoped, steward-preserving.
+    A pair that used to score is_fk=true but is no longer generated (e.g. a 1:1
+    mirror now suppressed at candidate time) must be retractable, since the
+    cumulative MERGE never removes rows on its own."""
+
+    def test_sweep_gated_on_flag_and_non_incremental(self):
+        src = inspect.getsource(FKPredictor._sweep_stale_predictions)
+        # Must early-return unless sweep_stale AND not incremental.
+        assert "not sweep_stale or self.config.incremental" in src
+
+    def test_sweep_preserves_steward_reviewed(self):
+        src = inspect.getsource(FKPredictor._sweep_stale_predictions)
+        # Human-approved predictions (review_updated_at set) are never swept.
+        assert "review_updated_at IS NULL" in src
+
+    def test_sweep_only_deletes_rows_not_re_emitted(self):
+        src = inspect.getsource(FKPredictor._sweep_stale_predictions)
+        # Deletes rows absent from the freshly-produced staging set.
+        assert "NOT EXISTS" in src
+        assert "staging_view" in src
+
+    def test_sweep_is_table_scoped(self):
+        src = inspect.getsource(FKPredictor._sweep_stale_predictions)
+        # Scope predicate ORs src_table / dst_table so a pair is in scope when
+        # EITHER endpoint matches; empty scope => whole-schema replacement.
+        assert "src_table" in src and "dst_table" in src
+        assert "table_filter_sql" in src
+
+    def test_write_predictions_threads_sweep_flag(self):
+        src = inspect.getsource(FKPredictor.write_predictions)
+        assert "_sweep_stale_predictions" in src
+
+    def test_run_passes_sweep_to_write_predictions(self):
+        src = inspect.getsource(FKPredictor.run)
+        assert "write_predictions(judged, sweep_stale=sweep_stale)" in src
+
+
 # --- TestManyToManyPenalty ---
 
 

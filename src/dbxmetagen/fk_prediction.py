@@ -2316,8 +2316,13 @@ class FKPredictor:
     # ------------------------------------------------------------------
     # Step 5: Write predictions
     # ------------------------------------------------------------------
-    def write_predictions(self, df: DataFrame) -> int:
-        """Write FK predictions to output table via MERGE (preserves existing predictions)."""
+    def write_predictions(self, df: DataFrame, sweep_stale: bool = False) -> int:
+        """Write FK predictions to output table via MERGE (preserves existing predictions).
+
+        When *sweep_stale* is true on a non-incremental run, additionally purges
+        auto-generated predictions on the in-scope tables that this run did NOT
+        re-emit (see ``_sweep_stale_predictions``).
+        """
         target = self.config.fq(self.config.predictions_table)
 
         try:
@@ -2397,11 +2402,6 @@ class FKPredictor:
         _mirror_cols_present = (
             "_card_ratio_a" in df.columns and "_card_ratio_b" in df.columns
             and "source_rank" in df.columns
-        )
-        logger.info(
-            "Mirror veto: cols_present=%s (has_card_a=%s has_card_b=%s has_source_rank=%s)",
-            _mirror_cols_present, "_card_ratio_a" in df.columns,
-            "_card_ratio_b" in df.columns, "source_rank" in df.columns,
         )
         if _mirror_cols_present:
             m_thresh = F.lit(self.config.fk_mirror_uniqueness_threshold)
@@ -2545,7 +2545,65 @@ class FKPredictor:
                 VALUES ({insert_vals})
         """)
         logger.info("Merged %d FK predictions", count)
+
+        self._sweep_stale_predictions(target, staging_view, sweep_stale)
         return count
+
+    def _sweep_stale_predictions(
+        self, target: str, staging_view: str, sweep_stale: bool
+    ) -> None:
+        """Retract auto-generated predictions this run no longer produces.
+
+        The predictions table is cumulative (MERGE upserts, never retracts), so a
+        pair that USED TO score is_fk=true but is no longer generated -- e.g. a
+        1:1 table mirror now suppressed at candidate time -- lingers forever with
+        a stale is_fk=true. This mirrors the ontology `sweep_stale_entities`
+        contract exactly and is gated identically:
+
+          - **sweep_stale AND NOT incremental** -- a purge is destructive, so it is
+            never done on a plain (upsert-only) or incremental run. A non-incremental
+            run reprocesses every in-scope pair, so "not in staging" reliably means
+            "no longer produced" (an incremental run may legitimately skip pairs).
+          - **table-scoped** -- only rows whose src OR dst table is in this run's
+            `table_names` scope are eligible; other tables' predictions are never
+            touched. Empty scope = whole schema (full replacement).
+          - **steward-preserving** -- `review_updated_at IS NOT NULL` rows (a human
+            approved/edited the prediction) are always kept. Only auto-generated
+            predictions are retractable, consistent with the accelerator's
+            human-in-the-loop contract.
+        """
+        if not sweep_stale or self.config.incremental:
+            return
+        from dbxmetagen.table_filter import table_filter_sql
+
+        scope_src = table_filter_sql(self.config.table_names, "src_table")
+        scope_dst = table_filter_sql(self.config.table_names, "dst_table")
+        # table_filter_sql returns "AND (...)"; strip the leading AND and OR the
+        # two sides so a pair is in scope when EITHER endpoint matches. Empty
+        # scope -> both blank -> no scope predicate -> whole-schema replacement.
+        scope_clause = ""
+        if scope_src and scope_dst:
+            scope_clause = (
+                f" AND (({scope_src[4:]}) OR ({scope_dst[4:]}))"
+            )
+        try:
+            self.spark.sql(f"""
+                DELETE FROM {target} AS t
+                WHERE t.review_updated_at IS NULL
+                  AND NOT EXISTS (
+                    SELECT 1 FROM {staging_view} s
+                    WHERE s.src_column = t.src_column
+                      AND s.dst_column = t.dst_column
+                  )
+                  {scope_clause}
+            """)
+            logger.info(
+                "FK sweep: retracted stale auto-generated predictions not re-emitted "
+                "this run (scope=%s)",
+                self.config.table_names or "ALL",
+            )
+        except AnalysisException as e:
+            logger.debug("FK stale-prediction sweep skipped: %s", e)
 
     # ------------------------------------------------------------------
     # Step 6: Graph edges
@@ -2929,7 +2987,7 @@ class FKPredictor:
         if "source_rank" in judged.columns:
             n_declared = judged.filter(F.col("source_rank") == SR_DECLARED).count()
 
-        n_preds = self.write_predictions(judged)
+        n_preds = self.write_predictions(judged, sweep_stale=sweep_stale)
         if n_declared > 0 and n_preds == 0:
             raise RuntimeError(
                 f"FK prediction wrote 0 rows but {n_declared} OWL-declared candidates were judged"
