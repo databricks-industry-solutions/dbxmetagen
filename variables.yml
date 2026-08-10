@@ -340,6 +340,9 @@ variables:
   fk_data_overlap_max_candidates:
     description: "PQ-1: global ceiling on value-overlap candidate pairs emitted, bounding cost/scale on wide catalogs (hundreds of tables x columns)."
     default: 2000
+  fk_mirror_uniqueness_threshold:
+    description: "PQ-1: a FK is many-to-one so the child side is non-unique. When BOTH columns of a low-trust (name/embedding/value-overlap) candidate have a cardinality ratio >= this, the pair is a 1:1 table mirror / staging copy (not a FK) and is vetoed (is_fk=false, confidence collapsed). Declared/ontology/column-property sources are exempt."
+    default: 0.95
   use_customer_context:
     description: "When true, enrich prompts with customer-provided context from the customer_context Delta table. Context is scoped hierarchically (catalog > schema > pattern > table). Requires the customer_context table to exist (seed from YAML or create via the app)."
     default: false

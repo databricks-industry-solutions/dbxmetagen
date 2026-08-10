@@ -250,6 +250,7 @@ class FKPredictionConfig:
     fk_data_overlap_min_distinct: int = 8               # small-domain veto (both sides < N -> skip)
     fk_data_overlap_weight: float = 0.25                # rule_score contribution
     fk_data_overlap_max_candidates: int = 2000          # global emitted-pair ceiling
+    fk_mirror_uniqueness_threshold: float = 0.95        # both card ratios >= this on a low-trust pair -> 1:1 table mirror, veto
 
     def __post_init__(self):
         if self.federation_mode and self.apply_ddl:
@@ -2380,6 +2381,30 @@ class FKPredictor:
                 never_joins = never_joins & (F.col("source_rank") != F.lit(SR_DECLARED))
             is_fk_col = F.when(never_joins, F.lit(False)).otherwise(F.col("ai_is_fk"))
 
+        # Mirror veto (generator-agnostic, defense in depth): a FK is many-to-one, so the
+        # CHILD side is NON-unique. When BOTH columns are near-unique the relationship is
+        # 1:1 -- almost always a table mirror / staging copy (dim_customer vs
+        # dim_customer_staging) sharing a unique column with 100% overlap, NOT a FK. Such a
+        # pair joins perfectly (join_rate=1, ri=1) so no other guard catches it; only the
+        # cardinality symmetry distinguishes it. The value-overlap generator already vetoes
+        # this at candidate time, but the SAME false pair also arrives via embedding
+        # similarity (equal column names + identical values), so the veto must also run
+        # here. Gated to low-trust heuristic sources (embedding / name / value-overlap):
+        # a genuine 1:1 FK should be asserted by a declared constraint, ontology, or
+        # column-property (higher-trust), which stay exempt. Requires both card ratios
+        # present and >= threshold.
+        mirror_pair = F.lit(False)
+        if "_card_ratio_a" in df.columns and "_card_ratio_b" in df.columns \
+                and "source_rank" in df.columns:
+            m_thresh = F.lit(self.config.fk_mirror_uniqueness_threshold)
+            low_trust = F.col("source_rank").isin(SR_NAME, SR_EMBEDDING, SR_DATA_OVERLAP)
+            mirror_pair = (
+                low_trust
+                & (F.coalesce(F.col("_card_ratio_a"), F.lit(0.0)) >= m_thresh)
+                & (F.coalesce(F.col("_card_ratio_b"), F.lit(0.0)) >= m_thresh)
+            )
+            is_fk_col = F.when(mirror_pair, F.lit(False)).otherwise(is_fk_col)
+
         pair_ok = (F.col("table_a") != F.col("table_b")) & (F.col("col_a") != F.col("col_b"))
         if "source_rank" in df.columns:
             pair_ok = pair_ok | (F.col("source_rank") == F.lit(SR_DECLARED))
@@ -2411,7 +2436,7 @@ class FKPredictor:
                  + capped_join * 0.15
                  + pk_uniq * 0.15
                  + ri * 0.15)
-                * F.when(never_joins, F.lit(0.25)).otherwise(F.lit(1.0))
+                * F.when(never_joins | mirror_pair, F.lit(0.25)).otherwise(F.lit(1.0))
             )).alias("final_confidence"),
             F.current_timestamp().alias("created_at"),
             F.current_timestamp().alias("updated_at"),
@@ -2952,6 +2977,7 @@ def predict_foreign_keys(
     fk_data_overlap_min_distinct: int = 8,
     fk_data_overlap_weight: float = 0.25,
     fk_data_overlap_max_candidates: int = 2000,
+    fk_mirror_uniqueness_threshold: float = 0.95,
 ) -> Dict[str, Any]:
     """Convenience function to run FK prediction."""
     from dbxmetagen.processing import _check_federation_guard
@@ -2989,6 +3015,7 @@ def predict_foreign_keys(
         fk_data_overlap_min_distinct=fk_data_overlap_min_distinct,
         fk_data_overlap_weight=fk_data_overlap_weight,
         fk_data_overlap_max_candidates=fk_data_overlap_max_candidates,
+        fk_mirror_uniqueness_threshold=fk_mirror_uniqueness_threshold,
     )
     predictor = FKPredictor(spark, config)
     return predictor.run(sweep_stale=sweep_stale)

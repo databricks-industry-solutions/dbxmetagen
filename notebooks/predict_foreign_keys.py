@@ -44,6 +44,7 @@ dbutils.widgets.text("fk_data_overlap_min_containment_distinctive", "0.30", "Val
 dbutils.widgets.text("fk_data_overlap_min_distinct", "8", "Value-overlap small-domain veto (min distinct)")
 dbutils.widgets.text("fk_data_overlap_weight", "0.25", "Value-overlap rule_score weight")
 dbutils.widgets.text("fk_data_overlap_max_candidates", "2000", "Value-overlap global candidate ceiling")
+dbutils.widgets.text("fk_mirror_uniqueness_threshold", "0.95", "Mirror veto: both card ratios >= this on low-trust pair -> 1:1 mirror, not FK")
 dbutils.widgets.text("table_names", "", "Table Names")
 dbutils.widgets.dropdown("federation_mode", "false", ["true", "false"], "Federation Mode")
 
@@ -79,6 +80,7 @@ fk_data_overlap_min_containment_distinctive = float(dbutils.widgets.get("fk_data
 fk_data_overlap_min_distinct = int(dbutils.widgets.get("fk_data_overlap_min_distinct"))
 fk_data_overlap_weight = float(dbutils.widgets.get("fk_data_overlap_weight"))
 fk_data_overlap_max_candidates = int(dbutils.widgets.get("fk_data_overlap_max_candidates"))
+fk_mirror_uniqueness_threshold = float(dbutils.widgets.get("fk_mirror_uniqueness_threshold"))
 
 federation_mode = dbutils.widgets.get("federation_mode").lower() == "true"
 
@@ -139,6 +141,7 @@ _fk_kwargs = dict(
     fk_data_overlap_min_distinct=fk_data_overlap_min_distinct,
     fk_data_overlap_weight=fk_data_overlap_weight,
     fk_data_overlap_max_candidates=fk_data_overlap_max_candidates,
+    fk_mirror_uniqueness_threshold=fk_mirror_uniqueness_threshold,
 )
 if system_column_patterns is not None:
     _fk_kwargs["system_column_patterns"] = system_column_patterns

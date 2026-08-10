@@ -133,6 +133,7 @@ class MetadataConfig:
             "fk_data_overlap_min_distinct",
             "fk_data_overlap_weight",
             "fk_data_overlap_max_candidates",
+            "fk_mirror_uniqueness_threshold",
             "ontology_vs_index",
             "use_ann_similarity",
             "ann_k_multiplier",

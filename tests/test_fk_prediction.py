@@ -265,6 +265,32 @@ class TestNeverJoinsVeto:
         assert self._never_joins(0, 0.5, SR_COL_PROP) is False
 
 
+class TestMirrorVeto:
+    """A FK is many-to-one, so its child side is non-unique. When BOTH columns of a
+    low-trust (name/embedding/value-overlap) candidate are near-unique the pair is a 1:1
+    table mirror / staging copy sharing a unique column, NOT a FK -- it joins perfectly so
+    no other guard catches it. Declared/ontology/column-property sources are exempt."""
+
+    def _mirror(self, card_a, card_b, source_rank, thresh=0.95):
+        # Mirror the predicate in run()'s final projection.
+        low_trust = source_rank in (SR_NAME, SR_EMBEDDING, SR_DATA_OVERLAP)
+        return low_trust and (card_a >= thresh) and (card_b >= thresh)
+
+    def test_embedding_mirror_vetoed(self):
+        # dim_customer.customer_name <-> dim_customer_staging.customer_name: both unique,
+        # arrives via embedding similarity (equal names + identical values).
+        assert self._mirror(1.0, 1.0, SR_EMBEDDING) is True
+
+    def test_real_fk_not_vetoed(self):
+        # npi/email FK: child non-unique (card ~0.1), parent unique -> asymmetric, keep.
+        assert self._mirror(0.10, 1.0, SR_DATA_OVERLAP) is False
+
+    def test_declared_11_link_exempt(self):
+        # A steward-declared / ontology 1:1 link is trusted, not vetoed.
+        assert self._mirror(1.0, 1.0, SR_DECLARED) is False
+        assert self._mirror(1.0, 1.0, SR_COL_PROP) is False
+
+
 class TestNeverJoinsConfidenceCollapse:
     """FK-11: a provably-disjoint pair (never_joins) has final_confidence collapsed
     by 0.25x, not just is_fk flipped -- so it drops below the display/review
