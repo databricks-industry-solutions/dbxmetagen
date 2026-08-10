@@ -1956,8 +1956,14 @@ class TestValueOverlapGeneratorSmoke:
         with _patch_fk_functions_for_run():
             result = p.get_value_overlap_candidates()
         # A candidate pair was emitted (child claims.npi -> parent providers.npi).
+        # col_a/col_b are FQN node ids ("{table}.{col}") to match every other
+        # generator (graph_nodes.id) so downstream joins/dedup key correctly.
         emitted = captured.get("emitted", [])
-        assert any(e[0] == "npi" and e[2] == "c.s.claims" and e[3] == "c.s.providers" for e in emitted)
+        assert any(
+            e[0] == "c.s.claims.npi" and e[1] == "c.s.providers.npi"
+            and e[2] == "c.s.claims" and e[3] == "c.s.providers"
+            for e in emitted
+        )
 
     def test_disabled_flag_returns_empty(self):
         cfg = _cfg()

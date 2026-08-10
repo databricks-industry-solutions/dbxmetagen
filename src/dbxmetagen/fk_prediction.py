@@ -742,7 +742,14 @@ class FKPredictor:
                     )
                     if containment is None:
                         continue
-                    emitted.append((a["col"], b["col"], a["table"], b["table"],
+                    # col_a/col_b must be FQN node ids (catalog.schema.table.column),
+                    # matching every other generator (they emit graph_nodes.id). Downstream
+                    # joins/dedup/one-FK-per-child key on these; a bare short name yields
+                    # null signals and mismatched src_column. column_profiling_stats stores
+                    # table_name as FQN + column_name bare, so id = "{table}.{col}".
+                    col_a_id = f"{a['table']}.{a['col']}"
+                    col_b_id = f"{b['table']}.{b['col']}"
+                    emitted.append((col_a_id, col_b_id, a["table"], b["table"],
                                     a["dtype"], b["dtype"], containment))
                     if len(emitted) >= ceiling:
                         break
