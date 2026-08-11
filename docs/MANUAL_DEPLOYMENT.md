@@ -81,19 +81,26 @@ repo root holds the placeholder keys to copy. It contains:
 > in place after cloning (steps below).
 
 **In the workspace UI (Git Folder):** `--var` and `BUNDLE_VAR_*` are CLI-only, so
-the override file is your mechanism. After cloning the Git Folder:
+the override file is your mechanism — but you do **not** create it by hand. The
+bundle editor writes it (and the `.databricks/bundle/<target>/` folders) for you:
 
-1. In the workspace file browser, open your bundle root
-   (`/Workspace/Users/<you>/dbxmetagen`).
-2. Create the folder path `.databricks/bundle/<target>/` (e.g.
-   `.databricks/bundle/dev/`) if it does not exist. Use **Create > File** and
-   type the full relative path `.databricks/bundle/dev/variable-overrides.json`
-   — the editor creates the intermediate folders.
-3. Paste the JSON above (copy it from `variable-overrides.example.json` at the
-   repo root) and fill in your real `catalog_name`, `schema_name`, and
-   `warehouse_id`. Save.
+1. Open `databricks.yml` in the workspace editor to bring up the bundle
+   deployment view, and select your target (`dev`, `demo`, or `prod`).
+2. Click the **⋮** (three-dots) menu next to the **Deploy** button and choose
+   **Configure variable overrides**.
+3. Fill in `catalog_name`, `schema_name`, and `warehouse_id` (copy the shape from
+   `variable-overrides.example.json` at the repo root), then save. This writes
+   `.databricks/bundle/<target>/variable-overrides.json` — you never touch the
+   file browser or create the folder yourself.
 
-**From the CLI:** copy the example into place instead:
+> If your workspace doesn't show **Configure variable overrides** (older
+> workspaces, or the feature not enabled), fall back to creating the file
+> manually: **Create > File**, type the full relative path
+> `.databricks/bundle/dev/variable-overrides.json` (the editor makes the
+> intermediate folders), and paste the JSON above.
+
+**From the CLI:** the folder won't exist on a fresh clone (`.databricks/` is
+gitignored), so create it and copy the example into place:
 
 ```bash
 mkdir -p .databricks/bundle/dev

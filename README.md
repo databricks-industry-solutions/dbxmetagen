@@ -72,11 +72,12 @@ from any tool: notebooks, dashboards, Genie spaces, agents, or your own applicat
    > **Prefer the workspace UI?** The Databricks bundle editor's **Deploy**
    > button is a first-class alternative to the CLI (same DAB engine, same
    > `artifacts.build` hook — the wheel is built for you in the workspace). See
-   > [`docs/MANUAL_DEPLOYMENT.md`](docs/MANUAL_DEPLOYMENT.md). Same
-   > `variable-overrides.json`, just created inside the workspace bundle root
-   > (`.databricks/` is gitignored, so it isn't part of the Git Folder clone).
-   > `--var` / `BUNDLE_VAR_*` are CLI-only, so use the override file for the UI
-   > path.
+   > [`docs/MANUAL_DEPLOYMENT.md`](docs/MANUAL_DEPLOYMENT.md). You don't create
+   > the override file by hand: open the **⋮** (three-dots) menu next to the
+   > **Deploy** button and choose **Configure variable overrides** — this opens
+   > an editor for the same per-target `variable-overrides.json` and writes it to
+   > `.databricks/bundle/<target>/` for you. (`--var` / `BUNDLE_VAR_*` are
+   > CLI-only, so this menu is the UI equivalent.)
 
 2. **Azure / GCP users:** The default job cluster node type is `i3.2xlarge` (AWS). Update `node_type` in `variables.yml` (or set it in `variable-overrides.json`) before deploying:
    - **Azure:** `Standard_D8s_v3`
@@ -105,10 +106,13 @@ from any tool: notebooks, dashboards, Genie spaces, agents, or your own applicat
    ```
 
    **Option B — Workspace UI** (no local machine required):
-   1. Clone the repo as a **Git Folder** and set variables (see step 1's note).
-   2. Open `databricks.yml`, click the **Deployments** (rocket) icon, pick your
-      target, and click **Deploy**. This builds the wheel and registers jobs + the
-      app — but does **not** start the app.
+   1. Clone the repo as a **Git Folder**.
+   2. Open `databricks.yml`, click the **Deployments** (rocket) icon, and pick
+      your target. Before deploying, set your variables: open the **⋮** menu next
+      to **Deploy**, choose **Configure variable overrides**, and fill in
+      `catalog_name` / `schema_name` / `warehouse_id` (this writes the override
+      file for you — see step 1's note). Then click **Deploy**. This builds the
+      wheel and registers jobs + the app — but does **not** start the app.
    3. Go to **Workspace > Apps > dbxmetagen-app**, click **Deploy** (deploys the
       app source), then **Start** (brings up compute). This is the UI equivalent
       of `bundle run dbxmetagen_app`. Takes a few minutes as it installs the wheel.
