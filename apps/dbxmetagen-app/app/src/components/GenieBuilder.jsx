@@ -1,4 +1,4 @@
-import React, { useState, useEffect, useRef } from 'react'
+import React, { useState, useEffect, useRef, useMemo } from 'react'
 import { safeFetchObj, ErrorBanner, PrereqBanner } from '../App'
 import { cachedFetch, TTL } from '../apiCache'
 import { PageHeader, EmptyState, SkeletonTable } from './ui'
@@ -273,10 +273,28 @@ export default function GenieBuilder({ onNavigate, pipelineStats }) {
     setCreating(false)
   }
 
+  // When a project is selected, scope the visible tables to that project's
+  // saved table list (fully-qualified catalog.schema.table ids stored in
+  // semantic_layer_projects.selected_tables). null = no project filter (show all).
+  const projectTableSet = useMemo(() => {
+    if (!selectedProject) return null
+    const proj = projects.find(p => p.project_id === selectedProject)
+    if (!proj?.selected_tables) return new Set()
+    try {
+      const tbls = JSON.parse(proj.selected_tables)
+      return Array.isArray(tbls) ? new Set(tbls) : new Set()
+    } catch {
+      return new Set()
+    }
+  }, [selectedProject, projects])
+
   const filterLower = tableFilter.toLowerCase()
-  const filteredTables = filterLower
-    ? tables.filter(t => t.label.toLowerCase().includes(filterLower) || t.schema.toLowerCase().includes(filterLower))
+  const projectScopedTables = projectTableSet
+    ? tables.filter(t => projectTableSet.has(t.id))
     : tables
+  const filteredTables = filterLower
+    ? projectScopedTables.filter(t => t.label.toLowerCase().includes(filterLower) || t.schema.toLowerCase().includes(filterLower))
+    : projectScopedTables
   const filteredMVs = metricViews.filter(mv => {
     const cat = mv.deployed_catalog || mv.source_table?.split('.')[0]
     if (cat !== selectedCatalog) return false
@@ -360,7 +378,18 @@ export default function GenieBuilder({ onNavigate, pipelineStats }) {
           {projects.length > 0 && (
             <select
               value={selectedProject}
-              onChange={e => { setSelectedProject(e.target.value); setSelectedMVs(new Set()) }}
+              onChange={e => {
+                const pid = e.target.value
+                setSelectedProject(pid)
+                setSelectedMVs(new Set())
+                // Drop any already-selected tables that fall outside the new project scope.
+                if (pid) {
+                  const proj = projects.find(p => p.project_id === pid)
+                  let inScope = null
+                  try { inScope = proj?.selected_tables ? new Set(JSON.parse(proj.selected_tables)) : new Set() } catch { inScope = new Set() }
+                  setSelectedTables(prev => prev.filter(t => inScope.has(t)))
+                }
+              }}
               className="border border-slate-200 dark:border-slate-600 rounded-md px-3 py-1.5 text-sm bg-dbx-oat-light dark:bg-slate-700 text-slate-800 dark:text-slate-200"
             >
               <option value="">All projects</option>
@@ -537,6 +566,17 @@ export default function GenieBuilder({ onNavigate, pipelineStats }) {
           className="w-full border border-slate-200 dark:border-slate-600 rounded-md px-3 py-2 text-sm bg-dbx-oat-light dark:bg-slate-700 text-slate-800 dark:text-slate-200 placeholder-slate-400"
         />
       </div>
+
+      {/* Mixed tables + metric views advisory */}
+      {selectedTables.length > 0 && selectedMVs.size > 0 && (
+        <div className="bg-amber-50 dark:bg-amber-950/40 border border-amber-300 dark:border-amber-800/60 rounded-lg px-4 py-3 text-sm text-amber-800 dark:text-amber-200">
+          <strong>Recommendation:</strong> avoid combining tables and metric views in
+          the same Genie space. As of August 2026, Genie cannot join a metric view to a
+          table (or to another metric view), so questions spanning both won't resolve.
+          For best results, build one space from metric views <em>or</em> from tables &mdash;
+          not both.
+        </div>
+      )}
 
       {/* Generate button */}
       <button
