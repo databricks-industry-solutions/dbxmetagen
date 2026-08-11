@@ -172,11 +172,13 @@ def seed_customer_context_table(
     # in Git-controlled YAML; merging into Delta lets runtime enrichment (`resolve_*`) read
     # consistent UC state without manual deletes when files change.
     # COEXISTENCE with the app UI (same table, same context_id key): the WHEN MATCHED
-    # branch updates only the YAML-authored fields (text/label/priority) + updated_at, and
-    # deliberately does NOT touch `active` or `created_at`. This preserves a UI soft-delete
-    # (`active=FALSE`, set by DELETE /api/customer-context/{id}) and the original creation
-    # timestamp across a re-seed, so YAML seeding is genuinely idempotent and does not clobber
-    # operator edits. New scopes still INSERT with active=TRUE.
+    # branch updates only the YAML-authored content fields (text/label/priority) + updated_at,
+    # and deliberately does NOT touch `active`, `created_at`, or `created_by`. This preserves a
+    # UI soft-delete (`active=FALSE`, set by DELETE /api/customer-context/{id}), the original
+    # creation timestamp, AND the original provenance/author across a re-seed, so YAML seeding
+    # is genuinely idempotent and does not clobber operator edits. `scope`/`scope_type` are
+    # derived from `context_id` (the merge key) so they are invariant and need no update.
+    # New scopes still INSERT with active=TRUE and created_by='yaml_seed'.
     # TRADEOFFS: rows removed from YAML are not retired here (they linger until deactivated in
     # the UI or cleaned separately). Explicit column lists must track schema changes.
 
@@ -185,12 +187,9 @@ def seed_customer_context_table(
         USING _customer_context_seed AS src
         ON tgt.context_id = src.context_id
         WHEN MATCHED THEN UPDATE SET
-            tgt.scope = src.scope,
-            tgt.scope_type = src.scope_type,
             tgt.context_text = src.context_text,
             tgt.context_label = src.context_label,
             tgt.priority = src.priority,
-            tgt.created_by = src.created_by,
             tgt.updated_at = src.updated_at
         WHEN NOT MATCHED THEN INSERT *
     """)

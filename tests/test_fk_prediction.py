@@ -2147,3 +2147,65 @@ class TestValueOverlapGeneratorSmoke:
             p.get_value_overlap_candidates()
         # When disabled, no profiling query is issued.
         assert not spark.sql.called
+
+    def test_exact_table_scope_excludes_prefix_siblings(self):
+        """An EXACT (non-wildcard) table_names scope must NOT over-match sibling
+        tables sharing the prefix (e.g. `orders` scope must exclude
+        `orders_archive`). Regression for the `rstrip('*')`+startswith bug."""
+        cfg = _cfg()
+        cfg.table_names = ["c.s.orders"]   # exact, no wildcard
+        spark = MagicMock()
+        ids = [str(1000 + i) for i in range(30)]
+        rows = [
+            # in-scope real FK: orders.customer_id -> customers.id
+            self._row("c.s.customers", "id", "bigint", 30, 1.0, True, "numeric_id", ids),
+            self._row("c.s.orders", "customer_id", "bigint", 30, 0.3, False, "numeric_id", ids[:20]),
+            # sibling that shares the `orders` prefix -- MUST be excluded from scope
+            self._row("c.s.orders_archive", "customer_id", "bigint", 30, 0.3, False, "numeric_id", ids[:20]),
+        ]
+        spark.sql.return_value.toLocalIterator.return_value = iter(rows)
+        captured = {}
+
+        def _mk_df(data, schema=None):
+            captured["emitted"] = data
+            chain = MagicMock()
+            chain.withColumn.return_value = chain
+            return chain
+        spark.createDataFrame.side_effect = _mk_df
+        p = FKPredictor(spark, cfg)
+        p._ontology_typed_column_pairs = lambda: set()
+        with _patch_fk_functions_for_run():
+            p.get_value_overlap_candidates()
+        emitted = captured.get("emitted", [])
+        # No emitted pair may reference orders_archive on either side.
+        assert not any(
+            "orders_archive" in str(e[2]) or "orders_archive" in str(e[3])
+            for e in emitted
+        ), f"orders_archive leaked into an exact-scoped run: {emitted}"
+
+    def test_wildcard_scope_still_matches_schema(self):
+        """A `cat.sch.*` wildcard scope still matches all tables in the schema
+        (the prefix guard keeps the trailing dot)."""
+        cfg = _cfg()
+        cfg.table_names = ["c.s.*"]
+        spark = MagicMock()
+        ids = [str(1000 + i) for i in range(30)]
+        rows = [
+            self._row("c.s.customers", "id", "bigint", 30, 1.0, True, "numeric_id", ids),
+            self._row("c.s.orders", "customer_id", "bigint", 30, 0.3, False, "numeric_id", ids[:20]),
+        ]
+        spark.sql.return_value.toLocalIterator.return_value = iter(rows)
+        captured = {}
+
+        def _mk_df(data, schema=None):
+            captured["emitted"] = data
+            chain = MagicMock()
+            chain.withColumn.return_value = chain
+            return chain
+        spark.createDataFrame.side_effect = _mk_df
+        p = FKPredictor(spark, cfg)
+        p._ontology_typed_column_pairs = lambda: set()
+        with _patch_fk_functions_for_run():
+            p.get_value_overlap_candidates()
+        emitted = captured.get("emitted", [])
+        assert any(e[2] == "c.s.orders" and e[3] == "c.s.customers" for e in emitted)

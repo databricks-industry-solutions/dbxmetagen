@@ -706,15 +706,29 @@ class FKPredictor:
 
         # Optional table_names scoping: keep a column only if its table matches a
         # configured pattern (supports `catalog.schema.*` wildcards, case-insensitive).
-        scope_pats = None
+        # Mirror table_names_col_filter semantics EXACTLY: an exact (non-wildcard)
+        # name matches only by equality; a `catalog.schema.*` wildcard matches by the
+        # `catalog.schema.` prefix (the trailing dot is the separator guard). A bare
+        # `rstrip("*")` on an exact name would turn `cat.sch.orders` into a prefix
+        # that also matches `cat.sch.orders_archive` / `orders_2023` -- leaking
+        # sibling tables into a run scoped to one table.
+        scope_exact = None
+        scope_prefixes = None
         if self.config.table_names:
-            scope_pats = [str(t).lower().rstrip("*") for t in self.config.table_names]
+            scope_exact = set()
+            scope_prefixes = []
+            for t in self.config.table_names:
+                tl = str(t).lower()
+                if tl.endswith(".*"):
+                    scope_prefixes.append(tl[:-1])  # keep the trailing '.' -> "cat.sch."
+                else:
+                    scope_exact.add(tl)
 
         def _in_scope(tbl: str) -> bool:
-            if scope_pats is None:
+            if scope_exact is None:
                 return True
             t = (tbl or "").lower()
-            return any(t == p or t.startswith(p) for p in scope_pats)
+            return t in scope_exact or any(t.startswith(p) for p in scope_prefixes)
 
         def _excluded_dtype(dt: str) -> bool:
             dt = (dt or "").lower()

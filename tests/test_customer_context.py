@@ -338,8 +338,9 @@ class TestExampleCustomerContextYaml(unittest.TestCase):
         self.assertEqual(n, 2)   # both entries seeded, priorities defaulted
 
     def test_merge_preserves_active_and_created_at(self):
-        """The re-seed MERGE must not overwrite app-managed `active` / `created_at`
-        (a UI soft-delete must survive a re-seed)."""
+        """The re-seed MERGE must not overwrite app-managed `active` / `created_at` /
+        `created_by` (a UI soft-delete and operator provenance must survive a re-seed).
+        The MATCHED branch updates ONLY the YAML-authored content fields + updated_at."""
         content = {
             "contexts": [
                 {"scope": "cat.sch", "scope_type": "schema", "context_text": "hi"},
@@ -353,10 +354,13 @@ class TestExampleCustomerContextYaml(unittest.TestCase):
         merge_sql = next(
             (str(c) for c in mock_spark.sql.call_args_list if "MERGE INTO" in str(c)), ""
         )
-        # WHEN MATCHED updates content but NOT active/created_at.
+        # WHEN MATCHED updates content but NOT active/created_at/created_by.
         self.assertIn("context_text = src.context_text", merge_sql)
+        self.assertIn("tgt.updated_at = src.updated_at", merge_sql)
         self.assertNotIn("tgt.active", merge_sql)
         self.assertNotIn("tgt.created_at", merge_sql)
+        # created_by is operator provenance; a re-seed must not reset it to 'yaml_seed'.
+        self.assertNotIn("tgt.created_by", merge_sql)
 
 
 class TestSeedCustomerContextGating(unittest.TestCase):
