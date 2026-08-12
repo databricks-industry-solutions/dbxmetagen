@@ -1644,16 +1644,6 @@ def log_metadata_generation(
     mark_as_deleted(table_name, config)
 
 
-# TODO: Figure out where this is used and if it is needed
-def set_classification_to_null(df: DataFrame, config: MetadataConfig) -> DataFrame:
-    """
-    Set the classification to null.
-    """
-    if config.mode == "pi":
-        df = df.withColumn("classification", lit(None))
-    return df
-
-
 def set_protected_classification(df: DataFrame, config: MetadataConfig) -> DataFrame:
     """
     Set the classification to protected.

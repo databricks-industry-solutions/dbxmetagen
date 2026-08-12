@@ -625,15 +625,11 @@ class ChatClientFactory:
             return OpenAISpecClient(config.custom_endpoint_url, api_key)
 
         elif chat_type == "custom_chat_spec":
-            if not config.custom_endpoint_url:
-                raise ValueError(
-                    "custom_endpoint_url is required for custom_chat_spec type"
-                )
-
-            api_key = ChatClientFactory._get_secret_from_scope(
-                config.custom_endpoint_secret_scope, config.custom_endpoint_secret_key
+            raise NotImplementedError(
+                "chat_completion_type='custom_chat_spec' is not yet supported. "
+                "Use 'databricks' (Foundation Model endpoints, default) or 'openai_spec' "
+                "(any OpenAI-compatible endpoint via custom_endpoint_url)."
             )
-            return CustomChatSpecClient(config.custom_endpoint_url, api_key)
 
         else:
             raise ValueError(f"Unknown chat completion type: {chat_type}")
