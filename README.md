@@ -95,8 +95,10 @@ from any tool: notebooks, dashboards, Genie spaces, agents, or your own applicat
    `artifacts.build` hook, and register jobs + the app — they are equivalent.
    Databricks Asset Bundles deliberately separate *deploying* an app from
    *starting* it (starting consumes app compute), so **both are two steps:
-   deploy, then deploy-source-and-start the app.** There is no `deploy.sh` and no
-   single-command shortcut — this is a platform behavior, not a project choice.
+   deploy, then deploy-source-and-start the app.** This is a platform behavior,
+   not a project choice — there is no true single-command shortcut. (A
+   deprecated `./deploy.sh` wrapper still exists that chains the commands below
+   for existing CI — see the note at the end of this section.)
 
    **Option A — CLI** (scriptable, best for CI):
    ```bash
@@ -144,6 +146,15 @@ from any tool: notebooks, dashboards, Genie spaces, agents, or your own applicat
    - **One workspace, one instance:** the app is a singleton by name. If you deploy
      more than one target/instance to the same workspace, set `app_name_suffix`
      (e.g. `-dev`) in your overrides so they don't overwrite each other's app.
+   - **Legacy `./deploy.sh` (deprecated):** a thin wrapper is kept so existing
+     CI/CD that calls `./deploy.sh -t <target> -p <profile>` keeps working — it
+     just runs `bundle deploy` → `bundle run dbxmetagen_app` →
+     `grant_app_permissions.sh`. It is **not** the old template-generating script
+     and does **not** read a `{target}.env` file; per-workspace config comes from
+     the variable overrides above. New setups should call the commands directly.
+     For the full set of advanced overrides (cluster policy, serverless budget,
+     `run_as` SP, app permissions, OBO scopes, lakebase), copy
+     `variable-overrides.advanced.example.json`.
 
 4. Access the app at **Workspace > Apps > dbxmetagen-app** and follow the instructions there.
 
@@ -672,6 +683,43 @@ The default `node_type` in `variables.yml` is `i3.2xlarge`, which is an AWS inst
 | GCP   | `n2-highmem-8`         |
 
 You may need to try a couple different node types if your organization doesn't have capacity for these in your cloud.
+
+### App serves the wrong config after deploying more than one target to the same workspace
+
+The app is a **singleton by name** in a workspace. Jobs are keyed by ID (dev mode prefixes their
+names so targets coexist), but the app resource name is **not** dev-prefixed — so deploying two
+targets (e.g. `dev` and `demo`) into one workspace makes both own the single app, and **last deploy
+wins**. Symptoms are the app reporting `WAREHOUSE_ID not configured`, OBO disabled, or missing job
+IDs, because the last-deployed target's overrides are now active.
+
+**Fix:** set `app_name_suffix` (default `""`, fully backward compatible) in your overrides to run
+separate instances in one workspace — it is appended to both the app name and the job-name prefix
+(e.g. `-dev`). Alternatively, deploy each target to its own workspace.
+
+### Workspace UI deploy builds a stale or missing wheel
+
+When you deploy from the **workspace UI Deploy button**, the `artifacts.build` hook
+(`scripts/build_artifacts.sh`) runs in the workspace-hosted build environment, which must have `uv`
+and Python 3.11+. If either is missing, the UI deploy can fail or ship a stale wheel / missing
+`configurations/`. The **CLI** path builds on your own machine and is unaffected. If you hit this,
+prefer the CLI deploy, or see [docs/MANUAL_DEPLOYMENT.md](docs/MANUAL_DEPLOYMENT.md) for the
+in-workspace build requirements.
+
+### Known Limitations
+
+- **`sample_size=0` degrades PI and domain quality.** With no row sampling, PI detection and domain
+  classification rely on column names, types, and existing comments rather than data values. Keep a
+  non-zero `sample_size` (or set `allow_data=false` only when you specifically must not send data to
+  the LLM) for best results.
+- **Very large catalogs need tuning.** Defaults are tuned for tens-to-thousands of tables. For
+  10,000+ tables, raise multi-task parallelism and `columns_per_call` (see [Scaling](#scaling)).
+  Further throughput/cost work — batching column/table classification LLM calls and batching
+  `DESCRIBE EXTENDED` via `information_schema` — is tracked in
+  [docs/CONSOLIDATED_ROADMAP.md](docs/CONSOLIDATED_ROADMAP.md) (items AQ-1/2, R3) and is not required
+  for typical runs.
+- **Federated sources.** In `federation_mode`, `DESCRIBE EXTENDED`, `ALTER TABLE`, and `SET TAGS` are
+  disabled and all output is Delta-native; start with a small table set to gauge source-query load
+  before scaling up.
 
 ## Dependencies
 

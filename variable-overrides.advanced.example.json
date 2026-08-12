@@ -1,0 +1,46 @@
+{
+  "_comment": "ADVANCED bundle variable overrides. Copy the keys you need into .databricks/bundle/<target>/variable-overrides.json (DAB auto-loads that exact path; a repo-root file is NOT picked up). For a minimal starting point use variable-overrides.example.json instead. JSON has no comments, so the _comment/_* keys below are documentation only -- DAB ignores unknown top-level keys, but delete them if your tooling is strict. Every key here maps to a variable defined in variables.yml / resources/app_variables.yml.",
+
+  "catalog_name": "your_catalog",
+  "schema_name": "metadata_results",
+  "warehouse_id": "0123456789abcdef",
+  "vs_endpoint_name": "dbxmetagen-vs",
+
+  "_comment_node_type": "Job-cluster node type. AWS i3.2xlarge (default), Azure Standard_D8s_v3, GCP n2-highmem-8.",
+  "node_type": "i3.2xlarge",
+
+  "_comment_cluster_policy": "To apply a CLUSTER POLICY you must override the WHOLE metadata_job_cluster complex variable (a bare policy_id string is not supported -- the v1.8.0+ direct deploy engine rejects an empty policy_id). Copy the default block from variables.yml and add policy_id + apply_policy_default_values. lakebase_job_cluster is the same pattern for the non-ML graph->Lakebase sync job.",
+  "metadata_job_cluster": {
+    "spark_version": "17.3.x-cpu-ml-scala2.13",
+    "node_type_id": "i3.2xlarge",
+    "data_security_mode": "SINGLE_USER",
+    "policy_id": "001DD81A49229D7C",
+    "apply_policy_default_values": true,
+    "autoscale": { "min_workers": 2, "max_workers": 4 },
+    "custom_tags": { "project": "dbxmetagen" }
+  },
+
+  "_comment_budget_policy": "Serverless budget policy ID for cost attribution on serverless jobs. Plain string variable -- empty is accepted at job level (unlike cluster policy_id).",
+  "budget_policy_id": "001DD81A49229D7C",
+
+  "_comment_run_as": "Identity jobs run as. Default is the deploying user. Set an SP to own all jobs (the old spn_id). The SP needs USE CATALOG/USE SCHEMA/CREATE TABLE/SELECT/MODIFY on the target schema plus CAN_ATTACH_TO on clusters.",
+  "run_as": { "service_principal_name": "00000000-0000-0000-0000-000000000000" },
+
+  "_comment_app": "app_name = app display name + job-name prefix. app_name_suffix appends to both, so multiple instances can coexist in one workspace (the app is a singleton by name).",
+  "app_name": "dbxmetagen-app",
+  "app_name_suffix": "",
+
+  "_comment_obo": "Enable On-Behalf-Of user auth. When true you MUST also set user_api_scopes, or SQL fails with 'OAuth token does not have required scopes'. Re-consent in an incognito window after any OBO change.",
+  "enable_obo": true,
+  "user_api_scopes": ["files.files", "sql.statement-execution", "dashboards.genie"],
+
+  "_comment_permissions": "Who can open the app UI (CAN_USE). Replaces the old permission_groups / permission_users env vars. The deploying user already has CAN_MANAGE.",
+  "app_permissions": [
+    { "group_name": "account users", "level": "CAN_USE" },
+    { "user_name": "user1@example.com", "level": "CAN_USE" }
+  ],
+
+  "_comment_lakebase": "Lakebase config for accelerated GraphRAG graph queries (used by sync_graph_lakebase_job). The app auto-detects Lakebase when the database resource is attached in the Apps UI.",
+  "lakebase_catalog": "dbxmetagen_graphrag",
+  "lakebase_instance_name": "dbxmetagen"
+}
