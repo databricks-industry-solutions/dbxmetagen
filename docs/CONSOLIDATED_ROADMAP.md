@@ -263,6 +263,7 @@ pragmatically).
 | ON-19 | Batch column classification truncates on WIDE tables: a 144-col table produced an 11424-char response cut off at `max_tokens=4096` -> invalid/partial JSON. The `len(columns) <= n*1.25` remainder-merge (n=120 -> up to 150 cols in ONE call) sent oversized batches, and truncation wasn't detected as truncation. **DONE (v0.10.61):** replaced count-merge with output-token-budget chunking (`_COLS_PER_CLASSIFY_CHUNK=60`), raised `max_tokens` 4096->8192, and `_classify_column_chunk_resilient` recursively BISECTS on `StructuredTruncationError` (ai_query only as last resort on a single column) so no column is lost. | DONE | P1 | M | Customer log (wide biotech tables) |
 | ON-20 | Empty/`{}` responses (`Expecting value: line 1 column 1`; `classifications Field required`) parse-failed with no finish-reason context, so a retryable empty/truncated response looked identical to genuine garbage. **DONE (v0.10.61)** with MG-6: `invoke_structured` now reads `finish_reason` and raises `StructuredTruncationError` (length) or `StructuredEmptyResponseError` (empty/`{}`) -- both `ValueError` subclasses (backward compatible) -- and logs finish_reason + length. This is the signal ON-19/ON-21 bisect on. | DONE | P2 | S | Customer log |
 | ON-21 | **geo_classifier has the SAME truncation bug as ON-19, worse**: `max_tokens=2048`, called `with_structured_output` directly (no fallback), and SILENTLY defaulted every column to non_geographic on any failure -> wide tables mis-classified with no error. **DONE (v0.10.61):** routed through `invoke_structured` (gains truncation signal), output-token chunking (`_GEO_COLS_PER_CHUNK=60`), `max_tokens` 2048->8192, and `_classify_geo_chunk_resilient` bisects on truncation -- defaulting only as a true last resort on a single column. | DONE | P1 | S | ON-19 sibling audit |
+| ON-22 | **Bundle-scoped ontology consumers + `ontology_bundle` on `ontology_relationships`.** Multi-bundle coexistence is correct at STORAGE (namespaced `entity::{bundle}::{name}` nodes, same-bundle edge guards) but READ consumers mix bundles: `ontology_relationships` has no `ontology_bundle` column (verified) and `genie/context._get_ontology_entities` / semantic-layer relationship reads join by entity-type NAME with no bundle filter, so two bundles in one schema yield ambiguous/duplicated entities + relationships. Documented limitation (`.cursor/rules/ontology-patterns.mdc:158-163`). Add the column; add bundle filters at read sites; thread `ontology_bundle` through `GenieContextAssembler`. Extends ON-18. NOTE: this is a SEPARATE latent gap — the customer's "multiple ontologies for one BU" testing error was the ON-19 wide-table truncation (now fixed), NOT this. | OPEN | P2 | M | Customer ask (Mohit) + multi-bundle consumer audit |
 
 ### ON-4: Remove legacy `link` SQL filter
 
@@ -332,6 +333,30 @@ pragmatically).
 **Status: OPEN** -- Canonical `entity_uri`, `source_ontology`, and relationship provenance are tied to the **active** ontology bundle (see three-pass classification, column entity rows, and `predict_edge`). Optional future mode: LLM or mapping tables may propose **secondary** equivalent classes or labels in **another** standard (for example FHIR vs OMOP) while primary UC tags and review badges remain aligned to the selected bundle. Would need configuration plus separate columns or JSON attributes for crosswalk vs canonical values.
 
 **Depends on:** Clear canonical-vs-LLM behavior (implemented in ontology provenance work).
+
+### ON-22: Bundle-scoped ontology consumers
+
+**Status: OPEN** -- Multi-bundle coexistence is correct at the STORAGE layer: graph nodes are
+namespaced `entity::{bundle}::{name}` and edge builders enforce a same-bundle guard
+(`_build_structural_edges`, `discover_inter_entity_relationships`). The gap is at the READ/consumer
+layer: `ontology_relationships` has no `ontology_bundle` column (verified against `ontology.py`), and
+`genie/context._get_ontology_entities` (`context.py:472`) + the semantic-layer relationship reads
+(`semantic_layer.py:713`) join by entity-type NAME with no bundle filter. With two bundles in one
+schema, "Patient" from bundle A and B, or `treats` (A) vs `manages` (B), both come back — producing
+ambiguous/duplicated entities and relationships in Genie context and metric-view generation. This is
+the documented limitation in `.cursor/rules/ontology-patterns.mdc:158-163`.
+
+**Work:** Add `ontology_bundle` to `ontology_relationships` (nullable ADD COLUMN, backfill on next
+run); add bundle filters at the consumer read sites; thread an `ontology_bundle` selection through
+`GenieContextAssembler.__init__` and the semantic-layer config. Extends ON-18.
+
+**Important scoping note:** the customer's "multiple ontologies for a single BU" **testing error was
+the ON-19 wide-table classification truncation** (entity type parsed as a string on wide biotech
+tables), now **FIXED** in v0.10.61+ — confirmed against Mohit's logs by Eli. ON-22 is a *separate,
+latent* correctness gap surfaced by the multi-bundle consumer audit; it is not the acute error and is
+lower urgency now that the chunking fix landed.
+
+**Files:** `src/dbxmetagen/ontology.py`, `src/dbxmetagen/genie/context.py`, `src/dbxmetagen/semantic_layer.py`
 
 ---
 
@@ -631,15 +656,97 @@ The `for table in config.table_names` loop is sequential within a single task, b
 
 ---
 
+## 8. Enterprise & Multi-Tenancy / Access Control
+
+Customer-driven (Mohit) August 2026. The previous dbxmetagen implementation lacked all of these; the
+current branch already added a few (see the verification note below). Items scoped from a code-level
+investigation this session — coupling points are named in the detail blocks.
+
+### Customer verification (Mohit, 2026-08)
+
+The three reported bugs are **already FIXED on the current feature branch (v0.10.67)** and are tracked
+as DONE above: wide-table entity-type-as-string (**ON-19/20/21**, commit `c027da2`), `$`-in-identifier
+parse errors (**MG-20/22**, `fe16afa`/`c027da2`), and the FK 0-candidate federation `RuntimeError`
+(**OB-11**, `8fe624b`). The **"multiple ontologies for one BU" testing error was the ON-19 wide-table
+truncation** (confirmed against Mohit's logs by Eli) — not the ON-22 consumer gap. **Backward
+compatibility** deploying the feature branch over `main` is **verified safe**: all new columns are
+nullable via `ADD COLUMN IF NOT EXISTS` + `mergeSchema`, with fallback SELECTs (e.g.
+`semantic_layer.py:1497`) and schema-alignment padding; no NOT-NULL/renamed/PK/MERGE-key changes.
+Recommended gate before promoting: one live backward-compat smoke test (feature branch over a
+`main`-created schema on DMVM → app + one pipeline pass → no missing-column errors).
+
+| ID | Item | Status | Priority | Effort | Source |
+|----|------|--------|----------|--------|--------|
+| EN-1 | Runtime metadata-result-schema selection in the app (schema picker; make `fq()`/`CATALOG`/`SCHEMA` request-scoped instead of startup globals — ~28 call sites; caches keyed by schema). Top customer ask. Builds on `schema_name` filter params + per-MV `deployed_catalog`/`deployed_schema` precedent. | OPEN | P1 | L | Customer ask (Mohit) |
+| EN-2 | Cross-schema semantic-layer stitching at enterprise level (schema registry + federated/union reads across `metadata_results` schemas + cross-schema entity/FK disambiguation). Design-spike first. Depends on EN-1. | OPEN | P2 | L | Customer ask (Mohit) |
+| EN-3 | External context sources for the agent — a structured UC table or an EXTERNAL vector index (already-ingested data; NOT reaching out to SharePoint). Index/endpoint are hardwired to `{CATALOG}.{SCHEMA}.{VS_INDEX_SUFFIX}` today; add `EXTERNAL_VECTOR_INDEXES`/`EXTERNAL_KB_TABLES` config + union into retrieval with source attribution. | OPEN | P2 | M | Customer ask (Mohit) |
+| EN-4 | Review-only user role (review + save/apply in Review-and-Apply only). No role system today — OBO identity only. Add role context + `require_role` gate on write/generation endpoints + frontend nav hiding. Relates to T3-6. | OPEN | P2 | M | Customer ask (Mohit) |
+| EN-5 | Read-only deployment mode (`READ_ONLY_MODE` central write gate over KB PATCH / apply-ddl / ontology+tag apply / job submit; document restricted-SP fallback). `federation_mode`/`apply_ddl` exist but there is no centralized gate. Shares plumbing with EN-4. | OPEN | P2 | M | Customer ask (Mohit) |
+| EN-6 | Production-readiness hardening track: re-include the excluded API test suite (`test_app_logic.py`, `pyproject.toml:54`) + API-route tests (TG-1..TG-6), `api_server.py` god-module split (DE-9, ~16K lines), OBO `x-forwarded-access-token` validation, result pagination, rate limiting, auth audit log (extends MG-9). Cross-links R3/R4/R5/R6. | OPEN | P1 | L | Customer ask (Mohit) + code audit |
+
+### EN-1: Runtime metadata-result-schema selection
+
+**Status: OPEN** -- `CATALOG`/`SCHEMA` are read once at app startup (`api_server.py:403`) and the
+module-level `fq()` helper (~28 call sites) hardcodes them; one app instance serves one schema. The
+library side (`SemanticLayerConfig.fq`, `semantic_layer.py:289`) is already per-instance, and per-MV
+`deployed_catalog`/`deployed_schema` (`api_server.py:2152`) is the closest existing flexibility. **Work:**
+make schema request-scoped (a picker → per-request fq context; key `_cache`/agent/index caches by
+schema; scope ERD/FK/KB reads by the selected schema). **Files:** `apps/.../api_server.py` (fq + ~28
+sites, caches), `apps/.../src/components/*` (schema picker).
+
+### EN-2: Cross-schema semantic-layer stitching
+
+**Status: OPEN (design-spike first)** -- Single-schema is baked into KB/ontology/FK/genie reads
+(`genie/context.py::_fq`, `_fetch_erd_inputs` `api_server.py:8144`). Needs a **schema registry**,
+federated/union reads across multiple `metadata_results` schemas, and cross-schema entity/FK
+disambiguation (a "Patient" in schema A vs B). Depends on EN-1. Produce a short design doc before code.
+
+### EN-3: External context sources
+
+**Status: OPEN** -- Vector index/endpoint are composed as `{CATALOG}.{SCHEMA}.{VS_INDEX_SUFFIX}`
+(`api_server.py:~14846`, `vector_index.py:26`) and KB reads go through `fq()` — all pinned to
+dbxmetagen's own schema. **Work:** add `EXTERNAL_VECTOR_INDEXES` / `EXTERNAL_KB_TABLES` config, let
+`_get_api_vs_index()` accept an endpoint/index, union external sources into the deep-analysis/Genie
+retrieval with source attribution + dedup. Reframes the "SharePoint/unstructured" ask as consuming
+already-ingested data, not outbound fetching. **Files:** `apps/.../api_server.py`, `src/dbxmetagen/vector_index.py`.
+
+### EN-4: Review-only user role
+
+**Status: OPEN** -- No role system today; only OBO identity (`_OBO_ENABLED`, `_get_effective_client`
+`api_server.py:132`). **Work:** add a role context (header- or config-mapped) + a `require_role`
+dependency gating write/generation endpoints (`/api/jobs/run`, `/api/agent/*`, `/api/genie/*`,
+`/api/ontology/*`, `apply-ddl`, `apply-tags`) while allowing review save + apply-in-review; hide the
+corresponding nav/actions in `App.jsx`. Relates to T3-6. **Files:** `apps/.../api_server.py`, `apps/.../src/App.jsx`.
+
+### EN-5: Read-only deployment mode
+
+**Status: OPEN** -- `federation_mode` (no ALTER/tags) and per-request `apply_ddl` exist, but there is no
+central write gate. **Work:** `READ_ONLY_MODE` env flag gating all write endpoints (KB PATCH,
+apply-ddl(+bundle), ontology/tag apply, job submit) → 403 with a clear message; document the
+restricted-service-principal fallback. Shares the enforcement point with EN-4. **Files:** `apps/.../api_server.py`.
+
+### EN-6: Production-readiness hardening
+
+**Status: OPEN (track)** -- Verified gaps: the API test suite is excluded from CI
+(`pyproject.toml:54` ignores `test_app_logic.py`; TG-1..TG-6), `api_server.py` is ~16K lines (DE-9),
+the OBO middleware trusts `x-forwarded-access-token` without validation, and there is no result
+pagination / rate limiting / auth audit log. Bundle these as a hardening track cross-linking TG-*,
+DE-9, MG-9, and the tracked scaling items R3/R4/R5/R6. **Files:** `pyproject.toml`, `apps/.../api_server.py`, `tests/`.
+
+---
+
 ## Summary by Status
 
 | Status | Count |
 |--------|-------|
 | DONE | 36 |
 | PARTIAL | 2 |
-| OPEN | 46 |
+| OPEN | 53 |
 | DEFERRED | 10 |
 | KILLED | 2 |
+
+> +7 OPEN in the 2026-08 customer-driven pass: ON-22 + EN-1..EN-6 (section 8). The three reported
+> bugs and backward-compat were verified already-DONE (see the section 8 verification note).
 
 ## Recommended Implementation Order
 
@@ -683,6 +790,13 @@ The `for table in config.table_names` loop is sequential within a single task, b
 26. DE-8, R10: Deep performance work
 27. PK-4-PK-6: Distribution
 28. T3 items, GE-2: Low priority / nice-to-have
+
+**Enterprise & Access (customer-driven, 2026-08) — sequencing:**
+0. Ship the current feature branch to the customer (resolves the 3 bugs; backward-compat verified — run the smoke test first).
+1. EN-4 + EN-5 together (shared role/write-gate plumbing).
+2. EN-1 (schema selection, high customer value, L) → then EN-2 design spike.
+3. EN-3 (external context) and ON-22 (bundle-scoped consumers) in parallel — independent.
+4. EN-6 production-readiness hardening as an ongoing track alongside the above.
 
 ---
 
