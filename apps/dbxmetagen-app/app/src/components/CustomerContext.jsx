@@ -10,6 +10,7 @@ export default function CustomerContext() {
   const [entries, setEntries] = useState([])
   const [loading, setLoading] = useState(true)
   const [error, setError] = useState(null)
+  const [saving, setSaving] = useState(false)
   const [editing, setEditing] = useState(null)
   const [form, setForm] = useState({ scope: '', scope_type: 'schema', context_text: '', context_label: '', priority: 0 })
   const [preview, setPreview] = useState({ table: '', result: null })
@@ -27,14 +28,17 @@ export default function CustomerContext() {
   useEffect(() => { load() }, [load])
 
   const handleSave = async () => {
+    if (saving) return   // ignore double-clicks -- a second concurrent MERGE conflicts
+    setSaving(true)
     setError(null)
     const { data, error: err } = await safeFetch('/api/customer-context', {
       method: 'POST', headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify(form),
     })
-    if (err) { setError(err); return }
+    if (err) { setError(err); setSaving(false); return }
     setEditing(null)
     setForm({ scope: '', scope_type: 'schema', context_text: '', context_label: '', priority: 0 })
+    setSaving(false)
     load()
   }
 
@@ -150,8 +154,8 @@ export default function CustomerContext() {
           </div>
           <div className="flex gap-2 justify-end">
             <button onClick={() => setEditing(null)} className="btn-ghost btn-sm">Cancel</button>
-            <button onClick={handleSave} disabled={overLimit || !form.scope || !form.context_text.trim()}
-              className="btn-primary btn-sm disabled:opacity-50">Save</button>
+            <button onClick={handleSave} disabled={saving || overLimit || !form.scope || !form.context_text.trim()}
+              className="btn-primary btn-sm disabled:opacity-50">{saving ? 'Saving...' : 'Save'}</button>
           </div>
         </div>
       )}

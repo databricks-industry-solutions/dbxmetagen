@@ -25,6 +25,17 @@ function formatElapsed(seconds) {
   return m > 0 ? `${m}m ${s}s` : `${s}s`
 }
 
+// Parse a project's selected_tables JSON into an array of fully-qualified
+// catalog.schema.table ids. Returns [] for null/empty/malformed. A null project
+// (no project selected) is handled by callers as "no filter", not by this helper.
+function parseProjectTables(proj) {
+  if (!proj?.selected_tables) return []
+  try {
+    const t = JSON.parse(proj.selected_tables)
+    return Array.isArray(t) ? t : []
+  } catch { return [] }
+}
+
 export default function GenieBuilder({ onNavigate, pipelineStats }) {
   const [editingSpaceId, setEditingSpaceId] = useState(null)
   const [loadByIdValue, setLoadByIdValue] = useState('')
@@ -63,7 +74,6 @@ export default function GenieBuilder({ onNavigate, pipelineStats }) {
   const pollRef = useRef(null)
   const [elapsed, setElapsed] = useState(0)
   const timerRef = useRef(null)
-  const prevTablesRef = useRef(selectedTables)
 
   useEffect(() => {
     if (loading) {
@@ -78,9 +88,8 @@ export default function GenieBuilder({ onNavigate, pipelineStats }) {
   useEffect(() => {
     fetch('/api/catalogs').then(r => r.ok ? r.json() : []).then(setCatalogs)
       .catch(e => setFetchErrors(prev => ({ ...prev, catalogs: e.message })))
-    fetch('/api/semantic/metric-views?status=applied')
-      .then(r => r.ok ? r.json() : []).then(d => { setMetricViews(d); setMvsLoading(false) })
-      .catch(e => { setMvsLoading(false); setFetchErrors(prev => ({ ...prev, metricViews: e.message })) })
+    // Metric views are fetched by the [selectedProject] effect below, which also runs
+    // on mount (selectedProject === '' -> unfiltered) -- so no separate fetch here.
     fetch('/api/semantic-layer/projects').then(r => r.ok ? r.json() : []).then(d => { if (Array.isArray(d)) setProjects(d) }).catch(() => {})
     fetch('/api/kpis').then(r => r.ok ? r.json() : []).then(setKpis)
       .catch(e => setFetchErrors(prev => ({ ...prev, kpis: e.message })))
@@ -103,7 +112,7 @@ export default function GenieBuilder({ onNavigate, pipelineStats }) {
       ? `/api/semantic/metric-views?status=applied&project_id=${selectedProject}`
       : '/api/semantic/metric-views?status=applied'
     fetch(url).then(r => r.ok ? r.json() : []).then(d => { setMetricViews(d); setMvsLoading(false) })
-      .catch(() => setMvsLoading(false))
+      .catch(e => { setMvsLoading(false); setFetchErrors(prev => ({ ...prev, metricViews: e.message })) })
   }, [selectedProject])
 
   const catalogChangeRef = useRef(false)
@@ -126,24 +135,6 @@ export default function GenieBuilder({ onNavigate, pipelineStats }) {
       setTablesLoading(false)
     })()
   }, [selectedCatalog])
-
-  useEffect(() => {
-    if (!metricViews.length) return
-    const prev = new Set(prevTablesRef.current)
-    const curr = new Set(selectedTables)
-    const added = selectedTables.filter(t => !prev.has(t))
-    const removed = prevTablesRef.current.filter(t => !curr.has(t))
-    prevTablesRef.current = selectedTables
-    if (!added.length && !removed.length) return
-    setSelectedMVs(prevSel => {
-      const next = new Set(prevSel)
-      metricViews.forEach(mv => {
-        if (added.some(t => t === mv.source_table)) next.add(mv.metric_view_name)
-        if (removed.some(t => t === mv.source_table)) next.delete(mv.metric_view_name)
-      })
-      return next
-    })
-  }, [selectedTables, metricViews])
 
   const toggleTable = (id) => {
     setSelectedTables(prev =>
@@ -273,31 +264,42 @@ export default function GenieBuilder({ onNavigate, pipelineStats }) {
     setCreating(false)
   }
 
-  // When a project is selected, scope the visible tables to that project's
-  // saved table list (fully-qualified catalog.schema.table ids stored in
-  // semantic_layer_projects.selected_tables). null = no project filter (show all).
-  const projectTableSet = useMemo(() => {
-    if (!selectedProject) return null
+  const tablesById = useMemo(() => new Map(tables.map(t => [t.id, t])), [tables])
+
+  // Table list shown for selection:
+  //   - No project selected => browse the current catalog's tables (unchanged).
+  //   - A project selected => exactly that project's saved tables (fully-qualified
+  //     catalog.schema.table ids in semantic_layer_projects.selected_tables),
+  //     independent of the catalog dropdown. A project's source tables may span
+  //     catalogs, so we render them directly from selected_tables, enriching from the
+  //     loaded catalog tables where a match exists (for tableType) and synthesizing a
+  //     minimal entry otherwise. An empty project yields [] (handled by an empty state).
+  const projectScopedTables = useMemo(() => {
+    if (!selectedProject) return tables
     const proj = projects.find(p => p.project_id === selectedProject)
-    if (!proj?.selected_tables) return new Set()
-    try {
-      const tbls = JSON.parse(proj.selected_tables)
-      return Array.isArray(tbls) ? new Set(tbls) : new Set()
-    } catch {
-      return new Set()
-    }
-  }, [selectedProject, projects])
+    return parseProjectTables(proj).map(id => {
+      const parts = id.split('.')
+      const hit = tablesById.get(id)
+      return {
+        id,
+        label: hit?.label || parts.slice(2).join('.') || id,
+        // Group by catalog.schema so schemas from different catalogs stay distinct.
+        schema: parts.length >= 2 ? `${parts[0]}.${parts[1]}` : (hit?.schema || id),
+        tableType: hit?.tableType,
+      }
+    })
+  }, [selectedProject, projects, tables, tablesById])
 
   const filterLower = tableFilter.toLowerCase()
-  const projectScopedTables = projectTableSet
-    ? tables.filter(t => projectTableSet.has(t.id))
-    : tables
   const filteredTables = filterLower
     ? projectScopedTables.filter(t => t.label.toLowerCase().includes(filterLower) || t.schema.toLowerCase().includes(filterLower))
     : projectScopedTables
   const filteredMVs = metricViews.filter(mv => {
     const cat = mv.deployed_catalog || mv.source_table?.split('.')[0]
-    if (cat !== selectedCatalog) return false
+    // In project mode the MV list is already scoped server-side by project_id and may
+    // span catalogs, so don't re-filter by the catalog dropdown. In browse mode, keep
+    // MVs scoped to the selected catalog.
+    if (!selectedProject && cat !== selectedCatalog) return false
     const sch = mv.deployed_schema || mv.source_table?.split('.')[1] || ''
     if (filterLower) return mv.metric_view_name.toLowerCase().includes(filterLower) || sch.toLowerCase().includes(filterLower)
     return true
@@ -381,14 +383,15 @@ export default function GenieBuilder({ onNavigate, pipelineStats }) {
               onChange={e => {
                 const pid = e.target.value
                 setSelectedProject(pid)
-                setSelectedMVs(new Set())
-                // Drop any already-selected tables that fall outside the new project scope.
                 if (pid) {
+                  // Selecting a project pre-selects its curated table set and clears any
+                  // metric-view selection (MVs are re-fetched for the project separately).
                   const proj = projects.find(p => p.project_id === pid)
-                  let inScope = null
-                  try { inScope = proj?.selected_tables ? new Set(JSON.parse(proj.selected_tables)) : new Set() } catch { inScope = new Set() }
-                  setSelectedTables(prev => prev.filter(t => inScope.has(t)))
+                  setSelectedTables(parseProjectTables(proj))
+                  setSelectedMVs(new Set())
                 }
+                // Selecting "All projects" (pid === '') leaves the current selection
+                // untouched -- switching back to browse mode must not wipe selections.
               }}
               className="border border-slate-200 dark:border-slate-600 rounded-md px-3 py-1.5 text-sm bg-dbx-oat-light dark:bg-slate-700 text-slate-800 dark:text-slate-200"
             >
@@ -472,18 +475,28 @@ export default function GenieBuilder({ onNavigate, pipelineStats }) {
             </div>
           )
         })}
-        {!tables.length && (tablesLoading || mvsLoading) && <SkeletonTable rows={3} cols={3} />}
-        {!tables.length && !tablesLoading && !mvsLoading && !schemas.length && (
+        {selectedProject && !projectScopedTables.length ? (
           <EmptyState
-            title="No tables or metric views in this catalog"
-            description="Run the metadata pipeline on tables, or apply metric views in the Semantic Layer tab."
-            action={onNavigate ? { label: 'Generate Metadata', onClick: () => onNavigate('jobs') } : undefined}
+            title="This project has no saved tables yet"
+            description="Add tables to it in the Semantic Layer tab, or choose 'All projects' to browse tables by catalog."
+            action={{ label: 'Browse all projects', onClick: () => setSelectedProject('') }}
           />
+        ) : (
+          <>
+            {!tables.length && (tablesLoading || mvsLoading) && <SkeletonTable rows={3} cols={3} />}
+            {!tables.length && !tablesLoading && !mvsLoading && !schemas.length && (
+              <EmptyState
+                title="No tables or metric views in this catalog"
+                description="Run the metadata pipeline on tables, or apply metric views in the Semantic Layer tab."
+                action={onNavigate ? { label: 'Generate Metadata', onClick: () => onNavigate('jobs') } : undefined}
+              />
+            )}
+            {!tables.length && !tablesLoading && schemas.length > 0 && (
+              <p className="text-xs text-slate-400 dark:text-slate-500 mt-1">No metadata-processed tables in this catalog. Schemas above contain applied metric views only.</p>
+            )}
+            {tableFilter && !filteredTables.length && projectScopedTables.length > 0 && <p className="text-sm text-slate-400">No tables match "{tableFilter}".</p>}
+          </>
         )}
-        {!tables.length && !tablesLoading && schemas.length > 0 && (
-          <p className="text-xs text-slate-400 dark:text-slate-500 mt-1">No metadata-processed tables in this catalog. Schemas above contain applied metric views only.</p>
-        )}
-        {tables.length > 0 && !filteredTables.length && <p className="text-sm text-slate-400">No tables match "{tableFilter}".</p>}
       </div>
 
       {fetchErrors.metricViews && (
@@ -571,8 +584,8 @@ export default function GenieBuilder({ onNavigate, pipelineStats }) {
       {selectedTables.length > 0 && selectedMVs.size > 0 && (
         <div className="bg-amber-50 dark:bg-amber-950/40 border border-amber-300 dark:border-amber-800/60 rounded-lg px-4 py-3 text-sm text-amber-800 dark:text-amber-200">
           <strong>Recommendation:</strong> avoid combining tables and metric views in
-          the same Genie space. As of August 2026, Genie cannot join a metric view to a
-          table (or to another metric view), so questions spanning both won't resolve.
+          the same Genie space. Genie currently cannot join a metric view to a table
+          (or to another metric view), so questions spanning both won't resolve.
           For best results, build one space from metric views <em>or</em> from tables &mdash;
           not both.
         </div>

@@ -278,7 +278,10 @@ class SemanticLayerConfig:
     # (built by genie_sql_puller into genie_examples_vs_index). When enabled and
     # the index exists, build_context retrieves exemplars matching the tables in
     # scope and injects them as "proven query patterns" few-shot context.
-    use_genie_sql_examples: bool = True
+    # Opt-in (default False): the index must be built first (most deployments have
+    # not), and the in-app generation path does not consume this flag at all -- it
+    # only affects this library/notebook path. Set True after building the index.
+    use_genie_sql_examples: bool = False
     genie_examples_index_suffix: str = "genie_examples_vs_index"
     vs_endpoint_name: str = "dbxmetagen-vs"
     genie_examples_max: int = 5
@@ -505,6 +508,30 @@ def validate_materialization(defn: dict) -> list[str]:
                 if m not in measure_names:
                     errors.append(f"materialized_views '{name}': unknown measure '{m}'")
     return errors
+
+
+def _resolve_mv_deploy_location(
+    source: str, default_catalog: str, default_schema: str, federation_mode: bool
+) -> tuple[str, str]:
+    """Choose the ``(catalog, schema)`` where a metric view should be CREATEd.
+
+    Normally the metric view lands in its SOURCE table's own catalog/schema (parsed
+    from the fully-qualified ``catalog.schema.table`` source). But a foreign
+    (federated) source catalog is **read-only** -- Databricks rejects any CREATE
+    inside it ("Not supported (read-only)"), so deriving the deploy location from the
+    source would make ``apply_metric_views`` fail 100% of the time on federated
+    sources. When ``federation_mode`` is set we therefore deploy into the LOCAL
+    default catalog/schema instead; the view still *references* the foreign source, it
+    just *lives* in a writable UC catalog.
+
+    Falls back to the defaults when the source is missing or not fully qualified.
+    """
+    if federation_mode:
+        return default_catalog, default_schema
+    src_parts = source.split(".") if source else []
+    if len(src_parts) >= 3:
+        return src_parts[0], src_parts[1]
+    return default_catalog, default_schema
 
 
 class SemanticLayerGenerator:
@@ -1791,15 +1818,29 @@ OUTPUT (one JSON object only, no array, no explanation):"""
             defn = json.loads(row["json_definition"])
             mv_name = row["metric_view_name"]
             source = defn.get("source", row.get("source_table", ""))
-            src_parts = source.split(".") if source else []
-            deploy_cat = src_parts[0] if len(src_parts) >= 3 else self.config.catalog_name
-            deploy_sch = src_parts[1] if len(src_parts) >= 3 else self.config.schema_name
+            federation_mode = getattr(self.config, "federation_mode", False)
+            # A foreign/federated source catalog is read-only -- deploy the view into
+            # the local config catalog/schema in that case (see _resolve_mv_deploy_location).
+            deploy_cat, deploy_sch = _resolve_mv_deploy_location(
+                source, self.config.catalog_name, self.config.schema_name, federation_mode
+            )
             fq_mv = f"{deploy_cat}.{deploy_sch}.{mv_name}"
+            # Materialization over a federated source would refresh by scanning the remote
+            # source on schedule (cost) and cannot target the read-only foreign catalog, so
+            # skip it in federation_mode and deploy a plain (non-materialized) view.
+            include_materialization = not federation_mode
+            if federation_mode and defn.get("materialization"):
+                logger.warning(
+                    "Metric view %s: skipping materialization -- source is federated "
+                    "(read-only remote; a materialized refresh would scan the remote source "
+                    "each run). Deployed as a non-materialized view in %s.%s.",
+                    mv_name, deploy_cat, deploy_sch,
+                )
             with _trace_span("apply_metric_view") as apply_span:
                 if apply_span is not None:
                     apply_span.set_inputs({"metric_view_name": mv_name, "fq_mv": fq_mv})
                 try:
-                    yaml_body = self._definition_to_yaml(defn, include_materialization=True)
+                    yaml_body = self._definition_to_yaml(defn, include_materialization=include_materialization)
                     sql = f"CREATE OR REPLACE VIEW {fq_mv}\nWITH METRICS LANGUAGE YAML AS $$\n{yaml_body}$$"
                     self.spark.sql(sql)
                     cat_esc = deploy_cat.replace("'", "''")

@@ -417,13 +417,19 @@ function HealthDetails({ health, onClose }) {
       </div>
       {Object.entries(health.dimensions || {}).map(([key, dim]) => (
         <div key={key} className="flex items-center gap-2 text-xs">
-          <span className={`w-5 text-center font-bold ${dim.score == null ? 'text-slate-400' : dim.score >= dim.max ? 'text-emerald-600' : dim.score > 0 ? 'text-amber-600' : 'text-red-500'}`}>
-            {dim.score == null ? '-' : dim.score}/{dim.max}
+          <span className={`w-8 text-center font-bold ${dim.score == null ? 'text-slate-400' : dim.score >= dim.max ? 'text-emerald-600' : dim.score > 0 ? 'text-amber-600' : 'text-red-500'}`}>
+            {dim.score == null ? (dim.max === 0 ? 'N/A' : `-/${dim.max}`) : `${dim.score}/${dim.max}`}
           </span>
           <span className="text-slate-600 dark:text-slate-400 capitalize">{key.replace(/_/g, ' ')}</span>
           <span className="text-slate-400 ml-auto">{dim.detail}</span>
         </div>
       ))}
+      <p className="text-xs text-slate-400 dark:text-slate-500 italic pt-1 border-t border-slate-100 dark:border-slate-700/50">
+        A tables-only space is perfectly fine if it answers your questions well — the
+        metric&nbsp;views dimension shows N/A here (excluded from the score, not counted against it).
+        Metric views are generally recommended as a best practice (governed, reusable measures),
+        not a requirement.
+      </p>
     </div>
   )
 }
@@ -1513,12 +1519,11 @@ export default function GenieUpdater({ spaceId, onBack }) {
           </div>
         )}
         {deployResult && (() => {
-          // The backend silently strips joins/snippets/example-SQL that the Genie
-          // API rejects; surface those so a "reverted"-looking space is explained.
+          // The Genie API can silently drop joins/snippets/example-SQL it rejects. The
+          // backend read-back compares persisted vs sent for every category and returns
+          // the drop messages in `warnings`; render them so a "reverted"-looking space is
+          // explained. (Single source of truth is the backend -- no client re-derivation.)
           const warns = [...(deployResult.warnings || [])]
-          if (deployResult.persisted_join_count === 0 && deployResult.join_count > 0) {
-            warns.push(`${deployResult.join_count} join(s) were sent but the Genie API returned 0 -- they may not have persisted.`)
-          }
           if (!warns.length) return null
           return (
             <div className="bg-amber-50 dark:bg-amber-900/20 border border-amber-300 dark:border-amber-700 rounded-lg px-4 py-2.5 text-sm text-amber-800 dark:text-amber-300 space-y-1">

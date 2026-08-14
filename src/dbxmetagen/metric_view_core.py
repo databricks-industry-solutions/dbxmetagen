@@ -97,6 +97,137 @@ def _drop_broken_measures(defn: dict) -> None:
 _ALIAS_DOT_RE = re.compile(r"\b([A-Za-z_]\w*)\.\w+")
 
 
+# Aggregate functions whose call we key a measure's "semantic" identity on. Used
+# by _dedup_new_items to collapse reworded duplicates (e.g. "SUM(o.amount)" vs
+# "SUM( o.amount )") while keeping genuinely different aggregates (SUM vs AVG,
+# COUNT vs COUNT(DISTINCT)) distinct.
+_AGG_FN_RE = re.compile(
+    r"\b(SUM|AVG|MIN|MAX|COUNT|MEDIAN|STDDEV|VARIANCE|APPROX_COUNT_DISTINCT|"
+    r"PERCENTILE|PERCENTILE_CONT|PERCENTILE_APPROX|COLLECT_SET|COLLECT_LIST)\s*\(",
+    re.IGNORECASE,
+)
+
+# Conditional-aggregate markers, matched on WORD BOUNDARIES so a column/alias whose
+# name merely contains "case"/"filter" (e.g. SUM(o.case_amount), o.filter_flag) is
+# NOT mistaken for a FILTER/CASE conditional. `\b` after the keyword also excludes
+# identifier continuations like CASE_AMOUNT (the underscore is a word char).
+_CONDITIONAL_KW_RE = re.compile(r"\b(?:FILTER|CASE)\b", re.IGNORECASE)
+
+
+def _norm_expr(expr: str) -> str:
+    """Whitespace-collapsed, upper-cased expression key.
+
+    Matches the normalization _drop_broken_measures uses so a candidate accepted
+    here is never silently re-dropped by the server-side dedup pass (which would
+    desync the caller-visible ``added`` list from what actually persisted)."""
+    return re.sub(r"\s+", " ", (expr or "").strip()).upper()
+
+
+def _measure_semantic_key(expr: str) -> str | None:
+    """Best-effort semantic identity for a measure expression.
+
+    Returns ``"<agg1>|<agg2>|...::<cond_sig>"`` where each ``aggN`` is
+    ``"<AGG>[#D]:<column_ref>"`` for EVERY aggregate call in the expression (in
+    source order), and ``cond_sig`` distinguishes conditional aggregates.
+    ``COUNT(DISTINCT x)`` keys distinctly from ``COUNT(x)``. Returns ``None`` when no
+    aggregate is found (caller falls back to the exact-expr key only) so we never
+    over-collapse non-aggregate expressions.
+
+    Two design choices prevent over-collapse (both were false-negative bugs when the
+    key looked at only the FIRST aggregate + a bare FILTER/CASE flag):
+
+    - **All aggregates, not just the first.** A ratio/composite measure that shares a
+      numerator but differs in the denominator -- e.g. ``SUM(rev)/NULLIF(SUM(orders))``
+      vs ``SUM(rev)/NULLIF(SUM(customers))`` -- must stay distinct. Keying on the full
+      ordered list of aggregate calls does that; two genuinely-identical measures
+      (only reworded/whitespaced) still produce the same list and still collapse.
+    - **Full-expression conditional signature.** When a FILTER/CASE conditional is
+      present (matched on word boundaries, so ``SUM(o.case_amount)`` is NOT treated as
+      conditional), we fold the whole normalized expression into ``cond_sig``. This
+      keeps two FILTER aggregates over the same column but with different predicates
+      distinct, and keeps a plain aggregate distinct from its FILTER variant. Folding
+      the full expr can only make the key MORE specific, never over-collapse; plain
+      aggregates keep the cheap ``"_"`` signature and their prior collapsing behavior.
+    """
+    norm = _norm_expr(expr)
+    if not norm:
+        return None
+    aggs: list[str] = []
+    for m in _AGG_FN_RE.finditer(norm):
+        agg = m.group(1).upper()
+        # Argument text: from just after this agg's "(" to the matching close paren.
+        arg_start = m.end()
+        depth = 1
+        i = arg_start
+        while i < len(norm) and depth > 0:
+            if norm[i] == "(":
+                depth += 1
+            elif norm[i] == ")":
+                depth -= 1
+            i += 1
+        arg = norm[arg_start:i - 1] if depth == 0 else norm[arg_start:]
+        distinct = arg.lstrip().startswith("DISTINCT")
+        col_m = _ALIAS_DOT_RE.search(arg) or re.search(
+            r"\b([A-Za-z_]\w*)\b", arg.replace("DISTINCT", "", 1)
+        )
+        col_ref = col_m.group(0) if col_m else arg.strip()
+        aggs.append(f"{agg}{'#D' if distinct else ''}:{col_ref}")
+    if not aggs:
+        return None
+    cond_sig = norm if _CONDITIONAL_KW_RE.search(norm) else "_"
+    return "|".join(aggs) + "::" + cond_sig
+
+
+def _dedup_new_items(existing: list[dict], candidates: list[dict], kind: str) -> tuple[list[dict], list[str]]:
+    """Filter LLM-proposed new measures/dimensions against what a view already has.
+
+    Returns ``(accepted, skipped_names)``. A candidate is skipped if ANY of its
+    keys collide with an existing item or an already-accepted candidate:
+      - exact-expr key (hard guarantee, mirrors _drop_broken_measures),
+      - name key (``name.lower()`` -- prevents UC duplicate-column deploy failures),
+      - measures only: semantic key ``(agg, column, conditional-flag)``.
+    Dimensions dedup on exact-expr + name only -- the same base column with a
+    different DATE_TRUNC bucket is a legitimately distinct dimension, so no
+    aggregate-based semantic key applies.
+    """
+    is_measures = kind == "measures"
+    seen_expr: set[str] = set()
+    seen_name: set[str] = set()
+    seen_sem: set[str] = set()
+
+    def _register(item: dict) -> None:
+        seen_expr.add(_norm_expr(item.get("expr", "")))
+        nm = (item.get("name") or "").strip().lower()
+        if nm:
+            seen_name.add(nm)
+        if is_measures:
+            sk = _measure_semantic_key(item.get("expr", ""))
+            if sk:
+                seen_sem.add(sk)
+
+    for it in existing or []:
+        _register(it)
+
+    accepted: list[dict] = []
+    skipped: list[str] = []
+    for cand in candidates or []:
+        if not isinstance(cand, dict) or not (cand.get("expr") or "").strip():
+            continue
+        expr_key = _norm_expr(cand.get("expr", ""))
+        name_key = (cand.get("name") or "").strip().lower()
+        sem_key = _measure_semantic_key(cand.get("expr", "")) if is_measures else None
+        if (
+            expr_key in seen_expr
+            or (name_key and name_key in seen_name)
+            or (sem_key and sem_key in seen_sem)
+        ):
+            skipped.append(cand.get("name") or expr_key)
+            continue
+        accepted.append(cand)
+        _register(cand)
+    return accepted, skipped
+
+
 def _drop_placeholder_dimensions(defn: dict) -> None:
     """Drop dimensions whose name implies a join alias but whose expr uses a different alias.
 

@@ -42,6 +42,7 @@ from dbxmetagen.metric_view_core import (
     _infer_synonyms,
     _backfill_agent_metadata,
     _drop_broken_measures,
+    _dedup_new_items,
     _drop_placeholder_dimensions,
     _normalize_window_specs,
     _strip_kpi_references,
@@ -237,6 +238,24 @@ _PERMISSION_DENIED_RE = re.compile(
 )
 
 
+# Delta optimistic-concurrency conflicts: two writes touched the same rows at the
+# same time (e.g. a user double-clicking Save fires two MERGEs on the same row).
+# These are transient -- retrying almost always succeeds -- so we translate the
+# noisy Delta stack into a friendly 409 the UI can show verbatim.
+_CONCURRENCY_CONFLICT_RE = re.compile(
+    r"DELTA_CONCURRENT_(APPEND|WRITE|DELETE_READ|DELETE_DELETE|TRANSACTION)"
+    r"|ConcurrentAppendException|ConcurrentModificationException"
+    r"|Transaction conflict detected",
+    re.IGNORECASE,
+)
+
+_CONCURRENCY_CONFLICT_MSG = (
+    "This entry was being saved by another request at the same time "
+    "(often from clicking Save more than once). Nothing was lost -- "
+    "please wait a moment and try again."
+)
+
+
 # Hard cap on rows materialized from a single query. The Statement Execution
 # API chunks large result sets; we follow chunks up to this many rows so callers
 # never silently receive only the first chunk, but stop here so a pathological
@@ -282,6 +301,9 @@ def execute_sql_meta(
                 403,
                 detail=f"Permission denied (running as {identity}). {_obo_permission_hint()}{sanitized}",
             )
+        if _CONCURRENCY_CONFLICT_RE.search(str(exc)):
+            logger.warning("Delta concurrency conflict (running as %s): %s", identity, sanitized)
+            raise HTTPException(409, detail=_CONCURRENCY_CONFLICT_MSG)
         raise HTTPException(500, detail=f"SQL execution error (running as {identity}): {sanitized}")
 
     deadline = time.time() + timeout
@@ -310,6 +332,9 @@ def execute_sql_meta(
                 403,
                 detail=f"Permission denied (running as {identity}). {_obo_permission_hint()}{msg}",
             )
+        if _CONCURRENCY_CONFLICT_RE.search(msg):
+            logger.warning("Delta concurrency conflict (running as %s): %s", identity, msg)
+            raise HTTPException(409, detail=_CONCURRENCY_CONFLICT_MSG)
         raise HTTPException(500, detail=f"SQL error (running as {identity}): {msg}")
 
     cols = [c.name for c in resp.manifest.schema.columns] if resp.manifest else []
@@ -9646,6 +9671,16 @@ Return ONLY a JSON object: {{"covered": [<1-based question indices>], "not_cover
                 kpi_cov = _compute_kpi_coverage(definitions, tables, project_id)
                 if kpi_cov:
                     stats["kpi_coverage"] = kpi_cov
+                    # Surface un-implemented KPIs as a user-visible warning so a
+                    # gap is actionable (the user can use Add measures per view).
+                    missing = kpi_cov.get("missing") or []
+                    if missing:
+                        shown = ", ".join(missing[:10])
+                        more = f" (+{len(missing) - 10} more)" if len(missing) > 10 else ""
+                        stats.setdefault("warnings", []).append(
+                            f"{len(missing)} KPI(s) not implemented as a measure: {shown}{more}. "
+                            "Use 'Add measures' on the relevant view to add them."
+                        )
             except Exception as exc:
                 logger.warning("KPI coverage check failed: %s", exc)
 
@@ -9754,6 +9789,31 @@ def _parse_single_json(text: str) -> dict:
     if start == -1 or end == -1:
         raise ValueError("No JSON object found in AI response")
     return json.loads(text[start : end + 1])
+
+
+def _parse_json_array(text: str) -> list[dict]:
+    """Extract a JSON array of items from an AI response.
+
+    Tolerant of code fences and of the model wrapping the array in an object
+    (``{"measures": [...]}`` / ``{"items": [...]}`` / ``{"dimensions": [...]}``).
+    Returns a list of dicts; non-dict entries are dropped by the caller."""
+    text = re.sub(r"^```(?:json)?\s*", "", (text or "").strip())
+    text = re.sub(r"\s*```$", "", text)
+    start = text.find("[")
+    end = text.rfind("]")
+    if start != -1 and end != -1 and end > start:
+        parsed = json.loads(text[start : end + 1])
+        return parsed if isinstance(parsed, list) else []
+    # Fallback: an object wrapping the array under a known key.
+    obj_start = text.find("{")
+    obj_end = text.rfind("}")
+    if obj_start != -1 and obj_end != -1:
+        obj = json.loads(text[obj_start : obj_end + 1])
+        for key in ("measures", "dimensions", "items", "new_measures", "new_dimensions"):
+            val = obj.get(key)
+            if isinstance(val, list):
+                return val
+    raise ValueError("No JSON array found in AI response")
 
 
 def _validate_definition(defn: dict, source: str) -> tuple[str, str]:
@@ -10380,6 +10440,143 @@ OUTPUT: Return ONLY the improved JSON definition (single object, not array)."""
     return {"definition_id": new_id, "parent_id": definition_id, "status": status, "validation_errors": errs}
 
 
+class AddItemsRequest(BaseModel):
+    # "measures" | "dimensions". Filters are a single scalar, not a list, so they
+    # stay on /improve (focus=check_filters) rather than this incremental path.
+    kind: str = "measures"
+    count: int | None = None          # soft cap on how many new items to request
+    guidance: str | None = None       # optional free-text steer
+
+
+_ADD_ITEMS_MAX = 8
+
+
+@app.post("/api/semantic-layer/definitions/{definition_id}/add-items")
+def add_items(definition_id: str, req: AddItemsRequest | None = None):
+    """Incrementally add NEW measures or dimensions to an existing definition.
+
+    Cheaper and less hallucination-prone than /improve: instead of re-sending the
+    whole definition and regenerating every item, we send only the existing item
+    names+exprs (as "already covered -- do NOT duplicate") plus compact column
+    metadata, and ask the LLM for a small JSON array of NEW items. The result is
+    merged + de-duplicated (exact-expr, name, and measure semantic keys) into the
+    current definition, then validated and persisted as a new version -- exactly
+    the same validate+version contract as /improve.
+    """
+    req = req or AddItemsRequest()
+    kind = req.kind if req.kind in ("measures", "dimensions") else "measures"
+    _ensure_semantic_layer_tables()
+    row = _fetch_definition(definition_id)
+    # Same guard as /improve: don't mutate a live UC view out from under its name.
+    if row.get("status") == "applied":
+        raise HTTPException(400, detail="Cannot add items to an applied metric view. Drop it first or add to a validated (unapplied) version.")
+    defn = json.loads(row["json_definition"]) if isinstance(row["json_definition"], str) else row["json_definition"]
+    source = defn.get("source", row.get("source_table", ""))
+    existing = defn.get(kind, []) or []
+
+    # Compact, targeted column context -- NOT _build_sl_context (KB/VS/ontology/
+    # profiling), which is what makes /improve expensive. Just column names+types
+    # for the source + joined tables, plus the join aliases so the LLM can write
+    # alias.col references.
+    col_lines: list[str] = []
+    for t in _mv_defn_tables(defn):
+        try:
+            short = t.split(".")[-1]
+            cols = execute_sql(
+                f"SELECT column_name, data_type FROM {fq('column_knowledge_base')} "
+                f"WHERE table_name = '{_esc_sql(t)}' OR table_name LIKE '%{_esc_sql(short)}'",
+                timeout=30,
+            )
+            if cols:
+                col_lines.append(
+                    f"{short}: " + ", ".join(f"{c['column_name']} ({c.get('data_type', '')})" for c in cols)
+                )
+        except Exception:
+            continue
+    col_context = "\n".join(col_lines) if col_lines else "(column metadata unavailable)"
+
+    join_aliases = [j.get("name", "") for j in defn.get("joins", []) if j.get("name")]
+    alias_line = (
+        f"Join aliases you may reference as alias.column: {', '.join(join_aliases)}"
+        if join_aliases else "This view has no joins; reference source columns directly."
+    )
+    covered = "\n".join(f"  - {it.get('name', '?')} :: {it.get('expr', '')}" for it in existing) or "  (none yet)"
+    ref_sections = ["measure_patterns"] if kind == "measures" else ["yaml_syntax_rules"]
+    ref_rules = _load_agent_reference("metric_view_reference.json", ref_sections)
+    cap = req.count if (req.count and req.count > 0) else _ADD_ITEMS_MAX
+    guidance_line = f"\nADDITIONAL GUIDANCE: {req.guidance}\n" if req.guidance else ""
+
+    if kind == "measures":
+        kind_rules = (
+            "- Each measure MUST be an aggregate (SUM, COUNT, COUNT(DISTINCT ...), AVG, ratios with "
+            "NULLIF guards, FILTER conditional aggregates, etc.) over the SOURCE table's numeric columns.\n"
+            "- NEVER aggregate a numeric column that comes from a JOINED DIMENSION table (e.g. "
+            "SUM(dim_alias.some_amount)); a fact->dimension join fans out and inflates the result. Use "
+            "dimension-table columns only as grouping dimensions.\n"
+            "- Do NOT duplicate any measure already covered above (same aggregate over the same column)."
+        )
+    else:
+        kind_rules = (
+            "- Dimensions are non-aggregated grouping/slicing expressions (categorical columns, "
+            "DATE_TRUNC time buckets, CASE categorizations) from the source OR any joined table.\n"
+            "- Do NOT turn a numeric measure column into a dimension.\n"
+            "- Do NOT duplicate any dimension already covered above."
+        )
+
+    prompt = f"""You are adding NEW {kind} to an existing Databricks metric view. Return ONLY the additions.
+
+METRIC VIEW SOURCE: {source}
+{alias_line}
+
+COLUMNS AVAILABLE (name (type), per table):
+{col_context}
+
+{kind.upper()} ALREADY COVERED -- do NOT duplicate these:
+{covered}
+
+RULES:
+{kind_rules}
+{guidance_line}
+REFERENCE:
+{ref_rules}
+
+Add up to {cap} genuinely NEW, analytically useful {kind}. All string literals MUST be single-quoted.
+comment fields describe user-facing intent (no KPI/question numbers, no generation-process references).
+
+OUTPUT: Return ONLY a JSON array of new {kind}: [{{"name": "...", "expr": "...", "comment": "..."}}]. No prose."""
+
+    rows = execute_sql(
+        f"SELECT AI_QUERY('{_DEFAULT_MODEL}', :prompt) as response", timeout=180,
+        parameters=[StatementParameterListItem(name="prompt", value=prompt)],
+    )
+    response = rows[0]["response"] if rows else ""
+    try:
+        candidates = _parse_json_array(response)
+    except (ValueError, json.JSONDecodeError) as e:
+        raise HTTPException(502, detail=f"AI returned invalid response: {str(e)[:200]}")
+    candidates = [c for c in candidates if isinstance(c, dict) and (c.get("expr") or "").strip()]
+
+    accepted, skipped = _dedup_new_items(existing, candidates, kind)
+    if not accepted:
+        return {
+            "definition_id": definition_id, "parent_id": definition_id,
+            "status": row.get("status", "validated"), "validation_errors": "",
+            "added": [], "skipped_duplicates": skipped, "requested": len(candidates),
+        }
+
+    defn[kind] = existing + accepted
+    status, errs = _validate_definition(defn, source)
+    new_id = _update_definition_row(definition_id, defn, status, errs)
+    # Report names that survived the server-side dedup pass in _update_definition_row.
+    final_names = {(m.get("name") or "").lower() for m in defn.get(kind, [])}
+    added = [a.get("name") for a in accepted if (a.get("name") or "").lower() in final_names]
+    return {
+        "definition_id": new_id, "parent_id": definition_id,
+        "status": status, "validation_errors": errs,
+        "added": added, "skipped_duplicates": skipped, "requested": len(candidates),
+    }
+
+
 @app.post("/api/semantic-layer/definitions/{definition_id}/drop")
 def drop_metric_view(definition_id: str, req: DropDefinitionRequest):
     """Drop a deployed metric view from Unity Catalog."""
@@ -10441,7 +10638,7 @@ Fix the definition so it deploys successfully. Rules:
 # ---------------------------------------------------------------------------
 
 
-def _compute_mv_health(defn: dict, available_cols: int | None = None) -> dict:
+def _compute_mv_health(defn: dict, available_cols: int | None = None, fk_rows: list | None = None) -> dict:
     """Compute a health score for a single metric view definition.
 
     Base is 0-10 (measures, dimensions, metadata, expression validity, richness).
@@ -10449,6 +10646,10 @@ def _compute_mv_health(defn: dict, available_cols: int | None = None) -> dict:
     factor adds 2 more points (max 12) rewarding views that surface most source
     columns, and emits actionable "add measures"/"add dimensions" issues for thin
     views. Coverage is a no-op when the column count is unavailable.
+
+    `fk_rows` (fk_predictions rows for the definition's tables), when supplied,
+    upgrades the joined-dimension-aggregation fan-out issue to `high` severity when
+    a fact->dimension relationship is confirmed; without it the issue is `medium`.
     """
     dims = defn.get("dimensions", [])
     measures = defn.get("measures", [])
@@ -10648,6 +10849,77 @@ def _compute_mv_health(defn: dict, available_cols: int | None = None) -> dict:
                     "suggestion": f"Remove the join to '{join_short}' or create a separate metric view sourced from it.",
                 })
 
+    # Joined-dimension numeric-aggregation detection (issues only). The prompt
+    # already forbids aggregating a numeric column from a JOINED dimension table
+    # (a fact->dim join fans out and inflates the aggregate), but that is prompt-
+    # only -- this is the deterministic guard. Best-effort: any failure resolving
+    # column types just skips the check (degrade like _mv_available_cols).
+    if joins and measures:
+        try:
+            # Map each JOIN alias -> its table's numeric column set (source alias
+            # excluded: aggregating source columns is correct).
+            _NUMERIC_TYPES = ("INT", "BIGINT", "SMALLINT", "TINYINT", "FLOAT",
+                              "DOUBLE", "DECIMAL", "NUMERIC", "REAL", "LONG")
+            alias_table: dict[str, str] = {}
+
+            def _walk_aliases(jlist):
+                for j in jlist or []:
+                    a = (j.get("name") or "").lower()
+                    if a and j.get("source"):
+                        alias_table[a] = j["source"]
+                    _walk_aliases(j.get("joins"))
+
+            _walk_aliases(joins)
+            numeric_by_alias: dict[str, set] = {}
+            for alias, tbl in alias_table.items():
+                short = tbl.split(".")[-1]
+                cols = execute_sql(
+                    f"SELECT column_name, data_type FROM {fq('column_knowledge_base')} "
+                    f"WHERE table_name = '{_esc_sql(tbl)}' OR table_name LIKE '%{_esc_sql(short)}'",
+                    timeout=30,
+                )
+                nums = {
+                    (c.get("column_name") or "").lower()
+                    for c in (cols or [])
+                    if any((c.get("data_type") or "").upper().startswith(t) for t in _NUMERIC_TYPES)
+                }
+                if nums:
+                    numeric_by_alias[alias] = nums
+
+            # FK evidence: does a confirmed fact->dim relationship exist for a join
+            # table? If so the aggregation is definitely fan-out (high); else medium.
+            fk_dim_tables = set()
+            for fr in (fk_rows or []):
+                for key in ("dst_table", "src_table"):
+                    t = (fr.get(key) or "")
+                    if t:
+                        fk_dim_tables.add(t.split(".")[-1].lower())
+
+            _ADDITIVE_AGG = re.compile(r"\b(SUM|AVG)\s*\(", re.IGNORECASE)
+            for idx, m in enumerate(measures):
+                expr = m.get("expr", "")
+                if m.get("window") or not _ADDITIVE_AGG.search(expr or ""):
+                    continue
+                for am in _ALIAS_DOT_RE.finditer(expr or ""):
+                    alias = am.group(1).lower()
+                    col = am.group(0).split(".", 1)[1].lower()
+                    if alias in numeric_by_alias and col in numeric_by_alias[alias]:
+                        jtbl = alias_table.get(alias, alias).split(".")[-1]
+                        sev = "high" if jtbl.lower() in fk_dim_tables else "medium"
+                        issues.append({
+                            "field": f"measures[{idx}].expr",
+                            "severity": sev,
+                            "action": "split_dim_measure",
+                            "message": (f"Measure '{m.get('name', '')}' aggregates numeric column "
+                                        f"{alias}.{col} from joined dimension table '{jtbl}'; a "
+                                        f"fact->dimension join fans out and inflates this aggregate."),
+                            "suggestion": ("Move this measure to a metric view sourced from the "
+                                           "dimension table, or aggregate the fact-side column instead."),
+                        })
+                        break  # one issue per measure is enough
+        except Exception as exc:
+            logger.info("Dimension-aggregation fan-out check skipped: %s", exc)
+
     # Coverage (0-2, only when source column count is known): reward views that
     # exploit most of their source+join columns, and surface actionable refinement
     # issues (with an `action` the UI turns into a button) for thin views.
@@ -10692,22 +10964,34 @@ def mv_health_check(definition_id: str):
 
 
 @app.post("/api/semantic-layer/definitions/{definition_id}/analyze")
-def mv_analyze(definition_id: str):
-    """LLM-based diagnostic analysis for a metric view definition (does not modify it)."""
+def mv_analyze(definition_id: str, profile_id: str | None = None):
+    """LLM-based diagnostic analysis for a metric view definition (does not modify it).
+
+    Optional `profile_id` scopes the KPI-coverage check (which surfaces KPIs bound
+    to this view's source table that no measure implements).
+    """
     _ensure_semantic_layer_tables()
     row = _fetch_definition(definition_id)
     defn = json.loads(row["json_definition"]) if isinstance(row["json_definition"], str) else row["json_definition"]
-    health = _compute_mv_health(defn, available_cols=_mv_available_cols(defn))
-
-    # --- FK-based dim-source detection ---
-    dim_source_issues: list[dict] = []
     source = defn.get("source", "")
+
+    # Fetch FK evidence up front so the health check can confirm fact->dim joins
+    # (upgrades the joined-dimension-aggregation fan-out issue to high severity).
+    fk_rows: list = []
     try:
-        from dbxmetagen.semantic_layer import check_dim_source_pattern
         fk_rows = execute_sql(
             f"SELECT * FROM {fq('fk_predictions')} "
             f"WHERE (src_table = '{source}' OR dst_table = '{source}') AND final_confidence >= 0.5"
-        )
+        ) or []
+    except Exception as e:
+        logger.debug("MV analyze FK lookup skipped: %s", e)
+
+    health = _compute_mv_health(defn, available_cols=_mv_available_cols(defn), fk_rows=fk_rows)
+
+    # --- FK-based dim-source detection ---
+    dim_source_issues: list[dict] = []
+    try:
+        from dbxmetagen.semantic_layer import check_dim_source_pattern
         warning = check_dim_source_pattern(defn, fk_rows)
         if warning:
             dim_source_issues.append({
@@ -10804,10 +11088,24 @@ Output JSON in ```json``` fences: {{"issues": [...]}}"""
         logger.warning("MV analyze LLM failed: %s", e)
         llm_issues = []
 
-    # Merge: deterministic + dim-source + LLM issues (dedup by field+message)
+    # KPI coverage: surface KPIs bound to this source that no measure implements.
+    # action=add_measures maps to the (always-available) Add measures refine button.
+    kpi_issues: list[dict] = []
+    try:
+        kpi_cov = _compute_kpi_coverage([defn], _mv_defn_tables(defn), profile_id or row.get("project_id"))
+        for kpi in (kpi_cov.get("missing") or []):
+            kpi_issues.append({
+                "field": "measures", "severity": "medium", "action": "add_measures",
+                "message": f"KPI '{kpi}' targets this view's tables but no measure implements it.",
+                "suggestion": "Use 'Add measures' to implement it.",
+            })
+    except Exception as e:
+        logger.debug("MV analyze KPI coverage skipped: %s", e)
+
+    # Merge: deterministic + dim-source + KPI + LLM issues (dedup by field+message)
     seen = {(i["field"], i["message"]) for i in health["issues"]}
     combined = list(health["issues"])
-    for extra in (dim_source_issues, llm_issues):
+    for extra in (dim_source_issues, kpi_issues, llm_issues):
         for li in extra:
             key = (li.get("field", ""), li.get("message", ""))
             if key not in seen:
@@ -11903,6 +12201,41 @@ def _validate_data_sources_exist(ss: dict, warehouse_id: str) -> list[str]:
     return errors
 
 
+def _mv_names_from_serialized_space(ss: dict) -> list[str]:
+    """Extract metric-view NAMES from a serialized space's data_sources.metric_views.
+
+    Each entry's ``identifier`` is fully qualified (``catalog.schema.name``); the
+    assembler's ``_get_metric_views_by_name`` expects the bare name (trailing segment).
+    Used by ``genie_improve`` so a space's existing MVs are re-supplied to the assembler
+    instead of being lost to empty auto-discovery.
+    """
+    ds = (ss or {}).get("data_sources", {}) or {}
+    names = []
+    for mv in ds.get("metric_views", []) or []:
+        name = (mv.get("identifier", "") or "").split(".")[-1]
+        if name:
+            names.append(name)
+    return names
+
+
+def _genie_content_counts(ss: dict) -> dict:
+    """Count the droppable content categories in a serialized Genie space.
+
+    Used to compare what was SENT vs what the Genie API actually persisted (read-back),
+    so the UI can report joins / example-SQL / snippets that were silently dropped.
+    """
+    inst = (ss or {}).get("instructions", {}) or {}
+    joins = inst.get("join_specs") or (ss or {}).get("data_sources", {}).get("join_specs", []) or []
+    examples = inst.get("example_question_sqls") or inst.get("example_sql") or []
+    snip = inst.get("sql_snippets") or {}
+    snippets = (
+        len(snip.get("measures", []) or [])
+        + len(snip.get("filters", []) or [])
+        + len(snip.get("expressions", []) or [])
+    )
+    return {"joins": len(joins), "example_sqls": len(examples), "snippets": snippets}
+
+
 @app.post("/api/genie/create")
 def genie_create(req: GenieCreateRequest):
     """Create or update a Genie space via the Databricks REST API."""
@@ -12053,14 +12386,19 @@ def genie_create(req: GenieCreateRequest):
                 "Genie deploy SUCCESS: space_id=%s, %d tables, %d MVs, %d joins survived, %d warnings",
                 result.get("space_id"), final_tables, final_mvs, len(final_joins), len(deploy_warnings),
             )
-            result["join_count"] = len(final_joins)
+            sent = _genie_content_counts(transformed)
+            result["join_count"] = sent["joins"]
+            result["example_sql_count"] = sent["example_sqls"]
+            result["snippet_count"] = sent["snippets"]
             result["table_count"] = final_tables
             result["mv_count"] = final_mvs
-            # Read-back verification: confirm joins actually persisted
-            persisted_join_count = None
+            # Read-back verification: the Genie API can silently drop joins, snippets, or
+            # example-SQL it rejects, leaving a "reverted"-looking space. Re-fetch and
+            # compare persisted vs sent for EACH content category (not just joins) so the
+            # UI can explain exactly what was dropped.
             try:
                 space_id = result.get("space_id")
-                if space_id and final_joins:
+                if space_id and (sent["joins"] or sent["example_sqls"] or sent["snippets"]):
                     rb = ws.api_client.do(
                         "GET",
                         f"/api/2.0/genie/spaces/{space_id}",
@@ -12071,22 +12409,24 @@ def genie_create(req: GenieCreateRequest):
                         rb_parsed = json.loads(rb_ss)
                     else:
                         rb_parsed = rb_ss if isinstance(rb_ss, dict) else {}
-                    rb_joins = (rb_parsed.get("instructions", {}).get("join_specs", [])
-                                or rb_parsed.get("data_sources", {}).get("join_specs", []))
-                    persisted_join_count = len(rb_joins)
+                    persisted = _genie_content_counts(rb_parsed)
+                    result["persisted_join_count"] = persisted["joins"]
+                    result["persisted_example_sql_count"] = persisted["example_sqls"]
+                    result["persisted_snippet_count"] = persisted["snippets"]
                     logger.info(
-                        "Genie read-back: %d joins persisted (sent %d)",
-                        persisted_join_count, len(final_joins),
+                        "Genie read-back persisted/sent: joins %d/%d, example_sql %d/%d, snippets %d/%d",
+                        persisted["joins"], sent["joins"],
+                        persisted["example_sqls"], sent["example_sqls"],
+                        persisted["snippets"], sent["snippets"],
                     )
-                    if persisted_join_count == 0 and len(final_joins) > 0:
-                        deploy_warnings.append(
-                            f"Joins did NOT persist: sent {len(final_joins)} but API returned 0. "
-                            "The Genie API may have silently dropped them."
-                        )
+                    for label, key in (("join", "joins"), ("example SQL", "example_sqls"), ("snippet", "snippets")):
+                        if sent[key] > 0 and persisted[key] == 0:
+                            deploy_warnings.append(
+                                f"{sent[key]} {label}(s) were sent but the Genie API returned 0 -- "
+                                "they may not have persisted."
+                            )
             except Exception as rb_err:
                 logger.warning("Genie read-back failed: %s", rb_err)
-            if persisted_join_count is not None:
-                result["persisted_join_count"] = persisted_join_count
             if deploy_warnings:
                 result["warnings"] = deploy_warnings
             return result
@@ -12431,6 +12771,7 @@ def _compute_health_score(ss: dict, semantic_gap_result: dict | None = None) -> 
 
     dimensions = {}
     score_total = 0
+    max_total = 20  # sum of all dimension maxes; reduced when a dimension is N/A
 
     # Join coverage (2 pts) -- based on analytical tables only
     at_count = len(analytical_tables)
@@ -12490,9 +12831,14 @@ def _compute_health_score(ss: dict, semantic_gap_result: dict | None = None) -> 
     else:
         dimensions["sample_questions"] = {"score": 0, "max": 2, "detail": f"{sq_count} questions (target: 5+)"}
 
-    # Metric views (2 pts)
+    # Metric views (2 pts) -- N/A for a tables-only space. A space with tables and no MVs
+    # is a valid choice (Improve deliberately never adds MVs to it), so scoring it 0/2 would
+    # be an unreachable, misleading penalty; mark it N/A and drop its 2 pts from the max.
     mv_count = len(mv_entries)
-    if mv_count >= 2:
+    if mv_count == 0 and table_entries:
+        dimensions["metric_views"] = {"score": None, "max": 0, "detail": "N/A -- tables-only space"}
+        max_total -= 2
+    elif mv_count >= 2:
         dimensions["metric_views"] = {"score": 2, "max": 2, "detail": f"{mv_count} metric views"}
         score_total += 2
     elif mv_count >= 1:
@@ -12521,7 +12867,7 @@ def _compute_health_score(ss: dict, semantic_gap_result: dict | None = None) -> 
     else:
         dimensions["semantic_gap"] = {"score": None, "max": 6, "detail": "Run Analyze to evaluate"}
 
-    return {"score": score_total, "max": 20, "dimensions": dimensions}
+    return {"score": score_total, "max": max_total, "dimensions": dimensions}
 
 
 @app.post("/api/genie/health-check")
@@ -12839,6 +13185,19 @@ def genie_improve(req: GenieImproveRequest):
 
     def _run():
         try:
+            # Fail fast if a referenced table/MV no longer exists (e.g. dropped since the
+            # space was built). genie_create validates this at deploy time, but without an
+            # up-front check here an improve burns a full analyze + multi-phase LLM cycle
+            # (up to 900s) before the user learns a source is gone.
+            missing = _validate_data_sources_exist(req.serialized_space, wh)
+            if missing:
+                _genie_tasks[task_id].update({
+                    "status": "error",
+                    "error": "Data source validation failed: " + "; ".join(missing),
+                    "elapsed_seconds": round(time.time() - started_at),
+                    "rounds_completed": 0,
+                })
+                return
             _genie_tasks[task_id]["stage"] = "analyzing"
             analysis = genie_analyze(GenieAnalyzeRequest(
                 serialized_space=req.serialized_space,
@@ -12895,7 +13254,17 @@ def genie_improve(req: GenieImproveRequest):
             progress_q: queue.Queue = queue.Queue()
 
             assembler = GenieContextAssembler(ws, wh, CATALOG, SCHEMA)
-            ctx = assembler.assemble(req.table_identifiers or [t.get("identifier", "") for t in req.serialized_space.get("data_sources", {}).get("tables", [])])
+            _ds = req.serialized_space.get("data_sources", {}) or {}
+            table_ids = req.table_identifiers or [t.get("identifier", "") for t in _ds.get("tables", [])]
+            # Improve must PRESERVE the space's composition: pass exactly the MV names the
+            # space already has. A space WITH MVs keeps them (a non-empty list avoids the
+            # empty-prebuilt merge that would otherwise drop them). A tables-only space yields
+            # [] -> assemble() takes the explicit-"no MVs" branch and does NOT auto-discover,
+            # so Improve never turns a tables-only space into a mixed one. (Passing None here
+            # would auto-discover every MV sourced from the space's tables and force-merge them
+            # in -- the exact behavior we are preventing.)
+            mv_names = _mv_names_from_serialized_space(req.serialized_space)
+            ctx = assembler.assemble(table_ids, metric_view_names=mv_names)
 
             def _monitor():
                 while True:

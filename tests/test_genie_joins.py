@@ -41,7 +41,7 @@ sys.path.insert(0, "src")
 from dbxmetagen.genie import agent as agent_mod  # noqa: E402
 from dbxmetagen.genie.agent import (  # noqa: E402
     _merge_prebuilt_join_specs, _validate_output, run_genie_agent,
-    _sql_skeleton, _dedup_example_sql,
+    _sql_skeleton, _dedup_example_sql, _merge_prebuilt_data_sources,
 )
 from dbxmetagen.genie.context import GenieContextAssembler  # noqa: E402
 
@@ -364,6 +364,51 @@ class TestAssembleMetricViewSplit:
         assert "measure_from_draft" in aliases
         # Applied MV measures are NOT emitted as snippets -- Genie auto-discovers them
         assert "measure_from_applied" not in aliases
+
+    def test_explicit_empty_mv_names_suppresses_autodiscovery(self):
+        """Regression for the tables-only-stays-tables-only fix: genie_improve passes an
+        explicit [] for a tables-only space, which must NOT auto-discover MVs from the
+        tables. Passing None (the old behavior) still discovers them."""
+        from unittest.mock import patch
+        discovered = [{
+            "metric_view_name": "mv_orders",
+            "status": "applied",
+            "source_table": "c.s.orders",
+            "json_definition": json.dumps({"measures": [{"name": "total", "expr": "SUM(amount)"}]}),
+        }]
+        common = dict(
+            _get_table_metadata=[{"table_name": "c.s.orders", "comment": ""}],
+            _get_column_metadata=[{"table_name": "c.s.orders", "column_name": "amount", "data_type": "DECIMAL"}],
+            _get_fk_predictions=[], _get_ontology_entities=[], _get_entity_relationships=[],
+            _sample_categorical_values={}, _format_context="", _get_ontology_join_specs=[],
+            _load_genie_reference="",
+        )
+
+        def _run(mv_names):
+            asm = self._make_assembler()
+            with patch.object(asm, "_get_metric_views", return_value=(discovered, [])) as auto, \
+                 patch.object(asm, "_get_metric_views_by_name", return_value=(discovered, [])), \
+                 patch.object(asm, "_get_table_metadata", return_value=common["_get_table_metadata"]), \
+                 patch.object(asm, "_get_column_metadata", return_value=common["_get_column_metadata"]), \
+                 patch.object(asm, "_get_fk_predictions", return_value=[]), \
+                 patch.object(asm, "_get_ontology_entities", return_value=[]), \
+                 patch.object(asm, "_get_entity_relationships", return_value=[]), \
+                 patch.object(asm, "_sample_categorical_values", return_value={}), \
+                 patch.object(asm, "_format_context", return_value=""), \
+                 patch.object(asm, "_get_ontology_join_specs", return_value=[]), \
+                 patch.object(asm, "_load_genie_reference", return_value=""):
+                out = asm.assemble(["c.s.orders"], metric_view_names=mv_names)
+                return out, auto
+
+        # Explicit empty -> no auto-discovery, no MVs added (the fix)
+        out_empty, auto_empty = _run([])
+        assert out_empty["data_sources"]["metric_views"] == []
+        auto_empty.assert_not_called()
+
+        # None (legacy) -> auto-discovers the table's MV (the behavior we now avoid on improve)
+        out_none, auto_none = _run(None)
+        assert len(out_none["data_sources"]["metric_views"]) == 1
+        auto_none.assert_called_once()
 
     def test_all_applied_no_measures_in_snippets(self):
         """Applied MVs in hybrid rooms should NOT produce measure snippets."""
@@ -817,3 +862,36 @@ class TestSampleCategoricalValuesCache:
         # cache miss + federated -> NO source read at all
         assert out == {}
         assert not any("FROM `fed`" in q or "FROM fed" in q for q in calls if "profiling_stats" not in q)
+
+
+# ---------------------------------------------------------------------------
+# Metric-view preservation on improve/refinement (regression for MV-loss bug)
+# ---------------------------------------------------------------------------
+
+
+class TestMergePrebuiltDataSourcesMVPreservation:
+    """Locks the contract genie_improve's MV-name fix depends on:
+    _merge_prebuilt_data_sources keeps a prior space's metric views ONLY when the
+    freshly-assembled prebuilt data_sources still carries them.
+    """
+
+    def test_prior_mvs_survive_when_prebuilt_supplies_them(self):
+        # This is the post-fix state: genie_improve passes metric_view_names, so the
+        # assembler re-supplies the MV in prebuilt -> it must survive the merge.
+        prior = {"data_sources": {"tables": [], "metric_views": [
+            {"identifier": "cat.sch.mv_sales", "description": ["Sales MV"]}]}}
+        prebuilt = {"tables": [], "metric_views": [
+            {"identifier": "cat.sch.mv_sales", "description": ["Sales MV"]}]}
+        out = _merge_prebuilt_data_sources(dict(prior), prebuilt)
+        idents = [m["identifier"] for m in out["data_sources"]["metric_views"]]
+        assert idents == ["cat.sch.mv_sales"]
+
+    def test_prior_mvs_wiped_when_prebuilt_metric_views_empty(self):
+        # This characterizes the ROOT CAUSE: if the prebuilt carries an (empty)
+        # metric_views key, the merge rebuilds the section from it and drops prior MVs.
+        # genie_improve avoids this by supplying metric_view_names so prebuilt is non-empty.
+        prior = {"data_sources": {"tables": [], "metric_views": [
+            {"identifier": "cat.sch.mv_sales", "description": ["Sales MV"]}]}}
+        prebuilt = {"tables": [], "metric_views": []}
+        out = _merge_prebuilt_data_sources(dict(prior), prebuilt)
+        assert out["data_sources"]["metric_views"] == []

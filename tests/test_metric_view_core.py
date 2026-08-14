@@ -24,6 +24,8 @@ from dbxmetagen.metric_view_core import (
     _qualify_nested_refs,
     _definition_to_yaml,
     _clean_joins_for_yaml,
+    _dedup_new_items,
+    _measure_semantic_key,
 )
 
 
@@ -541,3 +543,142 @@ class TestCleanJoinsDropsUnjoinable:
     def test_keeps_using_only_join(self):
         joins = [{"name": "y", "source": "c.s.y", "using": ["a", "b"]}]
         assert len(_clean_joins_for_yaml(joins)) == 1
+
+
+class TestMeasureSemanticKey:
+    def test_none_when_no_aggregate(self):
+        assert _measure_semantic_key("o.amount") is None
+
+    def test_whitespace_case_normalized(self):
+        assert _measure_semantic_key("SUM(o.amount)") == _measure_semantic_key("sum( o.amount )")
+
+    def test_sum_vs_avg_distinct(self):
+        assert _measure_semantic_key("SUM(o.amount)") != _measure_semantic_key("AVG(o.amount)")
+
+    def test_count_vs_count_distinct(self):
+        assert _measure_semantic_key("COUNT(o.id)") != _measure_semantic_key("COUNT(DISTINCT o.id)")
+
+    def test_conditional_aggregate_distinct_from_plain(self):
+        plain = _measure_semantic_key("SUM(o.amount)")
+        cond = _measure_semantic_key("SUM(o.amount) FILTER (WHERE o.status = 'returned')")
+        assert plain != cond
+
+    def test_ratios_sharing_numerator_are_distinct(self):
+        # Same leading aggregate (SUM(o.revenue)) but different denominators -> the key
+        # must reflect ALL aggregates, not just the first, so these stay distinct.
+        rev_per_order = _measure_semantic_key("SUM(o.revenue) / NULLIF(SUM(o.orders), 0)")
+        rev_per_cust = _measure_semantic_key("SUM(o.revenue) / NULLIF(SUM(o.customers), 0)")
+        assert rev_per_order != rev_per_cust
+
+    def test_ratio_reworded_still_collapses(self):
+        # Genuinely-identical ratio, only whitespace differs -> same key (still dedups).
+        a = _measure_semantic_key("SUM(o.revenue) / NULLIF(SUM(o.orders), 0)")
+        b = _measure_semantic_key("SUM( o.revenue )/NULLIF( SUM( o.orders ), 0 )")
+        assert a == b
+
+    def test_plain_aggregate_on_case_named_column_not_conditional(self):
+        # A column literally named case_amount must NOT be flagged as a CASE conditional
+        # (word-boundary match), so it stays distinct from a real FILTER conditional.
+        plain = _measure_semantic_key("SUM(o.case_amount)")
+        cond = _measure_semantic_key("SUM(o.case_amount) FILTER (WHERE o.status = 'open')")
+        assert plain != cond
+
+    def test_filter_predicates_differ_are_distinct(self):
+        # Two FILTER aggregates over the same column with different predicates -> distinct.
+        a = _measure_semantic_key("SUM(o.amount) FILTER (WHERE o.status = 'open')")
+        b = _measure_semantic_key("SUM(o.amount) FILTER (WHERE o.status = 'closed')")
+        assert a != b
+
+
+class TestDedupNewItems:
+    def test_exact_expr_duplicate_skipped(self):
+        existing = [{"name": "total", "expr": "SUM(o.amount)"}]
+        cands = [{"name": "total2", "expr": "SUM( o.amount )"}]
+        acc, skip = _dedup_new_items(existing, cands, "measures")
+        assert acc == []
+        assert skip == ["total2"]
+
+    def test_name_collision_skipped(self):
+        existing = [{"name": "total_amount", "expr": "SUM(o.amount)"}]
+        cands = [{"name": "total_amount", "expr": "SUM(o.total)"}]
+        acc, skip = _dedup_new_items(existing, cands, "measures")
+        assert acc == []
+        assert "total_amount" in skip
+
+    def test_semantic_duplicate_skipped(self):
+        # Different name + reworded, but same (agg, column) -> collapsed.
+        existing = [{"name": "revenue", "expr": "SUM(o.amount)"}]
+        cands = [{"name": "gross_sales", "expr": "SUM(o.amount)  "}]
+        acc, skip = _dedup_new_items(existing, cands, "measures")
+        assert acc == []
+
+    def test_distinct_aggregates_kept(self):
+        existing = [{"name": "revenue", "expr": "SUM(o.amount)"}]
+        cands = [
+            {"name": "avg_amount", "expr": "AVG(o.amount)"},
+            {"name": "distinct_cust", "expr": "COUNT(DISTINCT o.customer_id)"},
+        ]
+        acc, skip = _dedup_new_items(existing, cands, "measures")
+        assert {a["name"] for a in acc} == {"avg_amount", "distinct_cust"}
+        assert skip == []
+
+    def test_conditional_aggregate_over_same_column_kept(self):
+        existing = [{"name": "revenue", "expr": "SUM(o.amount)"}]
+        cands = [{"name": "returned_rev",
+                  "expr": "SUM(o.amount) FILTER (WHERE o.status = 'returned')"}]
+        acc, skip = _dedup_new_items(existing, cands, "measures")
+        assert [a["name"] for a in acc] == ["returned_rev"]
+
+    def test_ratio_with_shared_numerator_kept(self):
+        # Regression: distinct ratio measures sharing a numerator must not collapse.
+        existing = [{"name": "rev_per_order",
+                     "expr": "SUM(o.revenue) / NULLIF(SUM(o.orders), 0)"}]
+        cands = [{"name": "rev_per_customer",
+                  "expr": "SUM(o.revenue) / NULLIF(SUM(o.customers), 0)"}]
+        acc, skip = _dedup_new_items(existing, cands, "measures")
+        assert [a["name"] for a in acc] == ["rev_per_customer"]
+        assert skip == []
+
+    def test_case_named_column_conditional_variant_kept(self):
+        # Regression: plain SUM(o.case_amount) must not be treated as conditional, so a
+        # real FILTER variant over the same column is not falsely dropped.
+        existing = [{"name": "case_total", "expr": "SUM(o.case_amount)"}]
+        cands = [{"name": "open_case_total",
+                  "expr": "SUM(o.case_amount) FILTER (WHERE o.status = 'open')"}]
+        acc, skip = _dedup_new_items(existing, cands, "measures")
+        assert [a["name"] for a in acc] == ["open_case_total"]
+        assert skip == []
+
+    def test_filter_variants_with_different_predicates_kept(self):
+        existing = [{"name": "open_rev",
+                     "expr": "SUM(o.amount) FILTER (WHERE o.status = 'open')"}]
+        cands = [{"name": "closed_rev",
+                  "expr": "SUM(o.amount) FILTER (WHERE o.status = 'closed')"}]
+        acc, skip = _dedup_new_items(existing, cands, "measures")
+        assert [a["name"] for a in acc] == ["closed_rev"]
+        assert skip == []
+
+    def test_candidate_vs_candidate_dedup(self):
+        acc, skip = _dedup_new_items(
+            [], [{"name": "a", "expr": "SUM(o.amount)"}, {"name": "b", "expr": "SUM( o.amount )"}],
+            "measures",
+        )
+        assert len(acc) == 1
+
+    def test_empty_expr_candidate_dropped(self):
+        acc, skip = _dedup_new_items([], [{"name": "x", "expr": "  "}], "measures")
+        assert acc == []
+
+    def test_dimensions_ignore_semantic_key(self):
+        # Same base column, different DATE_TRUNC bucket -> both kept (dims dedup on
+        # exact-expr + name only, no aggregate semantic key).
+        existing = [{"name": "order_day", "expr": "DATE_TRUNC('DAY', o.order_date)"}]
+        cands = [{"name": "order_month", "expr": "DATE_TRUNC('MONTH', o.order_date)"}]
+        acc, skip = _dedup_new_items(existing, cands, "dimensions")
+        assert [a["name"] for a in acc] == ["order_month"]
+
+    def test_dimensions_exact_duplicate_skipped(self):
+        existing = [{"name": "region", "expr": "o.region"}]
+        cands = [{"name": "region2", "expr": "o.region"}]
+        acc, skip = _dedup_new_items(existing, cands, "dimensions")
+        assert acc == []

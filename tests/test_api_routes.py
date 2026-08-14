@@ -1458,3 +1458,193 @@ class TestValidateKpiFormulaCaps:
         monkeypatch.setattr(api_server, "execute_sql", lambda *a, **k: [])
         assert api_server._validate_kpi_formula("", ["c.s.a"])[0] == "skipped"
         assert api_server._validate_kpi_formula("SUM(x)", [])[0] == "skipped"
+
+
+# ---------------------------------------------------------------------------
+# _parse_json_array
+# ---------------------------------------------------------------------------
+class TestParseJsonArray:
+    def test_plain_array(self):
+        out = api_server._parse_json_array('[{"name": "a", "expr": "SUM(x)"}]')
+        assert out == [{"name": "a", "expr": "SUM(x)"}]
+
+    def test_fenced_array(self):
+        out = api_server._parse_json_array('```json\n[{"name": "a"}]\n```')
+        assert out == [{"name": "a"}]
+
+    def test_object_wrapped_measures(self):
+        out = api_server._parse_json_array('{"measures": [{"name": "m1"}]}')
+        assert out == [{"name": "m1"}]
+
+    def test_object_wrapped_items(self):
+        out = api_server._parse_json_array('{"items": [{"name": "d1"}]}')
+        assert out == [{"name": "d1"}]
+
+    def test_no_array_raises(self):
+        import pytest as _pytest
+        with _pytest.raises(ValueError):
+            api_server._parse_json_array("no json here")
+
+
+# ---------------------------------------------------------------------------
+# _compute_mv_health: joined-dimension numeric-aggregation fan-out detector
+# ---------------------------------------------------------------------------
+class TestDimAggFanoutDetector:
+    def _numeric_cols(self, monkeypatch, cols_by_table):
+        # execute_sql is called once per joined table with a column-metadata query.
+        def fake_execute_sql(query, *a, **k):
+            for tbl, rows in cols_by_table.items():
+                if tbl in query or tbl.split(".")[-1] in query:
+                    return rows
+            return []
+        monkeypatch.setattr(api_server, "execute_sql", fake_execute_sql)
+
+    def _dim_issues(self, health):
+        return [i for i in health["issues"] if i.get("action") == "split_dim_measure"]
+
+    def test_flags_sum_over_joined_dim_numeric(self, monkeypatch):
+        self._numeric_cols(monkeypatch, {
+            "c.s.dim_account": [{"column_name": "bed_count", "data_type": "INT"}],
+        })
+        defn = {
+            "source": "c.s.fct_rx",
+            "joins": [{"name": "acct", "source": "c.s.dim_account", "on": "source.acct_id = acct.id"}],
+            "measures": [{"name": "beds", "expr": "SUM(acct.bed_count)"}],
+            "dimensions": [{"name": "d", "expr": "acct.name"}],
+        }
+        health = api_server._compute_mv_health(defn)
+        issues = self._dim_issues(health)
+        assert len(issues) == 1
+        assert issues[0]["severity"] == "medium"  # no FK evidence supplied
+
+    def test_high_severity_with_fk_confirmation(self, monkeypatch):
+        self._numeric_cols(monkeypatch, {
+            "c.s.dim_account": [{"column_name": "bed_count", "data_type": "INT"}],
+        })
+        defn = {
+            "source": "c.s.fct_rx",
+            "joins": [{"name": "acct", "source": "c.s.dim_account", "on": "source.acct_id = acct.id"}],
+            "measures": [{"name": "beds", "expr": "SUM(acct.bed_count)"}],
+            "dimensions": [{"name": "d", "expr": "acct.name"}],
+        }
+        fk = [{"src_table": "c.s.fct_rx", "dst_table": "c.s.dim_account"}]
+        health = api_server._compute_mv_health(defn, fk_rows=fk)
+        issues = self._dim_issues(health)
+        assert issues and issues[0]["severity"] == "high"
+
+    def test_no_flag_for_source_column_aggregation(self, monkeypatch):
+        self._numeric_cols(monkeypatch, {
+            "c.s.dim_account": [{"column_name": "bed_count", "data_type": "INT"}],
+        })
+        # Aggregates a SOURCE column, not a join-alias column -> correct, no flag.
+        defn = {
+            "source": "c.s.fct_rx",
+            "joins": [{"name": "acct", "source": "c.s.dim_account", "on": "source.acct_id = acct.id"}],
+            "measures": [{"name": "total", "expr": "SUM(source.amount)"}],
+            "dimensions": [{"name": "d", "expr": "acct.name"}],
+        }
+        health = api_server._compute_mv_health(defn)
+        assert self._dim_issues(health) == []
+
+    def test_no_flag_for_non_numeric_dim_column(self, monkeypatch):
+        # A count over a categorical join column is not the fan-out pattern we flag
+        # (COUNT is not additive here; and the column is not numeric).
+        self._numeric_cols(monkeypatch, {
+            "c.s.dim_account": [{"column_name": "region", "data_type": "STRING"}],
+        })
+        defn = {
+            "source": "c.s.fct_rx",
+            "joins": [{"name": "acct", "source": "c.s.dim_account", "on": "source.acct_id = acct.id"}],
+            "measures": [{"name": "m", "expr": "SUM(acct.region)"}],
+            "dimensions": [{"name": "d", "expr": "acct.name"}],
+        }
+        health = api_server._compute_mv_health(defn)
+        assert self._dim_issues(health) == []
+
+    def test_degrades_when_column_lookup_fails(self, monkeypatch):
+        def boom(*a, **k):
+            raise RuntimeError("no warehouse")
+        monkeypatch.setattr(api_server, "execute_sql", boom)
+        defn = {
+            "source": "c.s.fct_rx",
+            "joins": [{"name": "acct", "source": "c.s.dim_account", "on": "source.acct_id = acct.id"}],
+            "measures": [{"name": "beds", "expr": "SUM(acct.bed_count)"}],
+            "dimensions": [{"name": "d", "expr": "acct.name"}],
+        }
+        # Must not raise; just skips the detector.
+        health = api_server._compute_mv_health(defn)
+        assert self._dim_issues(health) == []
+
+
+class TestGenieDeployHelpers:
+    """Helpers backing the Genie MV-preservation fix and dropped-content surfacing."""
+
+    def test_mv_names_extracts_trailing_name(self):
+        ss = {"data_sources": {"metric_views": [
+            {"identifier": "cat.sch.mv_sales"},
+            {"identifier": "cat.sch.mv_returns"},
+        ]}}
+        assert api_server._mv_names_from_serialized_space(ss) == ["mv_sales", "mv_returns"]
+
+    def test_mv_names_empty_when_no_metric_views(self):
+        assert api_server._mv_names_from_serialized_space({"data_sources": {"tables": [{"identifier": "c.s.t"}]}}) == []
+        assert api_server._mv_names_from_serialized_space({}) == []
+
+    def test_mv_names_skips_blank_identifiers(self):
+        ss = {"data_sources": {"metric_views": [{"identifier": ""}, {"identifier": "c.s.mv"}, {}]}}
+        assert api_server._mv_names_from_serialized_space(ss) == ["mv"]
+
+    def test_content_counts_all_categories(self):
+        ss = {"instructions": {
+            "join_specs": [{"a": 1}, {"b": 2}],
+            "example_question_sqls": [{"q": 1}],
+            "sql_snippets": {"measures": [{"m": 1}], "filters": [{"f": 1}, {"f": 2}], "expressions": []},
+        }}
+        counts = api_server._genie_content_counts(ss)
+        assert counts == {"joins": 2, "example_sqls": 1, "snippets": 3}
+
+    def test_content_counts_handles_empty_and_missing(self):
+        assert api_server._genie_content_counts({}) == {"joins": 0, "example_sqls": 0, "snippets": 0}
+        # legacy example_sql key + join_specs under data_sources
+        ss = {"data_sources": {"join_specs": [{"a": 1}]}, "instructions": {"example_sql": [{"q": 1}]}}
+        counts = api_server._genie_content_counts(ss)
+        assert counts["joins"] == 1 and counts["example_sqls"] == 1
+
+
+class TestGenieHealthScoreMetricViewsNA:
+    """metric_views health dimension is N/A (excluded from max) for a tables-only space."""
+
+    def _score(self, tables, mvs):
+        ss = {
+            "data_sources": {
+                "tables": [{"identifier": t} for t in tables],
+                "metric_views": [{"identifier": m} for m in mvs],
+            },
+            "instructions": {},
+            "sample_questions": [],
+        }
+        return api_server._compute_health_score(ss)
+
+    def test_tables_only_metric_views_na_and_max_18(self):
+        h = self._score(["c.s.orders", "c.s.customers"], [])
+        assert h["dimensions"]["metric_views"]["score"] is None
+        assert h["dimensions"]["metric_views"]["max"] == 0
+        assert h["max"] == 18  # 20 minus the excluded 2-pt metric_views dimension
+
+    def test_mv_space_scores_metric_views_and_max_20(self):
+        h = self._score([], ["c.s.mv1", "c.s.mv2"])
+        assert h["dimensions"]["metric_views"]["score"] == 2
+        assert h["dimensions"]["metric_views"]["max"] == 2
+        assert h["max"] == 20
+
+    def test_mixed_space_counts_metric_views_and_max_20(self):
+        h = self._score(["c.s.orders"], ["c.s.mv1"])
+        assert h["dimensions"]["metric_views"]["score"] == 1  # 1 MV present -> not N/A
+        assert h["max"] == 20
+
+    def test_empty_space_metric_views_stays_zero(self):
+        # No tables AND no MVs -> not "tables-only", keep the 0/2 penalty (degenerate space).
+        h = self._score([], [])
+        assert h["dimensions"]["metric_views"]["score"] == 0
+        assert h["dimensions"]["metric_views"]["max"] == 2
+        assert h["max"] == 20

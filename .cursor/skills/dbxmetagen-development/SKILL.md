@@ -26,7 +26,8 @@ the essentials and hard-won pitfalls.
 | Schema | `metadata_results` |
 
 ```bash
-# Deploy (bundle deploy + bundle run to start the app + post-deploy grants; no deploy.sh)
+# Deploy (bundle deploy + bundle run to start the app + post-deploy grants).
+# A deprecated deploy.sh wrapper chains these three for legacy CI (no templating, no .env).
 databricks bundle deploy -t demo -p DMVM
 databricks bundle run -t demo -p DMVM dbxmetagen_app   # bundle deploy does NOT start the app
 scripts/grant_app_permissions.sh -t demo -p DMVM
@@ -208,7 +209,8 @@ Rules:
 
 ```bash
 # Standard deploy: bundle deploy (builds wheel via artifacts.build hook, syncs
-# bundle) + bundle run (deploy app source + start) + post-deploy grants. No deploy.sh.
+# bundle) + bundle run (deploy app source + start) + post-deploy grants. A
+# deprecated deploy.sh wrapper chains these three for legacy CI (no templating, no .env).
 databricks bundle deploy -t demo -p DMVM
 databricks bundle run -t demo -p DMVM dbxmetagen_app   # deploy app source + START
 scripts/grant_app_permissions.sh -t demo -p DMVM

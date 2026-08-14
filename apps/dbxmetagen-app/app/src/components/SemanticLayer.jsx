@@ -1279,6 +1279,33 @@ export default function SemanticLayer({ onNavigate, pipelineStats, onRefreshPipe
     setActionLoading(prev => ({ ...prev, [defId]: null }))
   }
 
+  // Incremental add of new measures/dimensions -- cheaper than improve (only new
+  // items are generated, then merged + de-duplicated server-side).
+  const addItems = async (defId, kind) => {
+    const focus = kind === 'measures' ? 'add_measures' : 'add_dimensions'
+    setActionLoading(prev => ({ ...prev, [defId]: focus }))
+    setError(null)
+    try {
+      const res = await fetch(`/api/semantic-layer/definitions/${defId}/add-items`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ kind }),
+      })
+      const data = await res.json()
+      if (!res.ok) {
+        setError(data.detail || `Add ${kind} failed`)
+      } else if (!(data.added || []).length) {
+        const skipped = (data.skipped_duplicates || []).length
+        setError(skipped
+          ? `No new ${kind} added -- ${skipped} suggestion(s) duplicated existing items.`
+          : `No new ${kind} were suggested.`)
+      }
+      invalidateCache('/api/semantic-layer/definitions')
+      refreshDefinitions()
+    } catch (e) { setError(e.message) }
+    setActionLoading(prev => ({ ...prev, [defId]: null }))
+  }
+
   const fetchMvHealth = async (defId) => {
     try {
       const res = await fetch(`/api/semantic-layer/definitions/${defId}/health-check`, { method: 'POST' })
@@ -2917,6 +2944,25 @@ export default function SemanticLayer({ onNavigate, pipelineStats, onRefreshPipe
                                 className="w-full text-left px-3 py-1.5 text-xs text-blue-600 hover:bg-blue-50 dark:hover:bg-blue-900/20 disabled:opacity-50">
                                 {busy === 'improve' ? 'Re-generating...' : 'Improve (re-generate)'}
                               </button>
+                              {d.status === 'validated' && (
+                                <>
+                                  <button onClick={() => { addItems(d.definition_id, 'measures'); setOpenMenuId(null) }} disabled={!!busy}
+                                    title="Ask AI for additional measures and merge them in (existing measures are kept and duplicates skipped)."
+                                    className="w-full text-left px-3 py-1.5 text-xs text-blue-600 hover:bg-blue-50 dark:hover:bg-blue-900/20 disabled:opacity-50">
+                                    {busy === 'add_measures' ? 'Adding measures...' : 'Add measures'}
+                                  </button>
+                                  <button onClick={() => { addItems(d.definition_id, 'dimensions'); setOpenMenuId(null) }} disabled={!!busy}
+                                    title="Ask AI for additional dimensions and merge them in (existing dimensions are kept and duplicates skipped)."
+                                    className="w-full text-left px-3 py-1.5 text-xs text-blue-600 hover:bg-blue-50 dark:hover:bg-blue-900/20 disabled:opacity-50">
+                                    {busy === 'add_dimensions' ? 'Adding dimensions...' : 'Add dimensions'}
+                                  </button>
+                                  <button onClick={() => { improveDefinition(d.definition_id, 'check_filters'); setOpenMenuId(null) }} disabled={!!busy}
+                                    title="Ask AI to review and set the scope filter for this view."
+                                    className="w-full text-left px-3 py-1.5 text-xs text-blue-600 hover:bg-blue-50 dark:hover:bg-blue-900/20 disabled:opacity-50">
+                                    {busy === 'check_filters' ? 'Checking filters...' : 'Check filters'}
+                                  </button>
+                                </>
+                              )}
                               <button onClick={() => { createDefinition(d.definition_id); setOpenMenuId(null) }} disabled={!!busy}
                                 title={d.status === 'applied' ? 'Re-run CREATE OR REPLACE VIEW in Unity Catalog' : 'Deploy this definition as a UC metric view (CREATE OR REPLACE VIEW)'}
                                 className="w-full text-left px-3 py-1.5 text-xs text-green-600 hover:bg-green-50 dark:hover:bg-green-900/20 disabled:opacity-50">
@@ -3044,7 +3090,13 @@ export default function SemanticLayer({ onNavigate, pipelineStats, onRefreshPipe
                       appliedFields={mvAppliedFields[d.definition_id]}
                       busy={actionLoading[d.definition_id]}
                       onApplyFix={(path, value) => applyFieldFix(d.definition_id, path, value)}
-                      onRefine={(focus) => improveDefinition(d.definition_id, focus)} />
+                      onRefine={(focus) => {
+                        // measures/dimensions use the cheaper incremental endpoint;
+                        // check_filters edits a scalar so it stays on improve.
+                        if (focus === 'add_measures') addItems(d.definition_id, 'measures')
+                        else if (focus === 'add_dimensions') addItems(d.definition_id, 'dimensions')
+                        else improveDefinition(d.definition_id, focus)
+                      }} />
                   )}
 
                   {/* MV Test-query results panel */}

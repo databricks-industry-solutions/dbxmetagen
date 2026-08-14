@@ -1,5 +1,6 @@
 """Tests for semantic_layer module -- expression fixers, JSON parsers, column ref extraction."""
 
+import json
 import pytest
 import yaml
 from unittest.mock import MagicMock
@@ -9,6 +10,7 @@ from dbxmetagen.semantic_layer import (
     _normalize_window_specs,
     _infer_format_specs,
     _fix_percentage_scaling,
+    _resolve_mv_deploy_location,
     check_dim_source_pattern,
     _swap_source_and_join,
     profile_schema,
@@ -21,6 +23,17 @@ def gen():
     spark = MagicMock()
     config = SemanticLayerConfig(catalog_name="cat", schema_name="sch")
     return SemanticLayerGenerator(spark, config)
+
+
+# ── Config defaults ───────────────────────────────────────────────────
+
+
+class TestConfigDefaults:
+    def test_genie_sql_examples_opt_in(self):
+        # Must default OFF: the genie_examples_vs_index is not built in most
+        # deployments and the in-app path doesn't use this flag. Opt-in only.
+        config = SemanticLayerConfig(catalog_name="cat", schema_name="sch")
+        assert config.use_genie_sql_examples is False
 
 
 # ── Expression Fix Helpers ────────────────────────────────────────────
@@ -1086,7 +1099,9 @@ class TestGenieExamplesContext:
 
     def _gen(self, **cfg_kw):
         from unittest.mock import MagicMock
-        base = dict(catalog_name="cat", schema_name="sch")
+        # This class exercises the retrieval path, which is opt-in (default False).
+        # Enable it by default here; test_disabled_returns_empty overrides to False.
+        base = dict(catalog_name="cat", schema_name="sch", use_genie_sql_examples=True)
         base.update(cfg_kw)
         return SemanticLayerGenerator(MagicMock(), SemanticLayerConfig(**base))
 
@@ -1138,3 +1153,86 @@ class TestGenieExamplesContext:
         monkeypatch.setattr(puller, "query_examples", lambda **kw: [{"question_text": "Q", "sql": long_sql}])
         out = g._genie_examples_context(["cat.sch.orders"])
         assert "..." in out and len(out) < len(long_sql)
+
+
+# ── Federated metric-view deploy location ────────────────────────────
+
+
+class TestResolveMvDeployLocation:
+    def test_uses_source_catalog_when_not_federated(self):
+        assert _resolve_mv_deploy_location(
+            "sfcat.sales.orders", "localcat", "localsch", False
+        ) == ("sfcat", "sales")
+
+    def test_uses_local_catalog_when_federated(self):
+        # A foreign source catalog is read-only, so the view must land in the local
+        # (writable) config catalog/schema instead of the source's foreign catalog.
+        assert _resolve_mv_deploy_location(
+            "sfcat.sales.orders", "localcat", "localsch", True
+        ) == ("localcat", "localsch")
+
+    def test_falls_back_to_defaults_when_source_not_qualified(self):
+        assert _resolve_mv_deploy_location("orders", "localcat", "localsch", False) == (
+            "localcat", "localsch")
+        assert _resolve_mv_deploy_location("", "localcat", "localsch", False) == (
+            "localcat", "localsch")
+
+
+class TestApplyMetricViewsFederation:
+    """apply_metric_views() must not try to CREATE a view inside a read-only foreign
+    catalog; in federation_mode it deploys into the local catalog and drops materialization."""
+
+    def _make_gen(self, federation_mode, defn):
+        config = SemanticLayerConfig(catalog_name="localcat", schema_name="localsch")
+        config.federation_mode = federation_mode
+        executed = []
+        row = MagicMock()
+        row.asDict.return_value = {
+            "definition_id": "d1",
+            "metric_view_name": "mv_orders",
+            "source_table": defn["source"],
+            "json_definition": json.dumps(defn),
+        }
+        spark = MagicMock()
+
+        def _sql(q, *a, **k):
+            executed.append(q)
+            m = MagicMock()
+            if q.strip().upper().startswith("SELECT"):
+                m.collect.return_value = [row]
+            return m
+
+        spark.sql.side_effect = _sql
+        return SemanticLayerGenerator(spark, config), executed
+
+    def _mv_create_stmt(self, executed):
+        return next(q for q in executed if "CREATE OR REPLACE VIEW" in q)
+
+    def test_federated_source_deploys_to_local_catalog_no_materialization(self):
+        defn = {
+            "name": "mv_orders", "source": "sfcat.sales.orders", "dimensions": [],
+            "measures": [{"name": "total", "expr": "SUM(o.amount)"}],
+            "materialization": {"mode": "relaxed",
+                                "materialized_views": [{"name": "mv_orders_baseline",
+                                                        "type": "unaggregated"}]},
+        }
+        gen, executed = self._make_gen(True, defn)
+        gen.apply_metric_views()
+        create = self._mv_create_stmt(executed)
+        assert "localcat.localsch.mv_orders" in create
+        assert "sfcat.sales.mv_orders" not in create      # never targets the foreign catalog
+        assert "mv_orders_baseline" not in create          # materialization dropped
+
+    def test_non_federated_keeps_source_catalog_and_materialization(self):
+        defn = {
+            "name": "mv_orders", "source": "prodcat.sales.orders", "dimensions": [],
+            "measures": [{"name": "total", "expr": "SUM(o.amount)"}],
+            "materialization": {"mode": "relaxed",
+                                "materialized_views": [{"name": "mv_orders_baseline",
+                                                        "type": "unaggregated"}]},
+        }
+        gen, executed = self._make_gen(False, defn)
+        gen.apply_metric_views()
+        create = self._mv_create_stmt(executed)
+        assert "prodcat.sales.mv_orders" in create          # source catalog preserved
+        assert "mv_orders_baseline" in create               # materialization kept
