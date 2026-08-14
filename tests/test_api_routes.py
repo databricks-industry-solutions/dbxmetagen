@@ -1648,3 +1648,64 @@ class TestGenieHealthScoreMetricViewsNA:
         assert h["dimensions"]["metric_views"]["score"] == 0
         assert h["dimensions"]["metric_views"]["max"] == 2
         assert h["max"] == 20
+
+
+class TestExecuteSqlMetaPagination:
+    """Regression: the result-chunk pagination loop must terminate on a malformed or
+    non-advancing next_chunk_index instead of spinning forever. An unbounded loop pins
+    a worker thread in production (and caused a ~20-min unit-test hang on a MagicMock
+    whose next_chunk_index is perpetually truthy)."""
+
+    from types import SimpleNamespace as _NS
+
+    def _resp(self, data_array, next_chunk_index):
+        NS = self._NS
+        return NS(
+            status=NS(state=NS(value="SUCCEEDED"), error=None),
+            manifest=NS(schema=NS(columns=[NS(name="c")]), total_row_count=len(data_array)),
+            statement_id="s1",
+            result=NS(data_array=data_array, next_chunk_index=next_chunk_index),
+        )
+
+    def _ws(self, resp, chunk_fn):
+        NS = self._NS
+        return NS(statement_execution=NS(
+            execute_statement=lambda **k: resp,
+            get_statement=lambda sid: resp,
+            get_statement_result_chunk_n=chunk_fn,
+        ))
+
+    def test_non_advancing_chunk_index_terminates(self, monkeypatch):
+        calls = {"n": 0}
+        def _chunk(sid, idx):
+            calls["n"] += 1
+            return self._resp([["z"]], idx).result
+        resp = self._resp([["a"]], 0)  # next_chunk_index 0 does NOT advance past chunk 0
+        monkeypatch.setattr(api_server, "_get_effective_client", lambda: self._ws(resp, _chunk))
+        rows, truncated = api_server.execute_sql_meta("SELECT 1", warehouse_id="wh")
+        assert rows == [{"c": "a"}]
+        assert truncated is True
+        assert calls["n"] == 0  # guard broke BEFORE fetching another chunk (no infinite loop)
+
+    def test_non_int_chunk_index_terminates(self, monkeypatch):
+        # A non-int next_chunk_index (e.g. a MagicMock in tests, or a malformed API value)
+        resp = self._resp([["a"]], object())
+        monkeypatch.setattr(api_server, "_get_effective_client",
+                            lambda: self._ws(resp, lambda sid, idx: (_ for _ in ()).throw(AssertionError("should not fetch"))))
+        rows, truncated = api_server.execute_sql_meta("SELECT 1", warehouse_id="wh")
+        assert rows == [{"c": "a"}]
+        assert truncated is True
+
+    def test_advancing_chunks_are_followed(self, monkeypatch):
+        NS = self._NS
+        chunk1 = NS(data_array=[["b"]], next_chunk_index=None)
+        seen = {"idx": None}
+        def _chunk(sid, idx):
+            seen["idx"] = idx
+            return chunk1
+        resp = self._resp([["a"]], 1)  # advances 0 -> 1, then chunk1 ends the stream
+        monkeypatch.setattr(api_server, "_get_effective_client", lambda: self._ws(resp, _chunk))
+        rows, truncated = api_server.execute_sql_meta("SELECT 1", warehouse_id="wh")
+        assert rows == [{"c": "a"}, {"c": "b"}]
+        assert truncated is False
+        assert seen["idx"] == 1

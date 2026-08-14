@@ -342,6 +342,7 @@ def execute_sql_meta(
     truncated = False
     statement_id = resp.statement_id
     result = resp.result
+    current_chunk = 0  # resp.result is always the first result chunk (index 0)
     while result is not None:
         for row in (result.data_array or []):
             rows.append(dict(zip(cols, row)))
@@ -360,7 +361,19 @@ def execute_sql_meta(
             break
         next_idx = getattr(result, "next_chunk_index", None)
         if next_idx is None:
+            break  # normal end of stream
+        # Defensive termination: next_chunk_index must be an int that strictly advances
+        # past the chunk we just consumed. A malformed / non-advancing / cyclic value
+        # would otherwise spin this loop forever and pin the worker thread (chunk indices
+        # are sequential, so a valid next index is always > the current one).
+        if not isinstance(next_idx, int) or next_idx <= current_chunk:
+            logger.warning(
+                "Stopping result pagination for %s: next_chunk_index=%r did not advance past chunk %d",
+                statement_id, next_idx, current_chunk,
+            )
+            truncated = True
             break
+        current_chunk = next_idx
         try:
             result = ws.statement_execution.get_statement_result_chunk_n(statement_id, next_idx)
         except Exception as exc:
