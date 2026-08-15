@@ -12766,6 +12766,10 @@ def _compute_health_score(ss: dict, semantic_gap_result: dict | None = None) -> 
         t for t in table_entries
         if t.get("identifier") and not _looks_like_doc_table(t["identifier"], t.get("description"))
     ]
+    # A metric-view-only space (metric views, no analytical tables) is self-contained: MVs carry
+    # their own joins + measures, so joins/snippets/filters are N/A there, not deficiencies. This
+    # mirrors the metric_views-N/A treatment for tables-only spaces (opposite composition).
+    mv_only = bool(mv_entries) and not analytical_tables
 
     joins = inst.get("join_specs", [])
     if isinstance(joins, dict):
@@ -12812,15 +12816,21 @@ def _compute_health_score(ss: dict, semantic_gap_result: dict | None = None) -> 
     else:
         dimensions["example_sql"] = {"score": 0, "max": 2, "detail": f"{ex_count} examples (target: 8+)"}
 
-    # Snippet coverage (2 pts)
-    snip_score = 0
-    if len(measures) >= 2:
-        snip_score += 1
-    if len(filters_list) >= 2 or len(expressions_list) >= 1:
-        snip_score += 1
-    detail_parts = [f"{len(measures)} measures", f"{len(filters_list)} filters", f"{len(expressions_list)} expressions"]
-    dimensions["snippets"] = {"score": snip_score, "max": 2, "detail": ", ".join(detail_parts)}
-    score_total += snip_score
+    # Snippet coverage (2 pts) -- N/A for a metric-view-only space: applied MVs carry their own
+    # measures/dimensions and dbxmetagen deliberately emits NO snippet measures for them (Genie
+    # auto-discovers them), so 0 snippets is expected, not a deficiency.
+    if mv_only:
+        dimensions["snippets"] = {"score": None, "max": 0, "detail": "N/A -- metric views carry their own measures"}
+        max_total -= 2
+    else:
+        snip_score = 0
+        if len(measures) >= 2:
+            snip_score += 1
+        if len(filters_list) >= 2 or len(expressions_list) >= 1:
+            snip_score += 1
+        detail_parts = [f"{len(measures)} measures", f"{len(filters_list)} filters", f"{len(expressions_list)} expressions"]
+        dimensions["snippets"] = {"score": snip_score, "max": 2, "detail": ", ".join(detail_parts)}
+        score_total += snip_score
 
     # Instruction quality (2 pts)
     text_len = len(text)
@@ -12860,18 +12870,22 @@ def _compute_health_score(ss: dict, semantic_gap_result: dict | None = None) -> 
     else:
         dimensions["metric_views"] = {"score": 0, "max": 2, "detail": "No metric views"}
 
-    # Filter quality (2 pts) -- penalize oversized/useless filter values
-    fq_score = 2
+    # Filter quality (2 pts) -- penalize oversized/useless filter values. N/A for a metric-view-only
+    # space (filters aren't expected on self-contained MVs); still penalize document-length filter
+    # values if somehow present.
     oversized = sum(1 for f in filters_list if len(str(f.get("sql", ""))) > 500)
-    if oversized:
-        fq_score = 0
+    if mv_only and not oversized:
+        dimensions["filter_quality"] = {"score": None, "max": 0, "detail": "N/A -- metric-view space"}
+        max_total -= 2
+    elif oversized:
         dimensions["filter_quality"] = {"score": 0, "max": 2, "detail": f"{oversized} filters contain document-length SQL values"}
+        # score_total += 0
     elif filters_list:
         dimensions["filter_quality"] = {"score": 2, "max": 2, "detail": f"{len(filters_list)} well-formed filters"}
+        score_total += 2
     else:
-        fq_score = 1
         dimensions["filter_quality"] = {"score": 1, "max": 2, "detail": "No filters defined"}
-    score_total += fq_score
+        score_total += 1
 
     # Semantic gap (6 pts, externally computed via LLM in analyze)
     if semantic_gap_result:
@@ -12883,10 +12897,56 @@ def _compute_health_score(ss: dict, semantic_gap_result: dict | None = None) -> 
     return {"score": score_total, "max": max_total, "dimensions": dimensions}
 
 
+def _reclassify_metric_views(ss: dict, warehouse_id: Optional[str] = None) -> dict:
+    """Move data_sources.tables entries that are actually UC metric views into metric_views.
+
+    Genie's serialized_space does NOT preserve a separate metric_views bucket -- a deployed
+    metric view round-trips back from the Genie API under data_sources.tables (verified on a
+    live space). Health scoring and the analytical-table/joins logic must treat metric views as
+    self-contained (no joins/snippets/filters needed), so we re-bucket any table identifier whose
+    UC table_type is METRIC_VIEW into metric_views before scoring. Best-effort: any lookup failure
+    returns ss unchanged (no regression vs today).
+    """
+    ds = ss.get("data_sources") or {}
+    idents = [t.get("identifier") for t in (ds.get("tables") or []) if t.get("identifier")]
+    if not idents:
+        return ss
+    try:
+        in_list = ", ".join(_safe_sql_str(i) for i in idents)
+        rows = execute_sql(
+            "SELECT concat_ws('.', table_catalog, table_schema, table_name) AS fqn "
+            "FROM system.information_schema.tables WHERE table_type = 'METRIC_VIEW' "
+            f"AND concat_ws('.', table_catalog, table_schema, table_name) IN ({in_list})",
+            warehouse_id=warehouse_id or os.environ.get("WAREHOUSE_ID", ""), timeout=20,
+        ) or []
+    except Exception as e:
+        logger.info("Metric-view reclassification skipped (%s)", e)
+        return ss
+    mv_fqns = {r.get("fqn") for r in rows if r.get("fqn")}
+    if not mv_fqns:
+        return ss
+    import copy
+    ss2 = copy.deepcopy(ss)
+    ds2 = ss2.setdefault("data_sources", {})
+    moved = list(ds2.get("metric_views") or [])
+    moved_ids = {m.get("identifier") for m in moved}
+    kept = []
+    for t in (ds2.get("tables") or []):
+        if t.get("identifier") in mv_fqns:
+            if t.get("identifier") not in moved_ids:
+                moved.append(t)
+        else:
+            kept.append(t)
+    ds2["tables"] = kept
+    ds2["metric_views"] = moved
+    return ss2
+
+
 @app.post("/api/genie/health-check")
 def genie_health_check(req: GenieHealthCheckRequest):
     """Compute a health score for a Genie space definition."""
-    return _compute_health_score(req.serialized_space)
+    ss = _reclassify_metric_views(req.serialized_space)
+    return _compute_health_score(ss)
 
 
 _DOC_TABLE_KEYWORDS = {"chunk", "parsed", "embedding", "document", "policy_doc"}
@@ -12903,7 +12963,9 @@ def _looks_like_doc_table(identifier: str, desc: str | list | None = None) -> bo
 @app.post("/api/genie/analyze")
 def genie_analyze(req: GenieAnalyzeRequest):
     """Holistic AI analysis: identify gaps across all sections of a Genie space."""
-    ss = req.serialized_space
+    # Re-bucket metric views that Genie round-tripped into data_sources.tables so the whole
+    # analysis (doc-table split, join expectations, health score) treats them as metric views.
+    ss = _reclassify_metric_views(req.serialized_space)
 
     ds = ss.get("data_sources", {})
     inst = ss.get("instructions", {})

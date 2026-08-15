@@ -1631,11 +1631,18 @@ class TestGenieHealthScoreMetricViewsNA:
         assert h["dimensions"]["metric_views"]["max"] == 0
         assert h["max"] == 18  # 20 minus the excluded 2-pt metric_views dimension
 
-    def test_mv_space_scores_metric_views_and_max_20(self):
+    def test_mv_only_space_snippets_and_filters_na_max_16(self):
+        # A metric-view-only space is self-contained: joins not needed (0 analytical tables),
+        # and snippets + filter_quality are N/A (MVs carry their own measures/filters). So the
+        # max drops by 4 (snippets 2 + filter_quality 2) to 16, and metric_views scores 2/2.
         h = self._score([], ["c.s.mv1", "c.s.mv2"])
         assert h["dimensions"]["metric_views"]["score"] == 2
-        assert h["dimensions"]["metric_views"]["max"] == 2
-        assert h["max"] == 20
+        assert h["dimensions"]["snippets"]["score"] is None
+        assert h["dimensions"]["snippets"]["max"] == 0
+        assert h["dimensions"]["filter_quality"]["score"] is None
+        assert h["dimensions"]["filter_quality"]["max"] == 0
+        assert h["dimensions"]["joins"]["score"] == 2  # no analytical tables -> no joins needed
+        assert h["max"] == 16
 
     def test_mixed_space_counts_metric_views_and_max_20(self):
         h = self._score(["c.s.orders"], ["c.s.mv1"])
@@ -1709,3 +1716,51 @@ class TestExecuteSqlMetaPagination:
         assert rows == [{"c": "a"}, {"c": "b"}]
         assert truncated is False
         assert seen["idx"] == 1
+
+
+class TestReclassifyMetricViews:
+    """Genie round-trips metric views into data_sources.tables (no metric_views bucket
+    survives). _reclassify_metric_views must move UC METRIC_VIEW identifiers back into
+    metric_views so the health scorer treats them as self-contained (verified live on
+    clinical_genie_space_mvs)."""
+
+    def test_moves_metric_view_tables_to_metric_views(self, monkeypatch):
+        ss = {"data_sources": {"tables": [
+            {"identifier": "c.s.encounter_metrics"},
+            {"identifier": "c.s.real_table"},
+        ], "metric_views": []}}
+        monkeypatch.setattr(api_server, "execute_sql",
+                            lambda q, warehouse_id=None, timeout=20: [{"fqn": "c.s.encounter_metrics"}])
+        out = api_server._reclassify_metric_views(ss, "wh")
+        assert [t["identifier"] for t in out["data_sources"]["tables"]] == ["c.s.real_table"]
+        assert [m["identifier"] for m in out["data_sources"]["metric_views"]] == ["c.s.encounter_metrics"]
+        assert len(ss["data_sources"]["tables"]) == 2  # original not mutated
+
+    def test_no_metric_views_returns_unchanged(self, monkeypatch):
+        ss = {"data_sources": {"tables": [{"identifier": "c.s.t"}]}}
+        monkeypatch.setattr(api_server, "execute_sql", lambda q, warehouse_id=None, timeout=20: [])
+        assert api_server._reclassify_metric_views(ss, "wh") is ss
+
+    def test_lookup_failure_returns_unchanged(self, monkeypatch):
+        ss = {"data_sources": {"tables": [{"identifier": "c.s.t"}]}}
+        def _boom(*a, **k):
+            raise RuntimeError("no perms")
+        monkeypatch.setattr(api_server, "execute_sql", _boom)
+        assert api_server._reclassify_metric_views(ss, "wh") is ss
+
+    def test_reclassified_mv_space_scores_out_of_16(self, monkeypatch):
+        # The real end-to-end: 2 MVs round-tripped into tables -> reclassify -> score.
+        ss = {"data_sources": {"tables": [
+            {"identifier": "c.s.encounter_metrics"}, {"identifier": "c.s.event_metrics"}]},
+            "instructions": {}, "sample_questions": []}
+        monkeypatch.setattr(api_server, "execute_sql", lambda q, warehouse_id=None, timeout=20: [
+            {"fqn": "c.s.encounter_metrics"}, {"fqn": "c.s.event_metrics"}])
+        norm = api_server._reclassify_metric_views(ss, "wh")
+        assert norm["data_sources"]["tables"] == []
+        assert len(norm["data_sources"]["metric_views"]) == 2
+        h = api_server._compute_health_score(norm)
+        assert h["dimensions"]["metric_views"]["score"] == 2
+        assert h["dimensions"]["joins"]["score"] == 2          # no analytical tables
+        assert h["dimensions"]["snippets"]["score"] is None    # N/A for MV space
+        assert h["dimensions"]["filter_quality"]["score"] is None
+        assert h["max"] == 16
