@@ -395,6 +395,27 @@ const _healthStyles = {
   bad: 'border-red-300 dark:border-red-700 text-red-700 dark:text-red-400 hover:bg-red-50 dark:hover:bg-red-900/30',
 }
 
+// GN-12: diminishing-returns detector for the Improve loop. Returns null while it's still
+// worth improving; otherwise a guidance object once the last round produced no health gain (or
+// after a few rounds). Residual gaps exclude N/A dimensions (score == null, e.g. snippets/joins
+// on a metric-view space). When the semantic-gap dimension is the residual, the improver
+// structurally can't close it -- that's the "add benchmark questions" signal.
+const IMPROVE_ROUND_CAP = 3
+function computeImproveGuidance(health, preHealth, improveRound) {
+  if (!health || improveRound < 1) return null
+  const gainedThisRound = preHealth ? (health.score - preHealth.score) : null
+  const plateaued = (gainedThisRound !== null && gainedThisRound <= 0) || improveRound >= IMPROVE_ROUND_CAP
+  if (!plateaued) return null
+  const dims = health.dimensions || {}
+  const residual = Object.entries(dims)
+    .filter(([, d]) => d.score != null && d.score < d.max)
+    .map(([key, d]) => ({ key, label: key.replace(/_/g, ' '), score: d.score, max: d.max, gap: d.max - d.score }))
+    .sort((a, b) => b.gap - a.gap)
+  const sg = dims.semantic_gap
+  const recommendBenchmarks = !!(sg && sg.score != null && sg.score < sg.max)
+  return { plateaued, gainedThisRound, residual, recommendBenchmarks }
+}
+
 function HealthBadge({ score, max, onClick }) {
   const pct = max > 0 ? score / max : 0
   const tier = pct >= 0.8 ? 'good' : pct >= 0.5 ? 'ok' : 'bad'
@@ -1189,25 +1210,58 @@ export default function GenieUpdater({ spaceId, onBack }) {
           <span className={`text-xs font-medium ${health.score > preHealth.score ? 'text-emerald-600' : 'text-red-500'}`}>
             ({health.score > preHealth.score ? '+' : ''}{health.score - preHealth.score})
           </span>
-          {improveRound >= 3 && <span className="ml-auto text-xs text-amber-600 dark:text-amber-400">Round {improveRound} -- consider manual edits for remaining gaps</span>}
+          {computeImproveGuidance(health, preHealth, improveRound)?.plateaued && <span className="ml-auto text-xs text-amber-600 dark:text-amber-400">Diminishing returns -- see recommendation below</span>}
           <button onClick={() => setPreHealth(null)} className="ml-auto text-xs text-slate-400 hover:text-slate-600">Dismiss</button>
         </div>
       )}
 
-      {/* Accelerator hand-off note: dbxmetagen gets you to a solid starting space --
-          deeper, iterative tuning belongs in Genie's own best-practices / workbench. */}
-      {improveRound > 0 && (
-        <div className="card p-3 border-l-4 border-slate-300 dark:border-slate-600 text-xs text-slate-600 dark:text-slate-400">
-          dbxmetagen accelerates you to a solid starting space; it isn't a deep Genie optimizer.
-          For further tuning, see Genie best practices
-          (<a href="https://docs.databricks.com/aws/en/genie/best-practices" target="_blank" rel="noopener noreferrer"
-             className="text-indigo-600 dark:text-indigo-400 hover:underline">curate an effective Genie space</a>
-          {' '}&middot;{' '}
-          <a href="https://docs.databricks.com/aws/en/genie/" target="_blank" rel="noopener noreferrer"
-             className="text-indigo-600 dark:text-indigo-400 hover:underline">Genie docs</a>)
-          or continue in the Genie workbench.
-        </div>
-      )}
+      {/* GN-12: once the improver plateaus, give a reasoned hand-off (add benchmarks / manual /
+          workbench) keyed to the residual gaps; otherwise the generic accelerator hand-off note. */}
+      {improveRound > 0 && (() => {
+        const g = computeImproveGuidance(health, preHealth, improveRound)
+        if (!g?.plateaued) {
+          return (
+            <div className="card p-3 border-l-4 border-slate-300 dark:border-slate-600 text-xs text-slate-600 dark:text-slate-400">
+              dbxmetagen accelerates you to a solid starting space; it isn't a deep Genie optimizer.
+              For further tuning, see Genie best practices
+              (<a href="https://docs.databricks.com/aws/en/genie/best-practices" target="_blank" rel="noopener noreferrer"
+                 className="text-indigo-600 dark:text-indigo-400 hover:underline">curate an effective Genie space</a>
+              {' '}&middot;{' '}
+              <a href="https://docs.databricks.com/aws/en/genie/" target="_blank" rel="noopener noreferrer"
+                 className="text-indigo-600 dark:text-indigo-400 hover:underline">Genie docs</a>)
+              or continue in the Genie workbench.
+            </div>
+          )
+        }
+        return (
+          <div className="card p-3 border-l-4 border-amber-400 dark:border-amber-600 text-sm text-slate-700 dark:text-slate-300 space-y-2">
+            <div className="font-medium text-amber-700 dark:text-amber-400">
+              The improver has plateaued{g.gainedThisRound !== null && g.gainedThisRound <= 0 ? ' (no health gain in the last round)' : ''} — further automated rounds are unlikely to help.
+            </div>
+            {g.recommendBenchmarks && (
+              <p>
+                <span className="font-medium">Add benchmark questions.</span> The main remaining gap is
+                semantic coverage, which the improver can't close on its own — add real sample/benchmark
+                questions that reflect how users will actually ask, then re-analyze.
+              </p>
+            )}
+            {g.residual.length > 0 && (
+              <p className="text-xs text-slate-500 dark:text-slate-400">
+                Remaining gaps: {g.residual.map(r => `${r.label} ${r.score}/${r.max}`).join(', ')}.
+              </p>
+            )}
+            <p className="text-xs">
+              Best next steps: refine <span className="font-medium">manually</span> in the editor above,
+              add benchmark questions, or continue in the{' '}
+              <a href="https://docs.databricks.com/aws/en/genie/" target="_blank" rel="noopener noreferrer"
+                 className="text-indigo-600 dark:text-indigo-400 hover:underline">Genie workbench</a>
+              {' '}(<a href="https://docs.databricks.com/aws/en/genie/best-practices" target="_blank" rel="noopener noreferrer"
+                 className="text-indigo-600 dark:text-indigo-400 hover:underline">best practices</a>).
+              dbxmetagen gets you to a solid starting space; it isn't a deep Genie optimizer.
+            </p>
+          </div>
+        )
+      })()}
 
       {/* Analysis suggestions */}
       {analysisSuggestions && (

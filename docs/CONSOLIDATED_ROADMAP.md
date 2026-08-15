@@ -419,6 +419,7 @@ ON-18; see EN-1/EN-2.
 | GN-9 | Context window measurement and truncation | DEFERRED | P2 | M | GJ |
 | GN-10 | `_strip_out_of_scope_sql` regex ineffectiveness | DEFERRED | P3 | S | GJ |
 | GN-11 | Metric-view model builder reverted saved ERD (recommendation endpoint never overlaid saved `erd_json`); now overlays saved roles/grain/schema_type + clears `_erd_cache` on save | DONE | -- | S | UAT model-builder |
+| GN-12 | Improver diminishing-returns detection + guided hand-off. Replaced the blunt `improveRound>=3` hint with a health-delta plateau detector (`computeImproveGuidance` in GenieUpdater.jsx: no health gain in the last round, or round cap) that surfaces a reasoned recommendation keyed to the residual dimensions — add benchmark questions (when `semantic_gap` is the residual the improver structurally can't close), refine manually, or continue in the Genie workbench. Frontend-only; builds on existing `pre_health`/`health.dimensions`/`improveRound`. | DONE | P2 | M | Customer ask (Eli) |
 
 ### GN-11: Metric-view model builder reverted saved ERD
 
