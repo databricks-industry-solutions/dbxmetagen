@@ -3,5 +3,27 @@
   "schema_name": "metadata_results",
   "warehouse_id": "0123456789abcdef",
   "vs_endpoint_name": "dbxmetagen-vs",
-  "enable_obo": false
+  "enable_obo": false,
+
+  "_comment_optional": "Keys above are the minimal required set. The keys below are common OPTIONAL overrides (node type, compute/cluster policy, serverless budget policy, alternate app name). JSON has no comments, so the _comment_* keys are documentation only -- DAB ignores unknown top-level keys, but delete them if your tooling is strict. Delete any optional key you do not need. For the FULL advanced set (run_as SP, OBO user_api_scopes, app_permissions, Lakebase) copy variable-overrides.advanced.example.json instead.",
+
+  "_comment_node_type": "Job-cluster node type -- must match your cloud. AWS i3.2xlarge (default); Azure Standard_DS4_v2; GCP n2-highmem-8.",
+  "node_type": "i3.2xlarge",
+
+  "_comment_cluster_policy": "COMPUTE/CLUSTER POLICY: override the WHOLE metadata_job_cluster block (a bare policy_id string is NOT supported -- the v1.8.0+ direct deploy engine rejects an empty policy_id). Copy the default from variables.yml and add policy_id + apply_policy_default_values. lakebase_job_cluster is the same pattern for the graph->Lakebase sync job. OMIT this whole block for a policy-free deploy (the default).",
+  "metadata_job_cluster": {
+    "spark_version": "17.3.x-cpu-ml-scala2.13",
+    "node_type_id": "i3.2xlarge",
+    "data_security_mode": "SINGLE_USER",
+    "policy_id": "0123456789ABCDEF",
+    "apply_policy_default_values": true,
+    "autoscale": { "min_workers": 2, "max_workers": 4 },
+    "custom_tags": { "project": "dbxmetagen" }
+  },
+
+  "_comment_budget_policy": "Serverless budget policy ID for cost attribution on serverless jobs (Settings > Compute > Serverless usage policies). Plain string; empty (default) IS accepted at job level (unlike cluster policy_id).",
+  "budget_policy_id": "0123456789ABCDEF",
+
+  "_comment_app_name": "Alternate app name. app_name_suffix appends to BOTH the app display name and the job-name prefix, so multiple instances can coexist in one workspace (the app is a singleton by name). e.g. \"-dev\". Honored by grant_app_permissions.sh too.",
+  "app_name_suffix": "-dev"
 }
