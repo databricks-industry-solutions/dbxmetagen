@@ -263,7 +263,7 @@ pragmatically).
 | ON-19 | Batch column classification truncates on WIDE tables: a 144-col table produced an 11424-char response cut off at `max_tokens=4096` -> invalid/partial JSON. The `len(columns) <= n*1.25` remainder-merge (n=120 -> up to 150 cols in ONE call) sent oversized batches, and truncation wasn't detected as truncation. **DONE (v0.10.61):** replaced count-merge with output-token-budget chunking (`_COLS_PER_CLASSIFY_CHUNK=60`), raised `max_tokens` 4096->8192, and `_classify_column_chunk_resilient` recursively BISECTS on `StructuredTruncationError` (ai_query only as last resort on a single column) so no column is lost. | DONE | P1 | M | Customer log (wide biotech tables) |
 | ON-20 | Empty/`{}` responses (`Expecting value: line 1 column 1`; `classifications Field required`) parse-failed with no finish-reason context, so a retryable empty/truncated response looked identical to genuine garbage. **DONE (v0.10.61)** with MG-6: `invoke_structured` now reads `finish_reason` and raises `StructuredTruncationError` (length) or `StructuredEmptyResponseError` (empty/`{}`) -- both `ValueError` subclasses (backward compatible) -- and logs finish_reason + length. This is the signal ON-19/ON-21 bisect on. | DONE | P2 | S | Customer log |
 | ON-21 | **geo_classifier has the SAME truncation bug as ON-19, worse**: `max_tokens=2048`, called `with_structured_output` directly (no fallback), and SILENTLY defaulted every column to non_geographic on any failure -> wide tables mis-classified with no error. **DONE (v0.10.61):** routed through `invoke_structured` (gains truncation signal), output-token chunking (`_GEO_COLS_PER_CHUNK=60`), `max_tokens` 2048->8192, and `_classify_geo_chunk_resilient` bisects on truncation -- defaulting only as a true last resort on a single column. | DONE | P1 | S | ON-19 sibling audit |
-| ON-22 | **Bundle-scoped ontology consumers + `ontology_bundle` on `ontology_relationships`.** Multi-bundle coexistence is correct at STORAGE (namespaced `entity::{bundle}::{name}` nodes, same-bundle edge guards) but READ consumers mix bundles: `ontology_relationships` has no `ontology_bundle` column (verified) and `genie/context._get_ontology_entities` / semantic-layer relationship reads join by entity-type NAME with no bundle filter, so two bundles in one schema yield ambiguous/duplicated entities + relationships. Documented limitation (`.cursor/rules/ontology-patterns.mdc:158-163`). Add the column; add bundle filters at read sites; thread `ontology_bundle` through `GenieContextAssembler`. Extends ON-18. NOTE: this is a SEPARATE latent gap — the customer's "multiple ontologies for one BU" testing error was the ON-19 wide-table truncation (now fixed), NOT this. | OPEN | P2 | M | Customer ask (Mohit) + multi-bundle consumer audit |
+| ON-22 | **Bundle-scoped ontology consumers + `ontology_bundle` on `ontology_relationships`.** Multi-bundle coexistence is correct at STORAGE (namespaced `entity::{bundle}::{name}` nodes, same-bundle edge guards) but READ consumers mix bundles: `ontology_relationships` has no `ontology_bundle` column (verified) and `genie/context._get_ontology_entities` / semantic-layer relationship reads join by entity-type NAME with no bundle filter, so two bundles in one schema yield ambiguous/duplicated entities + relationships. Documented limitation (`.cursor/rules/ontology-patterns.mdc:158-163`). **Harden-or-document, two tiers:** (a) now — make consumers DETECT multi-bundle coexistence and warn, and make the one-bundle-per-schema rule louder in docs; (b) full fix (`ontology_bundle` column + read-site filters + thread through `GenieContextAssembler`) ONLY if single-schema multi-bundle becomes a first-class supported pattern — a product decision we are NOT currently making. It is off the recommended path (README: one bundle per output schema), ON-19 already fixed the acute error, and the customer need ("multiple ontologies per BU") routes to EN-1/EN-2 (one bundle per schema, many schemas). Extends ON-18. | OPEN | P3 | M | Customer ask (Mohit) + multi-bundle consumer audit |
 
 ### ON-4: Remove legacy `link` SQL filter
 
@@ -346,15 +346,31 @@ schema, "Patient" from bundle A and B, or `treats` (A) vs `manages` (B), both co
 ambiguous/duplicated entities and relationships in Genie context and metric-view generation. This is
 the documented limitation in `.cursor/rules/ontology-patterns.mdc:158-163`.
 
-**Work:** Add `ontology_bundle` to `ontology_relationships` (nullable ADD COLUMN, backfill on next
-run); add bundle filters at the consumer read sites; thread an `ontology_bundle` selection through
-`GenieContextAssembler.__init__` and the semantic-layer config. Extends ON-18.
+**Why this is P3, not P2 (scoping decision, 2026-08):** the scenario ON-22 guards against — two
+bundles coexisting in ONE output schema — is **off the recommended path**. The README ("Ontology
+Bundles and Deployment") already says use one bundle per output schema, and deploy separate schemas
+per bundle for multi-domain data. The customer's actual ask, "multiple ontologies for a single BU,"
+is best met by **one bundle per schema + multiple schemas per BU** — i.e. EN-1 (schema selection) +
+EN-2 (cross-schema stitching), where every schema is single-bundle and this consumer-mixing **never
+fires**. The crosswalk case (FHIR *and* OMOP semantics on the same tables) is ON-18, not ON-22. And
+the acute customer error was ON-19 (wide-table truncation), now FIXED (confirmed against Mohit's logs
+by Eli) — **not** this. So ON-22 is a real-but-narrow latent gap in a discouraged configuration.
 
-**Important scoping note:** the customer's "multiple ontologies for a single BU" **testing error was
-the ON-19 wide-table classification truncation** (entity type parsed as a string on wide biotech
-tables), now **FIXED** in v0.10.61+ — confirmed against Mohit's logs by Eli. ON-22 is a *separate,
-latent* correctness gap surfaced by the multi-bundle consumer audit; it is not the acute error and is
-lower urgency now that the chunking fix landed.
+**Work — harden-or-document, two tiers:**
+- **(a) Now (cheap):** make the consumer read sites DETECT multi-bundle coexistence in a schema and
+  emit a warning (generation-time already warns via ON-6; the read/consumer path is silent), and make
+  the one-bundle-per-schema requirement more prominent in docs/UI. This closes the *silent* failure.
+- **(b) Later, gated on a product decision:** the full fix — add `ontology_bundle` to
+  `ontology_relationships` (nullable ADD COLUMN), add bundle filters at the read sites, thread an
+  `ontology_bundle` selection through `GenieContextAssembler.__init__` + the semantic-layer config —
+  **only if** we decide to make single-schema multi-bundle a first-class supported pattern. We are
+  **not** currently making that decision; EN-1/EN-2 is the sanctioned path.
+
+**Open question (revisit before doing (b)):** do we have a customer who genuinely needs two bundles in
+ONE schema (not solvable by separate schemas)? If not, (a) + docs is the terminal state. Extends
+ON-18; see EN-1/EN-2.
+
+**Files:** (a) `src/dbxmetagen/genie/context.py`, `src/dbxmetagen/semantic_layer.py`, docs; (b) + `src/dbxmetagen/ontology.py`.
 
 **Files:** `src/dbxmetagen/ontology.py`, `src/dbxmetagen/genie/context.py`, `src/dbxmetagen/semantic_layer.py`
 
@@ -682,7 +698,7 @@ Recommended gate before promoting: one live backward-compat smoke test (feature 
 | EN-3 | External context sources for the agent — a structured UC table or an EXTERNAL vector index (already-ingested data; NOT reaching out to SharePoint). Index/endpoint are hardwired to `{CATALOG}.{SCHEMA}.{VS_INDEX_SUFFIX}` today; add `EXTERNAL_VECTOR_INDEXES`/`EXTERNAL_KB_TABLES` config + union into retrieval with source attribution. | OPEN | P2 | M | Customer ask (Mohit) |
 | EN-4 | Review-only user role (review + save/apply in Review-and-Apply only). No role system today — OBO identity only. Add role context + `require_role` gate on write/generation endpoints + frontend nav hiding. Relates to T3-6. | OPEN | P2 | M | Customer ask (Mohit) |
 | EN-5 | Read-only deployment mode (`READ_ONLY_MODE` central write gate over KB PATCH / apply-ddl / ontology+tag apply / job submit; document restricted-SP fallback). `federation_mode`/`apply_ddl` exist but there is no centralized gate. Shares plumbing with EN-4. | OPEN | P2 | M | Customer ask (Mohit) |
-| EN-6 | Production-readiness hardening track: re-include the excluded API test suite (`test_app_logic.py`, `pyproject.toml:54`) + API-route tests (TG-1..TG-6), `api_server.py` god-module split (DE-9, ~16K lines), OBO `x-forwarded-access-token` validation, result pagination, rate limiting, auth audit log (extends MG-9). Cross-links R3/R4/R5/R6. | OPEN | P1 | L | Customer ask (Mohit) + code audit |
+| EN-6 | Production-readiness — a DEFINED MINIMUM BAR, not an open epic (see detail for the 5-point checklist + explicit punt list). Bar: API test suite in CI (`test_app_logic.py` excluded, `pyproject.toml:54`; + TG-1..TG-6), OBO trust-boundary documented + guardrail, graceful-degradation verified, ops monitors + auth/action audit log (MG-9), read-only mode (EN-5) available. PUNTED (not prod-blockers): god-module split (DE-9), DI refactor (DE-10), rate limiting, full pagination, full RBAC. Open Q gates size: self-hosted vs managed offering. | OPEN | P1 | M | Customer ask (Mohit) + code audit |
 
 ### EN-1: Runtime metadata-result-schema selection
 
@@ -725,13 +741,39 @@ central write gate. **Work:** `READ_ONLY_MODE` env flag gating all write endpoin
 apply-ddl(+bundle), ontology/tag apply, job submit) → 403 with a clear message; document the
 restricted-service-principal fallback. Shares the enforcement point with EN-4. **Files:** `apps/.../api_server.py`.
 
-### EN-6: Production-readiness hardening
+### EN-6: Production-readiness (defined minimum bar)
 
-**Status: OPEN (track)** -- Verified gaps: the API test suite is excluded from CI
-(`pyproject.toml:54` ignores `test_app_logic.py`; TG-1..TG-6), `api_server.py` is ~16K lines (DE-9),
-the OBO middleware trusts `x-forwarded-access-token` without validation, and there is no result
-pagination / rate limiting / auth audit log. Bundle these as a hardening track cross-linking TG-*,
-DE-9, MG-9, and the tracked scaling items R3/R4/R5/R6. **Files:** `pyproject.toml`, `apps/.../api_server.py`, `tests/`.
+**Status: OPEN** -- "Production-ready" is defined here as an explicit acceptance bar so it cannot
+become an open-ended sink. Most of it is documentation + wiring existing pieces, not new architecture.
+
+**Minimum bar (the actual gate) — 5 dimensions:**
+1. **Security/auth:** document the OBO trust boundary — the app trusts `x-forwarded-access-token`, which
+   is safe ONLY behind Databricks Apps ingress and must never be exposed directly; confirm the app SP
+   is least-privilege; secrets/PII never logged (already enforced). Mostly docs + one guardrail.
+2. **Reliability/correctness:** the API test suite runs in CI (`test_app_logic.py` is excluded today,
+   `pyproject.toml:54`) + API-route tests (TG-1..TG-6); no unbounded client loops (one class fixed
+   this session — see the `execute_sql_meta` pagination guard); graceful degradation on a dependency
+   outage verified (VS-down → UC-Delta fallback already exists).
+3. **Operability:** the two ops monitors (`notebooks/monitors/job_activity_monitor.py`,
+   `pipeline_health_check.py`) wired/documented; structured logging (log-spam already fixed, MG-21); a
+   basic **auth/action audit log** (MG-9) so "who applied what" is answerable.
+4. **Data safety:** review-before-apply (exists), steward-lock preservation (exists), and read-only
+   mode (EN-5) available for cautious rollouts.
+5. **Deployability:** backward-compat verified (done this session), single deploy path (done), clear
+   versioning/rollback.
+
+**Explicitly PUNTED (do NOT gate prod-ready on these):** `api_server.py` god-module split (DE-9) and
+DI refactor (DE-10) are dev-velocity, not prod blockers — deferring them is the biggest scope-saver;
+rate limiting, full result pagination, cost dashboards (P3 hardening); full RBAC (EN-4's cheap
+reviewer flag suffices for the customer).
+
+**Open question that sets the true size:** production-ready for a **customer self-hosting the app in
+their own workspace** (mostly: document boundaries + tests + audit — bounded M) vs **us running it as a
+managed multi-tenant offering** (adds tenant isolation, rate limiting, SLOs — much larger). The row's
+`M` assumes self-hosted; managed is a separate, larger scope.
+
+Cross-links TG-1..TG-6, DE-9/DE-10, MG-9, MG-21, EN-5, and the tracked scaling items R3/R4/R5/R6.
+**Files:** `pyproject.toml`, `apps/.../api_server.py`, `tests/`, docs.
 
 ---
 
