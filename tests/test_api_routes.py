@@ -90,6 +90,27 @@ class TestSafeBundlePath:
 
 
 # ---------------------------------------------------------------------------
+# _compute_config_errors — required-config validation surfaced to the UI (DP-2)
+# ---------------------------------------------------------------------------
+class TestComputeConfigErrors:
+    def test_missing_catalog_flagged(self):
+        errs = api_server._compute_config_errors("", "wh123")
+        assert any("CATALOG_NAME" in e for e in errs)
+
+    def test_none_sentinel_catalog_flagged(self):
+        for val in ("None", "none", "null", "  "):
+            errs = api_server._compute_config_errors(val, "wh123")
+            assert any("CATALOG_NAME" in e for e in errs), f"expected flag for {val!r}"
+
+    def test_missing_warehouse_flagged(self):
+        errs = api_server._compute_config_errors("my_catalog", "")
+        assert any("WAREHOUSE_ID" in e for e in errs)
+
+    def test_valid_config_has_no_errors(self):
+        assert api_server._compute_config_errors("my_catalog", "wh123") == []
+
+
+# ---------------------------------------------------------------------------
 # _validate_filter
 # ---------------------------------------------------------------------------
 class TestValidateFilter:

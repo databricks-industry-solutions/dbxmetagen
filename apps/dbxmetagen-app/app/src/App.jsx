@@ -280,6 +280,7 @@ export default function App() {
   const [sessionExpired, setSessionExpired] = useState(false)
   const [pipelineStats, setPipelineStats] = useState(null)
   const [appMeta, setAppMeta] = useState({ displayName: '', version: '' })
+  const [configErrors, setConfigErrors] = useState([])
   const [dark, setDark] = useState(() => {
     if (typeof window !== 'undefined') {
       const saved = localStorage.getItem('dbxmetagen-dark')
@@ -318,7 +319,10 @@ export default function App() {
 
   useEffect(() => {
     cachedFetchObj('/api/config', {}, TTL.CONFIG).then(({ data }) => {
-      if (data) setAppMeta({ displayName: data.app_display_name || '', version: data.version || '' })
+      if (data) {
+        setAppMeta({ displayName: data.app_display_name || '', version: data.version || '' })
+        setConfigErrors(data.config_valid === false ? (data.config_errors || []) : [])
+      }
     })
   }, [])
 
@@ -344,6 +348,16 @@ export default function App() {
 
   return (
     <div className="min-h-screen bg-dbx-oat-light dark:bg-dbx-navy transition-colors">
+      {configErrors.length > 0 && (
+        <div className="bg-red-600 text-white px-6 py-3 text-sm">
+          <div className="max-w-[90rem] mx-auto">
+            <strong>Deployment incomplete —</strong> the app is missing required configuration:
+            <ul className="list-disc ml-6 mt-1">
+              {configErrors.map((e, i) => <li key={i}>{e}</li>)}
+            </ul>
+          </div>
+        </div>
+      )}
       {/* Header */}
       <header className="bg-gradient-to-r from-dbx-navy via-dbx-navy-700 to-dbx-navy-600 px-6 py-4 shadow-md">
         <div className="flex items-center justify-between max-w-[90rem] mx-auto">

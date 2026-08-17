@@ -1,7 +1,7 @@
 variables:
   catalog_name:
-    description: "(REQUIRED) Target catalog where data, models, and files are stored for this project. If source tables are in this catalog, then table names only have to be scoped with schema and table. If table names are in other catalogs then table names need to be fully scoped. Replace this catalog name with the main catalog you want to run dbxmetagen from. Cannot be 'none', 'null', or empty."
-    default: None
+    description: "(REQUIRED) Target catalog where data, models, and files are stored for this project. If source tables are in this catalog, then table names only have to be scoped with schema and table. If table names are in other catalogs then table names need to be fully scoped. Replace this catalog name with the main catalog you want to run dbxmetagen from. Cannot be 'none', 'null', or empty. Deploy succeeds if unset, but the app shows a blocking 'CATALOG_NAME not set' banner until you provide it via variable-overrides.json and redeploy."
+    default: ""
   schema_name:
     description: Primary schema where data, models, and files are written to for this project. This is not the source schema, which is specified elsewhere with the source table name.
     default: metadata_results

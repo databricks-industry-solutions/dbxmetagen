@@ -403,6 +403,28 @@ def execute_sql(query: str, warehouse_id: Optional[str] = None, timeout: int = 3
 CATALOG = os.environ.get("CATALOG_NAME", "")
 SCHEMA = os.environ.get("SCHEMA_NAME", "metadata_results")
 
+# Required-config validation (DP-2). The deploy still succeeds even when a required
+# per-workspace value is missing; instead the frontend renders a blocking banner from
+# /api/config's `config_valid`/`config_errors`, and lifespan logs a prominent error.
+# `catalog_name` is REQUIRED and cannot be none/null/empty (see variables.yml).
+def _compute_config_errors(catalog: str, warehouse_id: str) -> list[str]:
+    """Return human-readable messages for missing required deploy config (DP-2)."""
+    errors: list[str] = []
+    if (catalog or "").strip().lower() in ("", "none", "null"):
+        errors.append(
+            "CATALOG_NAME is not set. Set `catalog_name` in your variable-overrides.json "
+            "(at .databricks/bundle/<target>/variable-overrides.json) and redeploy."
+        )
+    if not (warehouse_id or "").strip():
+        errors.append(
+            "WAREHOUSE_ID is not set. Set `warehouse_id` in your variable-overrides.json "
+            "and redeploy — dashboard and SQL queries require it."
+        )
+    return errors
+
+
+_CONFIG_ERRORS: list[str] = _compute_config_errors(CATALOG, os.environ.get("WAREHOUSE_ID", ""))
+
 
 def fq(table: str) -> str:
     return f"`{CATALOG}`.`{SCHEMA}`.`{table}`"
@@ -689,6 +711,8 @@ def multi_hop_traverse(
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     logger.info("dbxmetagen API starting – catalog=%s schema=%s obo=%s", CATALOG, SCHEMA, _OBO_ENABLED)
+    for _err in _CONFIG_ERRORS:
+        logger.error("CONFIG ERROR (deploy incomplete): %s", _err)
     if _OBO_ENABLED:
         logger.info(
             "OBO mode active – ensure workspace preview "
@@ -831,6 +855,8 @@ def get_config():
         "obo_enabled": _OBO_ENABLED,
         "mlflow_experiment_id": _get_mlflow_experiment_id(),
         "app_display_name": os.environ.get("APP_DISPLAY_NAME", ""),
+        "config_valid": len(_CONFIG_ERRORS) == 0,
+        "config_errors": _CONFIG_ERRORS,
         "version": pkg_version,
     }
 
