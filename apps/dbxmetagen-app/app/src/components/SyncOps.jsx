@@ -137,9 +137,13 @@ export default function SyncOps({ onNavigate }) {
             </p>
             {kgiError && <div className="text-[11px] text-red-600 dark:text-red-400 mt-1">{kgiError}</div>}
           </div>
-          {/* Lakebase Sync (Beta) */}
+          {/* Lakebase Sync (Beta) — opt-in: greyed out until a Lakebase instance is provisioned
+              and attached as an app database resource (lakebase_configured = PGHOST set). Deploy
+              does NOT create the instance, so clicking blind would just fail the job. */}
           <div>
-            <button onClick={syncLakebase} disabled={!!runningAction || !ready} className="btn-secondary btn-md w-full">
+            <button onClick={syncLakebase} disabled={!!runningAction || !ready || !lakebaseConfigured}
+              title={!lakebaseConfigured ? 'Lakebase is not configured. Provision a Lakebase instance and attach it as an app database resource to enable — it is not created by deploy.' : undefined}
+              className="btn-secondary btn-md w-full">
               {runningAction === 'lakebase' ? 'Syncing…' : 'Lakebase Sync'}
             </button>
             <div className="flex items-center gap-1.5 mt-1.5">
@@ -147,9 +151,14 @@ export default function SyncOps({ onNavigate }) {
               {lakebaseConfigured
                 ? <span className="badge bg-emerald-50 text-emerald-700 dark:bg-emerald-900/40 dark:text-emerald-300 text-[10px]">Configured</span>
                 : <span className="badge bg-slate-100 text-slate-500 dark:bg-slate-800 dark:text-slate-400 text-[10px]" title="Not configured — the graph uses Delta tables instead.">Using Delta Tables</span>}
-              <InfoTip text="Syncs the graph (nodes, edges, entities, relationships) to Lakebase (Postgres) for low-latency queries by the exploration agents. Requires a completed analytics pipeline and a configured Lakebase catalog." />
+              <InfoTip text="Syncs the graph (nodes, edges, entities, relationships) to Lakebase (Postgres) for low-latency queries by the exploration agents. Opt-in: deploy does NOT create the Lakebase instance — you must provision it, attach it as an app database resource, and run the analytics pipeline first. The graph works on Delta tables without it." />
             </div>
-            <input value={lakebaseCatalog} onChange={e => setLakebaseCatalog(e.target.value)} placeholder="Target catalog (optional)" className="input-base !text-xs mt-1.5" />
+            <input value={lakebaseCatalog} onChange={e => setLakebaseCatalog(e.target.value)} disabled={!lakebaseConfigured} placeholder="Target catalog (optional)" className="input-base !text-xs mt-1.5" />
+            {!lakebaseConfigured && (
+              <p className="text-[11px] text-slate-400 mt-1">
+                Opt-in — not provisioned by deploy. Provision a Lakebase instance and attach it as an app database resource to enable.
+              </p>
+            )}
             {lakebaseError && <div className="text-[11px] text-red-600 dark:text-red-400 mt-1">{lakebaseError}</div>}
           </div>
         </div>
