@@ -67,7 +67,15 @@ from any tool: notebooks, dashboards, Genie spaces, agents, or your own applicat
    ```
    (Alternatively pass them with `--var "catalog_name=...,schema_name=...,warehouse_id=..."`
    or `BUNDLE_VAR_*` env vars. The workspace host comes from your CLI profile.
-   `example.env` documents every available variable.)
+   The full list of overridable variables is **declared** in `variables.yml` /
+   `variables.advanced.yml` / `resources/app_variables.yml`; `variable-overrides.example.json`
+   (basic) and `variable-overrides.advanced.example.json` are copy-ready starting points; and
+   `example.env` is an annotated human reference — no tool reads it, so you never edit it in place.)
+
+   > **First deploy:** `.databricks/` is git-ignored and does **not** exist in a fresh clone,
+   > so the `mkdir -p` above is required before the file will be picked up (a repo-root file is
+   > ignored). If you deploy before setting `catalog_name`, the deploy still succeeds and the app
+   > shows a clear "CATALOG_NAME not set" banner telling you what to fix — it won't fail cryptically.
 
    > **Prefer the workspace UI?** The Databricks bundle editor's **Deploy**
    > button is a first-class alternative to the CLI (same DAB engine, same
@@ -624,7 +632,17 @@ export UV_NATIVE_TLS=1
 
 Use that for `uv sync`, `uv lock`, `databricks bundle deploy`, and `./publish.sh`. Local `uv.lock` is gitignored; never commit it (it may contain internal proxy URLs). When bumping deps, export `requirements.txt` with `bash scripts/export_requirements.sh` and commit that file.
 
-**External customers** need no special config — `uv` defaults to public PyPI. The deploy build hook (`scripts/build_artifacts.sh`) only runs `uv build` (hatchling) and does not use `uv.lock`.
+**External customers on public PyPI** need no special config — `uv` defaults to public PyPI, and the deploy build hook (`scripts/build_artifacts.sh`) only runs `uv build` (hatchling) and does not use `uv.lock`.
+
+**External customers behind a proxy / on a private PyPI mirror (air-gapped):** the build hook does **not** scrub your environment, so standard `uv`/pip settings flow straight through to `uv build`. Set them in your shell before `databricks bundle deploy` (or in the workspace-UI build environment):
+
+```bash
+export UV_INDEX_URL=https://your-private-mirror/simple   # or UV_EXTRA_INDEX_URL
+export UV_NATIVE_TLS=1                                    # trust the corporate CA
+export HTTPS_PROXY=http://proxy.your-corp:8080           # if you route through an HTTP proxy
+```
+
+The **app's runtime `pip install`** (of `apps/dbxmetagen-app/app/requirements.txt`) runs in the Databricks Apps *platform* environment, which this repo cannot configure per-deploy. To route that install at a private mirror, either configure your workspace's package access (a Databricks workspace setting) or add an `--index-url` / `--extra-index-url` line to `apps/dbxmetagen-app/app/requirements.txt.template` and rebuild.
 
 ### `bundle deploy` fails downloading from `pypi-proxy.dev.databricks.com`
 

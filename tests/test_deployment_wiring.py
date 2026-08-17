@@ -153,7 +153,11 @@ def test_overrides_example_is_valid_and_declared():
         doc = yaml.safe_load((ROOT / vf).read_text()) or {}
         declared |= set((doc.get("variables") or {}).keys())
 
-    unknown = set(example) - declared
+    # `_comment*` keys are the intentional JSON-comment convention (JSON has no
+    # comments; DAB ignores unknown top-level keys). They document the example and
+    # are not bundle variables, so exclude them from the declared-variable check.
+    real_keys = {k for k in example if not k.startswith("_comment")}
+    unknown = real_keys - declared
     assert not unknown, (
         f"variable-overrides.example.json has keys not declared as bundle variables: {unknown}"
     )

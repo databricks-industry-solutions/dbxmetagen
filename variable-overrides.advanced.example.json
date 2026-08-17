@@ -9,6 +9,9 @@
   "_comment_node_type": "Job-cluster node type. AWS i3.2xlarge (default), Azure Standard_D8s_v3, GCP n2-highmem-8.",
   "node_type": "i3.2xlarge",
 
+  "_comment_model": "LLM endpoint used by BOTH jobs and the app. Default databricks-claude-sonnet-4-6.",
+  "model": "databricks-claude-sonnet-4-6",
+
   "_comment_cluster_policy": "To apply a CLUSTER POLICY you must override the WHOLE metadata_job_cluster complex variable (a bare policy_id string is not supported -- the v1.8.0+ direct deploy engine rejects an empty policy_id). Copy the default block from variables.yml and add policy_id + apply_policy_default_values. lakebase_job_cluster is the same pattern for the non-ML graph->Lakebase sync job.",
   "metadata_job_cluster": {
     "spark_version": "17.3.x-cpu-ml-scala2.13",
@@ -29,6 +32,9 @@
   "_comment_app": "app_name = app display name + job-name prefix. app_name_suffix appends to both, so multiple instances can coexist in one workspace (the app is a singleton by name).",
   "app_name": "dbxmetagen-app",
   "app_name_suffix": "",
+
+  "_comment_app_display_name": "Display name shown in the app UI title bar. MUST be non-empty -- an empty value is stripped by the DAB SDK and rejected on deploy. Defaults to dbxmetagen.",
+  "app_display_name": "dbxmetagen",
 
   "_comment_obo": "Enable On-Behalf-Of user auth. When true you MUST also set user_api_scopes, or SQL fails with 'OAuth token does not have required scopes'. Re-consent in an incognito window after any OBO change.",
   "enable_obo": true,

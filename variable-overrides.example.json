@@ -1,4 +1,5 @@
 {
+  "_comment_path": "Copy this file to .databricks/bundle/<target>/variable-overrides.json -- DAB auto-loads that EXACT path (a repo-root copy is NOT picked up). On a fresh clone that folder does not exist yet: run `mkdir -p .databricks/bundle/dev` first (match your -t target).",
   "catalog_name": "my_catalog",
   "schema_name": "metadata_results",
   "warehouse_id": "0123456789abcdef",
@@ -9,6 +10,9 @@
 
   "_comment_node_type": "Job-cluster node type -- must match your cloud. AWS i3.2xlarge (default); Azure Standard_DS4_v2; GCP n2-highmem-8.",
   "node_type": "i3.2xlarge",
+
+  "_comment_model": "LLM endpoint used by BOTH the jobs and the app (comments, PI, domain, agents). Default databricks-claude-sonnet-4-6. Override to point at a different Foundation Model or provisioned-throughput endpoint.",
+  "model": "databricks-claude-sonnet-4-6",
 
   "_comment_cluster_policy": "COMPUTE/CLUSTER POLICY: override the WHOLE metadata_job_cluster block (a bare policy_id string is NOT supported -- the v1.8.0+ direct deploy engine rejects an empty policy_id). Copy the default from variables.yml and add policy_id + apply_policy_default_values. lakebase_job_cluster is the same pattern for the graph->Lakebase sync job. OMIT this whole block for a policy-free deploy (the default).",
   "metadata_job_cluster": {
