@@ -373,16 +373,25 @@ export default function BatchJobs({ onNavigate, pipelineStats }) {
                   </>)
                 })()}
               </label>
-              <select value={ontologyBundle} onChange={e => {
-                const key = e.target.value
-                setOntologyBundle(key)
-                try { localStorage.setItem('dbxmetagen_ontologyBundle', key) } catch {}
+              <select value={ontologyBundle || (domainConfig ? `domain:${domainConfig}` : '')} onChange={e => {
+                const raw = e.target.value
+                if (raw.startsWith('domain:')) {
+                  // Domain-only selection: a standalone domain taxonomy with no ontology.
+                  // For customers who want domain classification but not a full ontology.
+                  const dk = raw.slice('domain:'.length)
+                  setDomainConfig(dk)
+                  setOntologyBundle('')
+                  try { localStorage.setItem('dbxmetagen_ontologyBundle', '') } catch {}
+                  return
+                }
+                setOntologyBundle(raw)
+                try { localStorage.setItem('dbxmetagen_ontologyBundle', raw) } catch {}
                 // The domain-taxonomy override only applies to custom-imported
                 // ontologies; clear any lingering selection when switching to a
                 // curated/formal bundle so we never send a stale invisible override.
-                if (!bundles.find(b => b.key === key)?.custom) setDomainConfig('')
+                if (!bundles.find(b => b.key === raw)?.custom) setDomainConfig('')
               }} className="select-base">
-                <option value="">(None — use domain list only)</option>
+                <option value="">(None — use default domain list only)</option>
                 {bundles.length > 0 && (() => {
                   const custom = bundles.filter(b => b.custom)
                   const formal = bundles.filter(b => !b.custom && b.bundle_type === 'formal_ontology')
@@ -412,6 +421,13 @@ export default function BatchJobs({ onNavigate, pipelineStats }) {
                       {curated.map(b => (
                         <option key={b.key} value={b.key}>
                           {b.has_tier_indexes ? '\u2713 ' : ''}{b.name} ({counts(b)}){suffix(b)}
+                        </option>
+                      ))}
+                    </optgroup>}
+                    {domainConfigs.length > 0 && <optgroup label="Domain taxonomies (domain classification only -- no ontology)">
+                      {domainConfigs.map(d => (
+                        <option key={`domain:${d.key}`} value={`domain:${d.key}`}>
+                          {d.name} ({d.domain_count} domains)
                         </option>
                       ))}
                     </optgroup>}
