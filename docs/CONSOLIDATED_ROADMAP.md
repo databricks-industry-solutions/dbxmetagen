@@ -263,7 +263,7 @@ pragmatically).
 | ON-19 | Batch column classification truncates on WIDE tables: a 144-col table produced an 11424-char response cut off at `max_tokens=4096` -> invalid/partial JSON. The `len(columns) <= n*1.25` remainder-merge (n=120 -> up to 150 cols in ONE call) sent oversized batches, and truncation wasn't detected as truncation. **DONE (v0.10.61):** replaced count-merge with output-token-budget chunking (`_COLS_PER_CLASSIFY_CHUNK=60`), raised `max_tokens` 4096->8192, and `_classify_column_chunk_resilient` recursively BISECTS on `StructuredTruncationError` (ai_query only as last resort on a single column) so no column is lost. | DONE | P1 | M | Customer log (wide biotech tables) |
 | ON-20 | Empty/`{}` responses (`Expecting value: line 1 column 1`; `classifications Field required`) parse-failed with no finish-reason context, so a retryable empty/truncated response looked identical to genuine garbage. **DONE (v0.10.61)** with MG-6: `invoke_structured` now reads `finish_reason` and raises `StructuredTruncationError` (length) or `StructuredEmptyResponseError` (empty/`{}`) -- both `ValueError` subclasses (backward compatible) -- and logs finish_reason + length. This is the signal ON-19/ON-21 bisect on. | DONE | P2 | S | Customer log |
 | ON-21 | **geo_classifier has the SAME truncation bug as ON-19, worse**: `max_tokens=2048`, called `with_structured_output` directly (no fallback), and SILENTLY defaulted every column to non_geographic on any failure -> wide tables mis-classified with no error. **DONE (v0.10.61):** routed through `invoke_structured` (gains truncation signal), output-token chunking (`_GEO_COLS_PER_CHUNK=60`), `max_tokens` 2048->8192, and `_classify_geo_chunk_resilient` bisects on truncation -- defaulting only as a true last resort on a single column. | DONE | P1 | S | ON-19 sibling audit |
-| ON-22 | **Bundle-scoped ontology consumers + `ontology_bundle` on `ontology_relationships`.** Multi-bundle coexistence is correct at STORAGE (namespaced `entity::{bundle}::{name}` nodes, same-bundle edge guards) but READ consumers mix bundles: `ontology_relationships` has no `ontology_bundle` column (verified) and `genie/context._get_ontology_entities` / semantic-layer relationship reads join by entity-type NAME with no bundle filter, so two bundles in one schema yield ambiguous/duplicated entities + relationships. Documented limitation (`.cursor/rules/ontology-patterns.mdc:158-163`). **Harden-or-document, two tiers:** (a) now — make consumers DETECT multi-bundle coexistence and warn, and make the one-bundle-per-schema rule louder in docs; (b) full fix (`ontology_bundle` column + read-site filters + thread through `GenieContextAssembler`) ONLY if single-schema multi-bundle becomes a first-class supported pattern — a product decision we are NOT currently making. It is off the recommended path (README: one bundle per output schema), ON-19 already fixed the acute error, and the customer need ("multiple ontologies per BU") routes to EN-1/EN-2 (one bundle per schema, many schemas). Extends ON-18. | OPEN | P3 | M | Customer ask (Mohit) + multi-bundle consumer audit |
+| ON-22 | **Table-scope ontology relationship reads (two-bundles-per-schema, different table sets).** Confirmed real customer config: multiple ontology bundles coexisting in ONE output schema on DIFFERENT table sets (finance/commercial/life-sciences data + their own ontologies in one `metadata_results`). Bundle is a PROVENANCE tag, not a scoping key. Storage is already correct; entities/FKs/joins are already table-scoped. **LOW severity, cosmetic:** ontology relationships are consumed as DESCRIPTIVE TEXT ONLY (`context.py:993,1053`; `semantic_layer.py:766-768`) — NOT joins (those come from `fk_predictions`, table-scoped, intentionally cross-bundle) — so a shared entity-type name (both bundles have `Organization`) only bleeds a wrong descriptive relationship line across table sets. **Fix (table-keyed, never bundle-keyed):** (a) reuse existing `evidence_table` to require the originating table be in scope; (b) add nullable `source_tables` to `ontology_relationships` for bundle-defined rows. Structural cross-ontology integration (FK/joins across table sets) MUST be preserved — ON-22 does not touch it. Extends ON-18; multi-schema UI-swap/enterprise-connect are EN-1/EN-2. | OPEN | P2 | M | Customer ask (Mohit/Eli) + multi-bundle consumer audit |
 
 ### ON-4: Remove legacy `link` SQL filter
 
@@ -334,45 +334,63 @@ pragmatically).
 
 **Depends on:** Clear canonical-vs-LLM behavior (implemented in ontology provenance work).
 
-### ON-22: Bundle-scoped ontology consumers
+### ON-22: Table-scope ontology relationship reads (two-bundles-per-schema, different table sets)
 
-**Status: OPEN** -- Multi-bundle coexistence is correct at the STORAGE layer: graph nodes are
-namespaced `entity::{bundle}::{name}` and edge builders enforce a same-bundle guard
-(`_build_structural_edges`, `discover_inter_entity_relationships`). The gap is at the READ/consumer
-layer: `ontology_relationships` has no `ontology_bundle` column (verified against `ontology.py`), and
-`genie/context._get_ontology_entities` (`context.py:472`) + the semantic-layer relationship reads
-(`semantic_layer.py:713`) join by entity-type NAME with no bundle filter. With two bundles in one
-schema, "Patient" from bundle A and B, or `treats` (A) vs `manages` (B), both come back — producing
-ambiguous/duplicated entities and relationships in Genie context and metric-view generation. This is
-the documented limitation in `.cursor/rules/ontology-patterns.mdc:158-163`.
+**Status: OPEN (P2).** **REFRAMED 2026-08 after Eli review** (was "Bundle-scoped ontology consumers,"
+P3). The confirmed real customer requirement: multiple ontology bundles coexisting in ONE output schema
+on **different table sets** — one `metadata_results` schema coherently holding finance data (finance
+bundle), commercial data (commercial bundle), and life-sciences data (LS bundle) at once. This is a
+first-class supported configuration, which removes the old P3 rationale ("off the recommended path / no
+customer needs two bundles in one schema"). The same-tables / multi-standard crosswalk case (FHIR *and*
+OMOP semantics on the SAME tables) remains **ON-18**, not this. Multiple output *schemas* — UI swap and
+enterprise cross-schema connect — are **EN-1 / EN-2**, out of scope here.
 
-**Why this is P3, not P2 (scoping decision, 2026-08):** the scenario ON-22 guards against — two
-bundles coexisting in ONE output schema — is **off the recommended path**. The README ("Ontology
-Bundles and Deployment") already says use one bundle per output schema, and deploy separate schemas
-per bundle for multi-domain data. The customer's actual ask, "multiple ontologies for a single BU,"
-is best met by **one bundle per schema + multiple schemas per BU** — i.e. EN-1 (schema selection) +
-EN-2 (cross-schema stitching), where every schema is single-bundle and this consumer-mixing **never
-fires**. The crosswalk case (FHIR *and* OMOP semantics on the same tables) is ON-18, not ON-22. And
-the acute customer error was ON-19 (wide-table truncation), now FIXED (confirmed against Mohit's logs
-by Eli) — **not** this. So ON-22 is a real-but-narrow latent gap in a discouraged configuration.
+**Bundle is a PROVENANCE tag, NOT a scoping key.** Genie spaces and metric views must be scoped by the
+*tables in play*, never gated by bundle — same philosophy as FK prediction. A user never picks a bundle
+to filter an artifact.
 
-**Work — harden-or-document, two tiers:**
-- **(a) Now (cheap):** make the consumer read sites DETECT multi-bundle coexistence in a schema and
-  emit a warning (generation-time already warns via ON-6; the read/consumer path is silent), and make
-  the one-bundle-per-schema requirement more prominent in docs/UI. This closes the *silent* failure.
-- **(b) Later, gated on a product decision:** the full fix — add `ontology_bundle` to
-  `ontology_relationships` (nullable ADD COLUMN), add bundle filters at the read sites, thread an
-  `ontology_bundle` selection through `GenieContextAssembler.__init__` + the semantic-layer config —
-  **only if** we decide to make single-schema multi-bundle a first-class supported pattern. We are
-  **not** currently making that decision; EN-1/EN-2 is the sanctioned path.
+**HARD REQUIREMENT — structural integration crosses ontology boundaries.** Even though the finance /
+commercial / LS ontologies do not integrate with each other, the underlying tables must still integrate
+structurally (a finance table joining a commercial table on `customer_id`). This already works and ON-22
+MUST preserve it: FK prediction is table-level and intentionally bundle-agnostic (see pitfall #8; the
+OB-6 guard is per-`catalog.schema`, not per-bundle), and `_build_join_specs` reads `fk_predictions`
+filtered only by `src_table/dst_table IN (selected)` (`context.py:461`). ON-22 touches ONLY ontology
+*relationship* reads (descriptive text) — never FK/join generation.
 
-**Open question (revisit before doing (b)):** do we have a customer who genuinely needs two bundles in
-ONE schema (not solvable by separate schemas)? If not, (a) + docs is the terminal state. Extends
-ON-18; see EN-1/EN-2.
+**SEVERITY: LOW — cosmetic, not a correctness bug.** Storage is already correct (entities carry
+`ontology_bundle` + `source_tables`; nodes namespaced `entity::{bundle}::{name}`; same-bundle edge
+guards; table-scoped sweeps). The correctness-bearing reads are already table-scoped: **entities** filter
+by `source_tables` (`context.py:481-491`, `semantic_layer.py:690-697`), and **joins/FKs** come only from
+`fk_predictions` (table-scoped) — NOT from ontology relationships. Verified: ontology relationships feed
+**descriptive text only** — the `"ENTITY RELATIONSHIPS:"` section (`context.py:993,1053`) and the
+`"Relationships: …"` line (`semantic_layer.py:766-768`). They do NOT drive joins, metric-view structure,
+or entity scoping. So when two table-sets share an entity-type name (both bundles have `Organization`),
+the only defect is that a **descriptive relationship line bleeds across table sets** (a clinical
+`Organization` header showing a finance `holds Account` line). Noise in context prose, not a broken
+artifact. The two read sites:
+- `genie/context._get_entity_relationships` (`context.py:503-516`) already scopes by entity-type
+  membership (`src OR dst` present on the selected tables); the residual leak is shared type names.
+- `semantic_layer.build_context` (`semantic_layer.py:644`) is **schema-wide by design** (no table param;
+  reads all of `table_knowledge_base`) and keys `rel_by_entity` by entity-type NAME.
 
-**Files:** (a) `src/dbxmetagen/genie/context.py`, `src/dbxmetagen/semantic_layer.py`, docs; (b) + `src/dbxmetagen/ontology.py`.
+**Work — two tiers, both TABLE-keyed (never bundle-keyed); descriptive-only, so no correctness-regression risk:**
+- **(a) Now (cheap, no schema change):** reuse the `evidence_table` column that already records the
+  originating table for FK/link-derived rows (`ontology.py:6085,6128`). In `_get_entity_relationships`,
+  additionally require `evidence_table` (when present) to be in the selected tables; in `build_context`,
+  attach a relationship line to an entity only when its `evidence_table` is one of that entity's
+  `source_tables`. Bundle-defined rows (`source='bundle'`, no evidence_table) fall back to today's
+  type-name behavior.
+- **(b) Later (precise, schema change):** add nullable `source_tables ARRAY<STRING>` to
+  `ontology_relationships` (via `_REL_MIGRATION_COLUMNS`, `ontology.py:3391`), populate at write time in
+  `discover_named_relationships` — `[src_table, dst_table]` for FK-derived, and the reverse of the
+  existing `table_to_primary` map (`ontology.py:6042`) for bundle-defined/link rows — then filter reads
+  by scoped tables directly. Covers the residual bundle-defined-row case `evidence_table` can't.
 
-**Files:** `src/dbxmetagen/ontology.py`, `src/dbxmetagen/genie/context.py`, `src/dbxmetagen/semantic_layer.py`
+**Not** the root of Mohit's error — that was ON-19 (wide-table truncation), fixed. Extends ON-18.
+Update `.cursor/rules/ontology-patterns.mdc:158-163` (which frames the limitation as needing a bundle
+column) to this table-scoping framing.
+
+**Files:** (a) `src/dbxmetagen/genie/context.py`, `src/dbxmetagen/semantic_layer.py`; (b) + `src/dbxmetagen/ontology.py`; tests.
 
 ---
 
@@ -517,9 +535,26 @@ preserved).
 |----|------|--------|----------|--------|--------|
 | R1 | Replace similarity CROSS JOIN with Vector Search ANN | DONE | -- | -- | SC R1 |
 | R2 | Cap knowledge graph edges per attribute value | DONE | -- | -- | SC R2 |
-| R3 | Batch DESCRIBE EXTENDED into `information_schema` query | OPEN | P0 | S | SC R3 |
+| R3 | Batch DESCRIBE EXTENDED into `information_schema` query | DONE | -- | S | SC R3 |
+| R3a | **Minor/future:** inline `if federation_mode: return {}` guard at the top of `_fetch_column_stats_concurrent` (`prompts.py:490`) as defense-in-depth. NOT needed for the current release — federation is already safe via the upstream `add_metadata=false` force (`config.py:290-298`) + entry gate (`prompts.py:86-87`), so R3 is DONE. This only protects against a FUTURE second caller of the stats path that forgets the `add_metadata` gate (would fire failing DESCRIBE EXTENDED at federated tables — non-fatal but wasteful/log-spammy). One line + a test asserting `{}`/no-SQL when `federation_mode=true`; mirrors `processing.py:224`. | OPEN | P3 | S | R3 review (Eli, defer) |
 
-> **R3 caveat:** Not all fields returned by DESCRIBE EXTENDED are available in `information_schema`. Fields like column-level statistics (min, max, distinct_count, avg_col_len, max_col_len, num_nulls) from ANALYZE TABLE COMPUTE STATISTICS are only exposed via DESCRIBE EXTENDED. A full replacement is not possible -- the migration should batch what `information_schema` does cover (column names, types, comments, nullability) and fall back to DESCRIBE EXTENDED only for statistics-dependent paths.
+> **R3 done (verified 2026-08-16):** Implemented as a two-tier fetch in `prompts.py`. **Tier 1**
+> (`_fetch_batch_column_metadata`, `prompts.py:451-488`) batches the info_schema-available fields
+> (column names, types, comments) into a SINGLE `system.information_schema.columns` query for all
+> columns. **Tier 2** (`_fetch_column_stats_concurrent`, `prompts.py:490-522`) fetches ONLY the
+> stats fields that info_schema cannot expose (min/max/num_nulls/avg_col_len/etc. from ANALYZE
+> STATISTICS) via concurrent per-column DESCRIBE EXTENDED (`ThreadPoolExecutor`, max 8). A full
+> replacement was never possible (the stats caveat), so this is the terminal design: batch what's
+> batchable, parallelize the irreducible remainder.
+>
+> **Federation-safe:** `config.py:290-298` forces `add_metadata=false` when `federation_mode=true`
+> (DESCRIBE EXTENDED unsupported on federated tables), and the whole stats path is gated behind
+> `if self.config.add_metadata` (`prompts.py:86-87`) — so federated tables issue ZERO DESCRIBE
+> EXTENDED calls. **Graceful on unsupported tables:** Tier-1 is try/except → `{}` (`prompts.py:471`),
+> and each Tier-2 per-column failure is caught/logged/skipped (`prompts.py:517-521`) so Tier-1 data
+> still returns — no crash on views/unsupported types. Optional future hardening (not required): add
+> an inline `if federation_mode: return {}` to `_fetch_column_stats_concurrent` for defense-in-depth,
+> matching the `processing.py:224` pattern.
 | R4 | Paginate semantic layer context build | OPEN | P1 | M | SC R4 |
 | R5 | Stream ontology column classification | OPEN | P1 | M | SC R5 |
 | R6 | Document and tune multi-task sharding | OPEN | P1 | S | SC R6 |
@@ -778,15 +813,95 @@ Cross-links TG-1..TG-6, DE-9/DE-10, MG-9, MG-21, EN-5, and the tracked scaling i
 
 ---
 
+## 9. Lakebase / GraphRAG Graph Sync (opt-in)
+
+**What happens today (documented 2026-08-16).** Lakebase (managed Postgres) is an **opt-in
+accelerator** for the exploration agents' graph queries — NOT part of the default deploy path, and
+the app/graph work fully on UC Delta tables without it.
+
+- **Deploy does NOT provision a Lakebase instance.** `bundle deploy` ships only the
+  `sync_graph_lakebase` job (+ `lakebase_job_cluster`). There is no `database_instance` resource in
+  the bundle and no post-deploy script creates one. `notebooks/sync_graph_to_lakebase.py` calls
+  `create_database_catalog()` / `create_synced_database_table()` against a **pre-existing** instance
+  (default name `dbxmetagen`, `resources/app_variables.yml`) — never `create_database_instance()`.
+- **"Sync to Lakebase" (SyncOps) flow:** `SyncOps.jsx` → `runJob('sync_graph_lakebase')` →
+  `/api/jobs/run` → the job → the notebook, which (1) enables CDF on `graph_nodes`/`graph_edges`,
+  (2) creates the Lakebase catalog in the existing instance, (3) creates SNAPSHOT synced tables.
+- **Preconditions (silent failures if unmet):** the Lakebase instance must already exist; the
+  analytics pipeline must have produced `graph_nodes`/`graph_edges`; the app must be attached to a
+  Lakebase database resource (`PGHOST` set → `/api/config` `lakebase_configured=true`).
+
+| ID | Item | Status | Priority | Effort | Source |
+|----|------|--------|----------|--------|--------|
+| LB-1 | **`lakebase_database_name` unwired (confirmed bug).** The bundle var exists (`resources/app_variables.yml`, default `knowledge_base`) but `sync_graph_lakebase.job.yml` never declares/passes it, so `sync_graph_to_lakebase.py` falls back to its hardcoded widget default `databricks_postgres` (line ~18) — the configured value is silently ignored, and the two defaults contradict. Works on a stock instance (has `databricks_postgres`) but breaks if the target PG database differs. **Fix:** declare `lakebase_database_name` as a job parameter + pass it in `base_parameters`; reconcile to ONE default (recommend `databricks_postgres`, the built-in DB, overridable). | OPEN | P2 | S | Lakebase trace (Eli) |
+| LB-2 | **Opt-in gating + UX.** UI now greys the "Lakebase Sync" button + input until `lakebase_configured` (PGHOST) is true, with a tooltip/note that deploy does not create the instance (`SyncOps.jsx`). `example.env` documents the opt-in provisioning steps. **Remaining:** add a fast-fail in the notebook that emits a clear "Lakebase instance `<name>` not found — provision it first" message instead of a raw SDK error; consider documenting the provisioning steps in a user-facing doc. | PARTIAL (UI greying + docs done 2026-08-16) | P3 | S | Lakebase trace (Eli) |
+| LB-3 | **Optional: deploy-time provisioning path.** Decide whether to offer a guided/DAB provisioning of the Lakebase instance (vs. keep it fully manual/opt-in). Product decision, not currently planned. | OPEN | P3 | M | Lakebase trace (Eli) |
+
+**Files:** `resources/jobs/sync_graph_lakebase.job.yml`, `notebooks/sync_graph_to_lakebase.py`,
+`resources/app_variables.yml`, `apps/dbxmetagen-app/app/src/components/SyncOps.jsx`, `example.env`.
+
+---
+
+## 10. Deployment Config Hygiene — THIS RELEASE (deployment must work)
+
+Top-priority, from the 2026-08-16 config/env audit (`variables.yml`, `variables.advanced.yml`,
+`resources/app_variables.yml`, `resources/apps/dbxmetagen_app.yml` config.env, `app.yaml`,
+`variable-overrides*.example.json`, `example.env`, bundled `src/dbxmetagen/variables*.yml`).
+**Good news first:** `app.yaml` carries only the launch command (no `env:` — config.env is the sole
+source, zero duplication there); the only `.template` (`requirements.txt.template`) is LIVE
+(`build_artifacts.sh:77`); the bundled `src/dbxmetagen/variables*.yml` copies are currently identical
+to root; all `variable-overrides*.example.json` keys map to real declared variables; `example.env`
+has no stale/removed references. The issues below are the real ones.
+
+| ID | Item | Status | Priority | Effort | Source |
+|----|------|--------|----------|--------|--------|
+| DP-1 | **config.env hardcodes model/node_type — bundle-var overrides silently ignored (CONFIRMED).** `resources/apps/dbxmetagen_app.yml` sets `GRAPHRAG_MODEL` (L20) and `LLM_MODEL` (L62) to the literal `"databricks-claude-sonnet-4-6"` and `NODE_TYPE` (L22) to `"i3.2xlarge"`, while sibling env vars use `${var.*}`. Overriding `var.model` / `var.node_type` (node_type is offered in `variable-overrides.example.json`) does NOT reach the app — it keeps the hardcoded value. **Fix:** `value: "${var.model}"` / `"${var.node_type}"` (confirm `var.model` exists in variables.yml). **DONE 2026-08-16:** `LLM_MODEL` now uses `${var.model}` (functional); vestigial `GRAPHRAG_MODEL`/`NODE_TYPE` also point at vars. | DONE | -- | S | Config audit (Eli) |
+| DP-2 | **No fail-fast for required vars; `catalog_name` default is the string `"None"` (CONFIRMED).** `variables.yml:4` `default: None` (unquoted → literal `"None"`), which violates the field's own "cannot be none/null/empty" rule; `warehouse_id` default `""` (L285). A bare/mis-overridden deploy SUCCEEDS then fails at runtime with a confusing "catalog not found: None" / empty-warehouse error instead of a clear message. **Fix:** validate required vars at app startup (and/or a preflight) — error clearly if `catalog_name ∈ {None, none, null, ""}` or warehouse unset; consider normalizing the sentinel to `""`. Makes deployment reliably work-or-clearly-fail. **DONE 2026-08-16:** `catalog_name` default `None`→`""`; `_compute_config_errors` surfaces `config_valid`/`config_errors` via `/api/config` → blocking UI banner (`App.jsx`) + startup ERROR log; unit-tested. | DONE | -- | S | Config audit (Eli) |
+| DP-3 | **Orphaned legacy app `apps/uc-metadata-assistant/` — DECISION: KEEP (won't fix).** Confirmed dead (last touched 2026-03-14; NOT wired into the bundle — databricks.yml syncs only `apps/dbxmetagen-app/app/**` + `resources/apps/*.yml`; referenced only by `apps/readme.md` + `tests/test_merged_functionality.py`). It does NOT deploy and does NOT affect dbxmetagen-app deployment, so per Eli (2026-08-16) we intentionally leave it in place rather than remove it. Noted here + in `apps/readme.md` so it isn't mistaken for live. | WON'T FIX | -- | -- | Config audit (Eli) |
+| DP-4 | **Duplicate `deploying_user` declaration.** Declared in BOTH `variables.yml:241` and `resources/app_variables.yml:2`, both defaulting to `${workspace.current_user.userName}` ("must match" by comment only). Can diverge if one is hardcoded. **Fix:** de-dupe to one declaration, or document the intentional split. | OPEN | P3 | S | Config audit (Eli) |
+| DP-5 | **Manual sync of bundled `src/dbxmetagen/variables*.yml`.** Copies are identical to root TODAY, but sync is a manual `cp` (CLAUDE.md) — silent drift risk for wheel-backfill. **Fix:** add a test/build-hook assert that root == bundled copies. | OPEN | P3 | S | Config audit (Eli) |
+| DP-6 | **Doc gap:** the cluster-policy "override the whole cluster block, not bare `policy_id`" gotcha is documented in `databricks.yml`/`variables.yml`/`variable-overrides.example.json` but NOT in `example.env`. Add a one-line pointer. | OPEN | P3 | S | Config audit (Eli) |
+| DP-7 | **UV / pip proxy + private-index support (CONFIRMED GAP — required).** `scripts/build_artifacts.sh` runs bare `uv build` with NO passthrough of `HTTP_PROXY`/`HTTPS_PROXY`/`UV_INDEX_URL`/`PIP_INDEX_URL`; README documents a private index ONLY for Databricks-internal laptops and tells external customers to use public PyPI. Air-gapped / proxy-restricted customers have no supported path for (a) the wheel build hook AND (b) the app's runtime `pip install -r requirements.txt` on Databricks Apps. **Fix:** pass through proxy/index env in `build_artifacts.sh`; document a supported `UV_INDEX_URL`/proxy setup for external customers; decide + document the app-runtime index mechanism (requirements.txt `--index-url`/`--extra-index-url` or app config). **DONE 2026-08-16 (docs-only — NO code change needed):** verified the build hook already passes `UV_INDEX_URL`/`UV_NATIVE_TLS`/`HTTP(S)_PROXY` through to `uv build` (env not scrubbed); README + example.env now document that for external customers, plus the platform-managed app-runtime `pip install` caveat (workspace mirror or `requirements.txt.template` edit). | DONE | -- | S | Deploy audit (Eli) |
+| DP-8 | **`app_display_name` regression vs main.** Settable on main (`app.yaml.template` sed), NOT settable via the one override file on the branch — DAB SDK strips empty strings (`omitempty`) so `config.env` intentionally omits `APP_DISPLAY_NAME` (dbxmetagen_app.yml L75-80); the only way to set it is hand-editing that committed YAML. Cosmetic (app reads `os.environ.get("APP_DISPLAY_NAME","")`), but it IS a parity loss the "all main vars settable" bar flags. **Fix:** make it settable from the single override file (e.g. a bundle var with a non-empty default). **DONE 2026-08-16:** added `app_display_name` var (default `"dbxmetagen"`) + `APP_DISPLAY_NAME`→`${var.app_display_name}`; now overridable via variable-overrides.json (must be non-empty). | DONE | -- | S | Config audit (Eli) |
+| DP-9 | **Deploy-doc accuracy (simple instructions that work).** (a) README claims "example.env documents every available variable" — no longer true (example.env is now instructional). (b) `model` is overridable (bundle var, `${var.model}`) but absent from both `variable-overrides*.example.json` and example.env — undiscoverable (pairs with DP-1 making the APP honor it). (c) The BASIC `variable-overrides.example.json` doesn't state the required `.databricks/bundle/<target>/` load path (only README/example.env/advanced do). **Fix:** correct the README claim; add `model` (+ note app-hardcoding until DP-1) to the example + example.env; add the load-path line to the basic example. **DONE 2026-08-16:** README claim corrected + a bold first-deploy callout added; `model` added to both example JSONs + example.env; load-path `_comment` added to the basic example; `example.env` marked documentation-only. Also fixed a PRE-EXISTING red test — `test_deployment_wiring` now ignores `_comment*` doc keys. | DONE | -- | S | Deploy audit (Eli) |
+
+### Manual UAT deploys required before shipping (DP-UAT — the confidence gate)
+
+Do these on a real workspace (DMVM) before release; each is a distinct path a customer will hit. This is the top-priority verification for a safe deploy:
+
+1. **Fresh-clone CLI deploy (happy path):** clone → create `.databricks/bundle/<target>/variable-overrides.json` from the example (catalog/schema/warehouse only) → `databricks bundle deploy` → `bundle run dbxmetagen_app` → `grant_app_permissions.sh` → app starts healthy, one metadata-gen job runs. Confirms the "touch one file, deploy" story end-to-end with NO npm locally.
+2. **Workspace-UI deploy (NOT web terminal):** UI Deploy button → verify the `artifacts.build` hook has `uv`+Python 3.11 in the UI build env and produces the wheel (UNVERIFIED today) → Apps > Deploy + Start → run the manual UC-grant SQL (§7) + create/permission the VS endpoint (§8) per `MANUAL_DEPLOYMENT.md`. Confirms the CLI-less path.
+3. **Backward-compat over a `main`-created schema:** deploy the branch against a schema first generated on `main`; app + one pipeline pass with no missing-column errors (from the Part-1 smoke test).
+4. **Override coverage:** a deploy that sets node_type, the whole `metadata_job_cluster` block WITH a `policy_id`, `budget_policy_id`, `run_as` SP, `app_permissions`, and `enable_obo`+`user_api_scopes` — confirm each takes effect (jobs on the policy/cluster, app access, OBO SQL works). Verifies no config-parity regression and the cluster-policy full-block path on BOTH engines.
+5. **Model override (after DP-1):** override `var.model`; confirm BOTH jobs and the app use the new model (guards the DP-1 fix).
+6. **Proxy/private-index deploy (after DP-7):** on a proxy-restricted setup, confirm the build hook + app runtime install resolve through the configured index.
+7. **Multi-target one-workspace:** deploy two targets with distinct `app_name_suffix`; confirm two apps coexist (no last-deploy-wins clobber).
+
+**This-release cut (top priority — deployment must work):** DP-1, DP-2, DP-7, DP-8, DP-9 are **DONE
+(implemented + tested 2026-08-16)** — pending only a frontend `dist/` rebuild (done) and the **DP-UAT
+manual deploy matrix**, which is now the sole remaining gate. DP-3 is intentionally KEPT (documented dead
+code, per Eli). DP-4/5/6 are low-risk cleanups that can follow. **Confirmed already-good (no action):** one-file
+override story (`.databricks/bundle/<target>/variable-overrides.json`), app.yaml↔config.env (no dup),
+committed `dist/` (no local npm), `deploy.sh` deprecated-but-working shim, workspace-UI deploy path
+documented in `MANUAL_DEPLOYMENT.md`, and full core-variable parity with main.
+
+---
+
 ## Summary by Status
 
 | Status | Count |
 |--------|-------|
-| DONE | 36 |
-| PARTIAL | 2 |
-| OPEN | 53 |
+| DONE | 42 |
+| PARTIAL | 3 |
+| OPEN | 58 |
 | DEFERRED | 10 |
 | KILLED | 2 |
+
+> R3 (batch DESCRIBE EXTENDED) closed DONE 2026-08-16 — **no open P0 items remain.**
+> 2026-08-16 audit additions: R3a (federation guard, P3); LB-1/2/3 (Lakebase, §9); DP-1..DP-9 +
+> DP-UAT (deployment config hygiene, §10). **DP-1/2/7/8/9 implemented + tested 2026-08-16**; DP-3 is
+> WON'T FIX / kept; DP-4/5/6 remain P3; DP-UAT manual deploy matrix is the remaining release gate.
+> Counts are approximate.
 
 > +7 OPEN in the 2026-08 customer-driven pass: ON-22 + EN-1..EN-6 (section 8). The three reported
 > bugs and backward-compat were verified already-DONE (see the section 8 verification note).
@@ -797,7 +912,8 @@ Cross-links TG-1..TG-6, DE-9/DE-10, MG-9, MG-21, EN-5, and the tracked scaling i
 1. ~~ON-7: Property classification test coverage~~ -- PARTIAL (unit coverage added, integrated flow test remains P1)
 2. ~~GN-1 through GN-4: Genie join reliability fixes~~ -- DONE
 3. ~~R1: Vector Search ANN for similarity~~ -- DONE (use_ann=True default, cross-join fallback, method telemetry)
-4. R3: Batch DESCRIBE EXTENDED (S) -- only remaining P0
+4. ~~R3: Batch DESCRIBE EXTENDED (S)~~ -- DONE (2026-08-16): two-tier info_schema batch + concurrent
+   stats; federation-safe. **No open P0 items remain.**
 
 **Wave 2 -- P1 (next sprint):**
 5. ~~ON-4: Remove legacy `link` SQL filter~~ -- DONE
@@ -838,7 +954,7 @@ Cross-links TG-1..TG-6, DE-9/DE-10, MG-9, MG-21, EN-5, and the tracked scaling i
 0. Ship the current feature branch to the customer (resolves the 3 bugs; backward-compat verified — run the smoke test first).
 1. EN-4 + EN-5 together (shared role/write-gate plumbing).
 2. EN-1 (schema selection, high customer value, L) → then EN-2 design spike.
-3. EN-3 (external context) and ON-22 (bundle-scoped consumers) in parallel — independent.
+3. EN-3 (external context) and ON-22 (table-scoped ontology relationship reads) in parallel — independent.
 4. EN-6 production-readiness hardening as an ongoing track alongside the above.
 
 ---
