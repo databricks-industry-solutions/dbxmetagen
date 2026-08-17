@@ -120,21 +120,21 @@ When `enable_obo=true`, the app passes the logged-in user's access token to SQL 
 
 ### Prerequisites
 
-1. A workspace admin enables the **"Databricks Apps - On-Behalf-Of User Authorization"** preview (Admin Console > Previews).
-2. Set `enable_obo=true` **and** override the `user_api_scopes` variable (e.g. in `variable-overrides.json`) before running `databricks bundle deploy`.
+1. The workspace has the **"Databricks Apps - user token passthrough"** feature (now GA; formerly the "On-Behalf-Of User Authorization" preview). Declaring `user_api_scopes` requires it.
+2. Set `enable_obo=true` at deploy time to use the user token at runtime (scopes are declared regardless).
 
-If the preview is not enabled but scopes are declared, the deploy will fail with: `Databricks Apps - user token passthrough feature is not enabled for organization`.
+If the workspace does NOT have the feature, override `user_api_scopes` to `[]` so no scopes are declared — otherwise the deploy fails with `Databricks Apps - user token passthrough feature is not enabled for organization`.
 
 ### User API scopes
 
-When OBO is enabled, the app declares `user_api_scopes` that control which Databricks APIs can be called under the user's token. Scopes are supplied via the `user_api_scopes` bundle variable (default: empty = OBO off):
+The app declares `user_api_scopes` on EVERY deploy (default in `app_variables.yml`), controlling which Databricks APIs may be called under the user's token when OBO is active at runtime. `enable_obo` selects the principal at runtime and does NOT gate this declaration.
 
-| Deploy method | Scopes declared |
+| Deploy method | Scopes declared (default) |
 |--------------|----------------|
-| `bundle deploy` (override `user_api_scopes`) | Whatever you set, e.g. `files.files`, `sql.statement-execution`, `dashboards.genie` |
+| `bundle deploy` / `deploy.sh` | `files.files`, `serving.serving-endpoints`, `sql.statement-execution`, `dashboards.genie` |
 | Notebook deploy (NB02) | `files.files`, `serving.serving-endpoints`, `sql.statement-execution`, `dashboards.genie` |
 
-`dashboards.genie` is needed for Genie Space creation/update via the OBO token. `serving.serving-endpoints` is only needed if OBO-authenticated users call model serving endpoints directly from the app UI (not currently used), so it can be omitted from the bundle variable.
+`files.files` (UC volumes), `sql.statement-execution` (SQL), and `dashboards.genie` (Genie space create/update) are the three the app actively uses under the user token. `serving.serving-endpoints` is declared for parity/future OBO serving calls (not exercised by the app today) — drop it from the `user_api_scopes` override for a minimal consent surface.
 
 ---
 

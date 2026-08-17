@@ -306,14 +306,16 @@ The sync job uses the Databricks SDK's synced database tables API to replicate D
 
 ## On-Behalf-Of User Auth (Optional)
 
-When `enable_obo=true` is set in your `.env` file, the app executes SQL queries and catalog operations under the logged-in user's identity instead of the app service principal. This honors per-user Unity Catalog permissions.
+When `enable_obo=true`, the app executes SQL queries and catalog operations under the logged-in user's identity instead of the app service principal, honoring per-user Unity Catalog permissions. `enable_obo` is a RUNTIME switch for *which principal* makes the call — it is separate from the `user_api_scopes` the app *declares*.
+
+**Scopes are declared on every deploy.** `user_api_scopes` defaults (in `app_variables.yml`) to `files.files`, `serving.serving-endpoints`, `sql.statement-execution`, `dashboards.genie`, independent of `enable_obo`. So enabling OBO needs no scope wrangling.
 
 **Prerequisites:**
 
-1. A workspace admin must enable the **"Databricks Apps - On-Behalf-Of User Authorization"** preview (Admin Console > Previews)
-2. Set `enable_obo=true` **and** override `user_api_scopes` (e.g. in `variable-overrides.json`) before `databricks bundle deploy`
+1. The workspace must have the **"Databricks Apps - user token passthrough"** feature (now GA; formerly the "On-Behalf-Of User Authorization" preview). Declaring `user_api_scopes` requires it.
+2. Set `enable_obo=true` at deploy time to actually use the user token at runtime.
 
-If the preview is not enabled and `enable_obo=true` is set with scopes declared, the deploy will fail with: `Databricks Apps - user token passthrough feature is not enabled for organization`. By default (`enable_obo` unset or `false`, `user_api_scopes` empty), user API scopes are not declared and this preview is not required.
+If a target workspace does NOT have the feature, override `user_api_scopes` to `[]` (empty) so no scopes are declared — otherwise the deploy fails with `Databricks Apps - user token passthrough feature is not enabled for organization`.
 
 ## Community Summaries
 

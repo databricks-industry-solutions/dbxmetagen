@@ -87,17 +87,8 @@ if [ -f "$ENV_FILE" ]; then
             esac
         fi
     done
-    # OBO parity with the old flow: enabling OBO auto-includes the standard scopes so
-    # the user does NOT have to enumerate them (the old deploy.sh injected these when
-    # enable_obo=true). Only add them if the env didn't already set user_api_scopes.
-    case "${enable_obo:-}" in
-        [Tt][Rr][Uu][Ee])
-            if [ -z "${user_api_scopes:-}" ]; then
-                DEPLOY_VARS+=(--var 'user_api_scopes=["files.files","sql.statement-execution","dashboards.genie"]')
-                echo "  enable_obo=true -> auto-included standard user_api_scopes (files.files, sql.statement-execution, dashboards.genie)."
-            fi
-            ;;
-    esac
+    # user_api_scopes is declared by default now (app_variables.yml), so enabling OBO
+    # needs no scope handling here -- enable_obo just flips the runtime principal.
     echo ""
 fi
 

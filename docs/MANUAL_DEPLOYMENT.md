@@ -121,7 +121,7 @@ complex variables (see `example.env` for all keys):
 {
   "run_as": { "service_principal_name": "your-spn-uuid" },
   "enable_obo": true,
-  "user_api_scopes": ["files.files", "sql.statement-execution", "dashboards.genie"],
+  "user_api_scopes": ["files.files", "serving.serving-endpoints", "sql.statement-execution", "dashboards.genie"],
   "app_permissions": [{ "group_name": "your_group", "level": "CAN_USE" }]
 }
 ```
@@ -130,11 +130,11 @@ complex variables (see `example.env` for all keys):
 > - **Re-consent after any OBO change.** The app asks the user to authorize on
 >   first visit; a stale cached consent surfaces as auth/scope errors. Open the
 >   app in an **incognito window** (or sign out/in) to force a fresh consent.
-> - **Set `user_api_scopes` with it.** OBO on but no scopes → the token carries
->   no permissions and SQL fails with
->   `Provided OAuth token does not have required scopes: sql`. Set both together
->   (as above); scopes are per-target — set them in the override file for the
->   target you actually deploy.
+> - **Scopes are declared by default** (`files.files`, `serving.serving-endpoints`,
+>   `sql.statement-execution`, `dashboards.genie`) — you do NOT need to set
+>   `user_api_scopes` to use OBO. Declaring scopes requires the workspace's
+>   user-token-passthrough feature; if a workspace lacks it, override
+>   `user_api_scopes` to `[]` to opt out.
 
 The workspace **host** is not a bundle variable -- the Deploy button uses the
 workspace you're in.

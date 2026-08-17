@@ -36,9 +36,9 @@
   "_comment_app_display_name": "Display name shown in the app UI title bar. MUST be non-empty -- an empty value is stripped by the DAB SDK and rejected on deploy. Defaults to dbxmetagen.",
   "app_display_name": "dbxmetagen",
 
-  "_comment_obo": "Enable On-Behalf-Of user auth. When true you MUST also set user_api_scopes, or SQL fails with 'OAuth token does not have required scopes'. Re-consent in an incognito window after any OBO change.",
+  "_comment_obo": "enable_obo flips the RUNTIME principal (user token vs app SP). user_api_scopes is declared on EVERY deploy by default (files.files, serving.serving-endpoints, sql.statement-execution, dashboards.genie) -- override only to customize, or set [] to opt out where the workspace lacks the user-token-passthrough feature. Re-consent in an incognito window after any OBO/scope change.",
   "enable_obo": true,
-  "user_api_scopes": ["files.files", "sql.statement-execution", "dashboards.genie"],
+  "user_api_scopes": ["files.files", "serving.serving-endpoints", "sql.statement-execution", "dashboards.genie"],
 
   "_comment_permissions": "Who can open the app UI (CAN_USE). Replaces the old permission_groups / permission_users env vars. The deploying user already has CAN_MANAGE.",
   "app_permissions": [

@@ -136,11 +136,11 @@ from any tool: notebooks, dashboards, Genie spaces, agents, or your own applicat
    >   requests the user's authorization on first visit; a stale cached consent
    >   shows up as auth/scope errors. Open the app in an **incognito window** (or
    >   sign out/in) to force a fresh consent after any OBO change.
-   > - **Set `user_api_scopes` alongside `enable_obo: true`.** With OBO on but no
-   >   scopes, the token carries no permissions and SQL fails with
-   >   `Provided OAuth token does not have required scopes: sql`. Set both in the
-   >   **same** override file, per target:
-   >   `"user_api_scopes": ["files.files", "sql.statement-execution", "dashboards.genie"]`.
+   > - **Scopes are declared by default — no need to set them.** `user_api_scopes`
+   >   defaults to `files.files`, `serving.serving-endpoints`, `sql.statement-execution`,
+   >   `dashboards.genie` on every deploy, so enabling OBO needs no scope wrangling.
+   >   Declaring scopes requires the workspace's user-token-passthrough feature; if a
+   >   target workspace lacks it, override `user_api_scopes` to `[]` to opt out.
 
    Notes:
    - The React frontend is **prebuilt and committed** (`apps/dbxmetagen-app/app/src/dist/`).

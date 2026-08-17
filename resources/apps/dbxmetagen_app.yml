@@ -164,10 +164,12 @@ resources:
           job:
             id: ${resources.jobs.build_knowledge_graph_job.id}
             permission: CAN_MANAGE_RUN
-      # OBO OAuth scopes. Empty by default (OBO off). To enable On-Behalf-Of user
-      # auth, set enable_obo=true AND override user_api_scopes, e.g. in
-      # variable-overrides.json:
-      #   {"user_api_scopes": ["files.files", "sql.statement-execution", "dashboards.genie"]}
+      # OAuth scopes the app declares for On-Behalf-Of user auth. Declared on EVERY
+      # deploy (default set in app_variables.yml: files.files, serving.serving-endpoints,
+      # sql.statement-execution, dashboards.genie) -- requires the workspace "Apps -
+      # user token passthrough" feature. enable_obo (above) is a SEPARATE runtime switch
+      # for WHICH principal makes calls; it does NOT gate this declaration. Override the
+      # var to customize scopes.
       user_api_scopes: ${var.user_api_scopes}
       # Who can open the app UI (CAN_USE). Empty by default; the deploying user
       # already has CAN_MANAGE via the target-level permissions block. Override
