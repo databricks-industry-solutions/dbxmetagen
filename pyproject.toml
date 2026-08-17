@@ -9,15 +9,21 @@ requires-python = ">=3.10.12,<3.14.0"
 dependencies = [
     "mlflow==3.11.1",
     "openai==1.56.1",
-    "cloudpickle==3.1.0",
+    "cloudpickle>=3.1.0,<4",
     "pydantic==2.10.3",
-    "ydata-profiling>=4.12.1,<5",
+    # Cap below 4.18: ydata-profiling 4.18 requires PyYAML>=6.0.3 which conflicts with
+    # our pyyaml pin, forcing pip to backtrack (the slow step that made serverless cold
+    # env builds fail on first run). 4.17.0 is what pip already resolved to.
+    "ydata-profiling>=4.12.1,<4.18",
     "databricks-langchain==0.4.0",
     "databricks-sdk==0.68.0",
     "openpyxl==3.1.5",
-    "deprecated==1.2.13",
-    "pyyaml==6.0.1",
-    "requests==2.32.5",
+    # Loosened from == to >= to align with the serverless base env and cut cold-build
+    # churn (pip keeps the base version instead of reinstalling). deprecated>=1.2.18 in
+    # base also clears the deltalake conflict warning.
+    "deprecated>=1.2.13,<2",
+    "pyyaml>=6.0.1,<7",
+    "requests>=2.32,<3",
     "nest-asyncio>=1.6.0,<2",
     "databricks-vectorsearch==0.66",
 ]
