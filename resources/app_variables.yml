@@ -18,6 +18,13 @@ variables:
       workspace (e.g. different targets or teams) without them overwriting
       each other's single app resource.
     default: ""
+  app_display_name:
+    description: >-
+      Display name shown in the app UI title bar. Overridable via
+      variable-overrides.json, but the value MUST be non-empty -- an empty value
+      is stripped by the DAB SDK (omitempty) and the Apps deploy then rejects it.
+      Defaults to the app name.
+    default: "dbxmetagen"
   user_api_scopes:
     description: >-
       OBO OAuth scopes granted to the app for On-Behalf-Of user auth. Empty by
