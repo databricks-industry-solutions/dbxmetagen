@@ -15,6 +15,8 @@ from dbxmetagen.erd_recommender import (
     _build_edges,
     _infer_role,
     _recommend_view_count,
+    _grain_column,
+    _measurable_columns,
     ErdRecommendation,
     GenSufficiency,
     FK_CONFIRMED_MIN,
@@ -153,15 +155,18 @@ class TestSufficiency:
             _fk("c.s.fct_orders", "product_id", "c.s.dim_product", "id"),
         ]
 
-    def test_missing_kpis_raise_recommendation(self):
+    def test_missing_kpis_are_surfaced_not_added_as_views(self):
+        # Missing KPIs are a coverage NOTE (add measures to the relevant grain
+        # view), NOT extra views -- the recommended count must not change.
         no_kpi = recommend_erd(self._star_tables(), fk_rows=self._fks())
         with_kpi = recommend_erd(
             self._star_tables(), fk_rows=self._fks(),
             kpi_coverage={"implemented": [], "missing": ["Revenue", "Margin"], "total": 2},
         )
-        assert with_kpi.sufficiency.metric_views_recommended >= \
+        assert with_kpi.sufficiency.metric_views_recommended == \
             no_kpi.sufficiency.metric_views_recommended
         assert with_kpi.sufficiency.missing_kpis == ["Revenue", "Margin"]
+        assert any("KPI" in r for r in with_kpi.sufficiency.reasons)
 
     def test_covered_fact_is_not_uncovered(self):
         rec = recommend_erd(
@@ -184,15 +189,16 @@ class TestSufficiency:
         )
         assert rec.sufficiency.metric_views_current == 1  # only the validated one
 
-    def test_coverage_aware_differs_from_naive_third(self):
-        # 3 tables -> naive num//3 == 1. But an uncovered fact + 2 missing KPIs
-        # should push the recommendation above 1.
+    def test_single_fact_star_recommends_one_grain_view(self):
+        # 1 fact + 2 connected dims -> ONE comprehensive grain view (dims join in),
+        # NOT one-per-table and NOT inflated by missing KPIs.
         rec = recommend_erd(
             self._star_tables(), fk_rows=self._fks(),
             kpi_coverage={"implemented": [], "missing": ["A", "B"], "total": 2},
         )
-        naive = len(self._star_tables()) // 3
-        assert rec.sufficiency.metric_views_recommended > naive
+        assert rec.sufficiency.metric_views_recommended == 1
+        assert any("grain anchor" in r for r in rec.sufficiency.reasons)
+        assert not any("fact table(s)" in r for r in rec.sufficiency.reasons)
 
     def test_gap_never_negative(self):
         rec = recommend_erd(
@@ -379,21 +385,154 @@ class TestRecommendViewCountFloor:
 
     def test_never_below_current_when_over_cap(self):
         rec, _ = _recommend_view_count(
-            facts=["c.s.fct"], uncovered_tables=[], missing_kpis=[],
+            anchors=["c.s.fct"], orphans=[], missing_kpis=[],
             current_views=MAX_RECOMMENDED_VIEWS + 5,
         )
         assert rec >= MAX_RECOMMENDED_VIEWS + 5   # not clamped below what exists
 
     def test_normal_case_still_capped(self):
         rec, _ = _recommend_view_count(
-            facts=["c.s.f1", "c.s.f2"], uncovered_tables=[], missing_kpis=[],
+            anchors=["c.s.f1", "c.s.f2"], orphans=[], missing_kpis=[],
             current_views=0,
         )
-        assert rec == 2   # 2 facts x 1 view, under the cap
+        assert rec == 2   # 2 grain anchors -> 2 views, under the cap
 
-    def test_fact_base_is_floor(self):
+    def test_anchor_base_is_floor(self):
         rec, _ = _recommend_view_count(
-            facts=["c.s.f1", "c.s.f2", "c.s.f3"], uncovered_tables=[], missing_kpis=[],
+            anchors=["c.s.f1", "c.s.f2", "c.s.f3"], orphans=[], missing_kpis=[],
             current_views=1,
         )
-        assert rec >= 3   # never below the fact base
+        assert rec >= 3   # never below the anchor base
+
+
+class TestGrainAnchorCount:
+    """The recommended count consolidates around grain anchors, not table count,
+    and missing KPIs do not inflate it."""
+
+    def test_pure_anchor_count_ignores_kpis(self):
+        # 4 anchors, 15 missing KPIs -> still 4 views (KPIs are a note).
+        rec, reasons = _recommend_view_count(
+            anchors=[f"c.s.f{i}" for i in range(4)], orphans=[],
+            missing_kpis=[f"kpi{i}" for i in range(15)], current_views=0,
+        )
+        assert rec == 4
+        assert any("grain anchor" in r for r in reasons)
+        assert any("KPI" in r and "not a new view" in r for r in reasons)
+
+    def test_disconnected_bonus_is_diminishing(self):
+        # 5 anchors + 10 standalone tables -> 5 + floor(sqrt(10))=3 = 8; never
+        # approaches the 15-table total.
+        rec, reasons = _recommend_view_count(
+            anchors=[f"c.s.f{i}" for i in range(5)],
+            orphans=[f"c.s.o{i}" for i in range(10)],
+            missing_kpis=[], current_views=0,
+        )
+        assert rec == 8
+        assert any("standalone" in r for r in reasons)
+
+    def test_no_clear_anchor_relabels(self):
+        rec, reasons = _recommend_view_count(
+            anchors=["c.s.t1", "c.s.t2"], orphans=[], missing_kpis=[],
+            current_views=0, no_clear_anchor=True,
+        )
+        assert any("no clear fact/grain" in r for r in reasons)
+        assert not any("fact table(s)" in r for r in reasons)
+
+
+class TestGrainKeyAndMeasures:
+    """A high-cardinality continuous MEASURE (e.g. instrument_revenue) must never
+    be picked as the grain key, and must still count as a measure. Real join keys
+    (id/*_id names or FK columns) win the grain slot."""
+
+    def test_measure_named_unique_numeric_is_not_the_grain(self):
+        rows = [_num_col("instrument_revenue", unique=True), _key_col("account_id")]
+        assert _grain_column(rows) == "account_id"
+
+    def test_measure_named_unique_numeric_still_counts_as_measure(self):
+        rows = [_num_col("instrument_revenue", unique=True), _num_col("volume")]
+        measures = _measurable_columns(rows)
+        assert "instrument_revenue" in measures
+        assert "volume" in measures
+
+    def test_fk_column_hint_wins_grain_over_measure(self):
+        # Among unique candidates, the actual join key (marked via key_hints, and
+        # not an id-like name) beats a unique measure column.
+        rows = [_num_col("total_cost", unique=True),
+                {"column_name": "provider_ref", "has_numeric_stats": False,
+                 "null_rate": 0.0, "is_unique_candidate": True, "cardinality_ratio": 1.0}]
+        assert _grain_column(rows, key_hints={"provider_ref"}) == "provider_ref"
+
+    def test_named_key_still_excluded_from_measures(self):
+        # A near-unique numeric that DOES look like a key stays out of measures.
+        rows = [{"column_name": "order_id", "has_numeric_stats": True,
+                 "null_rate": 0.0, "is_unique_candidate": True, "cardinality_ratio": 1.0}]
+        assert _measurable_columns(rows) == []
+
+    def test_summary_table_with_fks_classifies_as_anchor_not_dimension(self):
+        # procedure_summary-like: mart naming + 2 outbound FKs + measures (one of
+        # which, instrument_revenue, is a high-cardinality unique numeric). The
+        # grain bug used to flip this to a dimension; it must be a fact/source
+        # anchor with the revenue counted as a measure and NOT as the grain.
+        tables = ["c.s.procedure_summary", "c.s.account_master", "c.s.contact_master"]
+        fks = [
+            _fk("c.s.procedure_summary", "account_id", "c.s.account_master", "account_id", conf=0.91),
+            _fk("c.s.procedure_summary", "surgeon_id", "c.s.contact_master", "surgeon_id", conf=0.9),
+        ]
+        profiling = {
+            "c.s.procedure_summary": [
+                _num_col("instrument_revenue", unique=True),
+                _num_col("procedure_volume"),
+                _num_col("device_count"),
+                _attr_col("approach"),
+            ],
+            "c.s.account_master": [_key_col("account_id"), _attr_col("name")],
+            "c.s.contact_master": [_key_col("surgeon_id"), _attr_col("name")],
+        }
+        rec = recommend_erd(tables, fk_rows=fks, profiling_by_table=profiling)
+        ps = next(n for n in rec.nodes if n.table.endswith("procedure_summary"))
+        assert ps.role in ("fact", "source")
+        assert "instrument_revenue" in ps.measurable_columns
+        assert ps.grain != "instrument_revenue"
+        # Only procedure_summary anchors a view; the two master tables join in.
+        assert rec.sufficiency.metric_views_recommended == 1
+        assert any("grain anchor" in r for r in rec.sufficiency.reasons)
+
+
+class TestNoClearAnchorFallback:
+    def test_all_dimension_schema_does_not_report_fact_tables(self):
+        # Two dimension tables (a lookup chain), no measures. The old fallback
+        # labeled every table a "fact table"; now it must relabel.
+        tables = ["c.s.dim_x", "c.s.dim_y"]
+        fks = [_fk("c.s.dim_x", "y_id", "c.s.dim_y", "id", conf=0.9)]
+        profiling = {
+            "c.s.dim_x": [_key_col("id"), _attr_col("val")],
+            "c.s.dim_y": [_key_col("id"), _attr_col("label")],
+        }
+        rec = recommend_erd(tables, fk_rows=fks, profiling_by_table=profiling)
+        assert not any("fact table(s)" in r for r in rec.sufficiency.reasons)
+        assert any("no clear fact/grain" in r for r in rec.sufficiency.reasons)
+
+
+class TestFanoutDetection:
+    def test_low_pk_uniqueness_is_fanout(self):
+        edges = _build_edges([_fk("c.s.a", "x", "c.s.b", "y", conf=0.9, pk_uniqueness=0.4)])
+        assert edges[0].fanout_risk is True
+        assert edges[0].cardinality == "one_to_many"
+
+    def test_high_pk_uniqueness_is_safe(self):
+        edges = _build_edges([_fk("c.s.a", "x", "c.s.b", "y", conf=0.9, pk_uniqueness=0.95)])
+        assert edges[0].fanout_risk is False
+        assert edges[0].cardinality == "many_to_one"
+
+    def test_missing_pk_uniqueness_defaults_safe(self):
+        edges = _build_edges([_fk("c.s.a", "x", "c.s.b", "y", conf=0.9)])
+        assert edges[0].fanout_risk is False
+
+    def test_recommend_erd_surfaces_fanout_warning(self):
+        tables = ["c.s.fct_orders", "c.s.dim_customer"]
+        fks = [_fk("c.s.fct_orders", "customer_id", "c.s.dim_customer", "id",
+                   conf=0.9, pk_uniqueness=0.4)]
+        rec = recommend_erd(tables, fk_rows=fks,
+                            profiling_by_table={"c.s.fct_orders": [_num_col("amount")]})
+        assert len(rec.sufficiency.fanout_warnings) == 1
+        assert "fan out" in rec.sufficiency.fanout_warnings[0]

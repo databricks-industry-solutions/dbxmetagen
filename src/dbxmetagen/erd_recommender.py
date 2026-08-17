@@ -21,6 +21,7 @@ on top, and emits per-table roles rather than a single schema label.
 from __future__ import annotations
 
 import json
+import math
 from dataclasses import dataclass, field, asdict
 from typing import Any, Optional
 
@@ -50,10 +51,9 @@ ROLE_MART_NAMING_WEIGHT = 0.20    # was 0.30 -- mart/summary naming hint
 ROLE_FK_TOPOLOGY_WEIGHT = 0.35    # outbound/inbound FK degree (data-driven)
 ROLE_ONTOLOGY_WEIGHT = 0.25       # ontology entity_role (steward/AI attribution)
 
-# Sufficiency: how many metric views a schema "wants". A fact table typically
-# warrants ~1 broad view; extra views cover distinct grains / uncovered KPIs.
-VIEWS_PER_FACT = 1
-KPIS_PER_VIEW = 3                 # a metric view's measures can satisfy several KPIs
+# Sufficiency: how many metric views a schema "wants". One comprehensive view per
+# fact/source GRAIN anchor; dimensions attach as joins (never their own view).
+# Standalone measurable tables earn a diminishing bump; see _recommend_view_count.
 MAX_RECOMMENDED_VIEWS = 15        # mirror the existing UI cap
 
 # Questions/KPIs sufficiency: a fact grain warrants a few analytical questions;
@@ -83,6 +83,8 @@ class ErdEdge:
     confidence: float                # 0..1
     source: str                      # predicted | confirmed | ontology
     reasons: list[str] = field(default_factory=list)
+    cardinality: str = "many_to_one" # many_to_one (safe star join) | one_to_many (fan-out risk)
+    fanout_risk: bool = False        # join target isn't a clean unique key -> may multiply rows
 
 
 @dataclass
@@ -93,6 +95,7 @@ class Sufficiency:
     reasons: list[str] = field(default_factory=list)
     uncovered_tables: list[str] = field(default_factory=list)
     missing_kpis: list[str] = field(default_factory=list)
+    fanout_warnings: list[str] = field(default_factory=list)
 
 
 @dataclass
@@ -143,6 +146,37 @@ def _looks_like_mart(short: str) -> bool:
     return any(kw in short for kw in _MART_KEYWORDS)
 
 
+# Column-name semantics: disambiguate a high-cardinality numeric that is an
+# identifier (a grain/PK) from one that is a continuous MEASURE. Profiling flags
+# both as `is_unique_candidate`, so name is what tells `instrument_revenue`
+# (a measure) apart from `account_id` (a key). Used by _grain_column /
+# _measurable_columns so a measure is never mistaken for the grain and vice versa.
+_KEY_SUFFIXES = ("_id", "_key", "_guid", "_uuid", "_sk", "_pk", "_fk", "_code", "_no", "_num", "_nbr")
+_MEASURE_KEYWORDS = (
+    "revenue", "amount", "amt", "total", "count", "cnt", "qty", "quantity", "price",
+    "cost", "sum", "avg", "average", "balance", "volume", "spend", "value", "rate",
+)
+
+
+def _looks_like_key(name: Optional[str], key_hints: Optional[set] = None) -> bool:
+    """True when a column name reads like an identifier / join key (or is one of
+    the table's actual FK columns)."""
+    if not name:
+        return False
+    n = name.lower()
+    if key_hints and n in key_hints:
+        return True
+    return n == "id" or n.endswith(_KEY_SUFFIXES)
+
+
+def _looks_like_measure(name: Optional[str]) -> bool:
+    """True when a column name reads like a continuous/additive measure."""
+    if not name:
+        return False
+    n = name.lower()
+    return any(kw in n for kw in _MEASURE_KEYWORDS)
+
+
 def _coerce_list(val: Any) -> list:
     """target_tables / source_tables arrive as a real list or a JSON string."""
     if val is None:
@@ -187,8 +221,15 @@ def _build_edges(fk_rows: list[dict]) -> list[ErdEdge]:
             reasons.append("steward-confirmed FK")
         if fk.get("join_rate") is not None:
             reasons.append(f"join_rate={float(fk['join_rate']):.2f}")
-        if fk.get("pk_uniqueness") is not None:
-            reasons.append(f"pk_uniqueness={float(fk['pk_uniqueness']):.2f}")
+        pk_uniq = fk.get("pk_uniqueness")
+        if pk_uniq is not None:
+            reasons.append(f"pk_uniqueness={float(pk_uniq):.2f}")
+        # Fan-out risk: the referenced (dst) side isn't a clean unique key, so the
+        # join is not a safe many-to-one star join -- aggregating the source across
+        # it can multiply rows and inflate measures. pk_uniqueness is GREATEST of
+        # both columns' cardinality ratios, so < PK_UNIQUENESS_MIN means neither
+        # side is near-unique.
+        fanout = pk_uniq is not None and float(pk_uniq) < PK_UNIQUENESS_MIN
         edges.append(ErdEdge(
             src=src_t,
             dst=dst_t,
@@ -196,12 +237,17 @@ def _build_edges(fk_rows: list[dict]) -> list[ErdEdge]:
             confidence=1.0 if is_fk else round(conf, 3),
             source="confirmed" if confirmed else "predicted",
             reasons=reasons,
+            cardinality="one_to_many" if fanout else "many_to_one",
+            fanout_risk=fanout,
         ))
     return edges
 
 
 def _measurable_columns(profiling_rows: list[dict]) -> list[str]:
-    """Numeric, low-null columns that aren't near-unique keys -> good measures."""
+    """Numeric, low-null columns that make good measures. A near-unique numeric
+    is only treated as an ID (and skipped) when its NAME looks like a key -- a
+    measure-named high-cardinality numeric (e.g. `instrument_revenue`) is still a
+    measure, not a key."""
     out = []
     for c in profiling_rows or []:
         if not c.get("has_numeric_stats"):
@@ -209,26 +255,50 @@ def _measurable_columns(profiling_rows: list[dict]) -> list[str]:
         null_rate = float(c.get("null_rate") or 0.0)
         if null_rate > 0.5:
             continue
-        # A near-unique numeric column is usually an ID, not a measure.
-        if c.get("is_unique_candidate"):
-            continue
         name = c.get("column_name")
-        if name:
-            out.append(name)
+        if not name:
+            continue
+        # A near-unique numeric is usually an ID -- but only when its name reads
+        # like a key. Otherwise a continuous measure would be wrongly dropped.
+        if c.get("is_unique_candidate") and _looks_like_key(name):
+            continue
+        out.append(name)
     return out
 
 
-def _grain_column(profiling_rows: list[dict]) -> Optional[str]:
-    """Best natural-key candidate: unique + low null."""
+def _grain_column(profiling_rows: list[dict], key_hints: Optional[set] = None) -> Optional[str]:
+    """Best natural-key candidate: unique + low null, but NEVER a measure and with
+    a strong preference for id/key-named columns (and the table's actual FK
+    columns). A high-cardinality continuous measure like `instrument_revenue` is
+    unique + low-null too, so uniqueness alone must not win -- name semantics
+    decide, otherwise a measure gets mislabeled the grain (which also poisons role
+    inference via the 'has key, few measures -> dimension' nudge)."""
+    # rank: 2 = key-named / FK column, 1 = non-numeric key candidate, 0 = numeric
     best = None
-    best_ratio = 0.0
+    best_key: tuple = (-1, -1.0)  # (name_rank, cardinality_ratio)
     for c in profiling_rows or []:
+        name = c.get("column_name")
+        if not name:
+            continue
         ratio = float(c.get("cardinality_ratio") or 0.0)
         low_null = float(c.get("null_rate") or 0.0) <= 0.05
-        if (c.get("is_unique_candidate") or ratio >= PK_UNIQUENESS_MIN) and low_null:
-            if ratio >= best_ratio:
-                best_ratio = ratio
-                best = c.get("column_name")
+        is_unique = bool(c.get("is_unique_candidate")) or ratio >= PK_UNIQUENESS_MIN
+        if not (is_unique and low_null):
+            continue
+        is_numeric = bool(c.get("has_numeric_stats"))
+        # A measure-named column is never the grain, even if it happens to be unique.
+        if _looks_like_measure(name) and is_numeric and not _looks_like_key(name, key_hints):
+            continue
+        if _looks_like_key(name, key_hints):
+            rank = 2
+        elif not is_numeric:
+            rank = 1
+        else:
+            rank = 0
+        cand = (rank, ratio)
+        if cand > best_key:
+            best_key = cand
+            best = name
     return best
 
 
@@ -239,6 +309,7 @@ def _infer_role(
     inbound_fk_count: int,
     ontology_role: Optional[str],
     is_bridge: bool,
+    key_hints: Optional[set] = None,
 ) -> tuple[str, float, list[str]]:
     """Combine naming, FK topology, profiling and ontology into a role + why."""
     short = _short(table)
@@ -272,7 +343,7 @@ def _infer_role(
 
     # 3. Profiling shape (naming-independent -- this is what lets an unlabeled
     #    mart / wide table be classified sensibly).
-    grain = _grain_column(profiling_rows)
+    grain = _grain_column(profiling_rows, key_hints)
     measures = _measurable_columns(profiling_rows)
     n_measures = len(measures)
     n_cols = len(profiling_rows)
@@ -332,38 +403,44 @@ def _infer_role(
 
 
 def _recommend_view_count(
-    facts: list[str],
-    uncovered_tables: list[str],
+    anchors: list[str],
+    orphans: list[str],
     missing_kpis: list[str],
     current_views: int,
+    no_clear_anchor: bool = False,
 ) -> tuple[int, list[str]]:
-    """Coverage-aware target: base on fact tables + uncovered work, NOT raw table
-    count. Returns (recommended_total, reasons).
+    """Grain-anchor target: one comprehensive metric view per fact/source GRAIN.
+    Returns (recommended_total, reasons).
 
-    Each uncovered fact/source anchors ~1 view. Missing KPIs are grouped a few
-    per view (a metric view holds many measures), so they add ceil(n / KPIS_PER_
-    VIEW) views rather than one-per-KPI. The total is floored at the fact base
-    and capped at MAX_RECOMMENDED_VIEWS.
+    Dimensions attach as joins, never their own view. Standalone (disconnected)
+    measurable tables earn a small, strongly-diminishing bump -- floor(sqrt(n)) --
+    so they aren't left uncovered, but the total never approaches the raw table
+    count. Missing KPIs are a coverage NOTE (add measures to the relevant grain
+    view), NOT extra views. Floored at current_views, capped at MAX_RECOMMENDED_VIEWS.
     """
     reasons: list[str] = []
-    base = max(len(facts) * VIEWS_PER_FACT, 1)
-    reasons.append(f"{len(facts)} fact table(s) x {VIEWS_PER_FACT} view")
+    base = max(len(anchors), 1)
+    if no_clear_anchor:
+        reasons.append(
+            f"no clear fact/grain — review table classification; anchoring {base} view(s)"
+        )
+    else:
+        reasons.append(
+            f"{len(anchors)} grain anchor(s) — one comprehensive metric view per grain"
+        )
 
-    uncovered_need = len(uncovered_tables)
-    if uncovered_tables:
-        reasons.append(f"{len(uncovered_tables)} table(s) with no validated view")
+    # Diminishing: 1 orphan -> +1, 4 -> +2, 10 -> +3. Never one-view-per-table.
+    bonus = int(math.floor(math.sqrt(len(orphans)))) if orphans else 0
+    if orphans:
+        reasons.append(f"+{bonus} for {len(orphans)} standalone table(s) not joined to a fact")
 
-    # Multiple KPIs can be satisfied by one view's measures -> group them.
-    kpi_need = -(-len(missing_kpis) // KPIS_PER_VIEW) if missing_kpis else 0  # ceil div
     if missing_kpis:
-        reasons.append(f"{len(missing_kpis)} KPI(s) with no implementing measure")
+        reasons.append(
+            f"{len(missing_kpis)} KPI(s) need a measure — add to the relevant grain view "
+            f"(not a new view)"
+        )
 
-    # Floor at the fact base AND at the count already present (a recommendation
-    # should never suggest FEWER views than exist), then cap -- but never let the
-    # cap pull the recommendation below current_views, or the derived gap would go
-    # negative-clamped-to-zero and misreport "fully covered" when it isn't.
-    target = max(base, current_views + uncovered_need + kpi_need)
-    recommended = max(min(target, MAX_RECOMMENDED_VIEWS), current_views)
+    recommended = max(min(base + bonus, MAX_RECOMMENDED_VIEWS), current_views)
     return recommended, reasons
 
 
@@ -401,6 +478,10 @@ def recommend_erd(
     # --- FK topology counts + bridge detection (mirrors profile_schema) -------
     outbound: dict[str, int] = {t.lower(): 0 for t in tables}
     inbound: dict[str, int] = {t.lower(): 0 for t in tables}
+    # Per-table set of columns that participate in a FK (either side). These are
+    # the real join keys, used as grain hints so the natural-key detector prefers
+    # them over a high-cardinality measure.
+    fk_cols_by_table: dict[str, set] = {t.lower(): set() for t in tables}
     src_set, dst_set = set(), set()
     for fk in fk_rows:
         conf = float(fk.get("final_confidence") or 0.0)
@@ -408,12 +489,18 @@ def recommend_erd(
             continue
         st = (fk.get("src_table") or "").lower()
         dt = (fk.get("dst_table") or "").lower()
+        sc = (fk.get("src_column") or "").split(".")[-1].lower()
+        dc = (fk.get("dst_column") or "").split(".")[-1].lower()
         if st in outbound:
             outbound[st] += 1
             src_set.add(st)
+            if sc:
+                fk_cols_by_table[st].add(sc)
         if dt in inbound:
             inbound[dt] += 1
             dst_set.add(dt)
+            if dc:
+                fk_cols_by_table[dt].add(dc)
     bridges = src_set & dst_set
 
     # --- Ontology role per table (first attributed role wins) -----------------
@@ -432,6 +519,7 @@ def recommend_erd(
     for t in tables:
         key = t.lower()
         prof = profiling_by_table.get(t) or profiling_by_table.get(key) or []
+        hints = fk_cols_by_table.get(key) or set()
         role, conf, reasons = _infer_role(
             table=t,
             profiling_rows=prof,
@@ -439,6 +527,7 @@ def recommend_erd(
             inbound_fk_count=inbound.get(key, 0),
             ontology_role=onto_role.get(key),
             is_bridge=key in bridges,
+            key_hints=hints,
         )
         nodes.append(ErdNode(
             table=t,
@@ -446,7 +535,7 @@ def recommend_erd(
             confidence=conf,
             reasons=reasons,
             measurable_columns=_measurable_columns(prof),
-            grain=_grain_column(prof),
+            grain=_grain_column(prof, hints),
         ))
 
     edges = _build_edges(fk_rows)
@@ -468,19 +557,49 @@ def recommend_erd(
     else:
         schema_type = "STAR"
 
-    # --- Sufficiency ----------------------------------------------------------
-    facts = [n.table for n in nodes if n.role == "fact"]
-    if not facts:
-        # No clear fact: sources/marts each anchor a view.
-        facts = [n.table for n in nodes if n.role in ("source", "bridge")] or tables
+    # --- Sufficiency: grain anchors, not table count --------------------------
+    # A metric view is built per fact/source GRAIN; dimensions attach as joins,
+    # never as their own view. Anchors are fact/source/bridge nodes that actually
+    # have something to aggregate (measurable columns).
+    anchor_nodes = [n for n in nodes
+                    if n.role in ("fact", "source", "bridge") and n.measurable_columns]
+    if not anchor_nodes:
+        # Relax: any fact/source/bridge, even without detected measures.
+        anchor_nodes = [n for n in nodes if n.role in ("fact", "source", "bridge")]
+    no_clear_anchor = False
+    if not anchor_nodes:
+        # No structural signal at all. Do NOT default to "every table is a fact"
+        # (the old bug that reported N fact tables for an all-dimension schema);
+        # anchor only on tables that at least have measures.
+        no_clear_anchor = True
+        anchor_nodes = [n for n in nodes if n.measurable_columns] or list(nodes)
+    anchors = [n.table for n in anchor_nodes]
+    anchor_set = {t.lower() for t in anchors}
+
+    # A table connected to an anchor via any edge joins INTO that anchor's view --
+    # it doesn't need its own. A standalone (disconnected) table that still has
+    # measures would otherwise get zero coverage, so it earns a small, strongly-
+    # diminishing bump (see _recommend_view_count), never one-view-per-table.
+    connected: set = set()
+    for e in edges:
+        s, d = e.src.lower(), e.dst.lower()
+        if s in anchor_set:
+            connected.add(d)
+        if d in anchor_set:
+            connected.add(s)
+    orphans = [n.table for n in nodes
+               if n.table.lower() not in anchor_set
+               and n.role in ("dimension", "source", "bridge")
+               and n.measurable_columns
+               and n.table.lower() not in connected]
 
     covered = {
         (d.get("source_table") or "").lower()
         for d in existing_defs
         if (d.get("status") or "") in ("validated", "applied")
     }
-    uncovered_tables = [n.table for n in nodes
-                        if n.role in ("fact", "source") and n.table.lower() not in covered]
+    # The real gap is anchors (grain views) not yet realized.
+    uncovered_tables = [t for t in anchors if t.lower() not in covered]
     missing_kpis = list(kpi_coverage.get("missing") or [])
     # Count only realized views (validated/applied) so current_views is
     # consistent with `covered` -- 'created'/'failed' drafts must not inflate it
@@ -488,9 +607,15 @@ def recommend_erd(
     current_views = sum(
         1 for d in existing_defs if (d.get("status") or "") in ("validated", "applied")
     )
+    # Fan-out warnings: one line per risky join (detect-and-warn; no generation change).
+    fanout_warnings = [
+        f"{_short(e.src)} → {_short(e.dst)} join may fan out ({'; '.join(e.reasons) or 'low pk uniqueness'})"
+        f" — use COUNT(DISTINCT) and don't SUM/AVG dimension attributes at this grain"
+        for e in edges if e.fanout_risk
+    ]
 
     recommended, reasons = _recommend_view_count(
-        facts, uncovered_tables, missing_kpis, current_views
+        anchors, orphans, missing_kpis, current_views, no_clear_anchor
     )
     sufficiency = Sufficiency(
         metric_views_current=current_views,
@@ -499,6 +624,7 @@ def recommend_erd(
         reasons=reasons,
         uncovered_tables=uncovered_tables,
         missing_kpis=missing_kpis,
+        fanout_warnings=fanout_warnings,
     )
 
     return ErdRecommendation(

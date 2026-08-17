@@ -8402,7 +8402,10 @@ def explain_erd_recommendation(req: ErdExplainRequest):
     nodes = req.erd.get("nodes", [])
     edges = req.erd.get("edges", [])
     suff = req.erd.get("sufficiency", {})
-    facts = [n["table"] for n in nodes if n.get("role") == "fact"]
+    # "Fact/source tables" are the grain anchors -- include source-role tables
+    # (de-facto facts / marts), not just role=="fact", so the narrative sees the
+    # same anchors the numeric recommendation is built on.
+    facts = [n["table"] for n in nodes if n.get("role") in ("fact", "source", "bridge")]
     dims = [n["table"] for n in nodes if n.get("role") == "dimension"]
     ctx = (req.business_context or "").strip()
 

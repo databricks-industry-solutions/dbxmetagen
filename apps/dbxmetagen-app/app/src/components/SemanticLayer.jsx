@@ -2462,6 +2462,14 @@ export default function SemanticLayer({ onNavigate, pipelineStats, onRefreshPipe
             {onNavigate && <> Refine the data model in <button onClick={() => setActiveTab('model')} className="font-semibold underline">Model</button>.</>}
           </div>
         )}
+        {erdSufficiency?.fanout_warnings?.length > 0 && (
+          <div className="mb-4 px-3 py-2 rounded-md bg-rose-50 dark:bg-rose-900/20 border border-rose-200 dark:border-rose-700/50 text-xs text-rose-800 dark:text-rose-300 leading-relaxed">
+            <span className="font-semibold">Fan-out risk ({erdSufficiency.fanout_warnings.length}):</span>{' '}
+            <ul className="list-disc ml-4 mt-1 space-y-0.5">
+              {erdSufficiency.fanout_warnings.map((w, i) => <li key={i}>{w}</li>)}
+            </ul>
+          </div>
+        )}
           </>
         })()}
         <div className="mb-4 p-4 rounded-lg border border-slate-200 dark:border-slate-700 bg-slate-50/50 dark:bg-slate-900/30">

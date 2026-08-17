@@ -658,6 +658,14 @@ export default function ErdDesigner({ tables, projectId, profileId, businessCont
             </button>
           </div>
           <p className="text-[11px] text-slate-400 dark:text-slate-500">{SCHEMA_NOTES[schemaType]}</p>
+          {sufficiency.fanout_warnings?.length > 0 && (
+            <div className="mt-1 px-2 py-1.5 rounded bg-rose-50 dark:bg-rose-900/20 border border-rose-200 dark:border-rose-700/50 text-[11px] text-rose-800 dark:text-rose-300">
+              <span className="font-semibold">Fan-out risk ({sufficiency.fanout_warnings.length}):</span>
+              <ul className="list-disc ml-4 mt-0.5 space-y-0.5">
+                {sufficiency.fanout_warnings.map((w, i) => <li key={i}>{w}</li>)}
+              </ul>
+            </div>
+          )}
         </div>
       )}
 
