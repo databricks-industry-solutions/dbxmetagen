@@ -1,16 +1,16 @@
 #!/bin/bash
-# DEPRECATED compatibility wrapper. Kept so existing CI/CD that calls ./deploy.sh
-# keeps working. It is a thin shim around the current, canonical flow:
+# LEGACY deploy wrapper -- FULLY SUPPORTED (not going away). New users can call the
+# canonical flow directly:
 #   databricks bundle deploy -t <target> -p <profile>   # builds wheel via artifacts.build hook
 #   databricks bundle run    -t <target> -p <profile> dbxmetagen_app   # deploy app source + start
 #   scripts/grant_app_permissions.sh -t <target> -p <profile>          # UC + Vector Search grants
 #
-# This is NOT the old template-generating deploy.sh. It does not generate
-# databricks.yml / app.yaml / app resource YAML (those are static committed
-# files now), and it does NOT source a {target}.env file. Per-workspace config
-# comes from bundle variable overrides -- see example.env and
-# variable-overrides.example.json. New users should call the three commands
-# directly; this wrapper exists only for backward compatibility.
+# This wrapper chains those three AND preserves the old {target}.env experience: if a
+# {target}.env exists it is sourced and its scalar values are translated into bundle
+# variable overrides (--var), so existing customers keep deploying exactly as before
+# with no migration. It no longer GENERATES YAML (databricks.yml / app.yaml / the app
+# resource are static committed files now). New users can instead put values in
+# variable-overrides.json (see example.env + variable-overrides.example.json).
 #
 # Usage: ./deploy.sh [OPTIONS]
 #   -t, --target TARGET    Bundle target (default: dev)
@@ -21,11 +21,20 @@
 #   -h, --help             Show this help
 set -e
 
+# Bridge a pip proxy / private index to uv (uv does not read pip config), so existing
+# customers behind a corporate proxy keep working as they did on the old flow. An
+# explicit UV_INDEX_URL always wins; this only fills it in when unset.
+if [ -z "${UV_INDEX_URL:-}" ]; then
+    _pip_idx=$(pip3 config get global.index-url 2>/dev/null || true)
+    [ -n "$_pip_idx" ] && export UV_INDEX_URL="$_pip_idx" && echo "Using pip index-url for uv build: $UV_INDEX_URL"
+fi
+
 TARGET="dev"
 PROFILE="DEFAULT"
 SKIP_APP=false
 SKIP_FRONTEND=false
 SKIP_VS=false
+DEPLOY_VARS=()   # bundle-variable overrides forwarded from a legacy {target}.env, if present
 
 while [[ $# -gt 0 ]]; do
     case $1 in
@@ -41,24 +50,54 @@ while [[ $# -gt 0 ]]; do
 done
 
 echo "=================================================================="
-echo " deploy.sh is DEPRECATED -- it now just wraps the canonical flow:"
+echo " deploy.sh (legacy wrapper -- fully supported). It chains:"
 echo "   databricks bundle deploy -t $TARGET -p $PROFILE"
 echo "   databricks bundle run    -t $TARGET -p $PROFILE dbxmetagen_app"
 echo "   scripts/grant_app_permissions.sh -t $TARGET -p $PROFILE"
-echo " Prefer calling those directly. See README 'Deploy' + example.env."
+echo " and translates a ${TARGET}.env (if present) into bundle vars."
 echo "=================================================================="
 
-# The old deploy.sh sourced {target}.env. That is no longer read -- config now
-# comes from bundle variable overrides. Warn loudly if one is present so a CI
-# job that relied on it does not silently deploy with default catalog/schema.
+# Legacy {target}.env support (fully supported). If present, source it and forward its
+# scalar values as bundle-variable overrides so existing customers deploy exactly as
+# before -- no migration needed. Sourcing also EXPORTS the values, so
+# grant_app_permissions.sh (which honors exported catalog_name/schema_name/warehouse_id/
+# app_name/vs_endpoint_name) picks them up too. New users: use variable-overrides.json.
 ENV_FILE="${TARGET}.env"
 if [ -f "$ENV_FILE" ]; then
     echo ""
-    echo "WARNING: '${ENV_FILE}' exists but is NO LONGER read by this script."
-    echo "  Per-workspace config now comes from bundle variable overrides:"
-    echo "    .databricks/bundle/${TARGET}/variable-overrides.json  (DAB auto-loads this path)"
-    echo "    or --var / BUNDLE_VAR_* environment variables."
-    echo "  Migrate your ${ENV_FILE} values there. See example.env + variable-overrides.example.json."
+    echo "=== Loading legacy ${ENV_FILE} (fully supported) ==="
+    set -a; source "$ENV_FILE"; set +a
+    # Scalar vars that map 1:1 to a declared bundle variable -> forward as --var.
+    for _v in catalog_name schema_name warehouse_id vs_endpoint_name node_type \
+              budget_policy_id enable_obo app_name app_name_suffix app_display_name model; do
+        if [ -n "${!_v:-}" ]; then
+            DEPLOY_VARS+=(--var "${_v}=${!_v}")
+        fi
+    done
+    [ ${#DEPLOY_VARS[@]} -gt 0 ] && echo "  Forwarded ${#DEPLOY_VARS[@]} override(s) from ${ENV_FILE}."
+    # Knobs whose SHAPE changed -- can't be a simple --var; must move to
+    # variable-overrides.json (see variable-overrides.advanced.example.json).
+    for _old in policy_id spn_id permission_groups permission_users; do
+        if [ -n "${!_old:-}" ]; then
+            echo "  NOTE: '${_old}' changed shape and was NOT forwarded -- migrate it to variable-overrides.json:"
+            case "$_old" in
+                policy_id)  echo "        override the whole metadata_job_cluster block (+ policy_id, apply_policy_default_values)." ;;
+                spn_id)     echo "        run_as: {\"service_principal_name\": \"...\"}." ;;
+                permission_groups|permission_users) echo "        app_permissions: [{group_name|user_name, level: CAN_USE}]." ;;
+            esac
+        fi
+    done
+    # OBO parity with the old flow: enabling OBO auto-includes the standard scopes so
+    # the user does NOT have to enumerate them (the old deploy.sh injected these when
+    # enable_obo=true). Only add them if the env didn't already set user_api_scopes.
+    case "${enable_obo:-}" in
+        [Tt][Rr][Uu][Ee])
+            if [ -z "${user_api_scopes:-}" ]; then
+                DEPLOY_VARS+=(--var 'user_api_scopes=["files.files","sql.statement-execution","dashboards.genie"]')
+                echo "  enable_obo=true -> auto-included standard user_api_scopes (files.files, sql.statement-execution, dashboards.genie)."
+            fi
+            ;;
+    esac
     echo ""
 fi
 
@@ -84,13 +123,13 @@ fi
 # --- Deploy (wheel builds via the artifacts.build hook) ---
 echo ""
 echo "=== bundle deploy (target=${TARGET}, profile=${PROFILE}) ==="
-databricks bundle deploy -t "$TARGET" -p "$PROFILE"
+databricks bundle deploy -t "$TARGET" -p "$PROFILE" "${DEPLOY_VARS[@]}"
 
 # --- Deploy app source + start ---
 if [ "$SKIP_APP" = false ]; then
     echo ""
     echo "=== bundle run dbxmetagen_app (deploy app source + start) ==="
-    databricks bundle run -t "$TARGET" -p "$PROFILE" dbxmetagen_app
+    databricks bundle run -t "$TARGET" -p "$PROFILE" "${DEPLOY_VARS[@]}" dbxmetagen_app
 fi
 
 # --- Post-deploy UC + Vector Search grants (idempotent) ---
