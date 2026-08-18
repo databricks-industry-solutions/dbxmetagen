@@ -80,12 +80,15 @@ from any tool: notebooks, dashboards, Genie spaces, agents, or your own applicat
    > **Prefer the workspace UI?** The Databricks bundle editor's **Deploy**
    > button is a first-class alternative to the CLI (same DAB engine, same
    > `artifacts.build` hook — the wheel is built for you in the workspace). See
-   > [`docs/MANUAL_DEPLOYMENT.md`](docs/MANUAL_DEPLOYMENT.md). You don't create
-   > the override file by hand: open the **⋮** (three-dots) menu next to the
-   > **Deploy** button and choose **Configure variable overrides** — this opens
-   > an editor for the same per-target `variable-overrides.json` and writes it to
-   > `.databricks/bundle/<target>/` for you. (`--var` / `BUNDLE_VAR_*` are
-   > CLI-only, so this menu is the UI equivalent.)
+   > [`docs/MANUAL_DEPLOYMENT.md`](docs/MANUAL_DEPLOYMENT.md). In the UI you set
+   > variables through the **⋮** (three-dots) menu next to the **Deploy** button
+   > → **Configure variable overrides** (the UI equivalent of `--var`, which is
+   > CLI-only). **Important:** that editor stores overrides in a **workspace-managed
+   > store the UI deploy reads** — it is a *separate* store from the CLI's
+   > `.databricks/bundle/<target>/variable-overrides.json` file, it is **not**
+   > written into your Git Folder, and it is **not** committed to git. So editing
+   > one does not populate the other: use the ⋮ editor for UI deploys, and the
+   > `.databricks/...` file (or `--var`/`BUNDLE_VAR_*`) for CLI/`deploy.sh` deploys.
 
 2. **Azure / GCP users:** The default job cluster node type is `i3.2xlarge` (AWS). Update `node_type` in `variables.yml` (or set it in `variable-overrides.json`) before deploying:
    - **Azure:** `Standard_D8s_v3`
@@ -95,18 +98,18 @@ from any tool: notebooks, dashboards, Genie spaces, agents, or your own applicat
 
    | Path | Use when | Creates | Notes |
    |------|----------|---------|-------|
-   | **A. CLI bundle deploy** | You can run the Databricks CLI locally / in CI | **All 24 jobs** + app | Recommended. Grants automated via a script. |
-   | **B. Workspace-UI bundle deploy** | No local machine, but you have the workspace UI | **All 24 jobs** + app | First-class peer to the CLI (same bundle + build hook). Grants are manual. |
+   | **A. CLI — 3 commands** | You can run the Databricks CLI locally / in CI | **All 24 jobs** + app | Recommended. Most explicit; env applied via `bundle deploy` (not affected by the UI caveat). |
+   | **A2. `./deploy.sh` — one command** | You want route A as a single command, or you have a legacy `{target}.env` | **All 24 jobs** + app | Legacy but **fully supported**. Chains route A's 3 commands; also reads `{target}.env` and bridges a pip proxy to `uv`. |
+   | **B. Workspace UI** | No local machine, but you have the workspace UI | **All 24 jobs** + app | First-class peer to the CLI (same bundle + build hook). Grants are manual. **See the "UI env" known limitation below.** |
    | **C. Notebook pipeline** | You can run **neither** the CLI nor the UI Deploy button | **8 of 24 jobs** (core only) | True fallback — see [`notebook_deployment_pipeline/README.md`](notebook_deployment_pipeline/README.md). Some dashboard features unavailable. |
 
-   Paths **A** and **B** run the same bundle, build the wheel via the
+   Paths **A**, **A2**, and **B** run the same bundle, build the wheel via the
    `artifacts.build` hook, and register jobs + the app — they are equivalent.
    Databricks Asset Bundles deliberately separate *deploying* an app from
-   *starting* it (starting consumes app compute), so **both are two steps:
-   deploy, then deploy-source-and-start the app.** This is a platform behavior,
-   not a project choice — there is no true single-command shortcut. (A
-   deprecated `./deploy.sh` wrapper still exists that chains the commands below
-   for existing CI — see the note at the end of this section.)
+   *starting* it (starting consumes app compute), so at the platform level this is
+   **two steps: deploy, then deploy-source-and-start the app.** Route A does both
+   steps explicitly; route **A2 (`./deploy.sh`)** chains them into one command for
+   you; the UI (route B) does them as two button clicks.
 
    **Option A — CLI** (scriptable, best for CI):
    ```bash
@@ -115,20 +118,59 @@ from any tool: notebooks, dashboards, Genie spaces, agents, or your own applicat
    scripts/grant_app_permissions.sh -t dev -p <your-profile>          # UC grants + Vector Search endpoint (only needed for OBO / app-SP catalog access)
    ```
 
+   **Option A2 — `./deploy.sh`** (the same three commands, one invocation):
+   ```bash
+   ./deploy.sh -t dev -p <your-profile>
+   ```
+   `deploy.sh` is a **legacy-but-fully-supported** wrapper that chains the three
+   Option A commands. It does **not** generate any YAML (`databricks.yml`,
+   `app.yaml`, and the app resource are static committed files). It adds two
+   conveniences for existing customers:
+   - **`{target}.env` support.** If a `dev.env` / `demo.env` / `prod.env` exists,
+     it is sourced and its scalar values (`catalog_name`, `schema_name`,
+     `warehouse_id`, `vs_endpoint_name`, `node_type`, `budget_policy_id`,
+     `enable_obo`, `app_name`, `app_name_suffix`, `app_display_name`, `model`) are
+     forwarded as `--var` overrides — so a legacy `.env`-based deploy keeps working
+     with no migration. (Knobs whose *shape* changed — `policy_id`, `spn_id`,
+     `permission_groups/users` — are **not** forwarded; the script prints how to
+     move them to `variable-overrides.json`.) If you use `.databricks/bundle/<target>/variable-overrides.json`
+     instead, `deploy.sh` works too — the values resolve through the bundle.
+   - **pip → uv proxy bridge.** If `pip` is configured with a private index
+     (`global.index-url`) and `UV_INDEX_URL` is unset, it forwards that index to
+     `uv` for the wheel build (corporate-proxy environments).
+
+   Flags: `-t/--target`, `-p/--profile`, `--no-app` (jobs/code only, skip app
+   start), `--no-frontend`, `--no-vs`. If no `catalog_name` is found in any source,
+   it prints a clear warning and still deploys (the app then shows a "CATALOG_NAME
+   not set" banner until you configure it).
+
    **Option B — Workspace UI** (no local machine required):
    1. Clone the repo as a **Git Folder**.
    2. Open `databricks.yml`, click the **Deployments** (rocket) icon, and pick
       your target. Before deploying, set your variables: open the **⋮** menu next
       to **Deploy**, choose **Configure variable overrides**, and fill in
-      `catalog_name` / `schema_name` / `warehouse_id` (this writes the override
-      file for you — see step 1's note). Then click **Deploy**. This builds the
-      wheel and registers jobs + the app — but does **not** start the app.
+      `catalog_name` / `schema_name` / `warehouse_id`. These are saved to a
+      **workspace-managed store that the UI deploy reads** — *not* to a
+      `.databricks/...` file in your Git Folder, and not to git (see step 1's
+      note). Don't go looking for a `.databricks` folder; you won't see one, and
+      you don't need to create one for the UI path. Then click **Deploy** — this
+      builds the wheel and registers jobs + the app, but does **not** start it.
    3. Go to **Workspace > Apps > dbxmetagen-app**, click **Deploy** (deploys the
       app source), then **Start** (brings up compute). This is the UI equivalent
       of `bundle run dbxmetagen_app`. Takes a few minutes as it installs the wheel.
    4. For OBO / app-SP catalog access, run `scripts/grant_app_permissions.sh` (or
       grant the app service principal UC access manually — see
       [`docs/MANUAL_DEPLOYMENT.md`](docs/MANUAL_DEPLOYMENT.md)).
+
+   > **⚠️ Known limitation — UI deploy may start the app without its config.** On
+   > the workspace-UI path, the app compute can start but come up **without its
+   > environment** (`CATALOG_NAME` / `WAREHOUSE_ID` missing), even when the
+   > variable overrides were set correctly — you'll see the app's built-in
+   > "CATALOG_NAME not set" banner. The env is applied reliably by the **CLI**
+   > path (`bundle deploy` writes it), so if you hit this, deploy with Option A /
+   > A2 instead (or run `databricks bundle deploy` once from a workspace web
+   > terminal, then Start the app from the Apps page). This is a known issue under
+   > active investigation; the banner is your signal that it happened.
 
    > **Only using On-Behalf-Of (OBO) user auth?** (Default is off — skip this if
    > you deploy with `enable_obo=false`.) Two OBO-specific gotchas:
@@ -154,15 +196,15 @@ from any tool: notebooks, dashboards, Genie spaces, agents, or your own applicat
    - **One workspace, one instance:** the app is a singleton by name. If you deploy
      more than one target/instance to the same workspace, set `app_name_suffix`
      (e.g. `-dev`) in your overrides so they don't overwrite each other's app.
-   - **Legacy `./deploy.sh` (deprecated):** a thin wrapper is kept so existing
-     CI/CD that calls `./deploy.sh -t <target> -p <profile>` keeps working — it
-     just runs `bundle deploy` → `bundle run dbxmetagen_app` →
-     `grant_app_permissions.sh`. It is **not** the old template-generating script
-     and does **not** read a `{target}.env` file; per-workspace config comes from
-     the variable overrides above. New setups should call the commands directly.
-     For the full set of advanced overrides (cluster policy, serverless budget,
-     `run_as` SP, app permissions, OBO scopes, lakebase), copy
-     `variable-overrides.advanced.example.json`.
+   - **`./deploy.sh` (Option A2 above):** legacy but **fully supported** — it
+     chains the three Option A commands, reads a `{target}.env` if present, and
+     bridges a pip proxy to `uv`. It is **not** the old template-generating script
+     (no YAML is generated). See Option A2 for details and flags.
+   - **Advanced overrides:** for cluster policy, serverless budget, `run_as` SP,
+     app permissions, OBO scopes, or lakebase, copy
+     `variable-overrides.advanced.example.json` into
+     `.databricks/bundle/<target>/variable-overrides.json` (CLI) or paste the same
+     keys into the UI's ⋮ **Configure variable overrides** editor.
 
 4. Access the app at **Workspace > Apps > dbxmetagen-app** and follow the instructions there.
 

@@ -13,12 +13,20 @@ multi-workspace deploys, the **Workspace UI** for a self-contained in-workspace
 workflow. They target the same bundle and are interchangeable per deploy.
 
 > **Known rough edges (as of this writing).** This path is still being
-> hardened alongside the CLI path. Two things to be aware of:
+> hardened alongside the CLI path. Three things to be aware of:
 > - **The app is not started by the bundle deploy.** `bundle deploy` (CLI or UI)
 >   registers/updates the app but does not deploy its source or start it. After
 >   deploying, open **Workspace > Apps > dbxmetagen-app** and click **Deploy**
 >   then **Start** (Section 9). Until you do, the running app reflects a previous
 >   deploy -- including its old job IDs and OBO consent.
+> - **The app may start without its config (env not applied).** On the UI path,
+>   the app compute can start but come up **without** `CATALOG_NAME` /
+>   `WAREHOUSE_ID` even when your variable overrides were set correctly -- the app
+>   shows a "CATALOG_NAME not set" banner. The **CLI** path (`bundle deploy`)
+>   applies the env reliably, so if you hit this, deploy with the CLI / `deploy.sh`
+>   (or run `databricks bundle deploy` once from a workspace **web terminal**, then
+>   Start the app from the Apps page). Known issue under active investigation; the
+>   banner is your signal that it happened.
 > - **Pick one target per workspace.** The bundle has `dev`, `demo`, and `prod`
 >   targets, and there is a single app (`${var.app_name}`) whose `config.env`
 >   job IDs are rewritten by whichever target you deploy last. Deploying more
@@ -81,21 +89,29 @@ repo root holds the placeholder keys to copy. It contains:
 > in place after cloning (steps below).
 
 **In the workspace UI (Git Folder):** `--var` and `BUNDLE_VAR_*` are CLI-only, so
-the override file is your mechanism — but you do **not** create it by hand. The
-bundle editor writes it (and the `.databricks/bundle/<target>/` folders) for you:
+the ⋮ **Configure variable overrides** editor is your mechanism:
 
 1. Open `databricks.yml` in the workspace editor to bring up the bundle
    deployment view, and select your target (`dev`, `demo`, or `prod`).
 2. Click the **⋮** (three-dots) menu next to the **Deploy** button and choose
    **Configure variable overrides**.
 3. Fill in `catalog_name`, `schema_name`, and `warehouse_id` (copy the shape from
-   `variable-overrides.example.json` at the repo root), then save. This writes
-   `.databricks/bundle/<target>/variable-overrides.json` — you never touch the
-   file browser or create the folder yourself.
+   `variable-overrides.example.json` at the repo root), then save.
 
+> **Where does this get saved?** The ⋮ editor stores your overrides in a
+> **workspace-managed store that the UI deploy reads** — it does **not** write a
+> `.databricks/bundle/<target>/variable-overrides.json` file into your Git Folder,
+> and it does **not** commit anything to git. This is a **separate store** from
+> the CLI's `.databricks/...` file: editing one does not populate the other. So
+> **don't go looking for a `.databricks` folder after using the UI editor** — you
+> won't see one, and you don't need to create one for the UI path. (Also, that
+> folder starts with a dot and the workspace file browser hides it, so "it doesn't
+> exist" is doubly misleading.)
+>
 > If your workspace doesn't show **Configure variable overrides** (older
-> workspaces, or the feature not enabled), fall back to creating the file
-> manually: **Create > File**, type the full relative path
+> workspaces, or the feature not enabled), and you're driving the deploy from a
+> workspace **web terminal** (i.e. effectively the CLI), then the file mechanism
+> applies: **Create > File**, type the full relative path
 > `.databricks/bundle/dev/variable-overrides.json` (the editor makes the
 > intermediate folders), and paste the JSON above.
 

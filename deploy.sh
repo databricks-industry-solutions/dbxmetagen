@@ -111,6 +111,27 @@ if [ "$SKIP_FRONTEND" = false ] && [ "$SKIP_APP" = false ] && [ -f apps/dbxmetag
     fi
 fi
 
+# --- Pre-flight: warn (do NOT fail) if no catalog_name source is visible, so a
+#     customer doesn't end up with a deployed-but-mis-configured app that only
+#     shows "CATALOG_NAME not set". Checks every place a value could come from. ---
+_have_catalog=false
+[ -n "${catalog_name:-}" ] && _have_catalog=true                       # exported (shell or sourced {target}.env)
+[ -n "${BUNDLE_VAR_catalog_name:-}" ] && _have_catalog=true            # BUNDLE_VAR_* env
+[ -f ".databricks/bundle/${TARGET}/variable-overrides.json" ] && _have_catalog=true
+printf '%s\n' "${DEPLOY_VARS[@]}" | grep -q '^catalog_name=' && _have_catalog=true   # forwarded from {target}.env
+if [ "$_have_catalog" = false ]; then
+    echo ""
+    echo "WARNING: no catalog_name found for target '${TARGET}'. Checked: \$catalog_name,"
+    echo "         \$BUNDLE_VAR_catalog_name, .databricks/bundle/${TARGET}/variable-overrides.json,"
+    echo "         and ${TARGET}.env. The deploy will still succeed, but the app will show"
+    echo "         'CATALOG_NAME not set' until you configure it. Set it via any of:"
+    echo "           mkdir -p .databricks/bundle/${TARGET} && \\"
+    echo "             cp variable-overrides.example.json .databricks/bundle/${TARGET}/variable-overrides.json  # then edit"
+    echo "           - or create ${TARGET}.env with 'catalog_name=...' (legacy)"
+    echo "           - or export BUNDLE_VAR_catalog_name=..."
+    echo ""
+fi
+
 # --- Deploy (wheel builds via the artifacts.build hook) ---
 echo ""
 echo "=== bundle deploy (target=${TARGET}, profile=${PROFILE}) ==="
