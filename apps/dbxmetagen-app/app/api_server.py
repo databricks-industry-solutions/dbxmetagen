@@ -121,6 +121,22 @@ _AVAILABLE_MODELS = [
     "databricks-gpt-oss-120b",
 ]
 
+# Serving-endpoint names are a constrained identifier charset (letters, digits,
+# and _ . -). AI_QUERY's first arg is a literal that CANNOT be a bind parameter,
+# so a request-supplied model name is interpolated into SQL -- validate it here
+# to close the injection vector (a quote/paren/space would break out of the
+# quoted literal). Fail loudly rather than silently substituting a default.
+_MODEL_ENDPOINT_RE = re.compile(r"^[A-Za-z0-9_.-]{1,128}$")
+
+
+def _safe_model_endpoint(model: Optional[str]) -> str:
+    """Validate a serving-endpoint name before it is interpolated into AI_QUERY
+    SQL. Returns the name unchanged when safe; raises HTTP 400 otherwise."""
+    name = (model or _LLM_MODEL).strip()
+    if not _MODEL_ENDPOINT_RE.match(name):
+        raise HTTPException(400, detail=f"Invalid model endpoint name: {model!r}")
+    return name
+
 # Background Genie builder tasks: task_id -> {status, stage, result, error, created}
 _genie_tasks: dict[str, dict] = {}
 
@@ -8425,7 +8441,7 @@ def explain_erd_recommendation(req: ErdExplainRequest):
     )
     try:
         rows = execute_sql(
-            f"SELECT AI_QUERY('{model}', :prompt) as response", timeout=120,
+            f"SELECT AI_QUERY('{_safe_model_endpoint(model)}', :prompt) as response", timeout=120,
             parameters=[StatementParameterListItem(name="prompt", value=prompt)],
         )
         raw = rows[0]["response"] if rows else ""
@@ -8830,7 +8846,7 @@ Return ONLY the fixed JSON definition (single object, not array)."""
 
     try:
         rows = execute_sql(
-            f"SELECT AI_QUERY('{model}', :prompt) as response", timeout=120,
+            f"SELECT AI_QUERY('{_safe_model_endpoint(model)}', :prompt) as response", timeout=120,
             parameters=[StatementParameterListItem(name="prompt", value=prompt)],
         )
         response = rows[0]["response"] if rows else ""
@@ -9100,7 +9116,7 @@ def _batch_generate_views(
 
     values_block = ",\n".join(rows_sql)
     batch_sql = (
-        f"SELECT view_name, AI_QUERY('{model}', prompt) AS response "
+        f"SELECT view_name, AI_QUERY('{_safe_model_endpoint(model)}', prompt) AS response "
         f"FROM VALUES\n{values_block}\nAS t(view_name, prompt)"
     )
     timeout = 60 + 120 * min(len(plan_views), 6)
@@ -9372,7 +9388,7 @@ def _run_sl_generation(
         plan_prompt = _build_plan_prompt(questions, context, generation_style=generation_style,
                                          max_views=effective_max, num_eligible=num_eligible,
                                          fact_hint=erd_fact_hint)
-        rows = execute_sql(f"SELECT AI_QUERY('{model}', :prompt) as response", timeout=180,
+        rows = execute_sql(f"SELECT AI_QUERY('{_safe_model_endpoint(model)}', :prompt) as response", timeout=180,
                            parameters=[StatementParameterListItem(name="prompt", value=plan_prompt)])
         plan_response = rows[0]["response"] if rows else ""
         plan_views = []
@@ -9697,7 +9713,7 @@ BUSINESS QUESTIONS:
 {q_block}
 
 Return ONLY a JSON object: {{"covered": [<1-based question indices>], "not_covered": [<1-based question indices>]}}"""
-                cov_rows = execute_sql(f"SELECT AI_QUERY('{model}', :prompt) as response", timeout=60,
+                cov_rows = execute_sql(f"SELECT AI_QUERY('{_safe_model_endpoint(model)}', :prompt) as response", timeout=60,
                                        parameters=[StatementParameterListItem(name="prompt", value=cov_prompt)])
                 cov_resp = cov_rows[0]["response"] if cov_rows else ""
                 coverage = _parse_single_json_safe(cov_resp)

@@ -17,6 +17,10 @@ from dbxmetagen.erd_recommender import (
     _recommend_view_count,
     _grain_column,
     _measurable_columns,
+    _is_key_like,
+    _is_continuous_numeric,
+    _is_integer_numeric,
+    _name_hint,
     ErdRecommendation,
     GenSufficiency,
     FK_CONFIRMED_MIN,
@@ -35,10 +39,20 @@ def _fk(src_t, src_c, dst_t, dst_c, conf=0.9, is_fk=False, **kw):
     return row
 
 
-def _num_col(name, null_rate=0.0, unique=False):
+def _num_col(name, null_rate=0.0, unique=False, data_type="double"):
+    # data_type drives key-vs-measure: continuous (double/decimal) -> measure even
+    # when unique; integer -> identifier when unique. Default continuous (a measure).
     return {"column_name": name, "has_numeric_stats": True,
             "null_rate": null_rate, "is_unique_candidate": unique,
-            "cardinality_ratio": 1.0 if unique else 0.3}
+            "cardinality_ratio": 1.0 if unique else 0.3,
+            "data_type": data_type}
+
+
+def _int_id_col(name, data_type="bigint"):
+    """A unique integer identifier column (surrogate/natural key shape)."""
+    return {"column_name": name, "has_numeric_stats": True,
+            "null_rate": 0.0, "is_unique_candidate": True,
+            "cardinality_ratio": 1.0, "data_type": data_type}
 
 
 def _key_col(name):
@@ -536,3 +550,119 @@ class TestFanoutDetection:
                             profiling_by_table={"c.s.fct_orders": [_num_col("amount")]})
         assert len(rec.sufficiency.fanout_warnings) == 1
         assert "fan out" in rec.sufficiency.fanout_warnings[0]
+
+
+class TestKeyMeasureIsDataDrivenNotNameBased:
+    """Key-vs-measure classification must generalize across ALL schemas: it comes
+    from FK participation + type/uniqueness, NEVER from column-name vocabulary.
+    These tests deliberately use names a naming heuristic would get WRONG."""
+
+    def test_type_helpers(self):
+        assert _is_continuous_numeric("double") is True
+        assert _is_continuous_numeric("decimal(18,2)") is True
+        assert _is_continuous_numeric("float") is True
+        assert _is_continuous_numeric("bigint") is False
+        assert _is_integer_numeric("bigint") is True
+        assert _is_integer_numeric("int") is True
+        assert _is_integer_numeric("double") is False
+        # Unknown/absent type: neither -- callers fall back conservatively.
+        assert _is_continuous_numeric(None) is False
+        assert _is_integer_numeric("") is False
+
+    def test_continuous_numeric_is_a_measure_even_with_a_key_like_name(self):
+        # Named like an id, but a unique DECIMAL -> a measure, not a key. A
+        # name-suffix rule would wrongly call this a key.
+        rows = [_num_col("transaction_id", unique=True, data_type="decimal(18,2)")]
+        assert "transaction_id" in _measurable_columns(rows)
+        assert _grain_column(rows) is None      # a measure is never the grain
+
+    def test_integer_unique_is_an_identifier_even_with_a_measure_like_name(self):
+        # Named like a measure ("revenue_key"), but a unique BIGINT -> identifier.
+        # A keyword rule ("revenue") would wrongly call this a measure.
+        rows = [_int_id_col("revenue_key"), _num_col("net", data_type="double")]
+        assert "revenue_key" not in _measurable_columns(rows)
+        assert _grain_column(rows) == "revenue_key"
+        assert "net" in _measurable_columns(rows)
+
+    def test_fk_participation_beats_type_and_name(self):
+        # A continuous-typed column that is actually a join key (key_hints) is a
+        # key regardless of its type/name -- FK participation is the primary signal.
+        rows = [_num_col("amount", unique=True, data_type="double")]
+        assert _grain_column(rows, key_hints={"amount"}) == "amount"
+        assert "amount" not in _measurable_columns(rows, {"amount"})
+
+    def test_measure_and_grain_agree_on_every_column(self):
+        # The invariant: a column is never both a measure and the grain.
+        rows = [_int_id_col("k"), _num_col("m1", data_type="double"),
+                _num_col("m2", data_type="decimal(10,2)"), _attr_col("label")]
+        measures = set(_measurable_columns(rows))
+        grain = _grain_column(rows)
+        assert grain not in measures
+        assert measures == {"m1", "m2"}
+        assert grain == "k"
+
+    def test_unknown_type_uninformative_name_falls_back_to_identifier(self):
+        # Thin/federated profiling, no data_type, uninformative name: a unique
+        # numeric reads as an ID (conservative default).
+        rows = [{"column_name": "x", "has_numeric_stats": True, "null_rate": 0.0,
+                 "is_unique_candidate": True, "cardinality_ratio": 1.0}]
+        assert _measurable_columns(rows) == []
+        assert _grain_column(rows) == "x"
+
+
+class TestNameIsAMildTiebreakerNotAGate:
+    """The name prior is consulted ONLY where the data is silent (unknown-type
+    unique numeric) and NEVER overrides FK participation or a clear type."""
+
+    def test_name_hint_is_token_based(self):
+        assert _name_hint("account") is None          # NOT "count" (substring)
+        assert _name_hint("account_id") == "key"
+        assert _name_hint("net_revenue") == "measure"
+        assert _name_hint("order_counts") == "measure"  # plural stripped
+        assert _name_hint("region") is None
+        assert _name_hint("revenue_id") is None        # both signals -> no hint
+
+    def test_name_breaks_tie_only_when_type_unknown(self):
+        # Unknown data_type + measure-ish name -> measure; key-ish/blank -> ID.
+        measure_named = {"column_name": "gross_amount", "has_numeric_stats": True,
+                         "null_rate": 0.0, "is_unique_candidate": True,
+                         "cardinality_ratio": 1.0}  # no data_type
+        key_named = {"column_name": "member_id", "has_numeric_stats": True,
+                     "null_rate": 0.0, "is_unique_candidate": True,
+                     "cardinality_ratio": 1.0}      # no data_type
+        assert _is_key_like(measure_named) is False   # -> measure
+        assert _is_key_like(key_named) is True        # -> identifier
+
+    def test_name_does_not_override_a_clear_type(self):
+        # Clear CONTINUOUS type beats a key-ish name; clear INTEGER type beats a
+        # measure-ish name. Data wins whenever it speaks.
+        cont_key_named = _num_col("member_id", unique=True, data_type="decimal(9,2)")
+        int_measure_named = _int_id_col("total_amount", data_type="bigint")
+        assert _is_key_like(cont_key_named) is False  # still a measure
+        assert _is_key_like(int_measure_named) is True  # still an identifier
+
+    def test_name_does_not_override_fk_participation(self):
+        # A measure-ish name that is actually an FK stays a key.
+        col = _num_col("sales_amount", unique=True, data_type="double")
+        assert _is_key_like(col, key_hints={"sales_amount"}) is True
+
+    def test_grain_name_nudge_orders_equal_candidates(self):
+        # Two unknown-type unique integers; the id-named one is preferred as grain
+        # (ordering nudge only -- both remain key-like).
+        a = {"column_name": "seq", "has_numeric_stats": True, "null_rate": 0.0,
+             "is_unique_candidate": True, "cardinality_ratio": 1.0}
+        b = {"column_name": "customer_key", "has_numeric_stats": True,
+             "null_rate": 0.0, "is_unique_candidate": True, "cardinality_ratio": 1.0}
+        assert _grain_column([a, b]) == "customer_key"
+
+
+class TestNoAnchorRecommendsOneNotTableCount:
+    def test_all_dimension_schema_recommends_one_not_table_count(self):
+        # No fact/source/bridge and no measures anywhere: must recommend a single
+        # starter view, never the raw table count (the reintroduced-bug guard).
+        tables = ["c.s.dim_a", "c.s.dim_b", "c.s.dim_c", "c.s.dim_d"]
+        fks = [_fk("c.s.dim_a", "b_id", "c.s.dim_b", "id", conf=0.9)]
+        profiling = {t: [_key_col("id"), _attr_col("label")] for t in tables}
+        rec = recommend_erd(tables, fk_rows=fks, profiling_by_table=profiling)
+        assert rec.sufficiency.metric_views_recommended == 1
+        assert any("no clear fact/grain" in r for r in rec.sufficiency.reasons)
