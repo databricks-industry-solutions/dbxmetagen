@@ -4,6 +4,7 @@ from concurrent.futures import ThreadPoolExecutor, as_completed
 from typing import Dict, Any, Tuple
 import pandas as pd
 from dbxmetagen.deterministic_pi import detect_pi
+from dbxmetagen.databricks_utils import quote_fqn
 
 from pyspark.sql import SparkSession, DataFrame
 from pyspark.sql.functions import collect_list, struct, to_json, col
@@ -499,7 +500,7 @@ class Prompt(ABC):
 
         def _fetch_one(col_name):
             df = self.spark.sql(
-                f"DESCRIBE EXTENDED {self.full_table_name} `{col_name}`"
+                f"DESCRIBE EXTENDED {quote_fqn(self.full_table_name)} `{col_name}`"
             )
             rows = df.filter(df["info_name"].isin(STATS_FIELDS)).toPandas()
             stats = {}

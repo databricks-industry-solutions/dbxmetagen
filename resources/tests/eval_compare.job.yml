@@ -1,7 +1,7 @@
 resources:
   jobs:
-    eval_setup_job:
-      name: "${var.app_name}_eval_setup"
+    eval_compare_job:
+      name: "${var.app_name}${var.app_name_suffix}_eval_compare"
       budget_policy_id: ${var.budget_policy_id}
 
       permissions:
@@ -15,18 +15,24 @@ resources:
       parameters:
         - name: catalog_name
           default: ${var.catalog_name}
-        - name: schema_name
+        - name: eval_schema
           default: eval_data
+        - name: pipeline_schema
+          default: ${var.schema_name}
+        - name: run_label
+          default: ""
 
       tasks:
-        - task_key: create_eval_tables
+        - task_key: compare_and_score
           max_retries: 0
           environment_key: default
           notebook_task:
-            notebook_path: ../../notebooks/evaluation/eval_setup.py
+            notebook_path: ../../notebooks/evaluation/eval_compare.py
             base_parameters:
               catalog_name: "{{job.parameters.catalog_name}}"
-              schema_name: "{{job.parameters.schema_name}}"
+              eval_schema: "{{job.parameters.eval_schema}}"
+              pipeline_schema: "{{job.parameters.pipeline_schema}}"
+              run_label: "{{job.parameters.run_label}}"
 
       environments:
         - environment_key: default
@@ -34,4 +40,3 @@ resources:
             environment_version: "2"
             dependencies:
               - ../../dist/*.whl
-              - faker

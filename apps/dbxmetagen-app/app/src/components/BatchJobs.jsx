@@ -1,8 +1,9 @@
 import React, { useState, useEffect, useRef, useCallback, Component } from 'react'
-import { ErrorBanner, PrereqBanner } from '../App'
+import { ErrorBanner } from '../App'
 import { cachedFetchObj, TTL } from '../apiCache'
-import { PageHeader, EmptyState, Skeleton } from './ui'
-import { useCatalogSchemaTables } from '../hooks/useCatalogSchemaTables'
+import { PageHeader, EmptyState, Skeleton, InfoTip } from './ui'
+import { useSharedJobRunner, TERMINAL_STATES } from '../hooks/useJobRunner'
+import TableScopePicker, { scopeToTableNames } from './TableScopePicker'
 
 class TabErrorBoundary extends Component {
   state = { error: null }
@@ -21,27 +22,6 @@ class TabErrorBoundary extends Component {
     return this.props.children
   }
 }
-
-function InfoTip({ text }) {
-  return (
-    <span className="relative group/tip cursor-help inline-flex flex-shrink-0">
-      <svg xmlns="http://www.w3.org/2000/svg" className="h-3.5 w-3.5 text-slate-400 group-hover/tip:text-slate-600 dark:group-hover/tip:text-slate-300 transition-colors" viewBox="0 0 20 20" fill="currentColor">
-        <path fillRule="evenodd" d="M18 10a8 8 0 11-16 0 8 8 0 0116 0zm-7-4a1 1 0 11-2 0 1 1 0 012 0zM9 9a1 1 0 000 2v3a1 1 0 001 1h1a1 1 0 100-2v-3a1 1 0 00-1-1H9z" clipRule="evenodd" />
-      </svg>
-      <span className="absolute bottom-full left-1/2 -translate-x-1/2 mb-2 w-72 p-2 text-xs font-normal normal-case text-left text-slate-200 bg-slate-800 rounded-lg shadow-lg opacity-0 group-hover/tip:opacity-100 pointer-events-none transition-opacity z-10">
-        {text}
-      </span>
-    </span>
-  )
-}
-
-const TERMINAL_STATES = new Set(['TERMINATED', 'SKIPPED', 'INTERNAL_ERROR'])
-
-const TABS = [
-  { id: 'core', label: 'Generate Core Metadata', sub: 'Descriptions \u00b7 Sensitivity \u00b7 Domain', color: 'bg-dbx-lava' },
-  { id: 'advanced', label: 'Generate Advanced Metadata', sub: 'Ontology \u00b7 Foreign Keys \u00b7 Knowledge Graph', color: 'bg-dbx-amber' },
-  { id: 'assets', label: 'Semantic Layer Assets', sub: 'Metric Views', color: 'bg-dbx-teal' },
-]
 
 const STATUS_LABELS = {
   'RUNNING': 'Running', 'PENDING': 'Queued', 'SKIPPED': 'Skipped', 'INTERNAL_ERROR': 'Internal Error',
@@ -152,42 +132,32 @@ function HealthWarnings({ health }) {
 }
 
 export default function BatchJobs({ onNavigate, pipelineStats }) {
-  const [jobs, setJobs] = useState([])
+  const { jobs, runHistory, runningAction, runError, runJob, jobsError } = useSharedJobRunner()
   const [tableNames, setTableNames] = useState('')
-  const [mode, setMode] = useState('comment')
   const [applyDdl, setApplyDdl] = useState(false)
   const [federationMode, setFederationMode] = useState(false)
   const [catalogName, setCatalogName] = useState('')
   const [schemaName, setSchemaName] = useState('')
-  const [runningAction, setRunningAction] = useState(null)
   const [error, setError] = useState(null)
   const [ontologyBundle, setOntologyBundle] = useState(() => {
     try { return localStorage.getItem('dbxmetagen_ontologyBundle') || '' } catch { return '' }
   })
-  const [entityTagKey, setEntityTagKey] = useState('entity_type')
   const [bundles, setBundles] = useState([])
   const [bundlesLoading, setBundlesLoading] = useState(false)
   const [bundlesLoadError, setBundlesLoadError] = useState(null)
   const [domainConfig, setDomainConfig] = useState('')
   const [domainConfigs, setDomainConfigs] = useState([])
-  const [runHistory, setRunHistory] = useState([])
   const [historyPage, setHistoryPage] = useState(0)
   const [health, setHealth] = useState(null)
-  const [activeTab, setActiveTab] = useState('core')
-  const [similarityThreshold, setSimilarityThreshold] = useState(0.8)
-  const [incremental, setIncremental] = useState(true)
-  const [sweepStale, setSweepStale] = useState(false)
-  const [serverless, setServerless] = useState(true)
-  const [clusterMinK, setClusterMinK] = useState(2)
-  const [clusterMaxK, setClusterMaxK] = useState(15)
-  const [lakebaseCatalog, setLakebaseCatalog] = useState('')
-  const [lakebaseError, setLakebaseError] = useState(null)
-  const [lakebaseConfigured, setLakebaseConfigured] = useState(false)
-  const [mcpDropExisting, setMcpDropExisting] = useState(false)
-  const [mcpError, setMcpError] = useState(null)
+  // Core-metadata run scope: 'all3' runs descriptions + sensitivity + domain;
+  // 'comment' / 'pi' / 'domain' run a single mode. Serverless is unified into
+  // settings.use_serverless. (The advanced analytics pipeline now lives in the
+  // Semantic Layer's foundation gate, not here.)
+  const [genMenuOpen, setGenMenuOpen] = useState(false)
+  const [skipKbEnrich, setSkipKbEnrich] = useState(false)
+  const genMenuRef = useRef(null)
   const [importStatus, setImportStatus] = useState(null)
   const [availableModels, setAvailableModels] = useState(['databricks-claude-sonnet-4-6', 'databricks-gpt-oss-120b'])
-  const pollRef = useRef(null)
 
   const [settings, setSettings] = useState({
     model: 'databricks-claude-sonnet-4-6',
@@ -216,11 +186,53 @@ export default function BatchJobs({ onNavigate, pipelineStats }) {
     return isParallel ? '_parallel_modes_job' : '_metadata_job'
   }
 
-  const [pickerOpen, setPickerOpen] = useState(false)
-  const picker = useCatalogSchemaTables()
-  const { catalogs: pickerCatalogs, schemas: pickerSchemas, filtered: filteredPickerTables, catalog: pickerCatalog, schema: pickerSchema, filter: pickerFilter, setCatalog: setPickerCatalog, setSchema: setPickerSchema, setFilter: setPickerFilter } = picker
-  const pickerTables = picker.tables
-  const [pickerSelected, setPickerSelected] = useState([])
+  // Single entry point for core-metadata generation. `scope` is 'all3' (runs
+  // descriptions + sensitivity + domain together) or a single mode
+  // ('comment' | 'pi' | 'domain'). By default the all-3 path is KB-enriched
+  // (comments -> KB build -> PI/domain with KB context); "skip KB enrich"
+  // flips it to the faster non-enriched parallel job. Serverless is read from
+  // the unified settings.use_serverless.
+  const runGenerate = (scope) => {
+    setGenMenuOpen(false)
+    const common = {
+      table_names: tableNames,
+      apply_ddl: applyDdl,
+      federation_mode: federationMode,
+      ontology_bundle: ontologyBundle,
+      use_customer_context: settings.use_customer_context,
+      include_lineage: settings.include_lineage,
+      ...(domainConfig ? { domain_config: domainConfig } : {}),
+      extra_params: buildExtraParams(),
+    }
+    if (scope === 'all3') {
+      if (skipKbEnrich) {
+        // All 3 modes in parallel, no KB enrichment between passes.
+        runJob(getJobSuffix(true), { ...common, use_kb_comments: settings.use_kb_comments }, 'all3')
+      } else {
+        // Comments -> KB build -> PI + domain enriched with KB descriptions.
+        runJob(settings.use_serverless ? '_kb_enriched_serverless_job' : '_kb_enriched_modes_job', common, 'kb_enriched')
+      }
+      return
+    }
+    // Single mode (comment, PI, or domain).
+    runJob(getJobSuffix(false), { ...common, mode: scope, use_kb_comments: settings.use_kb_comments }, 'single')
+  }
+
+  // Table scope drives `tableNames` (the string the generate handlers read).
+  // Core metadata defaults to "Selected" — running descriptions on the ENTIRE
+  // workspace is expensive and rarely intended, so require an explicit choice
+  // (a pattern like catalog.schema.* still covers a whole schema). A separate
+  // advanced "paste patterns" field preserves `*` wildcard support.
+  const [coreScope, setCoreScope] = useState({ mode: 'selected', tables: [] })
+  const [patternText, setPatternText] = useState('')
+  const [showPatterns, setShowPatterns] = useState(false)
+  useEffect(() => {
+    const fromScope = scopeToTableNames(coreScope)
+    const pat = patternText.trim()
+    // Patterns (if any) union with the selected tables; else scope alone.
+    const combined = [fromScope, pat].filter(Boolean).join(', ')
+    setTableNames(combined)
+  }, [coreScope, patternText])
 
   const buildExtraParams = () => ({
     model: settings.model,
@@ -228,6 +240,13 @@ export default function BatchJobs({ onNavigate, pipelineStats }) {
     columns_per_call: String(settings.columns_per_call),
     comment_style: settings.comment_style,
   })
+
+  useEffect(() => {
+    if (!genMenuOpen) return
+    const handler = e => { if (genMenuRef.current && !genMenuRef.current.contains(e.target)) setGenMenuOpen(false) }
+    document.addEventListener('mousedown', handler)
+    return () => document.removeEventListener('mousedown', handler)
+  }, [genMenuOpen])
 
   const loadBundles = useCallback(() => {
     setBundlesLoadError(null)
@@ -250,18 +269,12 @@ export default function BatchJobs({ onNavigate, pipelineStats }) {
 
   useEffect(() => {
     setError(null)
-    fetch('/api/jobs').then(r => {
-      if (!r.ok) throw new Error(`${r.status} ${r.statusText}`)
-      return r.json()
-    }).then(setJobs)
-      .catch(e => setError(`Failed to load jobs: ${e.message}`))
-
+    // Job list + run history are loaded/polled by useJobRunner.
     cachedFetchObj('/api/config', {}, TTL.CONFIG).then(({ data: cfg, error: cfgErr }) => {
       if (cfgErr) setError(prev => prev ? `${prev} | Config: ${cfgErr}` : `Config load failed: ${cfgErr}`)
       if (cfg) {
         setCatalogName(cfg.catalog_name || '')
         setSchemaName(cfg.schema_name || '')
-        if (cfg.catalog_name) setPickerCatalog(cfg.catalog_name)
         setSettings(prev => ({
           ...prev,
           model: cfg.model ?? prev.model,
@@ -273,124 +286,15 @@ export default function BatchJobs({ onNavigate, pipelineStats }) {
         setApplyDdl(cfg.apply_ddl ?? false)
         setFederationMode(cfg.federation_mode ?? false)
         if (Array.isArray(cfg.available_models) && cfg.available_models.length) setAvailableModels(cfg.available_models)
-        setLakebaseConfigured(!!cfg.lakebase_configured)
       }
     })
     loadBundles()
     fetch('/api/domain-configs').then(r => r.ok ? r.json() : []).then(setDomainConfigs)
       .catch(() => setError(prev => prev ? `${prev} | Domain configs could not be loaded` : 'Domain configs could not be loaded'))
     fetch('/api/jobs/health').then(r => r.ok ? r.json() : null).then(setHealth).catch(() => {})
-    fetch('/api/jobs/runs').then(r => r.ok ? r.json() : []).then(runs => {
-      setRunHistory(runs.map(r => ({ ...r, _polling: false })))
-    }).catch(() => setError(prev => prev ? `${prev} | Run history could not be loaded` : 'Run history could not be loaded'))
   }, [loadBundles])
 
-  useEffect(() => { setPickerSelected([]) }, [pickerCatalog, pickerSchema])
-
-  const addSelectedTables = () => {
-    if (pickerSelected.length === 0) return
-    const fqNames = pickerSelected.map(t => `${pickerCatalog}.${pickerSchema}.${t}`)
-    setTableNames(prev => {
-      const trimmed = prev.trim()
-      return trimmed ? `${trimmed}, ${fqNames.join(', ')}` : fqNames.join(', ')
-    })
-    setPickerSelected([])
-  }
-
-  const togglePickerTable = (t) => {
-    setPickerSelected(prev => prev.includes(t) ? prev.filter(x => x !== t) : [...prev, t])
-  }
-
-  const runHistoryRef = useRef(runHistory)
-  useEffect(() => { runHistoryRef.current = runHistory }, [runHistory])
-
-  const pollActiveRuns = useCallback(async () => {
-    const active = runHistoryRef.current.filter(r => !TERMINAL_STATES.has(r.state))
-    if (active.length === 0) return
-    const updates = await Promise.all(active.map(async (r) => {
-      try {
-        const res = await fetch(`/api/jobs/${r.run_id}/status`)
-        if (!res.ok) return null
-        return await res.json()
-      } catch { return null }
-    }))
-    setRunHistory(prev => prev.map(r => {
-      const upd = updates.find(u => u && u.run_id === r.run_id)
-      return upd ? { ...r, ...upd } : r
-    }))
-  }, [])
-
-  useEffect(() => {
-    const hasActive = runHistory.some(r => !TERMINAL_STATES.has(r.state))
-    if (hasActive && !pollRef.current) {
-      pollRef.current = setInterval(pollActiveRuns, 5000)
-    } else if (!hasActive && pollRef.current) {
-      clearInterval(pollRef.current)
-      pollRef.current = null
-    }
-    return () => { if (pollRef.current) { clearInterval(pollRef.current); pollRef.current = null } }
-  }, [runHistory, pollActiveRuns])
-
-  const findJob = (suffix) => jobs.find(j => j.name?.endsWith(suffix))
-
   const hasDomainSource = !!(ontologyBundle || domainConfig)
-  const needsDomain = mode === 'domain'
-
-  const [runError, setRunError] = useState(null)
-
-  const runJob = async (jobNameSuffix, params = {}, actionKey = 'default') => {
-    setRunningAction(actionKey)
-    setRunError(null)
-    try {
-      const match = findJob(jobNameSuffix)
-      const body = match
-        ? { job_id: match.job_id, ...params }
-        : { job_name: jobNameSuffix, ...params }
-      const res = await fetch('/api/jobs/run', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify(body),
-      })
-      const data = await res.json().catch(() => ({}))
-      if (!res.ok) { setRunError(data.detail || `Failed to start job (${res.status})`); setRunningAction(null); return }
-      const newRun = {
-        ...data,
-        job_name: match?.name || jobNameSuffix,
-        state: 'PENDING', result: null, tasks: [],
-        run_page_url: null, state_message: null,
-      }
-      setRunHistory(prev => [newRun, ...prev])
-    } catch (e) { setRunError(e.message) }
-    setRunningAction(null)
-  }
-
-  const syncLakebase = async () => {
-    setLakebaseError(null)
-    try {
-      await runJob('sync_graph_lakebase', {
-        catalog_name: catalogName,
-        schema_name: schemaName,
-        extra_params: {
-          ...(lakebaseCatalog ? { lakebase_catalog: lakebaseCatalog } : {}),
-        },
-      }, 'lakebase')
-    } catch (e) {
-      setLakebaseError(e.message || 'Lakebase sync failed')
-    }
-  }
-
-  const setupMcpServers = async () => {
-    setMcpError(null)
-    try {
-      await runJob('setup_mcp_servers', {
-        catalog_name: catalogName,
-        schema_name: schemaName,
-        extra_params: { drop_existing: String(mcpDropExisting) },
-      }, 'mcp_setup')
-    } catch (e) {
-      setMcpError(e.message || 'MCP setup failed')
-    }
-  }
 
   const activeRuns = runHistory.filter(r => !TERMINAL_STATES.has(r.state))
   const completedRuns = runHistory.filter(r => TERMINAL_STATES.has(r.state))
@@ -399,6 +303,7 @@ export default function BatchJobs({ onNavigate, pipelineStats }) {
     <div className="space-y-5">
       <PageHeader title="Generate Metadata" subtitle="Generate descriptions, sensitivity labels, domains, and advanced analytics from your Unity Catalog tables" badge={catalogName && schemaName ? `${catalogName}.${schemaName}` : undefined} />
       <ErrorBanner error={error} />
+      <ErrorBanner error={jobsError} />
       <ErrorBanner error={runError} />
       <HealthWarnings health={health} />
 
@@ -416,14 +321,17 @@ export default function BatchJobs({ onNavigate, pipelineStats }) {
           <p className="text-xs text-gray-400 col-span-2">Set before deployment in the project settings.</p>
         </div>
 
-        <details className="mt-4 group" open>
+        <details className="mt-4 group">
           <summary className="section-title cursor-pointer select-none flex items-center gap-1.5 py-2 border-t border-dbx-oat-dark/30 dark:border-dbx-navy-400/20 mt-3 pt-3">
             <svg className="w-3 h-3 transition-transform group-open:rotate-90" fill="none" viewBox="0 0 24 24" stroke="currentColor">
               <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M9 5l7 7-7 7" />
             </svg>
-            Ontology &amp; Business Domain
+            Industry &amp; Domain
+            <span className="text-xs font-normal text-slate-400 dark:text-slate-500 ml-1">
+              — optional for descriptions &amp; sensitivity; required for domain classification and the advanced pipeline
+            </span>
           </summary>
-          <div className="grid grid-cols-1 md:grid-cols-2 gap-4 mt-3 animate-slide-up">
+          <div className="mt-3 animate-slide-up">
             <div>
               <label className="section-title mb-1.5 flex items-center gap-2">
                 Industry Ontology
@@ -465,11 +373,25 @@ export default function BatchJobs({ onNavigate, pipelineStats }) {
                   </>)
                 })()}
               </label>
-              <select value={ontologyBundle} onChange={e => {
-                setOntologyBundle(e.target.value)
-                try { localStorage.setItem('dbxmetagen_ontologyBundle', e.target.value) } catch {}
+              <select value={ontologyBundle || (domainConfig ? `domain:${domainConfig}` : '')} onChange={e => {
+                const raw = e.target.value
+                if (raw.startsWith('domain:')) {
+                  // Domain-only selection: a standalone domain taxonomy with no ontology.
+                  // For customers who want domain classification but not a full ontology.
+                  const dk = raw.slice('domain:'.length)
+                  setDomainConfig(dk)
+                  setOntologyBundle('')
+                  try { localStorage.setItem('dbxmetagen_ontologyBundle', '') } catch {}
+                  return
+                }
+                setOntologyBundle(raw)
+                try { localStorage.setItem('dbxmetagen_ontologyBundle', raw) } catch {}
+                // The domain-taxonomy override only applies to custom-imported
+                // ontologies; clear any lingering selection when switching to a
+                // curated/formal bundle so we never send a stale invisible override.
+                if (!bundles.find(b => b.key === raw)?.custom) setDomainConfig('')
               }} className="select-base">
-                <option value="">(None — use domain list only)</option>
+                <option value="">(None — use default domain list only)</option>
                 {bundles.length > 0 && (() => {
                   const custom = bundles.filter(b => b.custom)
                   const formal = bundles.filter(b => !b.custom && b.bundle_type === 'formal_ontology')
@@ -499,6 +421,13 @@ export default function BatchJobs({ onNavigate, pipelineStats }) {
                       {curated.map(b => (
                         <option key={b.key} value={b.key}>
                           {b.has_tier_indexes ? '\u2713 ' : ''}{b.name} ({counts(b)}){suffix(b)}
+                        </option>
+                      ))}
+                    </optgroup>}
+                    {domainConfigs.length > 0 && <optgroup label="Domain taxonomies (domain classification only -- no ontology)">
+                      {domainConfigs.map(d => (
+                        <option key={`domain:${d.key}`} value={`domain:${d.key}`}>
+                          {d.name} ({d.domain_count} domains)
                         </option>
                       ))}
                     </optgroup>}
@@ -535,9 +464,10 @@ export default function BatchJobs({ onNavigate, pipelineStats }) {
                 <ul className="mt-1.5 ml-3 list-disc space-y-1 leading-relaxed">
                   <li><strong>General</strong> &mdash; Good starting point for mixed or unknown data. Covers common patterns (Person, Organization, Location, Event, Product, etc.) across industries.</li>
                   <li><strong>Healthcare / FHIR R4 / OMOP CDM</strong> &mdash; Use for clinical, EHR, or health data. FHIR R4 and OMOP CDM are formal ontologies with standards-aligned entity URIs; Healthcare is a lighter curated bundle.</li>
-                  <li><strong>Financial Services</strong> &mdash; Banking, insurance, and capital-markets data (accounts, transactions, instruments, risk, compliance).</li>
+                  <li><strong>Financial Services / FIBO Foundations</strong> &mdash; Banking, insurance, and capital-markets data (accounts, transactions, instruments, risk, compliance). Financial Services is a curated bundle; FIBO Foundations (FND) is the formal EDM Council ontology (434 entity types: agents, parties, organizations, agreements, contracts, accounting, currency, ownership &amp; control) with standards-aligned entity URIs.</li>
                   <li><strong>Retail &amp; CPG</strong> &mdash; Retail, supply chain, and consumer goods data (customers, orders, products, inventory, promotions).</li>
                   <li><strong>Schema.org</strong> &mdash; Broad formal ontology from schema.org. Best for web-originated or loosely structured data.</li>
+                  <li><strong>Dublin Core</strong> &mdash; Compact, standards-aligned general ontology (34 catalog types: Agent, Dataset, Document, Location, Rights, etc.). A simpler alternative to Schema.org for general catalog metadata. Pair with a Domain Taxonomy for domain classification.</li>
                 </ul>
                 <p className="mt-1.5 leading-relaxed">
                   <strong>Formal ontologies</strong> (labeled &ldquo;Formal OWL&rdquo;) are auto-extracted from published OWL/Turtle files
@@ -603,159 +533,90 @@ export default function BatchJobs({ onNavigate, pipelineStats }) {
                 }} />
                 Import ontology file (.ttl, .owl, or .rdf)
               </label>
-              <p className="text-xs text-slate-500 dark:text-slate-400 mt-1">Imported ontologies provide entity types and relationships. For domain classification, pair with a Domain Taxonomy below.</p>
+              <p className="text-xs text-slate-500 dark:text-slate-400 mt-1">Imported ontologies provide entity types and relationships but no domain definitions — a domain taxonomy fallback appears below when one is selected.</p>
               {importStatus && <p className="text-xs text-green-600 dark:text-green-400 mt-1">{importStatus}</p>}
-            </div>
-            <div>
-              <label className="section-title mb-1.5 block">Domain Taxonomy</label>
-              <select value={domainConfig} onChange={e => setDomainConfig(e.target.value)} className="select-base">
-                <option value="">{ontologyBundle && bundles.find(b => b.key === ontologyBundle)?.custom ? '(Select a domain taxonomy for classification)' : ontologyBundle ? '(Use domains from selected ontology)' : '(No domain taxonomy selected)'}</option>
-                {domainConfigs.map(d => (
-                  <option key={d.key} value={d.key}>{d.name} ({d.domain_count} domains)</option>
-                ))}
-              </select>
-              {ontologyBundle && bundles.find(b => b.key === ontologyBundle)?.custom && (
-                <p className="text-xs text-blue-600 dark:text-blue-400 mt-1">Imported ontologies don't include domain definitions. Select a domain taxonomy that matches your data's industry to enable domain classification.</p>
-              )}
+
+              {/* Domains derive from the selected bundle automatically. The
+                  explicit Domain Taxonomy control only surfaces for custom-imported
+                  ontologies, which carry entity types but no domain definitions. */}
               {ontologyBundle && !bundles.find(b => b.key === ontologyBundle)?.custom && (
-                <p className="text-xs text-slate-500 dark:text-slate-400 mt-1">Overrides the domain list included in the selected ontology bundle.</p>
+                <p className="text-xs text-slate-500 dark:text-slate-400 mt-2 flex items-center gap-1.5">
+                  Domains come from the selected industry bundle.
+                  <InfoTip text="Each ontology bundle carries its own business-domain list, used for domain classification. No separate taxonomy selection is needed. Custom-imported ontologies (.ttl/.owl/.rdf) are the exception — they define entity types but no domains, so they show a taxonomy picker here." />
+                </p>
+              )}
+              {ontologyBundle && bundles.find(b => b.key === ontologyBundle)?.custom && (
+                <div className="mt-3 rounded-lg border border-amber-200/60 dark:border-amber-700/30 bg-amber-50/50 dark:bg-amber-900/10 px-3 py-2.5">
+                  <label className="section-title mb-1.5 flex items-center gap-2">
+                    Domain Taxonomy
+                    <span className="text-[10px] px-1.5 py-0.5 rounded bg-amber-100 text-amber-800 dark:bg-amber-900/40 dark:text-amber-300 font-medium">Required for custom ontology</span>
+                  </label>
+                  <select value={domainConfig} onChange={e => setDomainConfig(e.target.value)} className="select-base">
+                    <option value="">(Select a domain taxonomy for classification)</option>
+                    {domainConfigs.map(d => (
+                      <option key={d.key} value={d.key}>{d.name} ({d.domain_count} domains)</option>
+                    ))}
+                  </select>
+                  <p className="text-xs text-amber-700 dark:text-amber-300/90 mt-1">This imported ontology has no domains — pick a taxonomy that matches your data's industry to enable domain classification.</p>
+                </div>
               )}
             </div>
           </div>
         </details>
       </div>
 
-      {/* Tab bar */}
-      <div className="flex gap-1 bg-dbx-oat dark:bg-dbx-navy-500/50 rounded-xl p-1">
-        {TABS.map(tab => (
-          <button key={tab.id} onClick={() => setActiveTab(tab.id)}
-            className={`flex-1 py-2.5 px-4 rounded-lg text-sm font-medium transition-all ${
-              activeTab === tab.id
-                ? 'bg-white dark:bg-dbx-navy text-slate-800 dark:text-slate-100 shadow-sm'
-                : 'text-slate-500 dark:text-slate-400 hover:text-slate-700 dark:hover:text-slate-200'
-            }`}>
-            {tab.label}
-            {tab.sub && <span className="block text-[10px] font-normal opacity-60 mt-0.5">{tab.sub}</span>}
-          </button>
-        ))}
+      {/* Step 1: Generate Core Metadata — always visible, the primary action */}
+      <div className="flex items-center gap-2.5 pt-1">
+        <span className="flex items-center justify-center w-6 h-6 rounded-full bg-dbx-lava text-white text-xs font-bold shrink-0">1</span>
+        <div>
+          <h2 className="text-base font-semibold text-slate-800 dark:text-slate-100">Generate core metadata</h2>
+          <p className="text-xs text-slate-500 dark:text-slate-400">Descriptions · Sensitivity · Domain</p>
+        </div>
       </div>
 
-      <TabErrorBoundary key={activeTab}>
-      {/* Tab 1: Generate Core Metadata */}
-      {activeTab === 'core' && (
-        <section className="card border-l-4 border-l-dbx-lava overflow-hidden">
+      <TabErrorBoundary key="core">
+      {(
+        <section className="card border-l-4 border-l-dbx-lava">
           <div className="p-6 space-y-4">
-            <details className="group">
-              <summary className="text-sm font-medium text-slate-600 dark:text-slate-300 cursor-pointer select-none flex items-center gap-1.5">
-                <svg className="w-3 h-3 transition-transform group-open:rotate-90" fill="none" viewBox="0 0 24 24" stroke="currentColor">
-                  <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M9 5l7 7-7 7" />
-                </svg>
-                What is core metadata?
-              </summary>
-              <div className="mt-2 text-sm text-slate-500 dark:text-slate-400 bg-dbx-oat-light dark:bg-dbx-navy-500/30 rounded-lg p-4 animate-slide-up">
-                Core metadata generation uses LLMs to analyze your tables and produce three types of metadata: <strong className="text-slate-700 dark:text-slate-200">table and column descriptions</strong> (human-readable comments), <strong className="text-slate-700 dark:text-slate-200">sensitive data classification</strong> (PII/PHI/PCI labels), and <strong className="text-slate-700 dark:text-slate-200">business domain classification</strong>. Results are written to a review log and can be inspected in the Review tab before being applied to your tables.
-              </div>
-            </details>
-
-            <p className="text-sm text-slate-500 dark:text-slate-400">
-              <strong className="text-slate-700 dark:text-slate-200">Generate All</strong> runs descriptions, sensitivity, and domain classification together.{' '}
-              <strong className="text-slate-700 dark:text-slate-200">Run Selected Mode</strong> lets you run one analysis type at a time for targeted re-runs.
+            <p className="text-sm text-slate-500 dark:text-slate-400 flex items-center gap-1.5">
+              Generate <strong className="text-slate-700 dark:text-slate-200">descriptions, sensitivity, and domain</strong> for the chosen tables.
+              <InfoTip text="Core metadata = table/column descriptions (comments), PII/PHI/PCI classification, and business-domain classification. Results land in Review & Apply before anything is written. Use the dropdown beside Generate to run just one type for targeted re-runs." />
             </p>
 
             <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
               <div>
-                <label className="text-sm font-medium text-slate-700 dark:text-slate-200 mb-1.5 block">Tables to Process</label>
-                <textarea value={tableNames} onChange={e => setTableNames(e.target.value)}
-                  placeholder="catalog.schema.table1, catalog.schema.*"
-                  className="textarea-base h-20" />
-                <p className="text-[10px] text-slate-400 dark:text-slate-500 mt-1">Comma-separated. Use <code className="bg-dbx-oat dark:bg-dbx-navy-500 px-1 rounded">*</code> for all tables in a schema.</p>
-                <button onClick={() => setPickerOpen(o => !o)}
-                  className="btn-ghost btn-sm mt-1.5 !px-0 text-dbx-teal">
-                  <svg className={`w-3 h-3 transition-transform ${pickerOpen ? 'rotate-90' : ''}`} fill="none" viewBox="0 0 24 24" stroke="currentColor">
+                <label className="text-sm font-medium text-slate-700 dark:text-slate-200 mb-1.5 block">Tables to process</label>
+                <TableScopePicker value={coreScope} onChange={setCoreScope} allowAll={false} seedTables={[]} />
+                <button onClick={() => setShowPatterns(o => !o)} className="btn-ghost btn-sm mt-1.5 !px-0 text-dbx-teal">
+                  <svg className={`w-3 h-3 transition-transform ${showPatterns ? 'rotate-90' : ''}`} fill="none" viewBox="0 0 24 24" stroke="currentColor">
                     <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M9 5l7 7-7 7" />
                   </svg>
-                  Browse Unity Catalog
+                  Paste patterns / wildcards
                 </button>
-                {pickerOpen && (
-                  <div className="mt-2 card p-3 space-y-2 animate-slide-up">
-                    {picker.error && (
-                      <div className="rounded-lg border border-red-200 dark:border-red-800/40 bg-red-50 dark:bg-red-900/20 px-3 py-2 text-xs text-red-700 dark:text-red-300">
-                        Could not load catalogs/schemas. Check that the SQL warehouse is running and the app service principal has USE permissions. <span className="text-red-500 dark:text-red-400 font-mono">{picker.error}</span>
-                      </div>
-                    )}
-                    <div className="grid grid-cols-3 gap-2">
-                      <select value={pickerCatalog} onChange={e => setPickerCatalog(e.target.value)} className="select-base !text-xs !py-1.5">
-                        <option value="">Select catalog</option>
-                        {pickerCatalogs.map(c => <option key={c} value={c}>{c}</option>)}
-                      </select>
-                      <select value={pickerSchema} onChange={e => setPickerSchema(e.target.value)} className="select-base !text-xs !py-1.5" disabled={!pickerCatalog}>
-                        <option value="">Select schema</option>
-                        {pickerSchemas.map(s => <option key={s} value={s}>{s}</option>)}
-                      </select>
-                      <input value={pickerFilter} onChange={e => setPickerFilter(e.target.value)}
-                        placeholder="Search tables..." className="input-base !text-xs !py-1.5" aria-label="Search tables" />
-                    </div>
-                    {pickerTables.length > 0 && (
-                      <>
-                        <div className="max-h-40 overflow-y-auto scrollbar-thin border border-dbx-oat-dark/30 dark:border-dbx-navy-400/20 rounded-lg bg-dbx-oat-light dark:bg-dbx-navy/50 p-2 grid grid-cols-2 gap-x-4 gap-y-1">
-                          {pickerTables
-                            .filter(t => !pickerFilter || t.toLowerCase().includes(pickerFilter.toLowerCase()))
-                            .map(t => (
-                              <label key={t} className="flex items-center gap-2 text-xs cursor-pointer hover:bg-white dark:hover:bg-dbx-navy-500 px-2 py-1 rounded-lg transition-colors">
-                                <input type="checkbox" checked={pickerSelected.includes(t)}
-                                  onChange={() => togglePickerTable(t)} />
-                                <span className="text-slate-600 dark:text-slate-300">{t}</span>
-                              </label>
-                            ))}
-                        </div>
-                        <div className="flex items-center justify-between">
-                          <div className="flex gap-3">
-                            <button onClick={() => {
-                              const visible = pickerTables.filter(t => !pickerFilter || t.toLowerCase().includes(pickerFilter.toLowerCase()))
-                              setPickerSelected(visible)
-                            }} className="text-xs text-dbx-teal hover:text-dbx-teal/80 font-medium">Select All</button>
-                            <button onClick={() => setPickerSelected([])}
-                              className="text-xs text-slate-500 hover:text-slate-700 dark:hover:text-slate-300 font-medium">Clear</button>
-                          </div>
-                          <div className="flex items-center gap-2.5">
-                            <span className="text-xs text-slate-500">{pickerSelected.length} selected</span>
-                            <button onClick={addSelectedTables} disabled={pickerSelected.length === 0}
-                              className="btn-secondary btn-sm">Add Selected</button>
-                          </div>
-                        </div>
-                      </>
-                    )}
-                    {pickerCatalog && pickerSchema && pickerTables.length === 0 && (
-                      <p className="text-xs text-slate-400 italic py-2">No tables found in this schema</p>
-                    )}
+                {showPatterns && (
+                  <div className="mt-1.5">
+                    <textarea value={patternText} onChange={e => setPatternText(e.target.value)}
+                      placeholder="catalog.schema.*, catalog.schema.table1"
+                      title="Comma-separated fully-qualified table names; use * for all tables in a schema. Combined with any tables selected above."
+                      className="textarea-base h-16 !text-xs" />
                   </div>
                 )}
               </div>
               <div className="space-y-3">
-                <div>
-                  <label className="text-sm font-medium text-slate-700 dark:text-slate-200 mb-1.5 block">Generation Mode</label>
-                  <select value={mode} onChange={e => setMode(e.target.value)} className="select-base">
-                    <option value="comment">Table &amp; Column Descriptions</option>
-                    <option value="pi">Sensitive Data (PII / PHI / PCI)</option>
-                    <option value="domain" disabled={!hasDomainSource}>Business Domain{!hasDomainSource ? ' (select ontology or domain list first)' : ''}</option>
-                  </select>
-                  {needsDomain && !hasDomainSource && <p className="text-xs text-amber-600 dark:text-amber-400 mt-1">Domain classification requires an ontology bundle or domain list. Select one above, or switch to Descriptions or Sensitivity mode.</p>}
-                </div>
-                <label className="flex items-center gap-2.5 text-sm text-slate-600 dark:text-slate-300 cursor-pointer"
-                  title="Applies SQL comments directly to your tables. Disable this to review results first in the Review tab.">
+                <p className="text-sm font-medium text-slate-700 dark:text-slate-200">Options</p>
+                <label className="flex items-center gap-2 text-sm text-slate-600 dark:text-slate-300 cursor-pointer">
                   <input type="checkbox" checked={applyDdl} disabled={federationMode} onChange={e => setApplyDdl(e.target.checked)} />
                   Apply to tables immediately
+                  <InfoTip text="Applies SQL comments directly to your tables. When on, this writes SQL COMMENT ON statements to your Unity Catalog tables and columns — existing comments will be overwritten. Disable to review results first in the Review tab." />
                 </label>
-                {applyDdl && !federationMode && <p className="text-[10px] text-amber-600 dark:text-amber-400 ml-6 -mt-1">This will write SQL COMMENT ON statements directly to your Unity Catalog tables and columns. Existing comments will be overwritten.</p>}
-                <label className="flex items-center gap-2.5 text-sm text-slate-600 dark:text-slate-300 cursor-pointer"
-                  title="Enable for external/federated catalogs (Redshift, Snowflake, etc.). Disables DDL apply and skips DESCRIBE EXTENDED.">
+                <label className="flex items-center gap-2 text-sm text-slate-600 dark:text-slate-300 cursor-pointer">
                   <input type="checkbox" checked={federationMode} onChange={e => {
                     setFederationMode(e.target.checked)
                     if (e.target.checked) setApplyDdl(false)
                   }} />
                   Federation mode (external catalogs)
+                  <InfoTip text="Enable for external/federated catalogs (Redshift, Snowflake, etc.). DDL apply is disabled and DESCRIBE EXTENDED is skipped for federated tables." />
                 </label>
-                {federationMode && <p className="text-[10px] text-blue-600 dark:text-blue-400 ml-6 -mt-1">DDL apply is disabled. DESCRIBE EXTENDED will be skipped for federated tables.</p>}
               </div>
             </div>
 
@@ -826,26 +687,72 @@ export default function BatchJobs({ onNavigate, pipelineStats }) {
               Ontology: {ontologyBundle ? bundles.find(b => b.key === ontologyBundle)?.name || ontologyBundle : <em>None</em>}
               {' | '}Domains: {domainConfig ? domainConfigs.find(d => d.key === domainConfig)?.name || domainConfig : (ontologyBundle ? 'from selected ontology' : <em>none</em>)}
             </p>
-            <div className="flex flex-wrap gap-3 mt-2">
-              <button onClick={() => runJob(settings.use_serverless ? '_kb_enriched_serverless_job' : '_kb_enriched_modes_job', { table_names: tableNames, apply_ddl: applyDdl, federation_mode: federationMode, ontology_bundle: ontologyBundle, include_lineage: settings.include_lineage, use_customer_context: settings.use_customer_context, ...(domainConfig ? { domain_config: domainConfig } : {}), extra_params: buildExtraParams() }, 'kb_enriched')}
-                disabled={!!runningAction || !tableNames.trim()}
-                title="Generates comments first, builds table + column knowledge bases, then runs PI and domain classification with KB enrichment. PI/domain prompts see the generated descriptions even if DDL hasn't been applied to the tables yet."
-                className="btn-primary btn-md">{runningAction === 'kb_enriched' ? 'Starting...' : `All 3 Modes (KB-Enriched)${settings.use_serverless ? ' (Serverless)' : ''}`}</button>
-              <button onClick={() => runJob(getJobSuffix(true), { table_names: tableNames, apply_ddl: applyDdl, federation_mode: federationMode, ontology_bundle: ontologyBundle, use_kb_comments: settings.use_kb_comments, use_customer_context: settings.use_customer_context, include_lineage: settings.include_lineage, ...(domainConfig ? { domain_config: domainConfig } : {}), extra_params: buildExtraParams() }, 'all3')}
-                disabled={!!runningAction || !tableNames.trim()}
-                title="Runs comments first, then PI + domain in parallel without building the knowledge base in between. PI/domain prompts will only see table descriptions if DDL was already applied. Best option when tables already have good comments."
-                className="btn-secondary btn-md">{runningAction === 'all3' ? 'Starting...' : `All 3 Modes${settings.use_serverless ? ' (Serverless)' : ''}`}</button>
-              <button onClick={() => runJob(getJobSuffix(false), { table_names: tableNames, mode, apply_ddl: applyDdl, federation_mode: federationMode, ontology_bundle: ontologyBundle, use_kb_comments: settings.use_kb_comments, use_customer_context: settings.use_customer_context, include_lineage: settings.include_lineage, ...(domainConfig ? { domain_config: domainConfig } : {}), extra_params: buildExtraParams() }, 'single')}
-                disabled={!!runningAction || !tableNames.trim() || (needsDomain && !hasDomainSource)}
-                title={(needsDomain && !hasDomainSource) ? 'Select an ontology bundle or domain list to run domain classification' : 'Run only the selected mode (comment, PI, or domain) as a single generation pass. Use for targeted re-runs on specific tables or when you only need one metadata type.'}
-                className="btn-md bg-slate-100 text-slate-700 rounded-lg hover:bg-slate-200 dark:bg-dbx-navy-400/30 dark:text-slate-300 dark:hover:bg-dbx-navy-400/50 disabled:opacity-50 transition-all">{runningAction === 'single' ? 'Starting...' : `Run Selected Mode${settings.build_kb_after ? ' + KB' : ''}${settings.use_serverless ? ' (Serverless)' : ''}`}</button>
+            {/* Primary generate: main click runs all 3 modes (KB-enriched by
+                default); the caret dropdown picks all-3 or a single mode. */}
+            <div className="flex flex-wrap items-center gap-3 mt-2">
+              <div className="relative inline-flex" ref={genMenuRef}>
+                <button onClick={() => runGenerate('all3')}
+                  disabled={!!runningAction || !tableNames.trim()}
+                  title="Generate all three metadata types (descriptions, sensitivity, and domain). By default, descriptions are generated first and used to enrich sensitivity and domain classification."
+                  className="btn-primary btn-md rounded-r-none">
+                  {(runningAction === 'kb_enriched' || runningAction === 'all3') ? 'Starting...' : 'Generate Metadata'}
+                </button>
+                <button onClick={() => setGenMenuOpen(o => !o)}
+                  disabled={!!runningAction || !tableNames.trim()}
+                  aria-label="Choose what to generate"
+                  className="btn-primary btn-md rounded-l-none border-l border-white/25 px-2">
+                  <svg className={`w-4 h-4 transition-transform ${genMenuOpen ? 'rotate-180' : ''}`} fill="none" viewBox="0 0 24 24" stroke="currentColor">
+                    <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M19 9l-7 7-7-7" />
+                  </svg>
+                </button>
+                {genMenuOpen && (
+                  <div className="absolute top-full left-0 mt-1 w-64 z-20 card p-1.5 shadow-elevated animate-slide-up">
+                    <p className="text-[10px] font-semibold uppercase tracking-wider text-slate-400 px-2 py-1">Run</p>
+                    <button onClick={() => runGenerate('all3')} disabled={!!runningAction || !tableNames.trim()}
+                      className="w-full text-left px-2 py-1.5 rounded-md text-sm text-slate-700 dark:text-slate-200 hover:bg-dbx-oat/60 dark:hover:bg-dbx-navy-500 disabled:opacity-50">
+                      All three <span className="text-xs text-slate-400">· descriptions · sensitivity · domain</span>
+                    </button>
+                    <div className="border-t border-dbx-oat-dark/30 dark:border-dbx-navy-400/20 my-1" />
+                    <p className="text-[10px] font-semibold uppercase tracking-wider text-slate-400 px-2 py-1">Just one</p>
+                    <button onClick={() => runGenerate('comment')} disabled={!!runningAction || !tableNames.trim()}
+                      className="w-full text-left px-2 py-1.5 rounded-md text-sm text-slate-700 dark:text-slate-200 hover:bg-dbx-oat/60 dark:hover:bg-dbx-navy-500 disabled:opacity-50">
+                      Descriptions
+                    </button>
+                    <button onClick={() => runGenerate('pi')} disabled={!!runningAction || !tableNames.trim()}
+                      className="w-full text-left px-2 py-1.5 rounded-md text-sm text-slate-700 dark:text-slate-200 hover:bg-dbx-oat/60 dark:hover:bg-dbx-navy-500 disabled:opacity-50">
+                      Sensitivity (PII / PHI / PCI)
+                    </button>
+                    <button onClick={() => runGenerate('domain')} disabled={!!runningAction || !tableNames.trim() || !hasDomainSource}
+                      title={!hasDomainSource ? 'Select an ontology bundle or domain list first' : ''}
+                      className="w-full text-left px-2 py-1.5 rounded-md text-sm text-slate-700 dark:text-slate-200 hover:bg-dbx-oat/60 dark:hover:bg-dbx-navy-500 disabled:opacity-50">
+                      Business Domain{!hasDomainSource ? ' (needs ontology/domain)' : ''}
+                    </button>
+                  </div>
+                )}
+              </div>
+              <span className="text-xs text-slate-400 dark:text-slate-500">
+                Runs on {settings.use_serverless ? 'serverless' : 'classic'} compute · {skipKbEnrich ? 'no KB enrichment' : 'KB-enriched'}
+              </span>
             </div>
-            <div className="text-xs text-slate-400 space-y-1 mt-1">
-              <p><strong className="text-slate-500">All 3 Modes (KB-Enriched)</strong>: Comments, then KB build, then PI + domain enriched with KB descriptions. PI/domain see generated comments even before DDL is applied. Most useful when tables don't already have good comments.</p>
-              <p><strong className="text-slate-500">All 3 Modes</strong>: Comments first, then PI + domain in parallel without KB enrichment. Faster but PI/domain won't see generated comments unless DDL was applied.</p>
-              <p><strong className="text-slate-500">Run Selected Mode</strong>: Run a single mode (comment, PI, or domain) on the listed tables. Best for quick, targeted runs.</p>
-              {settings.build_kb_after && <p><strong className="text-slate-500">+ KB</strong>: Builds the table + column knowledge base after generation so the Review tab is populated.</p>}
-            </div>
+
+            <details className="group mt-1">
+              <summary className="text-xs text-slate-500 dark:text-slate-400 cursor-pointer select-none inline-flex items-center gap-1.5">
+                <svg className="w-3 h-3 transition-transform group-open:rotate-90" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+                  <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M9 5l7 7-7 7" />
+                </svg>
+                Other run options
+              </summary>
+              <div className="mt-2 text-xs text-slate-500 dark:text-slate-400 space-y-2 animate-slide-up pl-1">
+                <label className="flex items-start gap-2 cursor-pointer" title="Run all three modes in parallel without building the knowledge base between passes. Faster, but sensitivity/domain prompts won't see the generated descriptions unless DDL was already applied. Best when tables already have good comments.">
+                  <input type="checkbox" checked={skipKbEnrich} onChange={e => setSkipKbEnrich(e.target.checked)} className="mt-0.5" />
+                  <span>Skip knowledge-base enrichment <span className="text-slate-400">(faster; sensitivity/domain won't see fresh descriptions)</span></span>
+                </label>
+                <p className="text-slate-400 flex items-center gap-1.5">
+                  <span><strong className="text-slate-500">Default (KB-enriched):</strong> descriptions first, then sensitivity + domain enriched with them.</span>
+                  <InfoTip text="Descriptions are generated first, then a knowledge-base build runs, then sensitivity + domain classification are enriched with those descriptions — so they benefit from the new comments even before DDL is applied." />
+                </p>
+              </div>
+            </details>
 
             <div className="border-t border-slate-200/80 dark:border-dbx-navy-400/20 pt-4 mt-2">
               <button onClick={() => onNavigate?.('context')} className="btn-ghost btn-sm text-slate-600 dark:text-slate-300">
@@ -859,261 +766,22 @@ export default function BatchJobs({ onNavigate, pipelineStats }) {
           </div>
         </section>
       )}
-
-      {/* Tab 2: Generate Advanced Metadata */}
-      {activeTab === 'advanced' && (
-        <section className="card border-l-4 border-l-dbx-amber overflow-hidden">
-          <div className="p-6 space-y-5">
-            <div className={`flex items-start gap-2 px-3 py-2 rounded-md border text-xs ${
-              pipelineStats && pipelineStats.profiled > 0
-                ? 'bg-emerald-50 dark:bg-emerald-900/15 border-emerald-200 dark:border-emerald-800/40 text-emerald-700 dark:text-emerald-300'
-                : 'bg-amber-50 dark:bg-amber-900/20 border-amber-200 dark:border-amber-800 text-amber-700 dark:text-amber-300'
-            }`}>
-              <svg className="w-4 h-4 flex-shrink-0 mt-0.5" fill="none" viewBox="0 0 24 24" stroke="currentColor"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M12 9v2m0 4h.01M21 12a9 9 0 11-18 0 9 9 0 0118 0z" /></svg>
-              {pipelineStats && pipelineStats.profiled > 0 ? (
-                <span><strong>{pipelineStats.profiled}</strong> of {pipelineStats.total_tables} tables have core metadata. Advanced analytics will build on these results.</span>
-              ) : (
-                <span>Run <strong>Generate Core Metadata</strong> first (Step 1 above). The advanced pipeline reads from the knowledge base tables produced by core metadata &mdash; tables without core metadata will be skipped or produce incomplete results.</span>
-              )}
-            </div>
-            <details className="group">
-              <summary className="text-sm font-medium text-slate-600 dark:text-slate-300 cursor-pointer select-none flex items-center gap-1.5">
-                <svg className="w-3 h-3 transition-transform group-open:rotate-90" fill="none" viewBox="0 0 24 24" stroke="currentColor">
-                  <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M9 5l7 7-7 7" />
-                </svg>
-                What is advanced metadata?
-              </summary>
-              <div className="mt-2 text-sm text-slate-500 dark:text-slate-400 bg-dbx-oat-light dark:bg-dbx-navy-500/30 rounded-lg p-4 animate-slide-up">
-                The advanced pipeline builds on your core metadata to produce the full semantic layer: <strong className="text-slate-700 dark:text-slate-200">knowledge bases</strong>, a <strong className="text-slate-700 dark:text-slate-200">knowledge graph</strong>, <strong className="text-slate-700 dark:text-slate-200">embeddings</strong> and similarity edges, <strong className="text-slate-700 dark:text-slate-200">ontology</strong> entity discovery, <strong className="text-slate-700 dark:text-slate-200">profiling</strong> and data quality scores, <strong className="text-slate-700 dark:text-slate-200">foreign key prediction</strong>, <strong className="text-slate-700 dark:text-slate-200">table clustering</strong>, and a <strong className="text-slate-700 dark:text-slate-200">vector search index</strong>. This runs as a single Databricks job with 15 orchestrated tasks. <em className="text-slate-400">Requires core metadata to be generated first.</em>
-              </div>
-            </details>
-            <p className="text-[11px] text-slate-400 dark:text-slate-500 italic">No row-level data is sent to LLMs during this step. All prompts use only metadata (table/column names, comments, types, and computed statistics).</p>
-
-            <div className="grid grid-cols-2 md:grid-cols-5 gap-4">
-              <div>
-                <label className="text-xs text-slate-500 dark:text-slate-400 mb-1 block" title="Minimum embedding similarity score (0–1) for creating edges between columns. Higher values mean fewer, stronger connections.">Similarity Threshold</label>
-                <input type="number" step="0.05" min="0" max="1" value={similarityThreshold}
-                  onChange={e => setSimilarityThreshold(parseFloat(e.target.value) || 0.8)}
-                  title="Minimum embedding similarity for edge creation (0–1)"
-                  className="input-base !text-xs" />
-              </div>
-              <div>
-                <label className="text-xs text-slate-500 dark:text-slate-400 mb-1 block" title="Minimum number of table groups for clustering analysis">Cluster Min Groups</label>
-                <input type="number" min="1" max="50" value={clusterMinK}
-                  onChange={e => setClusterMinK(parseInt(e.target.value) || 2)}
-                  className="input-base !text-xs" />
-              </div>
-              <div>
-                <label className="text-xs text-slate-500 dark:text-slate-400 mb-1 block" title="Maximum number of table groups for clustering analysis">Cluster Max Groups</label>
-                <input type="number" min="2" max="100" value={clusterMaxK}
-                  onChange={e => setClusterMaxK(parseInt(e.target.value) || 15)}
-                  className="input-base !text-xs" />
-              </div>
-              <div>
-                <label className="text-xs text-slate-500 dark:text-slate-400 mb-1 block" title="Unity Catalog tag key where entity type classifications are stored">Entity Type Tag Key</label>
-                <input value={entityTagKey} onChange={e => setEntityTagKey(e.target.value)}
-                  placeholder="entity_type" title="Unity Catalog tag key for entity type classifications"
-                  className="input-base !text-xs" />
-              </div>
-              <div className="pb-1 flex items-center gap-1.5">
-                <label className="flex items-center gap-2 text-xs text-slate-600 dark:text-slate-300 cursor-pointer">
-                  <input type="checkbox" checked={incremental} onChange={e => setIncremental(e.target.checked)} />
-                  Incremental mode (skip already-processed tables)
-                </label>
-                <InfoTip text="When checked, each analytics task early-exits if its inputs haven't changed since the last run, so only new or modified tables are reprocessed (fast, cheap). Uncheck for a full run that reprocesses every table in scope — needed after code or ontology changes, and whenever you want the sweep below to take effect." />
-              </div>
-              <div className="pb-1 flex items-center gap-1.5">
-                <label className="flex items-center gap-2 text-xs text-slate-600 dark:text-slate-300 cursor-pointer">
-                  <input type="checkbox" checked={applyDdl} disabled={federationMode} onChange={e => setApplyDdl(e.target.checked)} />
-                  Apply DDL (tags &amp; FK constraints)
-                </label>
-                <InfoTip text="Apply ontology tags and FK constraints directly to Unity Catalog tables. Disable to review results first. When enabled, this writes ontology tags (entity_type, property_role) and FK constraints directly to your tables; existing tags will be updated." />
-                {applyDdl && !federationMode && <span className="text-[10px] text-amber-600 dark:text-amber-400 font-medium">writes to tables</span>}
-              </div>
-              <div className="pb-1 flex items-center gap-1.5">
-                <label className="flex items-center gap-2 text-xs text-slate-600 dark:text-slate-300 cursor-pointer">
-                  <input type="checkbox" checked={federationMode} onChange={e => {
-                    setFederationMode(e.target.checked)
-                    if (e.target.checked) setApplyDdl(false)
-                  }} />
-                  Federation mode (external catalogs)
-                </label>
-                <InfoTip text="Enable for external/federated catalogs. Disables DDL apply and skips DESCRIBE EXTENDED." />
-              </div>
-              <div className="pb-1 flex items-center gap-1.5">
-                <label className="flex items-center gap-2 text-xs text-slate-600 dark:text-slate-300 cursor-pointer">
-                  <input type="checkbox" checked={sweepStale} onChange={e => setSweepStale(e.target.checked)} />
-                  Sweep stale artifacts (refresh entities, edges &amp; docs in scope)
-                </label>
-                <InfoTip text={'Clean rebuild of derived data for the tables in scope: deletes ontology entities, relationships, graph nodes/edges, and vector-index docs that this run no longer reproduces, then regenerates them from the current bundle. Use it to clear leftovers after switching ontology bundles, changing metadata, or upgrading the pipeline. Tables not in scope and steward-overridden entities are never touched. Only takes effect on a full run, so leave "Incremental mode" unchecked when using it.'} />
-              </div>
-              <div className="pb-1 flex items-center gap-1.5">
-                <label className="flex items-center gap-2 text-xs text-slate-600 dark:text-slate-300 cursor-pointer">
-                  <input type="checkbox" checked={serverless} onChange={e => setServerless(e.target.checked)} />
-                  Serverless compute
-                </label>
-                <InfoTip text="Run the pipeline on serverless compute instead of classic ML clusters. Faster cold-start, no cluster management." />
-              </div>
-            </div>
-
-            <div>
-              <label className="text-xs text-slate-500 dark:text-slate-400 mb-1 block">Table Filter <span className="text-slate-400 dark:text-slate-500">(comma-separated; leave blank to include all tables in the knowledge base)</span></label>
-              <textarea value={tableNames} onChange={e => setTableNames(e.target.value)}
-                placeholder="catalog.schema.table1, catalog.schema.table2"
-                className="textarea-base h-16 !text-xs" />
-            </div>
-
-            {!ontologyBundle && <p className="text-xs text-amber-600 dark:text-amber-400">An ontology bundle must be selected in the Generate Metadata section to run the full analytics pipeline.</p>}
-            <button onClick={() => runJob(serverless ? '_full_analytics_pipeline_serverless' : '_full_analytics_pipeline', {
-              catalog_name: catalogName, schema_name: schemaName,
-              ontology_bundle: ontologyBundle,
-              apply_ddl: applyDdl,
-              federation_mode: federationMode,
-              sweep_stale_docs: sweepStale,
-              sweep_stale_edges: sweepStale,
-              sweep_stale_entities: sweepStale,
-              use_kb_comments: settings.use_kb_comments,
-              use_customer_context: settings.use_customer_context,
-              include_lineage: settings.include_lineage,
-              ...(tableNames.trim() ? { table_names: tableNames } : {}),
-              ...(domainConfig ? { domain_config: domainConfig } : {}),
-              extra_params: {
-                model: settings.model,
-                sample_size: String(settings.sample_size),
-                similarity_threshold: String(similarityThreshold),
-                incremental: String(incremental),
-                cluster_min_k: String(clusterMinK),
-                cluster_max_k: String(clusterMaxK),
-                ...(entityTagKey !== 'entity_type' ? { entity_tag_key: entityTagKey } : {}),
-              },
-            }, 'pipeline')} disabled={!!runningAction || !catalogName.trim() || !schemaName.trim() || !ontologyBundle} title={!ontologyBundle ? 'Select an ontology bundle in the Generate Metadata tab to run the full analytics pipeline' : ''} className="btn-primary btn-md">
-              {runningAction === 'pipeline' ? 'Starting...' : (tableNames.trim() ? `Run Pipeline (${tableNames.split(',').filter(t => t.trim()).length} tables)` : 'Run Full Pipeline')}
-            </button>
-            <p className="text-xs text-slate-400 mt-1">Runs the full 15-task analytics pipeline: knowledge bases, knowledge graph, embeddings, ontology, profiling, FK prediction, clustering, and vector index. Run after core metadata has been generated.</p>
-
-            {/* Post-review sync card */}
-            <div className="mt-2 card p-4 border border-dbx-oat-dark/30 dark:border-dbx-navy-400/20 bg-dbx-oat-light/50 dark:bg-dbx-navy/30 space-y-3">
-              <div className="flex items-center gap-2">
-                <h3 className="text-sm font-semibold text-slate-700 dark:text-slate-200">Post-Review Sync</h3>
-                <span className="relative group/tip">
-                  <svg className="w-4 h-4 text-slate-400 cursor-help" fill="none" viewBox="0 0 24 24" stroke="currentColor">
-                    <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M13 16h-1v-4h-1m1-4h.01M21 12a9 9 0 11-18 0 9 9 0 0118 0z" />
-                  </svg>
-                  <span className="absolute bottom-full left-1/2 -translate-x-1/2 mb-2 w-72 p-2 text-xs text-slate-200 bg-slate-800 rounded-lg shadow-lg opacity-0 group-hover/tip:opacity-100 pointer-events-none transition-opacity z-10">
-                    After reviewing foreign keys or editing metadata in the Review tab, use these buttons to propagate your changes to the knowledge graph and vector index without re-running the full pipeline.
-                  </span>
-                </span>
-              </div>
-              <div className="flex flex-wrap gap-3">
-                <div className="flex-1 min-w-[200px]">
-                  <button onClick={() => runJob('build_knowledge_graph', {
-                    catalog_name: catalogName, schema_name: schemaName,
-                    table_names: tableNames,
-                    sweep_stale_edges: 'true', incremental: 'false',
-                  }, 'sync_kg')} disabled={!!runningAction || !catalogName.trim() || !schemaName.trim()}
-                    className="btn-secondary btn-md w-full">
-                    {runningAction === 'sync_kg' ? 'Starting...' : 'Sync Knowledge Graph'}
-                  </button>
-                  <p className="text-[11px] text-slate-400 mt-1">Rebuilds graph_nodes and graph_edges from knowledge base tables, incorporating approved/rejected FK predictions. Runs with sweep_stale_edges=true to remove orphaned edges. Use after reviewing FKs or editing metadata in the Review tab.</p>
-                </div>
-                <div className="flex-1 min-w-[200px]">
-                  <button onClick={() => runJob('build_vector_index', {
-                    catalog_name: catalogName, schema_name: schemaName,
-                    sweep_stale_docs: 'true', incremental: 'false',
-                  }, 'sync_vi')} disabled={!!runningAction || !catalogName.trim() || !schemaName.trim()}
-                    className="btn-secondary btn-md w-full">
-                    {runningAction === 'sync_vi' ? 'Starting...' : 'Sync Vector Index'}
-                  </button>
-                  <p className="text-[11px] text-slate-400 mt-1">Regenerates metadata_documents from knowledge base tables and re-indexes them in Vector Search (metadata_vs_index). Runs with sweep_stale_docs=true to purge orphaned documents. Powers the agent's semantic search and the Search tab.</p>
-                </div>
-              </div>
-            </div>
-
-            {/* Lakebase sync card */}
-            <div className="mt-2 card p-4 border border-dbx-oat-dark/30 dark:border-dbx-navy-400/20 bg-dbx-oat-light/50 dark:bg-dbx-navy/30 space-y-3">
-              <div className="flex items-center gap-2">
-                <h3 className="text-sm font-semibold text-slate-700 dark:text-slate-200">Sync Knowledge Graph to Lakebase</h3>
-                <span className="badge bg-amber-100 text-amber-700 dark:bg-amber-900/40 dark:text-amber-300 text-[10px]">Beta</span>
-                {lakebaseConfigured
-                  ? <span className="badge bg-emerald-50 text-emerald-700 dark:bg-emerald-900/40 dark:text-emerald-300 text-[10px]">Lakebase Configured</span>
-                  : <span className="badge bg-slate-100 text-slate-500 dark:bg-slate-800 dark:text-slate-400 text-[10px]" title="Lakebase is not configured. The graph will use Delta tables instead.">Using Delta Tables</span>
-                }
-                <span className="relative group/tip">
-                  <svg className="w-4 h-4 text-slate-400 cursor-help" fill="none" viewBox="0 0 24 24" stroke="currentColor">
-                    <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M13 16h-1v-4h-1m1-4h.01M21 12a9 9 0 11-18 0 9 9 0 0118 0z" />
-                  </svg>
-                  <span className="absolute bottom-full left-1/2 -translate-x-1/2 mb-2 w-72 p-2 text-xs text-slate-200 bg-slate-800 rounded-lg shadow-lg opacity-0 group-hover/tip:opacity-100 pointer-events-none transition-opacity z-10">
-                    Syncs the knowledge graph (nodes, edges, entities, relationships) to Lakebase (PostgreSQL) for low-latency graph queries by the exploration agents. Requires a completed analytics pipeline and a configured Lakebase catalog.
-                  </span>
-                </span>
-              </div>
-              <div className="flex items-end gap-3">
-                <div className="flex-1">
-                  <label className="text-xs text-slate-500 dark:text-slate-400 mb-1 block">Target Lakebase Catalog (optional)</label>
-                  <input value={lakebaseCatalog} onChange={e => setLakebaseCatalog(e.target.value)}
-                    placeholder="e.g. lakebase_catalog" className="input-base !text-xs" />
-                </div>
-                <button onClick={syncLakebase} disabled={!!runningAction || !catalogName.trim() || !schemaName.trim()}
-                  className="btn-secondary btn-md whitespace-nowrap">
-                  {runningAction === 'lakebase' ? 'Syncing...' : 'Sync to Lakebase'}
-                </button>
-              </div>
-              {lakebaseError && (
-                <div className="text-xs text-red-600 dark:text-red-400 bg-red-50 dark:bg-red-900/20 rounded-lg px-3 py-2">
-                  {lakebaseError}
-                </div>
-              )}
-            </div>
-
-            {/* MCP servers setup card */}
-            <div className="mt-2 card p-4 border border-dbx-oat-dark/30 dark:border-dbx-navy-400/20 bg-dbx-oat-light/50 dark:bg-dbx-navy/30 space-y-3">
-              <div className="flex items-center gap-2">
-                <h3 className="text-sm font-semibold text-slate-700 dark:text-slate-200">Setup MCP Servers</h3>
-                <span className="badge bg-blue-100 text-blue-700 dark:bg-blue-900/40 dark:text-blue-300 text-[10px]">Beta</span>
-                <span className="relative group/tip">
-                  <svg className="w-4 h-4 text-slate-400 cursor-help" fill="none" viewBox="0 0 24 24" stroke="currentColor">
-                    <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M13 16h-1v-4h-1m1-4h.01M21 12a9 9 0 11-18 0 9 9 0 0118 0z" />
-                  </svg>
-                  <span className="absolute bottom-full left-1/2 -translate-x-1/2 mb-2 w-72 p-2 text-xs text-slate-200 bg-slate-800 rounded-lg shadow-lg opacity-0 group-hover/tip:opacity-100 pointer-events-none transition-opacity z-10">
-                    Creates UC functions and validates the Vector Search index for MCP server access. Exposes knowledge base, knowledge graph, FK predictions, and ontology entities as MCP tools for Cursor, Claude Code, AI Playground, and custom agents.
-                  </span>
-                </span>
-              </div>
-              <div className="flex items-end gap-3">
-                <label className="flex items-center gap-1.5 text-xs text-slate-600 dark:text-slate-400 cursor-pointer select-none">
-                  <input type="checkbox" checked={mcpDropExisting} onChange={e => setMcpDropExisting(e.target.checked)}
-                    className="rounded border-slate-300 dark:border-slate-600 text-dbx-orange focus:ring-dbx-orange/50" />
-                  Recreate existing functions
-                </label>
-                <button onClick={setupMcpServers} disabled={!!runningAction || !catalogName.trim() || !schemaName.trim()}
-                  className="btn-secondary btn-md whitespace-nowrap">
-                  {runningAction === 'mcp_setup' ? 'Starting...' : 'Setup MCP Servers'}
-                </button>
-              </div>
-              {mcpError && (
-                <div className="text-xs text-red-600 dark:text-red-400 bg-red-50 dark:bg-red-900/20 rounded-lg px-3 py-2">
-                  {mcpError}
-                </div>
-              )}
-            </div>
-          </div>
-        </section>
-      )}
-
-      {/* Tab 3: Create Semantic Layer Assets */}
-      {activeTab === 'assets' && (
-        <section className="card border-l-4 border-l-dbx-teal overflow-hidden">
-          <div className="p-6 space-y-4">
-            <p className="text-sm text-slate-600 dark:text-slate-300">
-              Create <strong className="text-slate-700 dark:text-slate-200">metric views</strong>, manage question profiles, and generate reusable KPI definitions from the <strong className="text-slate-700 dark:text-slate-200">Define Metrics</strong> page.
-            </p>
-            <button onClick={() => onNavigate?.('semantic')} className="btn-primary btn-md">
-              Go to Define Metrics
-            </button>
-          </div>
-        </section>
-      )}
       </TabErrorBoundary>
+
+      {/* Next steps: the advanced pipeline lives in the Semantic Layer and the
+          post-generation maintenance actions live in Sync & Ops. Simple links
+          to where each action actually runs, instead of full pointer cards. */}
+      {onNavigate && (
+        <div className="pt-1">
+          <p className="text-xs font-semibold uppercase tracking-wider text-slate-400 dark:text-slate-500 mb-2">Next steps</p>
+          <div className="grid grid-cols-2 sm:grid-cols-4 gap-2">
+            <button onClick={() => onNavigate('semantic')} className="btn-secondary btn-sm">Generate Semantic Layer</button>
+            <button onClick={() => onNavigate('syncops')} className="btn-secondary btn-sm">Post-review Sync</button>
+            <button onClick={() => onNavigate('syncops')} className="btn-secondary btn-sm">Lakebase</button>
+            <button onClick={() => onNavigate('syncops')} className="btn-secondary btn-sm">Create MCPs</button>
+          </div>
+        </div>
+      )}
 
       {/* Active Runs */}
       {activeRuns.length > 0 && (

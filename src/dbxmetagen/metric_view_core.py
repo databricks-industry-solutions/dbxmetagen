@@ -97,6 +97,137 @@ def _drop_broken_measures(defn: dict) -> None:
 _ALIAS_DOT_RE = re.compile(r"\b([A-Za-z_]\w*)\.\w+")
 
 
+# Aggregate functions whose call we key a measure's "semantic" identity on. Used
+# by _dedup_new_items to collapse reworded duplicates (e.g. "SUM(o.amount)" vs
+# "SUM( o.amount )") while keeping genuinely different aggregates (SUM vs AVG,
+# COUNT vs COUNT(DISTINCT)) distinct.
+_AGG_FN_RE = re.compile(
+    r"\b(SUM|AVG|MIN|MAX|COUNT|MEDIAN|STDDEV|VARIANCE|APPROX_COUNT_DISTINCT|"
+    r"PERCENTILE|PERCENTILE_CONT|PERCENTILE_APPROX|COLLECT_SET|COLLECT_LIST)\s*\(",
+    re.IGNORECASE,
+)
+
+# Conditional-aggregate markers, matched on WORD BOUNDARIES so a column/alias whose
+# name merely contains "case"/"filter" (e.g. SUM(o.case_amount), o.filter_flag) is
+# NOT mistaken for a FILTER/CASE conditional. `\b` after the keyword also excludes
+# identifier continuations like CASE_AMOUNT (the underscore is a word char).
+_CONDITIONAL_KW_RE = re.compile(r"\b(?:FILTER|CASE)\b", re.IGNORECASE)
+
+
+def _norm_expr(expr: str) -> str:
+    """Whitespace-collapsed, upper-cased expression key.
+
+    Matches the normalization _drop_broken_measures uses so a candidate accepted
+    here is never silently re-dropped by the server-side dedup pass (which would
+    desync the caller-visible ``added`` list from what actually persisted)."""
+    return re.sub(r"\s+", " ", (expr or "").strip()).upper()
+
+
+def _measure_semantic_key(expr: str) -> str | None:
+    """Best-effort semantic identity for a measure expression.
+
+    Returns ``"<agg1>|<agg2>|...::<cond_sig>"`` where each ``aggN`` is
+    ``"<AGG>[#D]:<column_ref>"`` for EVERY aggregate call in the expression (in
+    source order), and ``cond_sig`` distinguishes conditional aggregates.
+    ``COUNT(DISTINCT x)`` keys distinctly from ``COUNT(x)``. Returns ``None`` when no
+    aggregate is found (caller falls back to the exact-expr key only) so we never
+    over-collapse non-aggregate expressions.
+
+    Two design choices prevent over-collapse (both were false-negative bugs when the
+    key looked at only the FIRST aggregate + a bare FILTER/CASE flag):
+
+    - **All aggregates, not just the first.** A ratio/composite measure that shares a
+      numerator but differs in the denominator -- e.g. ``SUM(rev)/NULLIF(SUM(orders))``
+      vs ``SUM(rev)/NULLIF(SUM(customers))`` -- must stay distinct. Keying on the full
+      ordered list of aggregate calls does that; two genuinely-identical measures
+      (only reworded/whitespaced) still produce the same list and still collapse.
+    - **Full-expression conditional signature.** When a FILTER/CASE conditional is
+      present (matched on word boundaries, so ``SUM(o.case_amount)`` is NOT treated as
+      conditional), we fold the whole normalized expression into ``cond_sig``. This
+      keeps two FILTER aggregates over the same column but with different predicates
+      distinct, and keeps a plain aggregate distinct from its FILTER variant. Folding
+      the full expr can only make the key MORE specific, never over-collapse; plain
+      aggregates keep the cheap ``"_"`` signature and their prior collapsing behavior.
+    """
+    norm = _norm_expr(expr)
+    if not norm:
+        return None
+    aggs: list[str] = []
+    for m in _AGG_FN_RE.finditer(norm):
+        agg = m.group(1).upper()
+        # Argument text: from just after this agg's "(" to the matching close paren.
+        arg_start = m.end()
+        depth = 1
+        i = arg_start
+        while i < len(norm) and depth > 0:
+            if norm[i] == "(":
+                depth += 1
+            elif norm[i] == ")":
+                depth -= 1
+            i += 1
+        arg = norm[arg_start:i - 1] if depth == 0 else norm[arg_start:]
+        distinct = arg.lstrip().startswith("DISTINCT")
+        col_m = _ALIAS_DOT_RE.search(arg) or re.search(
+            r"\b([A-Za-z_]\w*)\b", arg.replace("DISTINCT", "", 1)
+        )
+        col_ref = col_m.group(0) if col_m else arg.strip()
+        aggs.append(f"{agg}{'#D' if distinct else ''}:{col_ref}")
+    if not aggs:
+        return None
+    cond_sig = norm if _CONDITIONAL_KW_RE.search(norm) else "_"
+    return "|".join(aggs) + "::" + cond_sig
+
+
+def _dedup_new_items(existing: list[dict], candidates: list[dict], kind: str) -> tuple[list[dict], list[str]]:
+    """Filter LLM-proposed new measures/dimensions against what a view already has.
+
+    Returns ``(accepted, skipped_names)``. A candidate is skipped if ANY of its
+    keys collide with an existing item or an already-accepted candidate:
+      - exact-expr key (hard guarantee, mirrors _drop_broken_measures),
+      - name key (``name.lower()`` -- prevents UC duplicate-column deploy failures),
+      - measures only: semantic key ``(agg, column, conditional-flag)``.
+    Dimensions dedup on exact-expr + name only -- the same base column with a
+    different DATE_TRUNC bucket is a legitimately distinct dimension, so no
+    aggregate-based semantic key applies.
+    """
+    is_measures = kind == "measures"
+    seen_expr: set[str] = set()
+    seen_name: set[str] = set()
+    seen_sem: set[str] = set()
+
+    def _register(item: dict) -> None:
+        seen_expr.add(_norm_expr(item.get("expr", "")))
+        nm = (item.get("name") or "").strip().lower()
+        if nm:
+            seen_name.add(nm)
+        if is_measures:
+            sk = _measure_semantic_key(item.get("expr", ""))
+            if sk:
+                seen_sem.add(sk)
+
+    for it in existing or []:
+        _register(it)
+
+    accepted: list[dict] = []
+    skipped: list[str] = []
+    for cand in candidates or []:
+        if not isinstance(cand, dict) or not (cand.get("expr") or "").strip():
+            continue
+        expr_key = _norm_expr(cand.get("expr", ""))
+        name_key = (cand.get("name") or "").strip().lower()
+        sem_key = _measure_semantic_key(cand.get("expr", "")) if is_measures else None
+        if (
+            expr_key in seen_expr
+            or (name_key and name_key in seen_name)
+            or (sem_key and sem_key in seen_sem)
+        ):
+            skipped.append(cand.get("name") or expr_key)
+            continue
+        accepted.append(cand)
+        _register(cand)
+    return accepted, skipped
+
+
 def _drop_placeholder_dimensions(defn: dict) -> None:
     """Drop dimensions whose name implies a join alias but whose expr uses a different alias.
 
@@ -195,11 +326,15 @@ def _infer_format_specs(defn: dict) -> None:
 
 # Matches a stray ``100 *`` premultiply in either ordering, optionally wrapped in
 # ROUND(...). Group 1, when present, is the trailing ``* 100`` form.
+# The ``(?![\d.])`` lookahead ensures we only match the literal 100 / 100.0 and
+# never the leading digits of a larger number: without it, ``* 100.05`` matched
+# ``* 100`` and corrupted the expr into ``.05`` (leftover). Also guard the leading
+# form so ``100.05 *`` isn't misread as ``100 *``.
 _PERCENTAGE_PREMULTIPLY_LEADING = re.compile(
-    r"(?:ROUND\s*\(\s*)?100(?:\.0)?\s*\*\s*", re.IGNORECASE
+    r"(?:ROUND\s*\(\s*)?100(?:\.0)?(?![\d.])\s*\*\s*", re.IGNORECASE
 )
 _PERCENTAGE_PREMULTIPLY_TRAILING = re.compile(
-    r"\s*\*\s*100(?:\.0)?\b", re.IGNORECASE
+    r"\s*\*\s*100(?:\.0)?(?![\d.])", re.IGNORECASE
 )
 
 
@@ -848,6 +983,79 @@ class _IndentYamlDumper(yaml.Dumper):
         return super().increase_indent(flow, False)
 
 
+# Keys the Databricks metric-view join spec accepts (per
+# docs.databricks.com/aws/en/uc-semantics/metric-views/yaml-reference). Anything
+# else on a join dict (our internal is_composite / extra_pairs / kind / etc.) must
+# be stripped before serialization or the CREATE VIEW dry-run rejects the YAML.
+_JOIN_SPEC_KEYS = ("name", "source", "on", "using", "cardinality", "rely")
+
+
+def _clean_joins_for_yaml(joins: list) -> list:
+    """Whitelist join dicts to spec-valid keys and recurse into nested joins.
+
+    Drops the default cardinality ('many_to_one') so we only emit it when it is
+    the non-default 'one_to_many' (a fan-out fact source). Joins are LEFT OUTER by
+    spec; there is no join-type key to emit. A join that ends up with neither an
+    'on' nor a 'using' is unjoinable YAML (CREATE VIEW rejects it) -- drop it.
+    """
+    out = []
+    for j in joins or []:
+        if not isinstance(j, dict):
+            continue
+        clean = {k: j[k] for k in _JOIN_SPEC_KEYS if j.get(k) not in (None, "")}
+        if clean.get("cardinality") == "many_to_one":
+            del clean["cardinality"]  # default; omit for a cleaner spec
+        if j.get("joins"):
+            nested = _clean_joins_for_yaml(j["joins"])
+            if nested:
+                clean["joins"] = nested
+        if not clean.get("on") and not clean.get("using"):
+            logger.warning("Dropping join '%s' with no on/using clause", clean.get("name", "?"))
+            continue
+        out.append(clean)
+    return out
+
+
+# --- Composite (multi-column) join-condition helpers -------------------------
+# A composite join condition is a set of equality terms ANDed together, authored
+# child->parent as "<child>.<col> = <parent>.<col> AND ...". These helpers parse
+# it into (child_col, parent_col) pairs and re-render it for a specific
+# child-alias / parent-alias orientation, so a stored condition can be applied
+# correctly in EITHER traversal direction (not just the direction it was authored
+# in). Direction-blind string .replace() of "source." was the prior bug.
+
+_EQ_TERM_RE = re.compile(
+    r"([A-Za-z_]\w*)\.([A-Za-z_]\w*)\s*=\s*([A-Za-z_]\w*)\.([A-Za-z_]\w*)"
+)
+
+
+def _parse_join_condition(condition: str, child_qualifier: str) -> list[tuple]:
+    """Parse a composite ON into [(child_col, parent_col), ...].
+
+    ``child_qualifier`` names the alias/prefix that denotes the child (FK) side in
+    the stored string (the ERD authors it as 'source'). Each equality term is
+    normalized so the child column comes first regardless of which side it was
+    written on. Returns [] if nothing parses (caller falls back)."""
+    pairs: list[tuple] = []
+    for m in _EQ_TERM_RE.finditer(condition or ""):
+        lq, lc, rq, rc = m.group(1), m.group(2), m.group(3), m.group(4)
+        if lq == child_qualifier:
+            pairs.append((lc, rc))
+        elif rq == child_qualifier:
+            pairs.append((rc, lc))
+        else:
+            # Neither side matches the expected child qualifier -- can't orient it.
+            return []
+    return pairs
+
+
+def _render_join_condition(pairs: list[tuple], child_alias: str, parent_alias: str) -> str:
+    """Render (child_col, parent_col) pairs as '<child_alias>.c = <parent_alias>.p AND ...'."""
+    return " AND ".join(
+        f"{child_alias}.{cc} = {parent_alias}.{pc}" for cc, pc in pairs
+    )
+
+
 def _definition_to_yaml(defn: dict, include_materialization: bool = False) -> str:
     """Serialize a JSON definition to the YAML body for CREATE VIEW WITH METRICS.
 
@@ -892,7 +1100,7 @@ def _definition_to_yaml(defn: dict, include_materialization: bool = False) -> st
         measures_out.append(entry)
     mv["measures"] = measures_out
     if defn.get("joins"):
-        mv["joins"] = defn["joins"]
+        mv["joins"] = _clean_joins_for_yaml(defn["joins"])
     if include_materialization and defn.get("materialization"):
         mv["materialization"] = defn["materialization"]
     return yaml.dump(mv, Dumper=_IndentYamlDumper, default_flow_style=False, sort_keys=False)

@@ -1,7 +1,7 @@
 resources:
   jobs:
     build_vector_index_job:
-      name: "${var.app_name}_build_vector_index"
+      name: "${var.app_name}${var.app_name_suffix}_build_vector_index"
       budget_policy_id: ${var.budget_policy_id}
 
       permissions:

@@ -1,0 +1,118 @@
+bundle:
+  name: dbxmetagen
+  databricks_cli_version: ">=0.283.0"
+
+# Deployment is a plain `databricks bundle deploy` -- there is no deploy.sh.
+# Per-workspace values (catalog, schema, warehouse, host) come from your CLI
+# profile plus bundle variable overrides. See README "Deployment" for the flow:
+#   1. databricks bundle deploy -t <target> -p <profile>   (builds wheel + deploys)
+#   2. scripts/grant_app_permissions.sh -t <target> -p <profile>   (UC grants + VS)
+#
+# Set the required variables (catalog_name, schema_name, warehouse_id) via any of:
+#   - a gitignored .databricks/bundle/<target>/variable-overrides.json  <-- easiest;
+#     DAB auto-loads this exact path for the matching target, no flags needed.
+#     Copy variable-overrides.example.json there and fill in your values:
+#       mkdir -p .databricks/bundle/dev
+#       cp variable-overrides.example.json .databricks/bundle/dev/variable-overrides.json
+#   - --var "catalog_name=...,schema_name=...,warehouse_id=..." on the CLI, OR
+#   - BUNDLE_VAR_catalog_name / BUNDLE_VAR_schema_name / ... env vars
+# NOTE: a plain repo-root variable-overrides.json is NOT auto-loaded by DAB --
+# it must live under .databricks/bundle/<target>/variable-overrides.json.
+# The workspace host comes from the CLI profile (-p) or the DATABRICKS_HOST env var.
+
+sync:
+  include:
+    - apps/dbxmetagen-app/app/configurations/**
+    - apps/dbxmetagen-app/app/src/dist/**
+    - apps/dbxmetagen-app/app/app.yaml
+    - apps/dbxmetagen-app/app/requirements.txt
+    - apps/dbxmetagen-app/app/dbxmetagen-*.whl
+    - tests/data/**
+
+include:
+  - resources/jobs/*.yml
+  - resources/apps/*.yml
+  #- resources/dashboards.yml
+  # Test / eval / fixture-builder jobs live in resources/tests/ and are
+  # DELIBERATELY excluded from the default deploy so they never ship in a
+  # customer's bundle. This includes the eval harness (eval_e2e / eval_setup /
+  # eval_compare) and the synthetic-data builders (build_uat_scenarios,
+  # build_challenging_ls). To run any of them (e.g. `bundle run eval_e2e_job`),
+  # uncomment the include below in your LOCAL checkout only -- do not commit it.
+  #- resources/tests/*.yml
+  - variables.yml
+  - variables.advanced.yml
+  - resources/app_variables.yml
+
+artifacts:
+  default:
+    type: whl
+    # build_artifacts.sh stamps the version with a deploy timestamp, builds the
+    # wheel, copies it into the app source dir, and regenerates the app's
+    # requirements.txt. It owns versioning, so dynamic_version is off (letting
+    # DAB also stamp would produce a double local-version segment / PEP 440 error).
+    build: "bash scripts/build_artifacts.sh"
+    dynamic_version: false
+    path: .
+
+# --- spaCy model for PI detection ---
+# The default spaCy model is en_core_web_md (~40 MB). If you need higher
+# NER accuracy for PII/PHI detection, set spacy_model_names to en_core_web_lg
+# (~400 MB) in variables.yml or via job parameter override. The generate_metadata
+# notebook installs the selected model at runtime via a widget.
+
+# --- Optional: Cluster policy / serverless budget policy ---
+# By default, NO policies are applied and a bare deploy works out of the box.
+#
+# Classic job clusters: the cluster spec is a complex variable
+# (metadata_job_cluster for the ML-runtime metadata jobs, lakebase_job_cluster
+# for the graph->Lakebase sync). To apply a CLUSTER POLICY, override the whole
+# cluster variable in variable-overrides.json and add policy_id +
+# apply_policy_default_values -- copy the default from variables.yml and add
+# those two keys, e.g.:
+#   {
+#     "metadata_job_cluster": {
+#       "spark_version": "17.3.x-cpu-ml-scala2.13",
+#       "node_type_id": "i3.2xlarge",
+#       "data_security_mode": "SINGLE_USER",
+#       "policy_id": "001DD81A49229D7C",
+#       "apply_policy_default_values": true,
+#       "autoscale": {"min_workers": 2, "max_workers": 4},
+#       "custom_tags": {"project": "dbxmetagen"}
+#     }
+#   }
+# Why a whole-cluster variable and not a standalone policy_id: the v1.8.0+
+# direct deploy engine does not strip an empty policy_id ("") and the Jobs API
+# rejects '' as an invalid policy ID; DAB cannot conditionally omit a scalar
+# field, so substituting the entire cluster block is the only pattern that
+# supports both with-policy and without-policy deploys.
+#
+# Serverless budget policy: budget_policy_id IS still a plain string variable
+# (empty is accepted by the Jobs API at job level, unlike cluster policy_id).
+# Set it via variable-overrides.json, --var, or BUNDLE_VAR_budget_policy_id:
+#   budget_policy_id=001DD81A49229D7C
+
+targets:
+  dev:
+    mode: development
+    default: true
+    run_as: ${var.run_as}
+    permissions:
+      - user_name: ${var.deploying_user}
+        level: CAN_MANAGE
+
+  demo:
+    mode: development
+    run_as: ${var.run_as}
+    permissions:
+      - user_name: ${var.deploying_user}
+        level: CAN_MANAGE
+
+  prod:
+    mode: production
+    workspace:
+      root_path: ${var.current_working_directory}
+    run_as: ${var.run_as}
+    permissions:
+      - user_name: ${var.current_user}
+        level: CAN_MANAGE

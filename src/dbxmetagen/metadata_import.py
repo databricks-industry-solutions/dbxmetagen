@@ -143,7 +143,4 @@ def merge_constraint_maps(
             if ref:
                 fks[col] = ref
         merged[table] = (pks, fks)
-    for table, (uc_pks, uc_fks) in uc.items():
-        if table not in merged:
-            merged[table] = (uc_pks, uc_fks)
     return merged

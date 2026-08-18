@@ -4,6 +4,18 @@ Decomposes metric views into typed nodes (metric_view, measure, dimension,
 source_table) and edges (has_measure, has_dimension, sourced_from, joins_to,
 provides, shared_source, co_dimension).  Persists into ``semantic_nodes`` and
 ``semantic_edges`` Delta tables with incremental MERGE.
+
+Scope / consumption (by design):
+    This graph is consumed by the **Metric View Agent**, which queries the
+    ``semantic_nodes`` / ``semantic_edges`` Delta tables to find related metrics
+    and trace lineage between KPIs. That is the intended and sufficient consumer.
+
+    It is deliberately NOT wired into the main knowledge graph, Genie context
+    assembly, or the Lakebase sync: those surfaces operate on the raw metadata /
+    KG (``graph_nodes`` / ``graph_edges``) and the Genie space is assembled from
+    metric-view definitions directly. So the semantic graph being separate from
+    Lakebase/Genie is correct, not a gap. Dedup (seen_nodes/seen_edges +
+    dropDuplicates + idempotent MERGE) is handled here and is safe across re-runs.
 """
 
 import json

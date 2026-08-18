@@ -171,6 +171,31 @@ def check_dim_source_pattern(defn: dict, fk_rows: list[dict]) -> Optional[dict]:
         if as_dst >= 2 and as_src == 0:
             signals.append(("fk_fanout", f"source {src_short} appears as FK target {as_dst}x, never as FK source"))
 
+    # Signal 4: measured cardinality (corroborating). When the source is the
+    # PARENT (dst_table) side of an FK to a joined child AND the pair carries a
+    # high uniqueness probe, that strengthens the "source is a dimension, joined
+    # child is the fact" reading with measured data rather than just naming.
+    # NOTE: pk_uniqueness is GREATEST(both sides) in fk_prediction, so it does not
+    # by itself prove the PARENT column is the unique one -- it only shows the pair
+    # has a (near-)unique key on some side. The topological guard below (source is
+    # the FK dst/parent, child is joined) is what establishes direction; a
+    # legitimately fact-sourced view has its source as the FK *child* (src_table),
+    # so this cannot fire for it. Absent on rows predating the column.
+    for fk in fk_rows:
+        pk_uniq = fk.get("pk_uniqueness")
+        if pk_uniq is None:
+            continue
+        try:
+            pk_uniq = float(pk_uniq)
+        except (TypeError, ValueError):
+            continue
+        fk_dst = fk.get("dst_table", "").split(".")[-1].lower()
+        fk_src = fk.get("src_table", "").split(".")[-1].lower()
+        if fk_dst == src_short and fk_src in join_shorts and pk_uniq >= 0.9:
+            signals.append(("measured_cardinality",
+                            f"source {src_short} is the FK parent of joined {fk_src} with a near-unique key (pk_uniqueness={pk_uniq:.2f}) -- {fk_src} is likely the many/fact side"))
+            break
+
     if not signals:
         return None
 
@@ -249,6 +274,17 @@ class SemanticLayerConfig:
     max_join_hops: int = 2
     materialize_metric_views: bool = False
     materialization_schedule: str = "every 6 hours"
+    # Item 15: seed generation with curated example SQL pulled from Genie spaces
+    # (built by genie_sql_puller into genie_examples_vs_index). When enabled and
+    # the index exists, build_context retrieves exemplars matching the tables in
+    # scope and injects them as "proven query patterns" few-shot context.
+    # Opt-in (default False): the index must be built first (most deployments have
+    # not), and the in-app generation path does not consume this flag at all -- it
+    # only affects this library/notebook path. Set True after building the index.
+    use_genie_sql_examples: bool = False
+    genie_examples_index_suffix: str = "genie_examples_vs_index"
+    vs_endpoint_name: str = "dbxmetagen-vs"
+    genie_examples_max: int = 5
 
     def fq(self, table: str) -> str:
         return f"{self.catalog_name}.{self.schema_name}.{table}"
@@ -474,6 +510,30 @@ def validate_materialization(defn: dict) -> list[str]:
     return errors
 
 
+def _resolve_mv_deploy_location(
+    source: str, default_catalog: str, default_schema: str, federation_mode: bool
+) -> tuple[str, str]:
+    """Choose the ``(catalog, schema)`` where a metric view should be CREATEd.
+
+    Normally the metric view lands in its SOURCE table's own catalog/schema (parsed
+    from the fully-qualified ``catalog.schema.table`` source). But a foreign
+    (federated) source catalog is **read-only** -- Databricks rejects any CREATE
+    inside it ("Not supported (read-only)"), so deriving the deploy location from the
+    source would make ``apply_metric_views`` fail 100% of the time on federated
+    sources. When ``federation_mode`` is set we therefore deploy into the LOCAL
+    default catalog/schema instead; the view still *references* the foreign source, it
+    just *lives* in a writable UC catalog.
+
+    Falls back to the defaults when the source is missing or not fully qualified.
+    """
+    if federation_mode:
+        return default_catalog, default_schema
+    src_parts = source.split(".") if source else []
+    if len(src_parts) >= 3:
+        return src_parts[0], src_parts[1]
+    return default_catalog, default_schema
+
+
 class SemanticLayerGenerator:
     """Orchestrates metric view generation, validation, and deployment to Unity Catalog.
 
@@ -609,8 +669,16 @@ class SemanticLayerGenerator:
             for c in batch_cols:
                 col_by_table.setdefault(c["table_name"], []).append(c)
 
-        # FK predictions (optional; stash on self for source validation reuse)
+        # FK predictions (optional; stash on self for source validation reuse).
+        # pk_uniqueness feeds the measured-cardinality signal in
+        # check_dim_source_pattern; tolerate its absence on older tables.
         fk_rows = self._safe_collect(
+            f"SELECT src_table, dst_table, src_column, dst_column, final_confidence, "
+            f"       pk_uniqueness "
+            f"FROM {fq('fk_predictions')} "
+            f"WHERE final_confidence >= {self.config.fk_confidence_threshold}"
+            f" AND (is_fk IS NULL OR is_fk = TRUE)"
+        ) or self._safe_collect(
             f"SELECT src_table, dst_table, src_column, dst_column, final_confidence "
             f"FROM {fq('fk_predictions')} "
             f"WHERE final_confidence >= {self.config.fk_confidence_threshold}"
@@ -836,16 +904,75 @@ class SemanticLayerGenerator:
         # Inject metric view best-practices reference (loaded from JSON)
         ref = _load_reference("metric_view_reference.json")
         if ref:
-            ref_text = _format_reference_section(ref, ["yaml_syntax_rules", "measure_patterns", "join_templates", "anti_patterns", "validation_checklist"])
+            ref_text = _format_reference_section(ref, ["guiding_principles", "fact_dimension_model", "yaml_syntax_rules", "measure_patterns", "join_templates", "anti_patterns", "validation_checklist"])
             if ref_text:
                 parts.append("\nREFERENCE: METRIC VIEW BEST PRACTICES (follow these rules strictly)")
                 parts.append(ref_text)
+
+        # Curated Genie SQL exemplars (item 15): proven query patterns for these
+        # tables, retrieved from the genie_examples_vs_index. Best-effort — never
+        # blocks generation if the index is absent or retrieval fails.
+        genie_ctx = self._genie_examples_context(table_names_list)
+        if genie_ctx:
+            parts.append(genie_ctx)
 
         # Schema profile: adaptive signal so LLM calibrates output complexity
         sp = profile_schema(table_names_list, fk_rows)
         parts.append(sp["profile_text"])
 
         return "\n".join(parts)
+
+    def _genie_examples_context(self, table_names_list: list[str]) -> str:
+        """Retrieve curated Genie SQL exemplars matching the tables in scope and
+        format them as few-shot 'proven query patterns' context.
+
+        Returns "" when disabled, the index is missing, or nothing is retrieved.
+        The exemplars are real, human-curated SQL from existing Genie spaces, so
+        they anchor generation to measures/dimensions/joins that are known to
+        work against similar data (the "replace a mart layer" use case)."""
+        if not self.config.use_genie_sql_examples or not table_names_list:
+            return ""
+        try:
+            from dbxmetagen.genie_sql_puller import query_examples
+        except Exception:
+            return ""
+        fq_index = (
+            f"{self.config.catalog_name}.{self.config.schema_name}."
+            f"{self.config.genie_examples_index_suffix}"
+        )
+        # Query text = the short table names in scope, so retrieval favors exemplars
+        # over semantically-similar tables/marts.
+        short_names = sorted({t.split(".")[-1] for t in table_names_list})
+        query_text = "Metric queries for tables: " + ", ".join(short_names[:50])
+        try:
+            examples = query_examples(
+                fq_index=fq_index,
+                query_text=query_text,
+                num_results=self.config.genie_examples_max,
+                endpoint_name=self.config.vs_endpoint_name,
+            )
+        except Exception as e:
+            logger.info("Genie SQL exemplar retrieval skipped (%s)", e)
+            return ""
+        if not examples:
+            return ""
+        lines = [
+            "\nPROVEN QUERY PATTERNS (curated example SQL from existing Genie spaces "
+            "on similar data -- use these as REFERENCE for which measures, dimensions, "
+            "grains, and joins are known to work; adapt them into metric-view measures/"
+            "dimensions. Do NOT copy table/column names that are not in the metadata above):"
+        ]
+        for ex in examples:
+            q = (ex.get("question_text") or "").strip()
+            sql = (ex.get("sql") or "").strip()
+            if not sql:
+                continue
+            # Keep each exemplar bounded so a few don't blow the context budget.
+            sql_snip = sql if len(sql) <= 1200 else sql[:1200] + " ..."
+            if q:
+                lines.append(f"  Q: {q}")
+            lines.append(f"  SQL: {sql_snip}")
+        return "\n".join(lines) if len(lines) > 1 else ""
 
     def _safe_collect(self, sql: str) -> list[dict]:
         """Run SQL and return list of dicts; returns [] if table/column doesn't exist."""
@@ -1029,12 +1156,21 @@ class SemanticLayerGenerator:
                     errors = (errors or []) + validate_materialization(defn)
 
                 if not errors and self.config.validate_before_store:
+                    # Dry-run in the SAME catalog/schema the view will actually deploy to.
+                    # apply_metric_views() derives the deploy location from the SOURCE table
+                    # (not config), so a view dry-run'd in config.catalog/schema could still
+                    # fail apply in the source's location (cross-catalog perms / referencing)
+                    # -- a "validated" view that fails on apply. Match apply's location here.
+                    # NOTE: we intentionally do NOT emit the materialization block in the
+                    # dry-run -- it would provision a Lakeflow pipeline. The block is
+                    # validated structurally by validate_materialization() above.
                     dry_run_name = f"{mv_name}_dry_run"
-                    fq_dry = f"{self.config.catalog_name}.{self.config.schema_name}.{dry_run_name}"
+                    src_parts = source.split(".") if source else []
+                    dry_cat = src_parts[0] if len(src_parts) >= 3 else self.config.catalog_name
+                    dry_sch = src_parts[1] if len(src_parts) >= 3 else self.config.schema_name
+                    fq_dry = f"{dry_cat}.{dry_sch}.{dry_run_name}"
                     try:
-                        yaml_body = self._definition_to_yaml(
-                            defn, include_materialization=self.config.materialize_metric_views
-                        )
+                        yaml_body = self._definition_to_yaml(defn, include_materialization=False)
                         self.spark.sql(
                             f"CREATE OR REPLACE VIEW {fq_dry}\nWITH METRICS LANGUAGE YAML AS $$\n{yaml_body}$$"
                         )
@@ -1148,8 +1284,13 @@ RULES:
 10. Every metric view MUST have at least one measure and one dimension
 11. Add a top-level "comment" (1-2 sentences) describing what the metric view measures, its analytical purpose, and which source tables it draws from. Do NOT reference question numbers, KPI numbers, or list which questions are/aren't answerable. Focus on content and lineage (e.g. "Analyzes order revenue by product family and sales representative, joining line items to the product catalog and parent order for discount tracking.")
 12. Every dimension and measure MUST have: "comment" (what it represents), "display_name" (human-readable label, max 255 chars), and "synonyms" (array of 2-5 alternative names for Genie discoverability, e.g. ["revenue", "total sales"] for Total Revenue). Every measure MUST have a "format" object: {{"type": "currency"}} for monetary values, {{"type": "percentage"}} for rates/ratios that return a 0-to-1 FRACTION (e.g. 0.167 for 16.7%), or {{"type": "number"}} for counts/averages/scores. CRITICAL: percentage-format expressions must NOT multiply by 100 -- the rendering layer does that automatically. Write `SUM(won)/NULLIF(COUNT(*),0)` (returns 0.167), NOT `100.0 * SUM(won)/NULLIF(COUNT(*),0)` (returns 16.7). Also do NOT wrap percentage expressions in ROUND(); the format handles decimal precision.
-13. Use "filter" (optional) for persistent WHERE clauses (e.g. excluding null/test rows)
-14. Use measure-level FILTER for conditional aggregation: SUM(col) FILTER (WHERE condition)
+13. Use "filter" (optional) for persistent WHERE clauses that apply to the WHOLE view (e.g. excluding null/test rows, is_deleted = false). This is the view-wide scope.
+14. FILTERED MEASURES -- lean into these heavily; they are the definition-time way to express "parameterized" slices without needing runtime parameters (metric views do NOT support parameters, so bake the important conditions into named measures):
+    - Use measure-level FILTER for conditional aggregation: SUM(amount) FILTER (WHERE status = 'fulfilled')
+    - Generate BOTH a total and its meaningful conditional variants as separate named measures, so the consumer can pick without writing SQL. E.g. alongside "Total Revenue" SUM(amount), add "Fulfilled Revenue" SUM(amount) FILTER (WHERE status = 'fulfilled') and "Refunded Revenue" SUM(amount) FILTER (WHERE status = 'refunded').
+    - Prefer filtered COUNT/SUM over ratios when a status/segment split is the point: "Active Customer Count" = COUNT(DISTINCT customer_id) FILTER (WHERE is_active), "At-Risk Order Count" = COUNT(*) FILTER (WHERE expected_ship < CURRENT_DATE AND actual_ship IS NULL).
+    - Every value referenced in a FILTER must exist in the data and follow the string-quoting rules above. Do NOT invent status values -- only use categorical values present in the column metadata / profiling. If the allowed values are unknown, use a general condition (IS NOT NULL, > 0) rather than guessing a literal.
+    - Keep filtered measures at the source grain (same fan-out rules as any measure); a FILTER does not change the grain.
 15. If some questions are not answerable with metrics (e.g. document search, free-text lookups, SOP retrieval), generate metric views for the ones that ARE quantitative/analytical and silently ignore the rest. Do NOT mention skipped or unanswerable questions in the comment field
 16. Each metric view "name" must be unique and descriptive, reflecting the grain (e.g. prescription_metrics, order_line_metrics, encounter_metrics)
 16. Output ONLY a valid JSON array, no explanation
@@ -1175,6 +1316,12 @@ RULES:
 23. NEVER nest aggregate functions inside other aggregate functions (e.g. SUM(COUNT(*)), AVG(SUM(x))). Databricks SQL does not allow nested aggregates. If you need a two-stage aggregation, use a conditional aggregate with CASE/WHEN or create a separate metric view for the inner aggregation
 24. If EXISTING METRIC VIEWS are listed in the metadata, do NOT recreate views that serve the same analytical purpose (as described in their comment) or use the same source table with overlapping measures. Instead create complementary views that cover genuinely different grains, join paths, or business questions not already addressed by existing views
 25. Do NOT create duplicate measures with identical expressions but different names. Each measure must have a semantically distinct expr. "Revenue per Physician" as SUM(cost) is just a duplicate of "Total Revenue" -- the grouping is a query-time choice, not a measure definition property
+26. DIMENSION BREADTH -- generate a RICH set of dimensions, not a minimal one. A metric view is more valuable to Genie/agents/SQL when it exposes many ways to slice the data. Concretely:
+    - Include a dimension for EVERY categorical / low-cardinality descriptive column available on the source table AND on each joined table (status, type, category, segment, region, channel, priority, flags, codes with a label, etc.). Aim for at least one dimension per joined table, and roughly one dimension per 2-3 descriptive (non-numeric, non-measure) columns present.
+    - Include temporal dimensions for EVERY meaningful date/timestamp column, at the natural grains (e.g. Order Month, Order Quarter via DATE_TRUNC/DATE_FORMAT) -- not just one date.
+    - Include geographic dimensions when location columns exist (country, state/region, city).
+    - Do NOT invent columns and do NOT turn measures (amounts, counts, scores) into dimensions. Only use columns present in the metadata. Respect the grain/fan-out rules above (dimension-table attributes are fine as grouping dimensions; never aggregate them from a fact-grain view).
+    - Err on the side of MORE dimensions when the columns exist -- under-populating dimensions is a common failure. The consumer picks which to use per query, so breadth is cheap and valuable.
 
 EXAMPLE:
 {few_shot}
@@ -1214,8 +1361,7 @@ For each metric view in "views", include:
 - "question_indices": array of 0-based question indices this view answers
 
 STAR SCHEMA SOURCE RULE: When joins are present, the source MUST be the fact table (the table at the grain of the analysis, typically the one with the most rows and multiple foreign keys to dimension tables). The join relationship from source to join should be many-to-one. If you need metrics about a dimension entity itself with no fact-table aggregation, source from the dimension with NO fact-table joins. NEVER source from a dimension table and join to a fact table -- this fans out rows and produces incorrect aggregates.
-FACT-TO-FACT JOIN PROHIBITION: Do NOT join from a fact source to another fact table (tables prefixed with fact_, fct_, f_ or those with high row counts). Fact-to-fact joins create one-to-many fan-out that inflates ALL aggregates. If you need columns from another fact table, create a SEPARATE metric view sourced from that table.
-JOIN USAGE REQUIREMENT: Only include joins whose columns you intend to use in dimensions or measures. Do NOT include joins "for completeness."
+(The fact-to-fact prohibition and "no joins for completeness" rule are in the MODELING PRINCIPLES / ANTI-PATTERNS reference in the catalog metadata below.)
 
 Create measures that match the business questions (ratios, rates, KPIs); avoid generic row count unless a question explicitly asks for it. Each view must have at least one dimension and one measure. Cross-table breakdowns using joined dimension tables are strongly preferred.
 
@@ -1348,7 +1494,15 @@ OUTPUT (one JSON object only, no array, no explanation):"""
         if max_hops is None:
             max_hops = self.config.max_join_hops
         fq = self.config.fq
+        # join_condition/is_composite are backfilled columns (Phase 3); tolerate
+        # their absence on older tables via a fallback query.
         fk_rows = self._safe_collect(
+            f"SELECT src_table, dst_table, src_column, dst_column, final_confidence, "
+            f"       join_condition, is_composite "
+            f"FROM {fq('fk_predictions')} "
+            f"WHERE final_confidence >= {self.config.fk_confidence_threshold}"
+            f" AND (is_fk IS NULL OR is_fk = TRUE)"
+        ) or self._safe_collect(
             f"SELECT src_table, dst_table, src_column, dst_column, final_confidence "
             f"FROM {fq('fk_predictions')} "
             f"WHERE final_confidence >= {self.config.fk_confidence_threshold}"
@@ -1357,31 +1511,44 @@ OUTPUT (one JSON object only, no array, no explanation):"""
         if not fk_rows:
             return []
 
-        # Build undirected adjacency: table -> [(neighbor, fk_col, pk_col)]
-        adj: dict[str, list[tuple[str, str, str]]] = {}
+        # Build undirected adjacency. Each edge carries the single-column fk/pk
+        # AND, for composite keys, the parsed (child_col, parent_col) pairs plus a
+        # flag for which endpoint is the FK child -- so the multi-column ON can be
+        # rendered correctly in EITHER traversal direction (a direction-blind
+        # string replace of the stored condition was wrong when a view is sourced
+        # from the parent side).
+        from dbxmetagen.metric_view_core import _parse_join_condition, _render_join_condition
+        adj: dict[str, list[tuple]] = {}
         for fk in fk_rows:
-            src_t, dst_t = fk["src_table"], fk["dst_table"]
+            src_t, dst_t = fk["src_table"], fk["dst_table"]  # src_t = FK child, dst_t = parent
             src_c = fk["src_column"].split(".")[-1]
             dst_c = fk["dst_column"].split(".")[-1]
-            adj.setdefault(src_t, []).append((dst_t, src_c, dst_c))
-            adj.setdefault(dst_t, []).append((src_t, dst_c, src_c))
+            pairs = None
+            if fk.get("is_composite") and fk.get("join_condition"):
+                # Authored child->parent with the child side qualified "source".
+                pairs = _parse_join_condition(fk["join_condition"], "source") or None
+            # (neighbor, fk_col, pk_col, composite_pairs, neighbor_is_child)
+            adj.setdefault(src_t, []).append((dst_t, src_c, dst_c, pairs, False))
+            adj.setdefault(dst_t, []).append((src_t, dst_c, src_c, pairs, True))
 
         def _walk(table: str, depth: int, visited: set) -> list[dict]:
             if depth >= max_hops:
                 return []
             joins: list[dict] = []
-            for neighbor, fk_col, pk_col in adj.get(table, []):
+            for neighbor, fk_col, pk_col, composite_pairs, neighbor_is_child in adj.get(table, []):
                 if neighbor in visited:
                     continue
                 visited.add(neighbor)
                 alias = neighbor.split(".")[-1]
                 parent_alias = "source" if depth == 0 else table.split(".")[-1]
                 child_joins = _walk(neighbor, depth + 1, visited)
-                entry: dict = {
-                    "name": alias,
-                    "source": neighbor,
-                    "on": f"{parent_alias}.{fk_col} = {alias}.{pk_col}",
-                }
+                if composite_pairs:
+                    # child columns live on whichever endpoint is the FK child.
+                    child_al, parent_al = (alias, parent_alias) if neighbor_is_child else (parent_alias, alias)
+                    on = _render_join_condition(composite_pairs, child_al, parent_al)
+                else:
+                    on = f"{parent_alias}.{fk_col} = {alias}.{pk_col}"
+                entry: dict = {"name": alias, "source": neighbor, "on": on}
                 if child_joins:
                     entry["joins"] = child_joins
                 joins.append(entry)
@@ -1651,15 +1818,29 @@ OUTPUT (one JSON object only, no array, no explanation):"""
             defn = json.loads(row["json_definition"])
             mv_name = row["metric_view_name"]
             source = defn.get("source", row.get("source_table", ""))
-            src_parts = source.split(".") if source else []
-            deploy_cat = src_parts[0] if len(src_parts) >= 3 else self.config.catalog_name
-            deploy_sch = src_parts[1] if len(src_parts) >= 3 else self.config.schema_name
+            federation_mode = getattr(self.config, "federation_mode", False)
+            # A foreign/federated source catalog is read-only -- deploy the view into
+            # the local config catalog/schema in that case (see _resolve_mv_deploy_location).
+            deploy_cat, deploy_sch = _resolve_mv_deploy_location(
+                source, self.config.catalog_name, self.config.schema_name, federation_mode
+            )
             fq_mv = f"{deploy_cat}.{deploy_sch}.{mv_name}"
+            # Materialization over a federated source would refresh by scanning the remote
+            # source on schedule (cost) and cannot target the read-only foreign catalog, so
+            # skip it in federation_mode and deploy a plain (non-materialized) view.
+            include_materialization = not federation_mode
+            if federation_mode and defn.get("materialization"):
+                logger.warning(
+                    "Metric view %s: skipping materialization -- source is federated "
+                    "(read-only remote; a materialized refresh would scan the remote source "
+                    "each run). Deployed as a non-materialized view in %s.%s.",
+                    mv_name, deploy_cat, deploy_sch,
+                )
             with _trace_span("apply_metric_view") as apply_span:
                 if apply_span is not None:
                     apply_span.set_inputs({"metric_view_name": mv_name, "fq_mv": fq_mv})
                 try:
-                    yaml_body = self._definition_to_yaml(defn, include_materialization=True)
+                    yaml_body = self._definition_to_yaml(defn, include_materialization=include_materialization)
                     sql = f"CREATE OR REPLACE VIEW {fq_mv}\nWITH METRICS LANGUAGE YAML AS $$\n{yaml_body}$$"
                     self.spark.sql(sql)
                     cat_esc = deploy_cat.replace("'", "''")

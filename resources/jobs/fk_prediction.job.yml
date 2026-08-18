@@ -1,7 +1,7 @@
 resources:
   jobs:
     fk_prediction_job:
-      name: "${var.app_name}_fk_prediction"
+      name: "${var.app_name}${var.app_name_suffix}_fk_prediction"
       budget_policy_id: ${var.budget_policy_id}
 
       permissions:
@@ -51,6 +51,8 @@ resources:
           default: "-0.10"
         - name: table_names
           default: ""
+        - name: sweep_stale_edges
+          default: "false"
 
       tasks:
         - task_key: predict_foreign_keys
@@ -80,6 +82,7 @@ resources:
               same_schema_bonus: "{{job.parameters.same_schema_bonus}}"
               cross_schema_penalty: "{{job.parameters.cross_schema_penalty}}"
               table_names: "{{job.parameters.table_names}}"
+              sweep_stale_edges: "{{job.parameters.sweep_stale_edges}}"
 
       environments:
         - environment_key: default

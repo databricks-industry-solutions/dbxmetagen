@@ -1,7 +1,7 @@
 variables:
   catalog_name:
-    description: "(REQUIRED) Target catalog where data, models, and files are stored for this project. If source tables are in this catalog, then table names only have to be scoped with schema and table. If table names are in other catalogs then table names need to be fully scoped. Replace this catalog name with the main catalog you want to run dbxmetagen from. Cannot be 'none', 'null', or empty."
-    default: None
+    description: "(REQUIRED) Target catalog where data, models, and files are stored for this project. If source tables are in this catalog, then table names only have to be scoped with schema and table. If table names are in other catalogs then table names need to be fully scoped. Replace this catalog name with the main catalog you want to run dbxmetagen from. Cannot be 'none', 'null', or empty. Deploy succeeds if unset, but the app shows a blocking 'CATALOG_NAME not set' banner until you provide it via variable-overrides.json and redeploy."
+    default: ""
   schema_name:
     description: Primary schema where data, models, and files are written to for this project. This is not the source schema, which is specified elsewhere with the source table name.
     default: metadata_results
@@ -155,6 +155,17 @@ variables:
   current_user:
     description: User deploying the bundle. Can apply to service principals as well.
     default: ${workspace.current_user.userName}
+  run_as:
+    description: >-
+      Identity that jobs run as. Defaults to the deploying user. To run jobs as a
+      service principal instead, override this complex variable, e.g. in a gitignored
+      variable-overrides.json:
+        {"run_as": {"service_principal_name": "00000000-0000-0000-0000-000000000000"}}
+      Note: in development-mode targets (dev, demo), DAB requires run_as to be the
+      deploying user; SP run_as is intended for the prod target.
+    type: complex
+    default:
+      user_name: ${workspace.current_user.userName}
   current_working_directory:
     description: Working directory or bundle root.
     default: /Users/${var.current_user}/.bundle/${bundle.name}/${bundle.target}
@@ -182,11 +193,44 @@ variables:
   node_type:
     description: "Node type for job clusters. Must match your cloud provider. AWS: i3.2xlarge (default), Azure: Standard_DS4_v2, GCP: n2-highmem-8."
     default: i3.2xlarge
-  policy_id:
-    description: "Cluster policy ID for classic job clusters. Leave empty for no policy. To resolve by name, override with lookup in your target (see databricks.yml.template)."
-    default: ""
+  metadata_job_cluster:
+    description: >-
+      Full new_cluster spec shared by the classic (ML-runtime) metadata jobs.
+      Policy-FREE by default so a bare deploy works with no cluster policy.
+      To deploy WITH a cluster policy, override this ONE variable in
+      variable-overrides.json (or --var / BUNDLE_VAR) and add policy_id +
+      apply_policy_default_values -- copy the default below and add those two
+      keys. This is a complex variable because the v1.8.0+ direct deploy engine
+      does not strip an empty policy_id set to "" (the Jobs API rejects '' as an
+      invalid policy ID), and DAB has no way to conditionally omit a scalar
+      policy_id field wired to a variable. Substituting the whole cluster block
+      is the one pattern that supports both with-policy and without-policy deploys.
+    type: complex
+    default:
+      spark_version: 17.3.x-cpu-ml-scala2.13
+      node_type_id: ${var.node_type}
+      data_security_mode: SINGLE_USER
+      autoscale:
+        min_workers: 2
+        max_workers: 4
+      custom_tags:
+        project: dbxmetagen
+  lakebase_job_cluster:
+    description: >-
+      Full new_cluster spec for the graph->Lakebase sync job (non-ML runtime,
+      single worker -- deliberately smaller than metadata_job_cluster). Same
+      policy-free-by-default / override-to-add-policy pattern as
+      metadata_job_cluster.
+    type: complex
+    default:
+      spark_version: 16.3.x-scala2.12
+      node_type_id: ${var.node_type}
+      data_security_mode: SINGLE_USER
+      num_workers: 1
+      custom_tags:
+        project: dbxmetagen
   budget_policy_id:
-    description: "Serverless budget policy ID for cost attribution on serverless jobs. Get the ID from Settings > Compute > Serverless usage policies. Leave empty for no policy."
+    description: "Serverless budget policy ID for cost attribution on serverless jobs. Empty (default) = no budget policy (accepted by the Jobs API at job level, unlike cluster policy_id). Set the ID from Settings > Compute > Serverless usage policies here (or via variable-overrides.json / --var / BUNDLE_VAR_budget_policy_id) to attribute serverless cost."
     default: ""
   permission_groups:
     description: Comma-separated list of groups to grant read permissions to (e.g., "data_analysts,data_scientists"). Set to "none" to skip group permissions.
@@ -272,6 +316,33 @@ variables:
   fk_system_column_exclude_patterns:
     description: "Comma-separated regex patterns identifying system/ETL columns (e.g. _created_at, batch_id) that should not receive FK boosting signals. Empty string uses sensible defaults."
     default: ""
+  fk_generic_column_names:
+    description: "Comma-separated generic column names (e.g. id, code, status, type) that are low-information for FK inference. A candidate pair whose BOTH sides are generic is dropped unless corroborated by a matching table/entity or a high-trust source. Prevents 'id'-column over-matching, especially in federation mode where real-data validation is limited. Empty string uses sensible defaults."
+    default: ""
+  enable_data_overlap_candidates:
+    description: "PQ-1: enable name-INDEPENDENT FK candidate generation from column VALUE OVERLAP (catches keys with no _id/_key/_code suffix like npi, ndc, email). Reads only cached column_profiling_stats (no new source reads; federation-safe). Additive + guarded; set false to disable."
+    default: true
+  fk_data_overlap_min_containment:
+    description: "PQ-1: minimum directional value containment (child values found in parent, 0.0-1.0) for a value-overlap FK candidate. Higher = stricter (fewer false positives)."
+    default: 0.85
+  fk_data_overlap_min_containment_ontology:
+    description: "PQ-1: relaxed containment bar used when the ontology corroborates the pair (both columns share a linked_entity_type). Ontology as a strong prior, never a gate."
+    default: 0.60
+  fk_data_overlap_min_containment_distinctive:
+    description: "PQ-1: relaxed containment bar for pairs sharing a distinctive REGISTERED value format (email/npi/ndc/cusip/uuid). Cached samples under-cover large key domains, so a genuine natural-key FK shows only partial sample overlap; the format is a strong prior and the downstream join probe + never_joins veto enforce precision. Generic codes keep the strict bar."
+    default: 0.30
+  fk_data_overlap_min_distinct:
+    description: "PQ-1: small-domain veto -- if BOTH columns have fewer than this many distinct values, value overlap is uninformative (e.g. status/type enums) and the pair is not emitted."
+    default: 8
+  fk_data_overlap_weight:
+    description: "PQ-1: weight of the value-overlap (containment) signal in rule_score, letting a name-free key clear the AI-judge threshold on data merit."
+    default: 0.25
+  fk_data_overlap_max_candidates:
+    description: "PQ-1: global ceiling on value-overlap candidate pairs emitted, bounding cost/scale on wide catalogs (hundreds of tables x columns)."
+    default: 2000
+  fk_mirror_uniqueness_threshold:
+    description: "PQ-1: a FK is many-to-one so the child side is non-unique. When BOTH columns of a low-trust (name/embedding/value-overlap) candidate have a cardinality ratio >= this, the pair is a 1:1 table mirror / staging copy (not a FK) and is vetoed (is_fk=false, confidence collapsed). Declared/ontology/column-property sources are exempt."
+    default: 0.95
   use_customer_context:
     description: "When true, enrich prompts with customer-provided context from the customer_context Delta table. Context is scoped hierarchically (catalog > schema > pattern > table). Requires the customer_context table to exist (seed from YAML or create via the app)."
     default: false
@@ -280,4 +351,7 @@ variables:
     default: ""
   enable_obo:
     description: "Enable On-Behalf-Of user authentication for the app. When true, catalog browsing and SQL queries run under the logged-in user's identity (requires workspace admin to enable user auth for the app). When false, all operations use the app service principal."
+    default: false
+  enable_agent_mcp:
+    description: "Mount a custom MCP server at /mcp exposing the metadata AGENT (metadata_agent_query + deep_analysis_submit/poll) so another agent can delegate whole metadata questions. Off by default. Runs under the invoking user's identity via OBO (set enable_obo=true + user_api_scopes). See docs/MCP_SERVERS.md."
     default: false

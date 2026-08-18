@@ -267,6 +267,21 @@ When `federation_mode=true`, dbxmetagen adapts for federated catalogs in Unity C
 | SET TAGS / UNSET TAGS | Skipped | Cannot tag federated tables |
 | Output tables | Works | All output tables are Delta |
 
+### Sampling against federated sources — start small
+
+In federation mode, row sampling uses a plain `LIMIT {sample_size}` (not Spark's `.sample()`, which
+does **not** push down through JDBC and would pull the entire remote table into Spark). Because
+`LIMIT N` pushes down to the remote engine (Redshift, Snowflake, etc.), its cost is bounded by
+`sample_size`, **not** by the size of the remote table — so raising `sample_size` a little (say from
+the default 5 to 10–20) fetches a few more rows without scanning the whole source.
+
+**Recommendation: start small.** Begin with the default `sample_size` (5) on federated sources,
+confirm the query cost is acceptable on your remote engine, then raise it incrementally if you want
+richer samples for description quality. Avoid large values on federated sources with per-query cost
+or rate limits, and remember `sample_size=0` sends no row data at all (metadata-only). The
+null-heavy-row filtering that the native path applies is skipped in federation mode (it would require
+a full scan), so a slightly higher `LIMIT` is the simplest way to get more non-null example rows.
+
 ## Lakebase (Optional)
 
 Lakebase accelerates graph queries in the dashboard's deep analysis agent by serving `graph_nodes` and `graph_edges` from a managed PostgreSQL instance instead of the SQL warehouse. This is **optional** -- the app automatically falls back to UC Delta queries when Lakebase is not configured.
@@ -291,14 +306,16 @@ The sync job uses the Databricks SDK's synced database tables API to replicate D
 
 ## On-Behalf-Of User Auth (Optional)
 
-When `enable_obo=true` is set in your `.env` file, the app executes SQL queries and catalog operations under the logged-in user's identity instead of the app service principal. This honors per-user Unity Catalog permissions.
+When `enable_obo=true`, the app executes SQL queries and catalog operations under the logged-in user's identity instead of the app service principal, honoring per-user Unity Catalog permissions. `enable_obo` is a RUNTIME switch for *which principal* makes the call — it is separate from the `user_api_scopes` the app *declares*.
+
+**Scopes are declared on every deploy.** `user_api_scopes` defaults (in `app_variables.yml`) to `files.files`, `serving.serving-endpoints`, `sql.statement-execution`, `dashboards.genie`, independent of `enable_obo`. So enabling OBO needs no scope wrangling.
 
 **Prerequisites:**
 
-1. A workspace admin must enable the **"Databricks Apps - On-Behalf-Of User Authorization"** preview (Admin Console > Previews)
-2. Set `enable_obo=true` in your `<target>.env` file before running `deploy.sh`
+1. The workspace must have the **"Databricks Apps - user token passthrough"** feature (now GA; formerly the "On-Behalf-Of User Authorization" preview). Declaring `user_api_scopes` requires it.
+2. Set `enable_obo=true` at deploy time to actually use the user token at runtime.
 
-If the preview is not enabled and `enable_obo=true` is set, the deploy will fail with: `Databricks Apps - user token passthrough feature is not enabled for organization`. By default (`enable_obo` unset or `false`), user API scopes are not declared and this preview is not required.
+If a target workspace does NOT have the feature, override `user_api_scopes` to `[]` (empty) so no scopes are declared — otherwise the deploy fails with `Databricks Apps - user token passthrough feature is not enabled for organization`.
 
 ## Community Summaries
 

@@ -202,11 +202,11 @@ export default function GettingStarted({ onNavigate, onStartTour }) {
           <p className="text-xs text-slate-500 dark:text-slate-400">
             <span className="font-semibold">Keeping things fresh:</span> A weekly vector index sync job is deployed but <span className="font-semibold">paused by default</span>.
             Unpause it in your Databricks Workflows UI to keep the search index fresh automatically as metadata changes.
-            Without it, the index only updates when you run the full analytics pipeline or click "Sync Vector Index" in the Advanced Metadata tab.
+            Without it, the index only updates when you run the full analytics pipeline or click "Sync Vector Index" in the Sync & Ops tab.
           </p>
           <p className="text-xs text-slate-500 dark:text-slate-400">
             <span className="font-semibold">After reviewing foreign keys:</span> Use the "Sync Knowledge Graph" and "Sync Vector Index" buttons
-            in the Advanced Metadata tab to propagate your approve/reject decisions without re-running the full pipeline.
+            in the Sync & Ops tab to propagate your approve/reject decisions without re-running the full pipeline.
           </p>
         </div>
         <div className="mt-4 pt-3 border-t border-slate-100 dark:border-dbx-navy-400/20">
@@ -239,7 +239,7 @@ export default function GettingStarted({ onNavigate, onStartTour }) {
         </p>
         <div className="flex gap-2">
           <button onClick={() => onNavigate('metadata')} className="btn-primary btn-sm">Review Metadata</button>
-          <button onClick={() => onNavigate('coverage')} className="btn-ghost btn-sm">View Coverage</button>
+          <button onClick={() => onNavigate('metadata')} className="btn-ghost btn-sm">View Coverage</button>
         </div>
       </div>
 
@@ -280,8 +280,8 @@ export default function GettingStarted({ onNavigate, onStartTour }) {
           <OutcomeCard
             title="Query Directly"
             description="All outputs live in your metadata schema as Delta tables. Run SQL against graph_nodes, graph_edges, ontology_entities, or column_knowledge_base from any notebook, dashboard, or downstream pipeline."
-            onClick={() => onNavigate('coverage')}
-            linkLabel="View Coverage"
+            onClick={() => onNavigate('metadata')}
+            linkLabel="Review & Coverage"
           />
         </div>
       </div>
@@ -290,7 +290,8 @@ export default function GettingStarted({ onNavigate, onStartTour }) {
       <div className="card p-6">
         <h2 className="heading-section mb-3">Agents</h2>
         <p className="text-sm text-slate-500 dark:text-slate-400 mb-4">
-          The Explore tab has multiple agents, each with different data access and purpose.
+          The Explore / Agent tab is organized around the Metadata Agent, plus direct Graph Explorer and Search access.
+          The agents below have different data access and purpose; those marked <span className="font-medium">Under Development</span> are not yet available in the UI.
         </p>
         <div className="space-y-3">
           <div className="p-4 rounded-lg border border-violet-200 dark:border-violet-800/40 bg-violet-50/50 dark:bg-violet-900/10">
@@ -317,13 +318,19 @@ export default function GettingStarted({ onNavigate, onStartTour }) {
 
           <div className="grid grid-cols-1 md:grid-cols-2 gap-3">
             <div className="p-3 rounded-lg border border-orange-200 dark:border-orange-800/40 bg-orange-50/30 dark:bg-orange-900/10">
-              <h4 className="text-xs font-bold text-orange-700 dark:text-orange-300 mb-1">Governance Agent</h4>
+              <div className="flex items-center gap-2 mb-1">
+                <h4 className="text-xs font-bold text-orange-700 dark:text-orange-300">Governance Agent</h4>
+                <span className="text-[10px] font-medium text-orange-600 dark:text-orange-400 bg-orange-100 dark:bg-orange-900/40 px-1.5 py-0.5 rounded">Under Development</span>
+              </div>
               <p className="text-[11px] text-slate-600 dark:text-slate-300 leading-relaxed">
                 Audits PII/PHI/PCI classification coverage, finds gaps in masking, traces sensitive data lineage, and identifies re-identification risk paths through entity relationships.
               </p>
             </div>
             <div className="p-3 rounded-lg border border-rose-200 dark:border-rose-800/40 bg-rose-50/30 dark:bg-rose-900/10">
-              <h4 className="text-xs font-bold text-rose-700 dark:text-rose-300 mb-1">Impact Analysis Agent</h4>
+              <div className="flex items-center gap-2 mb-1">
+                <h4 className="text-xs font-bold text-rose-700 dark:text-rose-300">Impact Analysis Agent</h4>
+                <span className="text-[10px] font-medium text-rose-600 dark:text-rose-400 bg-rose-100 dark:bg-rose-900/40 px-1.5 py-0.5 rounded">Under Development</span>
+              </div>
               <p className="text-[11px] text-slate-600 dark:text-slate-300 leading-relaxed">
                 What-if analysis for schema changes. Shows downstream dependencies, affected metric views, entity impact, and column importance before you drop, rename, or retype a column or table.
               </p>
@@ -343,7 +350,7 @@ export default function GettingStarted({ onNavigate, onStartTour }) {
           Re-running the pipeline is safe — results merge via deterministic IDs. If you see too many similarity edges
           or stale data from a previous ontology bundle, check <span className="font-medium">Sweep stale artifacts</span> on the
           next full (non-incremental) pipeline run — it refreshes stale entities, edges, and docs together for the tables in scope.
-          To sweep just one artifact type after review, the Advanced Metadata tab's <span className="font-medium">Sync Knowledge Graph</span> button
+          To sweep just one artifact type after review, the Sync & Ops tab's <span className="font-medium">Sync Knowledge Graph</span> button
           sweeps edges and <span className="font-medium">Sync Vector Index</span> sweeps docs. For targeted cleanup, query <code className="text-xs bg-slate-100 dark:bg-dbx-navy-500 px-1 py-0.5 rounded">graph_edges</code> grouped
           by <code className="text-xs bg-slate-100 dark:bg-dbx-navy-500 px-1 py-0.5 rounded">source_system</code> to diagnose which module is producing excess edges.
         </p>

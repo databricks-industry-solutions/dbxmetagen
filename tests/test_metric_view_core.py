@@ -23,6 +23,9 @@ from dbxmetagen.metric_view_core import (
     _restructure_chained_to_nested,
     _qualify_nested_refs,
     _definition_to_yaml,
+    _clean_joins_for_yaml,
+    _dedup_new_items,
+    _measure_semantic_key,
 )
 
 
@@ -259,6 +262,14 @@ class TestFixPercentageScaling:
         _fix_percentage_scaling(defn)
         assert defn["measures"][0]["expr"] == expr
 
+    def test_does_not_corrupt_larger_numeric_literal(self):
+        # Regression: `* 100.05` previously matched `* 100` and left `.05`, and
+        # `* 1000` / `100.5 *` must never be treated as the 100 premultiply.
+        for expr in ("SUM(x) * 100.05 / total", "SUM(x) * 1000 / total", "100.5 * SUM(x)"):
+            defn = {"measures": [{"name": "r", "expr": expr, "format": {"type": "percentage"}}]}
+            _fix_percentage_scaling(defn)
+            assert defn["measures"][0]["expr"] == expr, f"corrupted: {expr}"
+
     def test_end_to_end_fraction_contract(self):
         # infer marks it percentage, fix ensures it's a fraction (0-1), not pre-scaled
         defn = {"measures": [{"name": "win_rate", "expr": "SUM(won) * 100.0 / NULLIF(COUNT(*), 0)"}]}
@@ -443,3 +454,231 @@ class TestDefinitionToYaml:
             {"name": "M", "expr": "SUM(x)", "window": _json.dumps([{"order": "dt"}])}]}
         y = _definition_to_yaml(defn)
         assert "window" in y
+
+
+class TestCleanJoinsForYaml:
+    """Phase 3: join dicts are whitelisted to spec-valid keys before YAML dump,
+    internal keys are stripped, default cardinality is omitted, non-default kept."""
+
+    def test_strips_internal_keys(self):
+        joins = [{"name": "cust", "source": "c.s.customers",
+                  "on": "source.cid = cust.id",
+                  "is_composite": True, "extra_pairs": [{"src": "a", "dst": "b"}],
+                  "kind": "join_key", "src_column": "cid"}]
+        out = _clean_joins_for_yaml(joins)
+        assert out == [{"name": "cust", "source": "c.s.customers", "on": "source.cid = cust.id"}]
+
+    def test_omits_default_cardinality(self):
+        joins = [{"name": "c", "source": "c.s.c", "on": "source.x = c.y",
+                  "cardinality": "many_to_one"}]
+        assert "cardinality" not in _clean_joins_for_yaml(joins)[0]
+
+    def test_keeps_one_to_many_cardinality(self):
+        joins = [{"name": "c", "source": "c.s.c", "on": "source.x = c.y",
+                  "cardinality": "one_to_many"}]
+        assert _clean_joins_for_yaml(joins)[0]["cardinality"] == "one_to_many"
+
+    def test_keeps_using_and_rely(self):
+        joins = [{"name": "c", "source": "c.s.c", "using": ["x", "y"], "rely": True}]
+        out = _clean_joins_for_yaml(joins)[0]
+        assert out["using"] == ["x", "y"] and out["rely"] is True
+
+    def test_recurses_nested_and_strips(self):
+        joins = [{"name": "c", "source": "c.s.c", "on": "source.x = c.y",
+                  "is_composite": False,
+                  "joins": [{"name": "g", "source": "c.s.g", "on": "c.gid = g.id", "kind": "x"}]}]
+        out = _clean_joins_for_yaml(joins)[0]
+        assert "is_composite" not in out
+        assert out["joins"][0] == {"name": "g", "source": "c.s.g", "on": "c.gid = g.id"}
+
+    def test_composite_on_survives_yaml(self):
+        # A multi-column composite ON must pass through _definition_to_yaml intact.
+        defn = {"source": "c.s.orders", "measures": [{"name": "M", "expr": "SUM(x)"}],
+                "joins": [{"name": "lines", "source": "c.s.lines",
+                           "on": "source.order_id = lines.order_id AND source.line_no = lines.line_no",
+                           "is_composite": True}]}
+        y = _definition_to_yaml(defn)
+        assert "source.order_id = lines.order_id AND source.line_no = lines.line_no" in y
+        assert "is_composite" not in y   # internal key stripped
+
+
+class TestJoinConditionHelpers:
+    """Phase 3 fix: composite conditions are parsed + re-rendered per direction,
+    not string-replaced (which broke reverse-direction walks)."""
+
+    def test_parse_child_on_left(self):
+        from dbxmetagen.metric_view_core import _parse_join_condition
+        pairs = _parse_join_condition(
+            "source.order_id = lines.order_id AND source.line_no = lines.line_no", "source")
+        assert pairs == [("order_id", "order_id"), ("line_no", "line_no")]
+
+    def test_parse_child_on_right_normalizes(self):
+        from dbxmetagen.metric_view_core import _parse_join_condition
+        # child qualifier appears on the RHS of a term -> still child-first.
+        pairs = _parse_join_condition("lines.a = source.x AND source.y = lines.b", "source")
+        assert pairs == [("x", "a"), ("y", "b")]
+
+    def test_parse_returns_empty_when_child_absent(self):
+        from dbxmetagen.metric_view_core import _parse_join_condition
+        assert _parse_join_condition("a.x = b.y", "source") == []
+
+    def test_render_orientation(self):
+        from dbxmetagen.metric_view_core import _render_join_condition
+        pairs = [("order_id", "order_id"), ("line_no", "line_no")]
+        # child=source, parent=lines (view sourced from the fact)
+        assert _render_join_condition(pairs, "source", "lines") == \
+            "source.order_id = lines.order_id AND source.line_no = lines.line_no"
+        # reversed: child=orders (joined), parent=source (view sourced from parent)
+        assert _render_join_condition(pairs, "orders", "source") == \
+            "orders.order_id = source.order_id AND orders.line_no = source.line_no"
+
+
+class TestCleanJoinsDropsUnjoinable:
+    def test_drops_join_without_on_or_using(self):
+        joins = [{"name": "x", "source": "c.s.x"},
+                 {"name": "y", "source": "c.s.y", "on": "source.a = y.b"}]
+        out = _clean_joins_for_yaml(joins)
+        assert [j["name"] for j in out] == ["y"]
+
+    def test_keeps_using_only_join(self):
+        joins = [{"name": "y", "source": "c.s.y", "using": ["a", "b"]}]
+        assert len(_clean_joins_for_yaml(joins)) == 1
+
+
+class TestMeasureSemanticKey:
+    def test_none_when_no_aggregate(self):
+        assert _measure_semantic_key("o.amount") is None
+
+    def test_whitespace_case_normalized(self):
+        assert _measure_semantic_key("SUM(o.amount)") == _measure_semantic_key("sum( o.amount )")
+
+    def test_sum_vs_avg_distinct(self):
+        assert _measure_semantic_key("SUM(o.amount)") != _measure_semantic_key("AVG(o.amount)")
+
+    def test_count_vs_count_distinct(self):
+        assert _measure_semantic_key("COUNT(o.id)") != _measure_semantic_key("COUNT(DISTINCT o.id)")
+
+    def test_conditional_aggregate_distinct_from_plain(self):
+        plain = _measure_semantic_key("SUM(o.amount)")
+        cond = _measure_semantic_key("SUM(o.amount) FILTER (WHERE o.status = 'returned')")
+        assert plain != cond
+
+    def test_ratios_sharing_numerator_are_distinct(self):
+        # Same leading aggregate (SUM(o.revenue)) but different denominators -> the key
+        # must reflect ALL aggregates, not just the first, so these stay distinct.
+        rev_per_order = _measure_semantic_key("SUM(o.revenue) / NULLIF(SUM(o.orders), 0)")
+        rev_per_cust = _measure_semantic_key("SUM(o.revenue) / NULLIF(SUM(o.customers), 0)")
+        assert rev_per_order != rev_per_cust
+
+    def test_ratio_reworded_still_collapses(self):
+        # Genuinely-identical ratio, only whitespace differs -> same key (still dedups).
+        a = _measure_semantic_key("SUM(o.revenue) / NULLIF(SUM(o.orders), 0)")
+        b = _measure_semantic_key("SUM( o.revenue )/NULLIF( SUM( o.orders ), 0 )")
+        assert a == b
+
+    def test_plain_aggregate_on_case_named_column_not_conditional(self):
+        # A column literally named case_amount must NOT be flagged as a CASE conditional
+        # (word-boundary match), so it stays distinct from a real FILTER conditional.
+        plain = _measure_semantic_key("SUM(o.case_amount)")
+        cond = _measure_semantic_key("SUM(o.case_amount) FILTER (WHERE o.status = 'open')")
+        assert plain != cond
+
+    def test_filter_predicates_differ_are_distinct(self):
+        # Two FILTER aggregates over the same column with different predicates -> distinct.
+        a = _measure_semantic_key("SUM(o.amount) FILTER (WHERE o.status = 'open')")
+        b = _measure_semantic_key("SUM(o.amount) FILTER (WHERE o.status = 'closed')")
+        assert a != b
+
+
+class TestDedupNewItems:
+    def test_exact_expr_duplicate_skipped(self):
+        existing = [{"name": "total", "expr": "SUM(o.amount)"}]
+        cands = [{"name": "total2", "expr": "SUM( o.amount )"}]
+        acc, skip = _dedup_new_items(existing, cands, "measures")
+        assert acc == []
+        assert skip == ["total2"]
+
+    def test_name_collision_skipped(self):
+        existing = [{"name": "total_amount", "expr": "SUM(o.amount)"}]
+        cands = [{"name": "total_amount", "expr": "SUM(o.total)"}]
+        acc, skip = _dedup_new_items(existing, cands, "measures")
+        assert acc == []
+        assert "total_amount" in skip
+
+    def test_semantic_duplicate_skipped(self):
+        # Different name + reworded, but same (agg, column) -> collapsed.
+        existing = [{"name": "revenue", "expr": "SUM(o.amount)"}]
+        cands = [{"name": "gross_sales", "expr": "SUM(o.amount)  "}]
+        acc, skip = _dedup_new_items(existing, cands, "measures")
+        assert acc == []
+
+    def test_distinct_aggregates_kept(self):
+        existing = [{"name": "revenue", "expr": "SUM(o.amount)"}]
+        cands = [
+            {"name": "avg_amount", "expr": "AVG(o.amount)"},
+            {"name": "distinct_cust", "expr": "COUNT(DISTINCT o.customer_id)"},
+        ]
+        acc, skip = _dedup_new_items(existing, cands, "measures")
+        assert {a["name"] for a in acc} == {"avg_amount", "distinct_cust"}
+        assert skip == []
+
+    def test_conditional_aggregate_over_same_column_kept(self):
+        existing = [{"name": "revenue", "expr": "SUM(o.amount)"}]
+        cands = [{"name": "returned_rev",
+                  "expr": "SUM(o.amount) FILTER (WHERE o.status = 'returned')"}]
+        acc, skip = _dedup_new_items(existing, cands, "measures")
+        assert [a["name"] for a in acc] == ["returned_rev"]
+
+    def test_ratio_with_shared_numerator_kept(self):
+        # Regression: distinct ratio measures sharing a numerator must not collapse.
+        existing = [{"name": "rev_per_order",
+                     "expr": "SUM(o.revenue) / NULLIF(SUM(o.orders), 0)"}]
+        cands = [{"name": "rev_per_customer",
+                  "expr": "SUM(o.revenue) / NULLIF(SUM(o.customers), 0)"}]
+        acc, skip = _dedup_new_items(existing, cands, "measures")
+        assert [a["name"] for a in acc] == ["rev_per_customer"]
+        assert skip == []
+
+    def test_case_named_column_conditional_variant_kept(self):
+        # Regression: plain SUM(o.case_amount) must not be treated as conditional, so a
+        # real FILTER variant over the same column is not falsely dropped.
+        existing = [{"name": "case_total", "expr": "SUM(o.case_amount)"}]
+        cands = [{"name": "open_case_total",
+                  "expr": "SUM(o.case_amount) FILTER (WHERE o.status = 'open')"}]
+        acc, skip = _dedup_new_items(existing, cands, "measures")
+        assert [a["name"] for a in acc] == ["open_case_total"]
+        assert skip == []
+
+    def test_filter_variants_with_different_predicates_kept(self):
+        existing = [{"name": "open_rev",
+                     "expr": "SUM(o.amount) FILTER (WHERE o.status = 'open')"}]
+        cands = [{"name": "closed_rev",
+                  "expr": "SUM(o.amount) FILTER (WHERE o.status = 'closed')"}]
+        acc, skip = _dedup_new_items(existing, cands, "measures")
+        assert [a["name"] for a in acc] == ["closed_rev"]
+        assert skip == []
+
+    def test_candidate_vs_candidate_dedup(self):
+        acc, skip = _dedup_new_items(
+            [], [{"name": "a", "expr": "SUM(o.amount)"}, {"name": "b", "expr": "SUM( o.amount )"}],
+            "measures",
+        )
+        assert len(acc) == 1
+
+    def test_empty_expr_candidate_dropped(self):
+        acc, skip = _dedup_new_items([], [{"name": "x", "expr": "  "}], "measures")
+        assert acc == []
+
+    def test_dimensions_ignore_semantic_key(self):
+        # Same base column, different DATE_TRUNC bucket -> both kept (dims dedup on
+        # exact-expr + name only, no aggregate semantic key).
+        existing = [{"name": "order_day", "expr": "DATE_TRUNC('DAY', o.order_date)"}]
+        cands = [{"name": "order_month", "expr": "DATE_TRUNC('MONTH', o.order_date)"}]
+        acc, skip = _dedup_new_items(existing, cands, "dimensions")
+        assert [a["name"] for a in acc] == ["order_month"]
+
+    def test_dimensions_exact_duplicate_skipped(self):
+        existing = [{"name": "region", "expr": "o.region"}]
+        cands = [{"name": "region2", "expr": "o.region"}]
+        acc, skip = _dedup_new_items(existing, cands, "dimensions")
+        assert acc == []

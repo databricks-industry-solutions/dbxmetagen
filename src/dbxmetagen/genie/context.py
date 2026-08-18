@@ -18,6 +18,17 @@ from databricks.sdk.service.sql import Format, Disposition
 logger = logging.getLogger(__name__)
 
 
+def _rewrite_alias_prefix(sql: str, old_alias: str, new_alias: str) -> str:
+    """Replace an ``old_alias.`` table-alias prefix with ``new_alias.``, only at a
+    word boundary. A bare ``sql.replace("source.", ...)`` also rewrites a
+    ``source.`` substring inside a larger identifier (e.g. ``data_source.col`` or a
+    ``data_source`` alias), producing a malformed predicate. The negative
+    lookbehind ``(?<![\\w.])`` ensures we only match the standalone alias."""
+    if not sql or not old_alias:
+        return sql
+    return re.sub(rf"(?<![\w.]){re.escape(old_alias)}\.", f"{new_alias}.", sql)
+
+
 def _run_sql(ws: WorkspaceClient, warehouse_id: str, query: str) -> list[dict]:
     """Execute SQL via Statement Execution API, return list[dict]."""
     r = ws.statement_execution.execute_statement(
@@ -37,13 +48,39 @@ def _run_sql(ws: WorkspaceClient, warehouse_id: str, query: str) -> list[dict]:
     return []
 
 
-def _safe_sql(ws: WorkspaceClient, warehouse_id: str, query: str) -> list[dict]:
-    """Like _run_sql but returns [] on any exception."""
+def _safe_sql(ws: WorkspaceClient, warehouse_id: str, query: str,
+              fallback: str | None = None) -> list[dict]:
+    """Like _run_sql but returns [] on any exception.
+
+    ``fallback`` (optional) is retried once when the primary query fails on a
+    missing column -- e.g. selecting Phase-3 columns (join_condition/is_composite)
+    against a table that predates them.
+    """
     try:
         return _run_sql(ws, warehouse_id, query)
     except Exception as e:
         err = str(e)
-        if "TABLE_OR_VIEW_NOT_FOUND" in err or "SCHEMA_NOT_FOUND" in err:
+        # Retry the fallback on most primary failures when one is provided -- the
+        # fallback is a strict subset query (fewer columns), so it's safe to try
+        # even for transient/unrecognized errors, and we must not silently drop
+        # all FK-derived joins just because the error wording wasn't whitelisted.
+        # Skip the retry when it cannot possibly help: the table is missing, or
+        # access to it was denied (the fallback hits the SAME table, so it would
+        # just fail identically and waste a round-trip).
+        table_missing = "TABLE_OR_VIEW_NOT_FOUND" in err or "SCHEMA_NOT_FOUND" in err
+        permission_denied = any(
+            tok in err for tok in (
+                "PERMISSION_DENIED", "ACCESS_DENIED", "INSUFFICIENT_PRIVILEGES",
+                "does not have", "User does not have",
+            )
+        )
+        if fallback and not table_missing and not permission_denied:
+            try:
+                return _run_sql(ws, warehouse_id, fallback)
+            except Exception as e2:
+                logger.warning("SQL fallback also failed: %s — %s", fallback[:80], e2)
+                return []
+        if table_missing:
             logger.info("Table not found (expected before pipeline runs): %s", query[:80])
         else:
             logger.warning("SQL query failed (non-404): %s — %s", query[:80], e)
@@ -161,6 +198,30 @@ class GenieContextAssembler:
 
     def _fq(self, table: str) -> str:
         return f"`{self.catalog}`.`{self.schema}`.`{table}`"
+
+    def _any_federated(self, tables: List[str]) -> bool:
+        """True if any of the given fully-qualified tables lives in a federated/foreign
+        catalog. Env FEDERATION_MODE forces true. Best-effort: a lookup failure returns
+        False (the LIMIT+non-DISTINCT fallback is itself bounded), matching
+        api_server._is_federated_catalog's fail-open-to-safe-bounded behavior."""
+        if os.environ.get("FEDERATION_MODE", "false").lower() == "true":
+            return True
+        catalogs = {t.split(".")[0] for t in tables if "." in t}
+        if not catalogs:
+            return False
+        try:
+            cat_list = ", ".join(f"'{c}'" for c in sorted(catalogs))
+            rows = _safe_sql(
+                self.ws, self.wh,
+                f"SELECT catalog_type FROM system.information_schema.catalogs "
+                f"WHERE catalog_name IN ({cat_list})",
+            ) or []
+            return any(
+                (r.get("catalog_type") or "").upper() in ("FOREIGN", "FOREIGN_CATALOG", "EXTERNAL")
+                for r in rows
+            )
+        except Exception:
+            return False
 
     def assemble(
         self,
@@ -392,6 +453,14 @@ class GenieContextAssembler:
             self.ws,
             self.wh,
             f"""
+            SELECT src_table, dst_table, src_column, dst_column, final_confidence,
+                   join_condition, is_composite
+            FROM {self._fq('fk_predictions')}
+            WHERE final_confidence >= 0.7
+              AND (is_fk IS NULL OR is_fk = TRUE)
+              AND src_table IN ({table_list}) AND dst_table IN ({table_list})
+        """,
+            fallback=f"""
             SELECT src_table, dst_table, src_column, dst_column, final_confidence
             FROM {self._fq('fk_predictions')}
             WHERE final_confidence >= 0.7
@@ -642,9 +711,15 @@ class GenieContextAssembler:
     def _sample_categorical_values(
         self, columns: list[dict]
     ) -> dict[str, dict[str, list]]:
-        """Sample distinct values for STRING columns (useful for filter suggestions)."""
-        from concurrent.futures import ThreadPoolExecutor, as_completed
+        """Sample values for STRING columns (useful for filter suggestions).
 
+        FEDERATION-SAFE (PQ-3): profiling already persists per-column `sample_values`
+        into `column_profiling_stats`. Read that CACHE first -- a `SELECT DISTINCT col`
+        against the source forces a full-column scan/dedup that does NOT push down and
+        can hammer a federated source (the previous behavior). Only when the cache has
+        nothing for a column do we fall back to a bounded, non-DISTINCT source read, and
+        NEVER against a federated catalog. Distinct-ing is done locally on the sample.
+        """
         samples: dict[str, dict[str, list]] = {}
         string_cols = [
             c
@@ -655,25 +730,77 @@ class GenieContextAssembler:
         if not capped:
             return samples
 
-        def _fetch(col):
-            tbl = col["table_name"]
-            cn = col["column_name"]
-            fq_tbl = self._qualify(tbl)
+        # 1. Cached path: read persisted sample_values (JSON arrays) in ONE query.
+        want = {(c["table_name"], c["column_name"]) for c in capped}
+        tables = sorted({t for t, _ in want})
+        tbl_list = ", ".join(f"'{t}'" for t in tables)
+        try:
             rows = _safe_sql(
                 self.ws, self.wh,
-                f"SELECT DISTINCT `{cn}` AS val FROM {fq_tbl} WHERE `{cn}` IS NOT NULL LIMIT 8",
-            )
-            return tbl, cn, [r["val"] for r in rows] if rows else []
+                f"SELECT table_name, column_name, sample_values "
+                f"FROM {self._fq('column_profiling_stats')} "
+                f"WHERE table_name IN ({tbl_list})",
+            ) or []
+        except Exception:
+            rows = []
+        for r in rows:
+            key = (r.get("table_name"), r.get("column_name"))
+            if key not in want:
+                continue
+            raw = r.get("sample_values")
+            try:
+                vals = json.loads(raw) if isinstance(raw, str) else (raw or [])
+            except (ValueError, TypeError):
+                vals = []
+            # Local distinct, drop nulls, cap to 8 -- no source scan.
+            seen, out = set(), []
+            for v in vals:
+                if v is None or v in seen:
+                    continue
+                seen.add(v)
+                out.append(v)
+                if len(out) >= 8:
+                    break
+            if out:
+                samples.setdefault(key[0], {})[key[1]] = out
 
-        with ThreadPoolExecutor(max_workers=8) as pool:
-            futures = {pool.submit(_fetch, c): c for c in capped}
-            for f in as_completed(futures):
-                try:
-                    tbl, cn, vals = f.result(timeout=30)
-                    if vals:
-                        samples.setdefault(tbl, {})[cn] = vals
-                except Exception:
-                    pass  # skip failed columns silently
+        # 2. Fallback ONLY for columns with no cached samples, and NEVER on federated
+        #    catalogs (a source read there is the exact blow-up risk). Non-DISTINCT +
+        #    LIMIT so it pushes down; dedup locally.
+        missing = [
+            c for c in capped
+            if c["column_name"] not in samples.get(c["table_name"], {})
+        ]
+        if missing and not self._any_federated(tables):
+            from concurrent.futures import ThreadPoolExecutor, as_completed
+
+            def _fetch(col):
+                tbl, cn = col["table_name"], col["column_name"]
+                fq_tbl = self._qualify(tbl)
+                rows = _safe_sql(
+                    self.ws, self.wh,
+                    f"SELECT `{cn}` AS val FROM {fq_tbl} WHERE `{cn}` IS NOT NULL LIMIT 200",
+                )
+                seen, out = set(), []
+                for row in (rows or []):
+                    v = row.get("val")
+                    if v is None or v in seen:
+                        continue
+                    seen.add(v)
+                    out.append(v)
+                    if len(out) >= 8:
+                        break
+                return tbl, cn, out
+
+            with ThreadPoolExecutor(max_workers=8) as pool:
+                futures = {pool.submit(_fetch, c): c for c in missing}
+                for f in as_completed(futures):
+                    try:
+                        tbl, cn, vals = f.result(timeout=30)
+                        if vals:
+                            samples.setdefault(tbl, {})[cn] = vals
+                    except Exception:
+                        pass  # skip failed columns silently
         return samples
 
     # -- Synonym helpers -------------------------------------------------------
@@ -818,11 +945,26 @@ class GenieContextAssembler:
             ent_type = ent_info["entity_type"] if ent_info else ""
 
             cols = col_by_table.get(tname, [])
-            id_cols = [c["column_name"] for c in cols if c["column_name"].endswith("_id") or c["column_name"] == "id"]
+            # PQ-5: key columns preferentially from FK PREDICTIONS (data-driven), not just
+            # the _id suffix -- so a suffix-less key like `npi`/`ndc` that FK prediction
+            # found is recognized as a key. Fall back to the _id/`id` heuristic too (union).
+            short = tname.split(".")[-1]
+            fk_key_cols = set()
+            for fk in fk_rows:
+                if fk.get("src_table", "").split(".")[-1] == short and fk.get("src_column"):
+                    fk_key_cols.add(fk["src_column"])
+                if fk.get("dst_table", "").split(".")[-1] == short and fk.get("dst_column"):
+                    fk_key_cols.add(fk["dst_column"])
+            id_cols = [
+                c["column_name"] for c in cols
+                if c["column_name"].endswith("_id") or c["column_name"] == "id"
+                or c["column_name"] in fk_key_cols
+            ]
             date_cols = [c["column_name"] for c in cols if c.get("data_type", "").upper() in ("DATE", "TIMESTAMP", "DATETIME")]
             numeric_cols = [c["column_name"] for c in cols
                            if c.get("data_type", "").upper().split("(")[0] in ("DECIMAL", "DOUBLE", "FLOAT", "INT", "BIGINT")
-                           and not c["column_name"].endswith("_id") and c["column_name"] != "id"]
+                           and not c["column_name"].endswith("_id") and c["column_name"] != "id"
+                           and c["column_name"] not in fk_key_cols]  # PQ-5: a FK key isn't a measure
             string_cols = [c["column_name"] for c in cols if c.get("data_type", "").upper() in ("STRING", "VARCHAR")]
 
             # Classify: fact (has numeric measure columns + FK refs) vs dimension (mostly descriptive)
@@ -926,17 +1068,39 @@ class GenieContextAssembler:
         """
         specs = []
         for fk in fk_rows:
-            src_col = fk['src_column'].split('.')[-1]
-            dst_col = fk['dst_column'].split('.')[-1]
+            src_short = fk["src_table"].split(".")[-1]
+            dst_short = fk["dst_table"].split(".")[-1]
+            # Self-referential FK (e.g. employee.manager_id -> employee.id): both
+            # sides resolve to the same short-name alias, so any predicate we build
+            # (composite or simple) is ambiguous -- "employee.a = employee.x" gives
+            # Genie no way to distinguish the two ends. This join_spec pipeline
+            # aliases both sides by the short table name (see schema.py JoinSide),
+            # so a self-join can't be represented without distinct aliases. Skip it
+            # rather than emit a broken predicate; the self-FK is still preserved in
+            # fk_predictions for review.
+            if src_short == dst_short:
+                logger.debug(
+                    "Skipping self-referential FK join_spec for %s (needs distinct aliases)",
+                    fk.get("src_table"),
+                )
+                continue
+            # Composite key: the stored join_condition is authored as
+            # "source.a = <dst_short>.x AND source.b = <dst_short>.y" (the ERD uses
+            # the dst table's short name as the alias). Only the generic "source."
+            # prefix needs rewriting to the real src short name for Genie.
+            composite = fk.get("join_condition") if fk.get("is_composite") else None
+            if composite:
+                sql = _rewrite_alias_prefix(composite, "source", src_short)
+            else:
+                src_col = fk["src_column"].split(".")[-1]
+                dst_col = fk["dst_column"].split(".")[-1]
+                sql = f"{src_short}.{src_col} = {dst_short}.{dst_col}"
             specs.append(
                 {
                     "id": uuid.uuid4().hex[:32],
                     "left": {"identifier": fk["src_table"]},
                     "right": {"identifier": fk["dst_table"]},
-                    "sql": [
-                        f"{fk['src_table'].split('.')[-1]}.{src_col} = "
-                        f"{fk['dst_table'].split('.')[-1]}.{dst_col}"
-                    ],
+                    "sql": [sql],
                 }
             )
         return specs
@@ -975,9 +1139,9 @@ class GenieContextAssembler:
                     continue
                 on_clause = j.get("on", "")
                 alias = j.get("name", right_short)
-                sql = on_clause.replace("source.", f"{left_short}.")
+                sql = _rewrite_alias_prefix(on_clause, "source", left_short)
                 if alias.lower() != right_short:
-                    sql = sql.replace(f"{alias}.", f"{right_short}.")
+                    sql = _rewrite_alias_prefix(sql, alias, right_short)
                 if sql:
                     existing_pairs.add(pair)
                     specs.append({

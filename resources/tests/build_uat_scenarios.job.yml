@@ -1,7 +1,7 @@
 resources:
   jobs:
-    eval_compare_job:
-      name: "${var.app_name}_eval_compare"
+    build_uat_scenarios_job:
+      name: "${var.app_name}${var.app_name_suffix}_build_uat_scenarios"
       budget_policy_id: ${var.budget_policy_id}
 
       permissions:
@@ -16,27 +16,28 @@ resources:
         - name: catalog_name
           default: ${var.catalog_name}
         - name: eval_schema
-          default: eval_data
-        - name: pipeline_schema
-          default: ${var.schema_name}
-        - name: run_label
+          default: uat_eval
+        - name: skip_scenarios
           default: ""
+        - name: base_rows
+          default: "500"
 
       tasks:
-        - task_key: compare_and_score
+        - task_key: build_uat_scenarios
           max_retries: 0
+          timeout_seconds: 7200
           environment_key: default
           notebook_task:
-            notebook_path: ../../notebooks/evaluation/eval_compare.py
+            notebook_path: ../../tests/data/build_uat_scenarios.py
             base_parameters:
               catalog_name: "{{job.parameters.catalog_name}}"
               eval_schema: "{{job.parameters.eval_schema}}"
-              pipeline_schema: "{{job.parameters.pipeline_schema}}"
-              run_label: "{{job.parameters.run_label}}"
+              skip_scenarios: "{{job.parameters.skip_scenarios}}"
+              base_rows: "{{job.parameters.base_rows}}"
 
       environments:
         - environment_key: default
           spec:
             environment_version: "2"
             dependencies:
-              - ../../dist/*.whl
+              - faker

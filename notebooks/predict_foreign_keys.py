@@ -34,7 +34,17 @@ dbutils.widgets.text("max_candidates_per_table_pair", "5", "Max candidates per t
 dbutils.widgets.text("same_schema_bonus", "0.10", "Same-schema FK score bonus")
 dbutils.widgets.text("cross_schema_penalty", "-0.10", "Cross-schema FK score penalty")
 dbutils.widgets.text("system_column_exclude_patterns", "", "Regex patterns to exclude system columns from FK boosting (comma-separated, empty=defaults)")
+dbutils.widgets.text("generic_column_names", "", "Generic column names (e.g. id,code,status) that need corroboration to form an FK (comma-separated, empty=defaults)")
 dbutils.widgets.text("sweep_stale_edges", "false", "Sweep stale edges")
+# PQ-1: data-driven (value-overlap) FK candidates -- catch keys with no _id/_key/_code suffix.
+dbutils.widgets.text("enable_data_overlap_candidates", "true", "Enable value-overlap FK candidates")
+dbutils.widgets.text("fk_data_overlap_min_containment", "0.85", "Value-overlap min containment")
+dbutils.widgets.text("fk_data_overlap_min_containment_ontology", "0.60", "Value-overlap min containment (ontology-corroborated)")
+dbutils.widgets.text("fk_data_overlap_min_containment_distinctive", "0.30", "Value-overlap min containment (distinctive format: email/npi/ndc/cusip/uuid)")
+dbutils.widgets.text("fk_data_overlap_min_distinct", "8", "Value-overlap small-domain veto (min distinct)")
+dbutils.widgets.text("fk_data_overlap_weight", "0.25", "Value-overlap rule_score weight")
+dbutils.widgets.text("fk_data_overlap_max_candidates", "2000", "Value-overlap global candidate ceiling")
+dbutils.widgets.text("fk_mirror_uniqueness_threshold", "0.95", "Mirror veto: both card ratios >= this on low-trust pair -> 1:1 mirror, not FK")
 dbutils.widgets.text("table_names", "", "Table Names")
 dbutils.widgets.dropdown("federation_mode", "false", ["true", "false"], "Federation Mode")
 
@@ -60,7 +70,17 @@ same_schema_bonus = float(dbutils.widgets.get("same_schema_bonus"))
 cross_schema_penalty = float(dbutils.widgets.get("cross_schema_penalty"))
 _sys_col_raw = dbutils.widgets.get("system_column_exclude_patterns").strip()
 system_column_patterns = tuple(p.strip() for p in _sys_col_raw.split(",") if p.strip()) if _sys_col_raw else None
+_generic_raw = dbutils.widgets.get("generic_column_names").strip()
+generic_column_names = tuple(p.strip().lower() for p in _generic_raw.split(",") if p.strip()) if _generic_raw else None
 sweep_stale = dbutils.widgets.get("sweep_stale_edges").strip().lower() in ("true", "1", "yes")
+enable_data_overlap_candidates = dbutils.widgets.get("enable_data_overlap_candidates").strip().lower() in ("true", "1", "yes")
+fk_data_overlap_min_containment = float(dbutils.widgets.get("fk_data_overlap_min_containment"))
+fk_data_overlap_min_containment_ontology = float(dbutils.widgets.get("fk_data_overlap_min_containment_ontology"))
+fk_data_overlap_min_containment_distinctive = float(dbutils.widgets.get("fk_data_overlap_min_containment_distinctive"))
+fk_data_overlap_min_distinct = int(dbutils.widgets.get("fk_data_overlap_min_distinct"))
+fk_data_overlap_weight = float(dbutils.widgets.get("fk_data_overlap_weight"))
+fk_data_overlap_max_candidates = int(dbutils.widgets.get("fk_data_overlap_max_candidates"))
+fk_mirror_uniqueness_threshold = float(dbutils.widgets.get("fk_mirror_uniqueness_threshold"))
 
 federation_mode = dbutils.widgets.get("federation_mode").lower() == "true"
 
@@ -114,9 +134,19 @@ _fk_kwargs = dict(
     same_schema_bonus=same_schema_bonus,
     cross_schema_penalty=cross_schema_penalty,
     federation_mode=federation_mode,
+    enable_data_overlap_candidates=enable_data_overlap_candidates,
+    fk_data_overlap_min_containment=fk_data_overlap_min_containment,
+    fk_data_overlap_min_containment_ontology=fk_data_overlap_min_containment_ontology,
+    fk_data_overlap_min_containment_distinctive=fk_data_overlap_min_containment_distinctive,
+    fk_data_overlap_min_distinct=fk_data_overlap_min_distinct,
+    fk_data_overlap_weight=fk_data_overlap_weight,
+    fk_data_overlap_max_candidates=fk_data_overlap_max_candidates,
+    fk_mirror_uniqueness_threshold=fk_mirror_uniqueness_threshold,
 )
 if system_column_patterns is not None:
     _fk_kwargs["system_column_patterns"] = system_column_patterns
+if generic_column_names is not None:
+    _fk_kwargs["generic_column_names"] = generic_column_names
 _fk_kwargs["sweep_stale"] = sweep_stale
 if table_names:
     _fk_kwargs["table_names"] = table_names

@@ -208,12 +208,13 @@ def execute_metadata_sql(query: str) -> str:
     """Execute a read-only SQL query against the metadata knowledge base tables.
 
     Allowed tables (use fully-qualified names with {catalog}.{schema}.table or just the table name):
-    - table_knowledge_base: table_name, comment, domain, subdomain, has_pii, has_phi, row_count
+    - table_knowledge_base: table_name, catalog, `schema`, table_short_name, comment, domain, subdomain, has_pii, has_phi
     - column_knowledge_base: table_name, column_name, comment, data_type, classification, classification_type
     - ontology_entities: entity_id, entity_name, entity_type, description, source_tables, confidence, entity_uri, source_ontology
     - fk_predictions: src_table, src_column, dst_table, dst_column, final_confidence, join_rate, pk_uniqueness, ri_score, ai_reasoning
-    - metric_view_definitions: definition_id, metric_view_name, source_table, source_questions, json_definition, status
     - profiling_results: table_name, column_name, distinct_count, null_count, min_value, max_value, avg_value
+    - profiling_snapshots: table_name, snapshot_time, row_count, table_size_bytes   (row_count lives HERE, not in table_knowledge_base)
+    - metric_view_definitions: definition_id, metric_view_name, source_table, source_questions, json_definition, status
     - metadata_generation_log: table_name, mode, status, comment
     """
     t0 = _log_tool("execute_metadata_sql")
@@ -401,7 +402,7 @@ def execute_baseline_sql(query: str) -> str:
     """Execute read-only SQL against ONLY the three core knowledge base tables.
 
     Allowed tables (use fully-qualified {catalog}.{schema}.table or just the table name):
-    - table_knowledge_base: table_name, comment, domain, subdomain, has_pii, has_phi, row_count
+    - table_knowledge_base: table_name, catalog, `schema`, comment, domain, subdomain, has_pii, has_phi (NO row_count -- use profiling_snapshots.row_count)
     - column_knowledge_base: table_name, column_name, comment, data_type, classification, classification_type
     - schema_knowledge_base: catalog_name, schema_name, comment, tables_count
     """

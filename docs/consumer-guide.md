@@ -115,19 +115,19 @@ Clone the repo and run the standard deployment:
 ```bash
 git clone https://github.com/<org>/dbxmetagen.git
 cd dbxmetagen
-cp example.env dev.env
-# Edit dev.env with your catalog, schema, warehouse, host
-./deploy.sh --target dev --profile MY_PROFILE
+# Set per-workspace values (catalog, schema, warehouse) as bundle variables in a
+# gitignored variable-overrides.json. DAB auto-loads it from
+# .databricks/bundle/<target>/variable-overrides.json (see example.env for all keys):
+mkdir -p .databricks/bundle/dev          # match your deploy target (-t below)
+cp variable-overrides.example.json .databricks/bundle/dev/variable-overrides.json
+# edit that file with your catalog / schema / warehouse ID
+databricks bundle deploy -t dev -p MY_PROFILE          # builds wheel + deploys jobs & app
+scripts/grant_app_permissions.sh -t dev -p MY_PROFILE  # UC grants + Vector Search endpoint
 ```
 
-Use `--no-app` to deploy only the jobs without the web UI:
-
-```bash
-./deploy.sh --target dev --no-app
-```
-
-This creates all jobs, builds the wheel, and deploys everything as a
-Databricks Asset Bundle.
+There is no `deploy.sh`; `bundle deploy` builds the wheel automatically via the
+`artifacts.build` hook and deploys everything as a Databricks Asset Bundle. The
+workspace host comes from your CLI profile.
 
 ---
 

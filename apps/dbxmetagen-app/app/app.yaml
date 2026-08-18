@@ -1,0 +1,14 @@
+# Databricks App entry point.
+#
+# This file carries ONLY the launch command. All environment variables (catalog,
+# schema, warehouse, job IDs, VS endpoint, OBO, etc.) are defined in the bundle at
+# resources/apps/dbxmetagen_app.yml under `config.env`. On a `databricks bundle
+# deploy`, that config.env is sent in the deploy API call and OVERRIDES anything
+# here, so keeping env out of this file avoids drift. Do not add an `env:` block.
+command:
+  - uvicorn
+  - api_server:app
+  - --host
+  - 0.0.0.0
+  - --port
+  - "8000"

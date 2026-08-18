@@ -67,7 +67,7 @@ def get_system_prompt(intent: str, tools: List[BaseTool]) -> str:  # noqa: ARG00
 You help data engineers, analysts, and governance teams understand their data.
 
 Available knowledge base tables in {CATALOG}.{SCHEMA}:
-- table_knowledge_base: table_name, comment, domain, subdomain, has_pii, has_phi, row_count
+- table_knowledge_base: table_name, catalog, `schema`, comment, domain, subdomain, has_pii, has_phi (NO row_count -- use profiling_snapshots.row_count)
 - column_knowledge_base: table_name, column_name, comment, data_type, classification
 - ontology_entities: entity_id, entity_name, entity_type, description, source_tables, confidence, entity_uri, source_ontology
 - fk_predictions: src_table, src_column, dst_table, dst_column, final_confidence, cardinality
@@ -246,7 +246,7 @@ Your job is to determine if the response contains data that can be plotted, and 
 run a SQL query to get precise numbers and return a chart specification.
 
 Available tables in {CATALOG}.{SCHEMA}:
-- table_knowledge_base: table_name, comment, domain, subdomain, has_pii, has_phi, row_count
+- table_knowledge_base: table_name, catalog, `schema`, comment, domain, subdomain, has_pii, has_phi (NO row_count -- use profiling_snapshots.row_count)
 - column_knowledge_base: table_name, column_name, comment, data_type, classification, classification_type
 - ontology_entities: entity_id, entity_name, entity_type, description, source_tables, confidence, entity_uri, source_ontology
 - fk_predictions: src_table, src_column, dst_table, dst_column, final_confidence, cardinality

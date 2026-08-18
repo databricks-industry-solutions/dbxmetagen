@@ -12,6 +12,7 @@ from pyspark.sql import SparkSession, DataFrame
 from pyspark.sql import functions as F
 
 from dbxmetagen.table_filter import table_filter_sql
+from dbxmetagen.databricks_utils import quote_fqn
 
 logger = logging.getLogger(__name__)
 
@@ -130,7 +131,7 @@ class ExtendedMetadataBuilder:
 
         for catalog in catalogs:
             try:
-                rows = self.spark.sql(f"DESCRIBE CATALOG EXTENDED {catalog}").collect()
+                rows = self.spark.sql(f"DESCRIBE CATALOG EXTENDED {quote_fqn(catalog)}").collect()
                 info = {r["info_name"]: r["info_value"] for r in rows}
                 if info.get("Catalog Type", "").lower() == "foreign":
                     conn_name = info.get("Connection Name", "")
@@ -369,19 +370,21 @@ class ExtendedMetadataBuilder:
             from functools import reduce
             combined = reduce(lambda a, b: a.union(b), all_dfs)
 
+            # Collect once and partition in Python. `combined` is a lazy union of
+            # one information_schema query per catalog; filtering + collecting it
+            # twice would re-execute the entire union/scan for each collect.
             pk_by_table: dict = {}
-            for r in combined.filter(F.col("constraint_type") == "PRIMARY KEY").collect():
-                if r.table_name and r.column_name:
-                    pk_by_table.setdefault(r.table_name, set()).add(r.column_name)
-
             fk_by_table: dict = {}
-            for r in combined.filter(F.col("constraint_type") == "FOREIGN KEY").collect():
+            for r in combined.collect():
                 tname, col = r.table_name, r.column_name
                 if not tname or not col:
                     continue
-                cat = tname.split(".")[0]
-                ref_target = fk_ref_maps.get(cat, {}).get(tname, {}).get(col, "")
-                fk_by_table.setdefault(tname, {})[col] = ref_target
+                if r.constraint_type == "PRIMARY KEY":
+                    pk_by_table.setdefault(tname, set()).add(col)
+                elif r.constraint_type == "FOREIGN KEY":
+                    cat = tname.split(".")[0]
+                    ref_target = fk_ref_maps.get(cat, {}).get(tname, {}).get(col, "")
+                    fk_by_table.setdefault(tname, {})[col] = ref_target
 
             for tname in set(pk_by_table) | set(fk_by_table):
                 uc_by_table[tname] = (
@@ -407,7 +410,7 @@ class ExtendedMetadataBuilder:
         results = []
         for table in tables[:100]:
             try:
-                detail_df = self.spark.sql(f"DESCRIBE DETAIL {table}")
+                detail_df = self.spark.sql(f"DESCRIBE DETAIL {quote_fqn(table)}")
                 row = detail_df.collect()[0]
                 
                 clustering = None
