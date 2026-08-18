@@ -23,6 +23,7 @@ from pyspark.sql.types import (
 )
 
 from dbxmetagen.table_filter import table_filter_sql
+from dbxmetagen.databricks_utils import quote_fqn
 
 logger = logging.getLogger(__name__)
 
@@ -63,8 +64,23 @@ class ProfilingBuilder:
     UUID_PATTERN = re.compile(r'^[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}$')
     EMAIL_PATTERN = re.compile(r'^[a-zA-Z0-9._%+-]+@[a-zA-Z0-9.-]+\.[a-zA-Z]{2,}$')
     DATE_PATTERN = re.compile(r'^\d{4}[-/]\d{2}[-/]\d{2}')
+    # PQ-2: domain-standard identifier formats (checked BEFORE the generic numeric_id
+    # fallback so e.g. a 10-digit NPI classes as 'npi', not 'numeric_id'). These feed the
+    # value-overlap FK generator's bucketing so same-format keys across tables get paired.
+    NPI_PATTERN = re.compile(r'^\d{10}$')                       # National Provider Identifier
+    NDC_PATTERN = re.compile(r'^\d{4,5}-\d{3,4}-\d{1,2}$')      # National Drug Code
+    CUSIP_PATTERN = re.compile(r'^[0-9A-Z]{9}$')                # security identifier
     NUMERIC_ID_PATTERN = re.compile(r'^\d+$')
-    
+
+    # Number of distinct sample values persisted to column_profiling_stats.sample_values.
+    # The value-overlap FK generator (fk_prediction.py) computes directional containment
+    # on these cached samples, so it must be large enough that two columns drawing from
+    # the same ~tens-of-values domain actually intersect even when sampled independently
+    # (5 was too small: random draws from a 60-value email domain rarely overlapped, so a
+    # real natural-key FK produced no candidate). The underlying scan is already LIMIT 100,
+    # so persisting more of what was pulled is free and federation-safe -- no extra reads.
+    SAMPLE_VALUE_COUNT = 25
+
     # Explicit schema for snapshots table
     SNAPSHOT_SCHEMA = StructType([
         StructField("snapshot_id", StringType(), False),
@@ -267,8 +283,9 @@ class ProfilingBuilder:
         if not sample_values:
             return "unknown"
         
-        patterns = {"uuid": 0, "email": 0, "date": 0, "numeric_id": 0, "other": 0}
-        
+        patterns = {"uuid": 0, "email": 0, "date": 0, "npi": 0, "ndc": 0,
+                    "cusip": 0, "numeric_id": 0, "other": 0}
+
         for val in sample_values:
             if val is None:
                 continue
@@ -279,6 +296,12 @@ class ProfilingBuilder:
                 patterns["email"] += 1
             elif self.DATE_PATTERN.match(val_str):
                 patterns["date"] += 1
+            elif self.NDC_PATTERN.match(val_str):
+                patterns["ndc"] += 1
+            elif self.NPI_PATTERN.match(val_str):
+                patterns["npi"] += 1     # 10-digit; checked before generic numeric_id
+            elif self.CUSIP_PATTERN.match(val_str) and not val_str.isdigit():
+                patterns["cusip"] += 1   # alnum 9-char (pure-digit handled by numeric_id)
             elif self.NUMERIC_ID_PATTERN.match(val_str):
                 patterns["numeric_id"] += 1
             else:
@@ -322,7 +345,10 @@ class ProfilingBuilder:
 
     def _profile_table_delta(self, table_name: str, drift_baselines: Dict[str, Dict[str, int]] = None) -> Optional[Dict[str, Any]]:
         snapshot_id = str(uuid.uuid4())
-        df = self.spark.table(table_name)
+        # Read via quoted SQL: both spark.table() AND spark.read.table() parse the
+        # identifier and raise on a special char (e.g. `$` in a federated tbl$raw);
+        # a backtick-quoted SELECT is parse-safe for any legal identifier (MG-22).
+        df = self.spark.sql(f"SELECT * FROM {quote_fqn(table_name)}")
         schema = df.schema
         columns = [f.name for f in schema.fields[:50]]
         column_count = len(schema.fields)
@@ -379,14 +405,14 @@ class ProfilingBuilder:
             agg_parts.append(f"CAST(MIN({qc}) AS STRING) AS `{c}__dt_min`")
             agg_parts.append(f"CAST(MAX({qc}) AS STRING) AS `{c}__dt_max`")
 
-        sql = f"SELECT {', '.join(agg_parts)} FROM {table_name}"
+        sql = f"SELECT {', '.join(agg_parts)} FROM {quote_fqn(table_name)}"
         row = self.spark.sql(sql).collect()[0]
         row_count = int(row["_row_count"])
 
         # DESCRIBE DETAIL (instant for Delta)
         table_size, num_files, last_modified = None, None, None
         try:
-            detail = self.spark.sql(f"DESCRIBE DETAIL {table_name}").collect()[0]
+            detail = self.spark.sql(f"DESCRIBE DETAIL {quote_fqn(table_name)}").collect()[0]
             table_size = getattr(detail, "sizeInBytes", None)
             num_files = getattr(detail, "numFiles", None)
             last_modified = getattr(detail, "lastModified", None)
@@ -449,7 +475,7 @@ class ProfilingBuilder:
                 "mode_value": "",
                 "mode_frequency": 0,
                 "entropy": 0.0,
-                "sample_values": json.dumps(sample_map.get(c, [])[:5]),
+                "sample_values": json.dumps(sample_map.get(c, [])[:self.SAMPLE_VALUE_COUNT]),
                 "value_distribution": "{}",
                 "pattern_detected": "unknown",
                 "has_numeric_stats": is_numeric,
@@ -521,7 +547,7 @@ class ProfilingBuilder:
 
     def _profile_table_federated(self, table_name: str, drift_baselines: Dict[str, Dict[str, int]] = None) -> Optional[Dict[str, Any]]:
         snapshot_id = str(uuid.uuid4())
-        df = self.spark.table(table_name)
+        df = self.spark.sql(f"SELECT * FROM {quote_fqn(table_name)}")
         schema = df.schema
         columns = [f.name for f in schema.fields[:50]]
         column_count = len(schema.fields)
@@ -555,7 +581,7 @@ class ProfilingBuilder:
             qc = f"`{c}`"
             agg_parts.append(f"AVG({qc}) AS `{c}__mean`")
 
-        sql = f"SELECT {', '.join(agg_parts)} FROM {table_name}"
+        sql = f"SELECT {', '.join(agg_parts)} FROM {quote_fqn(table_name)}"
         row = self.spark.sql(sql).collect()[0]
         row_count = int(row["_row_count"])
 
@@ -608,7 +634,7 @@ class ProfilingBuilder:
                 "mode_value": "",
                 "mode_frequency": 0,
                 "entropy": 0.0,
-                "sample_values": json.dumps(sample_map.get(c, [])[:5]),
+                "sample_values": json.dumps(sample_map.get(c, [])[:self.SAMPLE_VALUE_COUNT]),
                 "value_distribution": "{}",
                 "pattern_detected": self._detect_pattern(sample_map.get(c, [])) if is_string else "unknown",
                 "has_numeric_stats": is_numeric,
@@ -665,12 +691,19 @@ class ProfilingBuilder:
         """Single LIMIT query to get sample values for all columns."""
         try:
             sel = ", ".join(f"CAST(`{c}` AS STRING) AS `{c}`" for c in columns)
-            sample_rows = self.spark.sql(f"SELECT {sel} FROM {table_name} LIMIT 100").collect()
+            sample_rows = self.spark.sql(f"SELECT {sel} FROM {quote_fqn(table_name)} LIMIT 100").collect()
             result: Dict[str, List[str]] = {c: [] for c in columns}
+            # Collect DISTINCT values (not raw rows): the value-overlap FK generator needs
+            # value coverage of the column's domain, and a FK child column repeats its
+            # parent's keys, so raw sampling wastes slots on duplicates. Dedup maximizes
+            # distinct coverage from the same LIMIT-100 pull (still zero extra source reads).
+            seen: Dict[str, set] = {c: set() for c in columns}
             for r in sample_rows:
                 for c in columns:
                     v = r[c]
-                    if v is not None and len(result[c]) < 5:
+                    if v is not None and len(result[c]) < self.SAMPLE_VALUE_COUNT \
+                            and v not in seen[c]:
+                        seen[c].add(v)
                         result[c].append(v)
             return result
         except Exception as e:
@@ -688,7 +721,7 @@ class ProfilingBuilder:
                 qc = f"`{c}`"
                 parts.append(
                     f"SELECT '{c}' AS col_name, CAST({qc} AS STRING) AS val, COUNT(*) AS cnt "
-                    f"FROM {table_name} GROUP BY {qc}"
+                    f"FROM {quote_fqn(table_name)} GROUP BY {qc}"
                 )
             sql = " UNION ALL ".join(parts)
             mode_rows = self.spark.sql(sql).collect()

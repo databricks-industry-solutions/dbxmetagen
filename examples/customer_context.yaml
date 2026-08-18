@@ -1,0 +1,47 @@
+# Customer context for metadata generation (01_generate_metadata).
+#
+# These entries are seeded into the `customer_context` Delta table in your output
+# schema and injected into the LLM prompt for every matching table, so generated
+# comments/classifications reflect YOUR business meaning -- not just what the data
+# looks like. Seeding happens automatically inside main() when you pass BOTH
+# use_customer_context=true AND customer_context_yaml_dir pointing at this folder.
+#
+# Each entry:
+#   scope        - the identifier to match (see scope_type)
+#   scope_type   - one of:
+#                    catalog  -> scope = "my_catalog"                 (whole catalog)
+#                    schema   -> scope = "my_catalog.my_schema"       (whole schema)
+#                    table    -> scope = "my_catalog.my_schema.my_tbl" (one table)
+#                    pattern  -> scope = "my_catalog.my_schema.fct_*" (glob over FQ name)
+#   context_text - the guidance (<= 500 words); the more specific, the better
+#   context_label- optional short label (for the app UI)
+#   priority     - optional int; lower sorts first when multiple entries match
+#
+# More specific scopes win: table > pattern > schema > catalog. Multiple matches
+# are concatenated in that order. Seeding is a MERGE keyed on scope, so editing
+# and re-running is idempotent.
+
+contexts:
+  # Uncomment and customize for your domain:
+  # - scope: my_catalog.my_schema
+  #   scope_type: schema
+  #   context_text: >-
+  #     This schema is an investment-operations warehouse. "Position" means a
+  #     portfolio holding (a security a fund owns), NOT a job role or GPS location.
+  #     "Book" refers to a trading book. Amounts are in USD unless a currency
+  #     column says otherwise.
+  #   context_label: investment-ops glossary
+  #   priority: 10
+  #
+  # - scope: my_catalog.my_schema.fct_*
+  #   scope_type: pattern
+  #   context_text: >-
+  #     Tables prefixed fct_ are fact tables at transaction grain; each row is one
+  #     trade. Treat *_amt columns as monetary measures and *_dt as event dates.
+  #
+  # - scope: my_catalog.my_schema.dim_account
+  #   scope_type: table
+  #   context_text: >-
+  #     One row per client account. account_status uses codes A=active,
+  #     C=closed, S=suspended. Do NOT treat ssn_hash as a real SSN -- it is a
+  #     salted hash used only for joins.

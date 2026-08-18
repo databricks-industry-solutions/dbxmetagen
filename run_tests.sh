@@ -142,7 +142,7 @@ echo -e "${YELLOW}1/3 Core Unit Tests${NC}"
 echo -e "${YELLOW}═══════════════════════════════════════════════${NC}"
 echo ""
 
-CORE_CMD="uv run pytest tests/ --ignore=tests/test_ddl_regenerator.py --ignore=tests/test_binary_variant_types.py $PYTEST_ARGS"
+CORE_CMD="uv run pytest tests/ --ignore=tests/test_ddl_regenerator.py --ignore=tests/test_binary_variant_types.py --ignore=tests/test_mcp_server.py $PYTEST_ARGS"
 
 run_test_suite "Core Unit Tests" "$CORE_CMD" "$YELLOW" CORE_TESTS_PASSED
 if [ $? -ne 0 ]; then
@@ -196,8 +196,27 @@ if [ $? -ne 0 ]; then
     SUITES_FAILED=$((SUITES_FAILED + 1))
 fi
 
+echo ""
+echo ""
+
+# 4. Run custom agent MCP server tests (separate process: uses the REAL mcp/
+#    starlette/pydantic packages, which collide with test_api_routes.py's mocks)
+echo -e "${YELLOW}═══════════════════════════════════════════════${NC}"
+echo -e "${YELLOW}4/4 Agent MCP Server Tests (Separate Process)${NC}"
+echo -e "${YELLOW}═══════════════════════════════════════════════${NC}"
+echo ""
+
+MCP_CMD="uv run pytest tests/test_mcp_server.py $PYTEST_ARGS"
+
+run_test_suite "Agent MCP Server Tests" "$MCP_CMD" "$YELLOW" MCP_TESTS_PASSED
+if [ $? -ne 0 ]; then
+    echo -e "${RED}Agent MCP server tests failed. Continuing...${NC}"
+    MCP_TESTS_PASSED=0
+    SUITES_FAILED=$((SUITES_FAILED + 1))
+fi
+
 # Calculate total
-TOTAL_TESTS=$((CORE_TESTS_PASSED + DDL_TESTS_PASSED + BINARY_TESTS_PASSED))
+TOTAL_TESTS=$((CORE_TESTS_PASSED + DDL_TESTS_PASSED + BINARY_TESTS_PASSED + MCP_TESTS_PASSED))
 
 echo ""
 echo ""
@@ -209,6 +228,7 @@ echo -e "${GREEN}╠════════════════════
 printf "${GREEN}║  Core Tests:         %3d passing                ║${NC}\n" $CORE_TESTS_PASSED
 printf "${GREEN}║  DDL Regenerator:    %3d passing                ║${NC}\n" $DDL_TESTS_PASSED
 printf "${GREEN}║  Binary/Variant:     %3d passing                ║${NC}\n" $BINARY_TESTS_PASSED
+printf "${GREEN}║  Agent MCP Server:   %3d passing                ║${NC}\n" $MCP_TESTS_PASSED
 echo -e "${GREEN}╠════════════════════════════════════════════════╣${NC}"
 printf "${GREEN}║  TOTAL:              %3d tests passing          ║${NC}\n" $TOTAL_TESTS
 echo -e "${GREEN}╚════════════════════════════════════════════════╝${NC}"

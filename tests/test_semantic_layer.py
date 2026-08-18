@@ -1,5 +1,6 @@
 """Tests for semantic_layer module -- expression fixers, JSON parsers, column ref extraction."""
 
+import json
 import pytest
 import yaml
 from unittest.mock import MagicMock
@@ -9,6 +10,7 @@ from dbxmetagen.semantic_layer import (
     _normalize_window_specs,
     _infer_format_specs,
     _fix_percentage_scaling,
+    _resolve_mv_deploy_location,
     check_dim_source_pattern,
     _swap_source_and_join,
     profile_schema,
@@ -21,6 +23,17 @@ def gen():
     spark = MagicMock()
     config = SemanticLayerConfig(catalog_name="cat", schema_name="sch")
     return SemanticLayerGenerator(spark, config)
+
+
+# ── Config defaults ───────────────────────────────────────────────────
+
+
+class TestConfigDefaults:
+    def test_genie_sql_examples_opt_in(self):
+        # Must default OFF: the genie_examples_vs_index is not built in most
+        # deployments and the in-app path doesn't use this flag. Opt-in only.
+        config = SemanticLayerConfig(catalog_name="cat", schema_name="sch")
+        assert config.use_genie_sql_examples is False
 
 
 # ── Expression Fix Helpers ────────────────────────────────────────────
@@ -857,6 +870,101 @@ class TestCheckDimSourcePattern:
         ]
         assert check_dim_source_pattern(defn, fk_rows) is None
 
+    def test_measured_cardinality_signal(self):
+        """Phase 3: pk_uniqueness on the source (parent) side of an FK to a joined
+        child is an authoritative dim-source signal, even without naming hints."""
+        defn = {
+            "source": "cat.sch.customer",   # not dim_-prefixed
+            "joins": [{"source": "cat.sch.orders", "on": "source.id = orders.cust_id"}],
+        }
+        fk_rows = [{
+            "src_table": "cat.sch.orders", "dst_table": "cat.sch.customer",
+            "src_column": "cust_id", "dst_column": "id", "pk_uniqueness": 0.99,
+        }]
+        result = check_dim_source_pattern(defn, fk_rows)
+        assert result is not None
+        assert "measured_cardinality" in [s[0] for s in result["signals"]]
+
+    def test_low_pk_uniqueness_no_cardinality_signal(self):
+        # A non-unique source key must NOT fire the measured-cardinality signal.
+        defn = {
+            "source": "cat.sch.customer",
+            "joins": [{"source": "cat.sch.orders", "on": "source.id = orders.cust_id"}],
+        }
+        fk_rows = [{
+            "src_table": "cat.sch.orders", "dst_table": "cat.sch.customer",
+            "src_column": "cust_id", "dst_column": "id", "pk_uniqueness": 0.4,
+        }]
+        result = check_dim_source_pattern(defn, fk_rows)
+        assert result is None or "measured_cardinality" not in [s[0] for s in result["signals"]]
+
+    def test_missing_pk_uniqueness_tolerated(self):
+        # Rows predating the pk_uniqueness column must not raise (falls back to 1-3).
+        defn = {
+            "source": "cat.sch.dim_customer",
+            "joins": [{"source": "cat.sch.orders", "on": "source.id = orders.cust_id"}],
+        }
+        fk_rows = [{"src_table": "cat.sch.orders", "dst_table": "cat.sch.dim_customer",
+                    "src_column": "cust_id", "dst_column": "id"}]
+        result = check_dim_source_pattern(defn, fk_rows)   # must not raise
+        assert result is not None  # still fires via fk_direction/name_prefix
+
+
+class TestDiscoverJoinPathsComposite:
+    """Phase 3: _discover_join_paths uses a stored composite join_condition
+    verbatim (rewriting the generic source. prefix), else the single-column ON."""
+
+    def test_single_column_join(self, gen):
+        gen._safe_collect = lambda sql: [{
+            "src_table": "cat.sch.orders", "dst_table": "cat.sch.customer",
+            "src_column": "cat.sch.orders.cust_id", "dst_column": "cat.sch.customer.id",
+            "final_confidence": 0.9, "join_condition": None, "is_composite": False,
+        }]
+        joins = gen._discover_join_paths("cat.sch.orders")
+        assert joins[0]["on"] == "source.cust_id = customer.id"
+
+    def test_composite_join_condition_used(self, gen):
+        gen._safe_collect = lambda sql: [{
+            "src_table": "cat.sch.orders", "dst_table": "cat.sch.lines",
+            "src_column": "cat.sch.orders.order_id", "dst_column": "cat.sch.lines.order_id",
+            "final_confidence": 0.9, "is_composite": True,
+            "join_condition": "source.order_id = lines.order_id AND source.line_no = lines.line_no",
+        }]
+        joins = gen._discover_join_paths("cat.sch.orders")
+        assert joins[0]["on"] == "source.order_id = lines.order_id AND source.line_no = lines.line_no"
+
+    def test_composite_reverse_direction_reorients(self, gen):
+        # Same FK (child=lines, parent=orders) but the VIEW is sourced from the
+        # PARENT (orders). The composite ON must reorient: joined child alias
+        # 'lines' on the child columns, 'source' (= orders) on the parent columns.
+        # Regression guard for the direction-blind string-replace bug.
+        gen._safe_collect = lambda sql: [{
+            "src_table": "cat.sch.lines", "dst_table": "cat.sch.orders",
+            "src_column": "cat.sch.lines.order_id", "dst_column": "cat.sch.orders.order_id",
+            "final_confidence": 0.9, "is_composite": True,
+            "join_condition": "source.order_id = orders.order_id AND source.line_no = orders.line_no",
+        }]
+        joins = gen._discover_join_paths("cat.sch.orders")
+        # child columns (order_id, line_no) live on the joined 'lines' alias.
+        assert joins[0]["on"] == "lines.order_id = source.order_id AND lines.line_no = source.line_no"
+
+    def test_missing_columns_fall_back(self, gen):
+        # Primary query returns [] (missing column), fallback returns single-col row.
+        calls = {"n": 0}
+        def _fake(sql):
+            calls["n"] += 1
+            if "join_condition" in sql:
+                return []   # simulate column-missing -> empty
+            return [{
+                "src_table": "cat.sch.orders", "dst_table": "cat.sch.customer",
+                "src_column": "cat.sch.orders.cust_id", "dst_column": "cat.sch.customer.id",
+                "final_confidence": 0.9,
+            }]
+        gen._safe_collect = _fake
+        joins = gen._discover_join_paths("cat.sch.orders")
+        assert calls["n"] == 2                       # primary + fallback
+        assert joins[0]["on"] == "source.cust_id = customer.id"
+
 
 class TestSwapSourceAndJoin:
     def test_swap_reverses_source_and_join(self):
@@ -983,3 +1091,148 @@ class TestKpiRefRegex:
         result = self._strip(text)
         assert "KPI" not in result
         assert "#" not in result
+
+
+class TestGenieExamplesContext:
+    """_genie_examples_context: inject curated Genie SQL exemplars (item 15).
+    Best-effort — disabled/empty/error all return '' without blocking."""
+
+    def _gen(self, **cfg_kw):
+        from unittest.mock import MagicMock
+        # This class exercises the retrieval path, which is opt-in (default False).
+        # Enable it by default here; test_disabled_returns_empty overrides to False.
+        base = dict(catalog_name="cat", schema_name="sch", use_genie_sql_examples=True)
+        base.update(cfg_kw)
+        return SemanticLayerGenerator(MagicMock(), SemanticLayerConfig(**base))
+
+    def test_disabled_returns_empty(self):
+        g = self._gen(use_genie_sql_examples=False)
+        assert g._genie_examples_context(["cat.sch.orders"]) == ""
+
+    def test_no_tables_returns_empty(self):
+        g = self._gen()
+        assert g._genie_examples_context([]) == ""
+
+    def test_retrieval_error_returns_empty(self, monkeypatch):
+        g = self._gen()
+        import dbxmetagen.genie_sql_puller as puller
+        monkeypatch.setattr(puller, "query_examples",
+                            lambda **kw: (_ for _ in ()).throw(RuntimeError("no index")))
+        assert g._genie_examples_context(["cat.sch.orders"]) == ""
+
+    def test_no_examples_returns_empty(self, monkeypatch):
+        g = self._gen()
+        import dbxmetagen.genie_sql_puller as puller
+        monkeypatch.setattr(puller, "query_examples", lambda **kw: [])
+        assert g._genie_examples_context(["cat.sch.orders"]) == ""
+
+    def test_formats_exemplars_as_proven_patterns(self, monkeypatch):
+        g = self._gen()
+        import dbxmetagen.genie_sql_puller as puller
+        monkeypatch.setattr(puller, "query_examples", lambda **kw: [
+            {"question_text": "Revenue by region?", "sql": "SELECT region, SUM(amt) FROM orders GROUP BY region"},
+            {"question_text": "", "sql": "SELECT COUNT(*) FROM returns"},
+        ])
+        out = g._genie_examples_context(["cat.sch.orders"])
+        assert "PROVEN QUERY PATTERNS" in out
+        assert "Revenue by region?" in out
+        assert "SELECT region, SUM(amt)" in out
+        assert "SELECT COUNT(*) FROM returns" in out
+
+    def test_skips_examples_without_sql(self, monkeypatch):
+        g = self._gen()
+        import dbxmetagen.genie_sql_puller as puller
+        monkeypatch.setattr(puller, "query_examples", lambda **kw: [{"question_text": "Q", "sql": "  "}])
+        # header only + no sql rows -> nothing to add -> empty
+        assert g._genie_examples_context(["cat.sch.orders"]) == ""
+
+    def test_long_sql_is_truncated(self, monkeypatch):
+        g = self._gen()
+        import dbxmetagen.genie_sql_puller as puller
+        long_sql = "SELECT " + "x," * 2000 + "1"
+        monkeypatch.setattr(puller, "query_examples", lambda **kw: [{"question_text": "Q", "sql": long_sql}])
+        out = g._genie_examples_context(["cat.sch.orders"])
+        assert "..." in out and len(out) < len(long_sql)
+
+
+# ── Federated metric-view deploy location ────────────────────────────
+
+
+class TestResolveMvDeployLocation:
+    def test_uses_source_catalog_when_not_federated(self):
+        assert _resolve_mv_deploy_location(
+            "sfcat.sales.orders", "localcat", "localsch", False
+        ) == ("sfcat", "sales")
+
+    def test_uses_local_catalog_when_federated(self):
+        # A foreign source catalog is read-only, so the view must land in the local
+        # (writable) config catalog/schema instead of the source's foreign catalog.
+        assert _resolve_mv_deploy_location(
+            "sfcat.sales.orders", "localcat", "localsch", True
+        ) == ("localcat", "localsch")
+
+    def test_falls_back_to_defaults_when_source_not_qualified(self):
+        assert _resolve_mv_deploy_location("orders", "localcat", "localsch", False) == (
+            "localcat", "localsch")
+        assert _resolve_mv_deploy_location("", "localcat", "localsch", False) == (
+            "localcat", "localsch")
+
+
+class TestApplyMetricViewsFederation:
+    """apply_metric_views() must not try to CREATE a view inside a read-only foreign
+    catalog; in federation_mode it deploys into the local catalog and drops materialization."""
+
+    def _make_gen(self, federation_mode, defn):
+        config = SemanticLayerConfig(catalog_name="localcat", schema_name="localsch")
+        config.federation_mode = federation_mode
+        executed = []
+        row = MagicMock()
+        row.asDict.return_value = {
+            "definition_id": "d1",
+            "metric_view_name": "mv_orders",
+            "source_table": defn["source"],
+            "json_definition": json.dumps(defn),
+        }
+        spark = MagicMock()
+
+        def _sql(q, *a, **k):
+            executed.append(q)
+            m = MagicMock()
+            if q.strip().upper().startswith("SELECT"):
+                m.collect.return_value = [row]
+            return m
+
+        spark.sql.side_effect = _sql
+        return SemanticLayerGenerator(spark, config), executed
+
+    def _mv_create_stmt(self, executed):
+        return next(q for q in executed if "CREATE OR REPLACE VIEW" in q)
+
+    def test_federated_source_deploys_to_local_catalog_no_materialization(self):
+        defn = {
+            "name": "mv_orders", "source": "sfcat.sales.orders", "dimensions": [],
+            "measures": [{"name": "total", "expr": "SUM(o.amount)"}],
+            "materialization": {"mode": "relaxed",
+                                "materialized_views": [{"name": "mv_orders_baseline",
+                                                        "type": "unaggregated"}]},
+        }
+        gen, executed = self._make_gen(True, defn)
+        gen.apply_metric_views()
+        create = self._mv_create_stmt(executed)
+        assert "localcat.localsch.mv_orders" in create
+        assert "sfcat.sales.mv_orders" not in create      # never targets the foreign catalog
+        assert "mv_orders_baseline" not in create          # materialization dropped
+
+    def test_non_federated_keeps_source_catalog_and_materialization(self):
+        defn = {
+            "name": "mv_orders", "source": "prodcat.sales.orders", "dimensions": [],
+            "measures": [{"name": "total", "expr": "SUM(o.amount)"}],
+            "materialization": {"mode": "relaxed",
+                                "materialized_views": [{"name": "mv_orders_baseline",
+                                                        "type": "unaggregated"}]},
+        }
+        gen, executed = self._make_gen(False, defn)
+        gen.apply_metric_views()
+        create = self._mv_create_stmt(executed)
+        assert "prodcat.sales.mv_orders" in create          # source catalog preserved
+        assert "mv_orders_baseline" in create               # materialization kept

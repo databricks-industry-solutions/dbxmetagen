@@ -51,7 +51,14 @@ def get_analyzer_engine(
     analyzer = AnalyzerEngine(nlp_engine=nlp_engine)
 
     if add_pci:
-        pci_patterns = [
+        # Card patterns stay under CREDIT_CARD (subject to the Luhn gate in
+        # classify_column). IBAN and SWIFT/BIC are NOT Luhn-checkable numbers, so they
+        # must NOT be emitted as CREDIT_CARD -- doing so sent them through the Luhn
+        # filter, which dropped every SWIFT/BIC (a non-numeric value fails Luhn) and
+        # left it classified None (MG-17). Give them their own recognizers emitting
+        # IBAN_CODE / SWIFT_CODE (both already in the PCI entity_map) so they are
+        # detected as PCI and bypass the card-only Luhn check.
+        card_patterns = [
             Pattern(
                 name="credit_card_basic", regex=r"\b(?:\d[ -]*?){13,19}\b", score=0.5
             ),
@@ -60,18 +67,10 @@ def get_analyzer_engine(
                 regex=r"\b(?:\d{4}[ -]?){3}\d{4}\b",
                 score=0.6,
             ),
-            Pattern(
-                name="iban",
-                regex=r"\b[A-Z]{2}\d{2}[A-Z0-9]{11,30}\b",  # At least 15 chars total
-                score=0.8,
-            ),
-            Pattern(
-                name="swift", regex=r"\b[A-Z]{6}[A-Z0-9]{2}([A-Z0-9]{3})?\b", score=0.8
-            ),
         ]
         pci_recognizer = PatternRecognizer(
             supported_entity="CREDIT_CARD",
-            patterns=pci_patterns,
+            patterns=card_patterns,
             context=[
                 "credit",
                 "card",
@@ -90,6 +89,24 @@ def get_analyzer_engine(
             ],
         )
         analyzer.registry.add_recognizer(pci_recognizer)
+        iban_recognizer = PatternRecognizer(
+            supported_entity="IBAN_CODE",
+            patterns=[Pattern(
+                name="iban",
+                regex=r"\b[A-Z]{2}\d{2}[A-Z0-9]{11,30}\b",  # At least 15 chars total
+                score=0.8,
+            )],
+            context=["iban", "bank", "account", "payment", "wire", "transfer"],
+        )
+        analyzer.registry.add_recognizer(iban_recognizer)
+        swift_recognizer = PatternRecognizer(
+            supported_entity="SWIFT_CODE",
+            patterns=[Pattern(
+                name="swift", regex=r"\b[A-Z]{6}[A-Z0-9]{2}([A-Z0-9]{3})?\b", score=0.8
+            )],
+            context=["swift", "bic", "bank", "wire", "transfer", "payment"],
+        )
+        analyzer.registry.add_recognizer(swift_recognizer)
 
     if add_phi:
         # PHI patterns for medical data

@@ -1,8 +1,8 @@
 # dbxmetagen Examples
 
-Standalone notebooks that show how to use dbxmetagen as a **pip-installable library** in your own projects. Each notebook installs dbxmetagen from GitHub -- no repo clone, no `deploy.sh`, no Asset Bundles needed.
+Standalone notebooks that show how to use dbxmetagen as a **pip-installable library** in your own projects. Each notebook installs dbxmetagen from GitHub -- no repo clone, no Asset Bundle deploy needed.
 
-> **Looking for the full experience?** The main repo's `deploy.sh` gives you a web dashboard, pre-configured jobs with concurrent processing, review/apply workflow, and more. See the [top-level README](../README.md#quickstart).
+> **Looking for the full experience?** Deploying the Asset Bundle (`databricks bundle deploy`) gives you a web dashboard, pre-configured jobs with concurrent processing, review/apply workflow, and more. See the [top-level README](../README.md#quickstart).
 
 ## How to use
 
@@ -27,7 +27,7 @@ Run the notebooks in order. Each step depends on the outputs of the previous ste
 |----------|-------------|---------|
 | `01_generate_metadata` | Runs all three modes (comment + PI + domain) for richest Genie context | `metadata_generation_log` |
 | `02_build_knowledge_bases` | Structured KB tables from raw metadata | `table_knowledge_base`, `column_knowledge_base`, `schema_knowledge_base`, `extended_metadata` |
-| `03_build_analytics` | Graph, ontology, embeddings, profiling, FK prediction, quality | `knowledge_graph_*`, `ontology_*`, `embeddings`, `fk_predictions`, `data_quality_scores` |
+| `03_build_analytics` | Graph, ontology, embeddings, profiling, FK prediction, quality | `graph_nodes`, `graph_edges`, `ontology_entities`, `ontology_relationships`, `fk_predictions`, `data_quality_scores` (embeddings are stored in the `graph_nodes.embedding` column, not a separate table) |
 | `04_generate_semantic_layer` | Metric view definitions from business questions | `metric_view_definitions`, `semantic_layer_questions` |
 | `05_create_genie_spaces` | Genie spaces with auto-splitting for large schemas | Genie space(s) + JSON exports in UC Volume |
 

@@ -27,6 +27,13 @@ _DEFAULT_CONFIG_PATH = None  # Legacy geo_config.yaml removed; pass explicit pat
 _DEFAULT_TAG_KEY = "geo_classification"
 _TABLE_NAME = "geo_classifications"
 
+# ON-19 (geo sibling): cap columns per batch call by output-token budget, same as
+# the ontology classifier. Each column emits one small JSON object (~60 tokens);
+# 60 cols fits comfortably under max_tokens=8192 with headroom for the sub-chunk
+# retry. Previously this used metadata_cols_per_chunk (100) at max_tokens=2048 and
+# SILENTLY defaulted every column to non_geographic on truncation.
+_GEO_COLS_PER_CHUNK = 60
+
 
 class GeoColumnResult(BaseModel):
     column_name: str
@@ -91,17 +98,16 @@ class GeoClassifier:
             return "geographic"
         return None
 
-    def _get_llm(self):
-        from databricks_langchain import ChatDatabricks
-        llm = ChatDatabricks(
-            endpoint=self.config.model_endpoint, temperature=0.0, max_tokens=2048, max_retries=2
-        )
-        return llm.with_structured_output(BatchGeoClassificationResult)
-
     def _classify_geo_chunk(
         self, table_name: str, columns: List[Tuple[str, str, str]]
     ) -> List[Tuple[str, str, float]]:
-        """LLM classify a single chunk of columns for one table."""
+        """LLM classify a single chunk of columns for one table.
+
+        Routes through chat_client.invoke_structured (not with_structured_output
+        directly) so a truncated response raises StructuredTruncationError instead
+        of silently losing columns (ON-19).
+        """
+        from dbxmetagen.chat_client import invoke_structured
         col_lines = "\n".join(
             f"  - {cn} ({dt}): {desc[:200]}" for cn, dt, desc in columns
         )
@@ -116,11 +122,17 @@ class GeoClassifier:
             f"Table: {table_name}\n\nColumns:\n{col_lines}\n\n"
             "Classify each column as 'geographic' or 'non_geographic'."
         )
-        llm = self._get_llm()
-        result: BatchGeoClassificationResult = llm.invoke([
-            {"role": "system", "content": system_prompt},
-            {"role": "user", "content": user_prompt},
-        ])
+        result: BatchGeoClassificationResult = invoke_structured(
+            self.config.model_endpoint,
+            [
+                {"role": "system", "content": system_prompt},
+                {"role": "user", "content": user_prompt},
+            ],
+            BatchGeoClassificationResult,
+            temperature=0.0,
+            max_tokens=8192,
+            max_retries=2,
+        )
         return [
             (r.column_name, r.classification, round(r.confidence, 3))
             for r in result.classifications
@@ -129,7 +141,7 @@ class GeoClassifier:
     def _ai_classify_batch(
         self, table_name: str, columns: List[Tuple[str, str, str]]
     ) -> List[Tuple[str, str, float]]:
-        """LLM classify columns for one table, chunking if needed.
+        """LLM classify columns for one table, chunking by output-token budget.
 
         Args:
             table_name: fully qualified table name
@@ -138,26 +150,50 @@ class GeoClassifier:
         Returns:
             list of (column_name, classification, confidence)
         """
-        n = self.config.metadata_cols_per_chunk
-        if len(columns) <= n:
-            try:
-                return self._classify_geo_chunk(table_name, columns)
-            except Exception as e:
-                logger.warning("LLM geo classification failed for %s: %s", table_name, e)
-                return [(cn, self._default, 0.3) for cn, _, _ in columns]
-
+        n = _GEO_COLS_PER_CHUNK
         num_chunks = -(-len(columns) // n)
         all_results = []
         for i in range(0, len(columns), n):
             chunk = columns[i : i + n]
-            chunk_idx = i // n + 1
-            logger.info(f"Geo classifying {table_name}: chunk {chunk_idx}/{num_chunks} ({len(chunk)} cols)")
-            try:
-                all_results.extend(self._classify_geo_chunk(table_name, chunk))
-            except Exception as e:
-                logger.warning(f"Geo chunk {chunk_idx} failed for {table_name}: {e}")
-                all_results.extend((cn, self._default, 0.3) for cn, _, _ in chunk)
+            if num_chunks > 1:
+                logger.info(
+                    f"Geo classifying {table_name}: chunk {i // n + 1}/{num_chunks} ({len(chunk)} cols)"
+                )
+            all_results.extend(self._classify_geo_chunk_resilient(table_name, chunk))
         return all_results
+
+    def _classify_geo_chunk_resilient(
+        self, table_name: str, columns: List[Tuple[str, str, str]]
+    ) -> List[Tuple[str, str, float]]:
+        """Classify one chunk; bisect on truncation, default only as last resort.
+
+        A truncated batch (too many columns for the output budget) is bisected and
+        retried so columns aren't silently lost. Only a genuine failure on an
+        already-minimal chunk falls back to the default classification (ON-19).
+        """
+        from dbxmetagen.chat_client import StructuredTruncationError
+        try:
+            return self._classify_geo_chunk(table_name, columns)
+        except StructuredTruncationError as e:
+            if len(columns) <= 1:
+                logger.warning(
+                    "Single-column geo chunk still truncated for %s; using default: %s",
+                    table_name, e,
+                )
+                return [(cn, self._default, 0.3) for cn, _, _ in columns]
+            mid = len(columns) // 2
+            logger.warning(
+                "Geo classification truncated for %s (%d cols); bisecting into %d+%d.",
+                table_name, len(columns), mid, len(columns) - mid,
+            )
+            results = []
+            for sub in (columns[:mid], columns[mid:]):
+                results.extend(self._classify_geo_chunk_resilient(table_name, sub))
+            return results
+        except Exception as e:
+            logger.warning("LLM geo classification failed for %s (%d cols): %s",
+                           table_name, len(columns), e)
+            return [(cn, self._default, 0.3) for cn, _, _ in columns]
 
     def ensure_table(self) -> None:
         self.spark.sql(f"""

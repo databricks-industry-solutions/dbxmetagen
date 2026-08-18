@@ -12,7 +12,7 @@ globs:
 ## Anti-Patterns (do not introduce)
 
 1. **`.collect()` in loops** -- materializes entire DataFrame to driver memory, then iterates in Python. Prefer Spark-native operations or SQL.
-2. **Sequential `DESCRIBE EXTENDED`** -- O(T) driver round-trips. Use `information_schema.columns` in a single SQL query instead.
+2. **Sequential `DESCRIBE EXTENDED`** -- O(T) driver round-trips. Batch basic column metadata via `information_schema.columns` and run any remaining per-column `DESCRIBE EXTENDED` concurrently (this is what `prompts.py` `_fetch_batch_column_metadata` + `_fetch_column_stats_concurrent` now do -- R3, shipped).
 3. **Single-row Delta writes** -- `df.write.mode("append")` with one row per call fragments the Delta log. Batch rows into a single write.
 4. **Cross-join similarity** -- `O(N^2)` shuffle. Use Vector Search ANN (Databricks endpoint) instead.
 5. **Serial Python LLM calls** -- `for row in rows: client.invoke()` is O(N) sequential. Use SQL `AI_QUERY` (Spark-parallel) or `ThreadPoolExecutor` / `asyncio`.
@@ -22,7 +22,7 @@ globs:
 - **Batch SQL**: combine multiple `DESCRIBE` / `ALTER TABLE` / `SET TAGS` into single multi-statement operations or `information_schema` queries.
 - **Spark-parallel AI**: use `AI_QUERY` in SQL for classification / judgment calls (already used for FK AI judge and embeddings).
 - **Incremental processing**: filter by control table status, `updated_at`, or `bundle_version` before expensive operations.
-- **`columns_per_call`**: default is 5; for wide tables (1000+ cols), consider tuning upward to reduce LLM call count (`ceil(C/K)` calls per table).
+- **`columns_per_call`**: default is 20 (`variables.yml`); for wide tables (1000+ cols), consider tuning upward to reduce LLM call count (`ceil(C/K)` calls per table).
 
 ## Scale Reference
 

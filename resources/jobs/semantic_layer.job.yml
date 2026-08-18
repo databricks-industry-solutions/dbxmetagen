@@ -1,7 +1,7 @@
 resources:
   jobs:
     semantic_layer_job:
-      name: "${var.app_name}_semantic_layer"
+      name: "${var.app_name}${var.app_name_suffix}_semantic_layer"
       budget_policy_id: ${var.budget_policy_id}
 
       permissions:

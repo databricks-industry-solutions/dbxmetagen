@@ -400,6 +400,69 @@ def _validate_and_strip_sql(
     return raw
 
 
+def _sql_skeleton(sql: str) -> str:
+    """Reduce a SQL string to a normalized fingerprint for TRUE-duplicate detection.
+
+    Keeps the tables, SQL structure, AND the dimension/measure identifiers, so two
+    examples fingerprint the same ONLY when they query the same tables with the
+    same shape AND the same dimensions/measures -- i.e. genuine duplicates. It
+    deliberately does NOT collapse different dims/measures together: "revenue by
+    region" and "units by product" are distinct, useful questions and must both
+    survive. Only cosmetic differences are normalized away: string literals,
+    :params, numeric literals (e.g. LIMIT 10 vs LIMIT 20), AS-aliases, and
+    whitespace. Best-effort: on any failure, falls back to the collapsed
+    lowercased SQL so nothing is wrongly merged.
+    """
+    import re
+
+    try:
+        s = sql.lower() if isinstance(sql, str) else str(sql).lower()
+        s = re.sub(r"'[^']*'", "?", s)            # string literals
+        s = re.sub(r":\w+", "?", s)               # :params
+        s = re.sub(r"\bas\s+[a-z0-9_`]+", "", s)   # aliases after AS
+        s = re.sub(r"\b\d+(?:\.\d+)?\b", "?", s)   # numeric literals (LIMIT, thresholds)
+        s = s.replace("`", "")
+        s = re.sub(r"\s+", " ", s).strip()
+        return s
+    except Exception:
+        return re.sub(r"\s+", " ", str(sql)).strip().lower()
+
+
+def _dedup_example_sql(raw: dict) -> tuple[dict, int]:
+    """Drop example_sql entries that share a structural skeleton with an earlier one.
+
+    Keeps the first occurrence of each skeleton (order preserved). Returns the
+    (possibly mutated) dict and the number of duplicates removed.
+    """
+    inst = raw.get("instructions", {})
+    key = "example_sql" if "example_sql" in inst else (
+        "example_question_sqls" if "example_question_sqls" in inst else None
+    )
+    if not key:
+        return raw, 0
+    examples = inst.get(key) or []
+    seen: set[str] = set()
+    kept = []
+    removed = 0
+    for ex in examples:
+        sql_val = ex.get("sql", "")
+        if isinstance(sql_val, list):
+            sql_val = sql_val[0] if sql_val else ""
+        skel = _sql_skeleton(sql_val)
+        if skel and skel in seen:
+            removed += 1
+            q = ex.get("question", "?")
+            if isinstance(q, list):
+                q = q[0] if q else "?"
+            logger.info("Dropped structurally-duplicate example_sql: %s", str(q)[:60])
+            continue
+        seen.add(skel)
+        kept.append(ex)
+    inst[key] = kept
+    raw["instructions"] = inst
+    return raw, removed
+
+
 def _llm_phase(
     llm: ChatDatabricks, system_prompt: str, user_msg: str, label: str,
 ) -> Optional[dict]:
@@ -489,6 +552,10 @@ def run_genie_agent(
 
     progress_queue.put({"stage": "initializing"})
 
+    # Set when Phase 1 instructions exceed Genie's 20-line limit and get trimmed;
+    # surfaced as a quality warning so the truncation isn't silent.
+    instructions_truncated = 0
+
     llm = ChatDatabricks(
         endpoint=model_endpoint, temperature=0.1, max_tokens=16384,
         max_retries=1, request_timeout=300,
@@ -501,6 +568,14 @@ def run_genie_agent(
         len(context.get("data_sources", {}).get("tables", [])),
         len(context.get("join_specs", [])),
         sum(len(context.get("sql_snippets", {}).get(k, [])) for k in ("measures", "filters", "expressions")),
+    )
+
+    # Whether this space is metric-view-only (no base tables). Computed once so
+    # both the refinement and fresh-generation paths -- and the shared tail below
+    # -- see the same value (the tail references mv_only unconditionally).
+    mv_only = bool(
+        context.get("data_sources", {}).get("metric_views")
+        and not context.get("data_sources", {}).get("tables")
     )
 
     # ---- Refinement path: targeted sectional re-generation ----
@@ -533,10 +608,6 @@ def run_genie_agent(
                     serialized.setdefault("instructions", {})["join_specs"] = extra_joins
                 phases_completed += 1
 
-        ref_mv_only = bool(
-            context.get("data_sources", {}).get("metric_views")
-            and not context.get("data_sources", {}).get("tables")
-        )
         if 2 in target_phases:
             progress_queue.put({"stage": "generating", "message": "Refining example SQL..."})
             ref_mv_guidance = _MV_GUIDANCE_BLOCK if context.get("data_sources", {}).get("metric_views") else ""
@@ -544,7 +615,7 @@ def run_genie_agent(
                 **ctx_subs,
                 description=serialized.get("description", ""),
                 mv_guidance=ref_mv_guidance,
-                patterns=_get_phase2_patterns(ref_mv_only),
+                patterns=_get_phase2_patterns(mv_only),
             ) + feedback_suffix
             p2 = _llm_phase(llm, p2_prompt, "Revise the example_sql JSON now.", "refine_sql")
             if p2:
@@ -555,7 +626,7 @@ def run_genie_agent(
         if 3 in target_phases:
             progress_queue.put({"stage": "generating", "message": "Refining SQL snippets..."})
             ref_p3_base = _PHASE3_PROMPT
-            if ref_mv_only:
+            if mv_only:
                 ref_p3_base = ref_p3_base + _MV_ONLY_PHASE3_EXTRA
             p3_prompt = (ref_p3_base + SAFETY_PROMPT_BLOCK).format(
                 **ctx_subs,
@@ -578,10 +649,6 @@ def run_genie_agent(
 
         # Phase 1: Core Config
         progress_queue.put({"stage": "generating", "message": "Phase 1/3: Generating core config..."})
-        mv_only = bool(
-            context.get("data_sources", {}).get("metric_views")
-            and not context.get("data_sources", {}).get("tables")
-        )
         p1_mv_extra = (
             "\nOVERRIDE: Generate 12-15 sample_questions (not 5-8) because this space uses only metric views "
             "and the questions will be used to generate example SQL. Make them analytically rich and diverse -- "
@@ -601,6 +668,7 @@ def run_genie_agent(
             if len(lines) > 20:
                 logger.info("Truncating instructions from %d to 20 lines", len(lines))
                 inst_text = "\n".join(lines[:20])
+                instructions_truncated = len(lines)
             serialized["instructions"] = {"text": inst_text}
             serialized["sample_questions"] = p1.get("sample_questions", [])
             extra_joins = p1.get("join_specs", [])
@@ -670,9 +738,17 @@ def run_genie_agent(
     serialized = _merge_prebuilt_snippets(serialized, context.get("sql_snippets", {}))
     serialized = _merge_prebuilt_join_specs(serialized, context.get("join_specs", []))
     serialized = _merge_prebuilt_data_sources(serialized, context.get("data_sources", {}))
+    serialized, dup_removed = _dedup_example_sql(serialized)
+    if dup_removed:
+        logger.info("Removed %d structurally-duplicate example_sql", dup_removed)
     serialized = _dedup_sample_vs_example(serialized)
     serialized = _backfill_synonyms(serialized)
     warnings = _validate_output(serialized, context)
+    if instructions_truncated:
+        warnings.append(
+            f"Text instructions were truncated from {instructions_truncated} to 20 lines "
+            "(Genie's limit) -- review that the most important guidance survived"
+        )
     if warnings:
         logger.warning("Genie output quality warnings: %s", "; ".join(warnings))
 
@@ -878,6 +954,28 @@ def _validate_output(raw: dict, context: dict | None = None) -> list[str]:
             f"Only {len(joins)} join_specs for {table_count} tables "
             f"(need {table_count - 1} for full connectivity)"
         )
+
+    # Invented-join check: a join endpoint that references a table NOT in
+    # data_sources is an LLM hallucination -- Genie would reject it. Flag so it
+    # can be pruned/reviewed rather than shipped.
+    if joins:
+        known = {t.get("identifier", "").lower() for t in ds.get("tables", []) if t.get("identifier")}
+        if known:  # only meaningful when we actually know the table set
+            def _endpoint(v):
+                if isinstance(v, dict):
+                    return (v.get("identifier") or "").lower()
+                return (v or "").lower() if isinstance(v, str) else ""
+            invented = set()
+            for j in joins:
+                for side in (_endpoint(j.get("left")), _endpoint(j.get("right"))):
+                    if side and side not in known:
+                        invented.add(side)
+            if invented:
+                warnings.append(
+                    "join_specs reference table(s) not in data_sources: "
+                    + ", ".join(sorted(invented))
+                    + " -- likely invented by the model; remove or add the table"
+                )
     return warnings
 
 

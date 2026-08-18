@@ -125,3 +125,46 @@ class TestKeywordClassify:
     def test_non_geographic_wins_when_both_match(self, classifier):
         # "storage_location" matches non_geographic keyword exactly
         assert classifier._keyword_classify("storage_location") == "non_geographic"
+
+
+class TestGeoResilientChunking:
+    """ON-19 (geo sibling): geo classification bisects a truncated batch instead
+    of SILENTLY defaulting every column to non_geographic."""
+
+    def test_truncation_bisects_not_silent_default(self, classifier):
+        from dbxmetagen.chat_client import StructuredTruncationError
+        cols = [(f"col_{i}", "string", "") for i in range(4)]
+        calls = []
+
+        def fake(table, chunk):
+            calls.append(len(chunk))
+            if len(chunk) > 2:
+                raise StructuredTruncationError("truncated")
+            return [(cn, "geographic", 0.8) for cn, _, _ in chunk]
+
+        with patch.object(classifier, "_classify_geo_chunk", side_effect=fake):
+            out = classifier._classify_geo_chunk_resilient("cat.sch.t", cols)
+        # All 4 recovered as real classifications, not defaulted.
+        assert len(out) == 4
+        assert all(cls == "geographic" for _, cls, _ in out)
+        assert calls[0] == 4 and 2 in calls[1:]
+
+    def test_single_column_truncation_defaults_as_last_resort(self, classifier):
+        from dbxmetagen.chat_client import StructuredTruncationError
+        cols = [("col_0", "string", "")]
+        with patch.object(classifier, "_classify_geo_chunk",
+                          side_effect=StructuredTruncationError("t")):
+            out = classifier._classify_geo_chunk_resilient("cat.sch.t", cols)
+        assert len(out) == 1
+        assert out[0][1] == classifier._default
+
+    def test_wide_table_splits_by_budget(self, classifier):
+        from dbxmetagen.geo_classifier import _GEO_COLS_PER_CHUNK
+        cols = [(f"col_{i}", "string", "") for i in range(144)]
+        seen = []
+        with patch.object(classifier, "_classify_geo_chunk",
+                          side_effect=lambda t, ch: seen.append(len(ch)) or
+                          [(cn, "non_geographic", 0.7) for cn, _, _ in ch]):
+            out = classifier._ai_classify_batch("cat.sch.t", cols)
+        assert len(out) == 144
+        assert max(seen) <= _GEO_COLS_PER_CHUNK

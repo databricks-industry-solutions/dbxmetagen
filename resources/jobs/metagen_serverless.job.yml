@@ -7,7 +7,7 @@
 resources:
   jobs:
     metadata_serverless_job:
-      name: "${var.app_name}_metadata_serverless_job"
+      name: "${var.app_name}${var.app_name_suffix}_metadata_serverless_job"
       budget_policy_id: ${var.budget_policy_id}
       max_concurrent_runs: 5
 

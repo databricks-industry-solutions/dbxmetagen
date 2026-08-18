@@ -75,6 +75,15 @@ class ColumnClassificationItem(BaseModel):
     confidence: float = Field(ge=0.0, le=1.0, description="Confidence 0.0-1.0")
 
 
+# ON-19: cap columns per batch-classify LLM call by expected OUTPUT size, not just
+# count. Each column emits one {"column_name","entity_type","confidence"} object
+# (~75-80 tokens with names/whitespace). At max_tokens=8192 (_get_batch_column_llm),
+# ~100 objects is a safe ceiling with headroom; 60 keeps a comfortable margin and
+# bounds the sub-chunk depth. This REPLACES the old `metadata_cols_per_chunk` (120)
+# + `*1.25` merge (which admitted up to 150 columns -> truncation at 4096).
+_COLS_PER_CLASSIFY_CHUNK = 60
+
+
 class BatchColumnClassificationResult(BaseModel):
     """Batch response for classifying all columns of a single table."""
     classifications: List[ColumnClassificationItem] = Field(
@@ -767,6 +776,45 @@ class EntityDefinition:
 BUNDLE_DIR = "configurations/ontology_bundles"
 
 
+def _match_bundle_by_display_name(display_name: str) -> Optional[str]:
+    """Scan the local bundle dir for a *.yaml whose metadata.name matches
+    display_name (case-insensitive). Returns the file path or None.
+
+    Rescues curated bundles whose display label != slugified stem
+    (e.g. "General Cross-Industry" -> general.yaml). Reads only the small
+    metadata header of each file, and only the first bundle dir that exists.
+    """
+    want = display_name.strip().lower()
+    if not want:
+        return None
+    dirs = [
+        BUNDLE_DIR,
+        os.path.join(os.path.dirname(__file__), "..", "..", BUNDLE_DIR),
+    ]
+    try:
+        dirs.append(os.path.join(os.getcwd(), BUNDLE_DIR))
+    except Exception:
+        pass
+    for d in dirs:
+        d = os.path.normpath(d)
+        if not os.path.isdir(d):
+            continue
+        for fn in sorted(os.listdir(d)):
+            if not fn.endswith(".yaml"):
+                continue
+            fpath = os.path.join(d, fn)
+            try:
+                with open(fpath) as f:
+                    raw = yaml.safe_load(f) or {}
+                name = (raw.get("metadata") or {}).get("name")
+            except Exception:
+                continue
+            if name and str(name).strip().lower() == want:
+                return fpath
+        return None  # first existing dir is authoritative; don't scan further
+    return None
+
+
 def resolve_bundle_path(
     bundle_name: str,
     catalog_name: Optional[str] = None,
@@ -786,20 +834,34 @@ def resolve_bundle_path(
     wheel. ``catalog_name``/``schema_name`` are required to search the Volume;
     ``volume_name`` defaults to ``$VOLUME_NAME`` or ``generated_metadata``.
     """
-    filename = (
-        f"{bundle_name}.yaml" if not bundle_name.endswith(".yaml") else bundle_name
-    )
-    candidates = [
-        os.path.join(BUNDLE_DIR, filename),
-        os.path.join("..", BUNDLE_DIR, filename),
-        os.path.join(os.path.dirname(__file__), "..", "..", BUNDLE_DIR, filename),
-    ]
-    try:
-        cwd = os.getcwd()
-        candidates.append(os.path.join(cwd, BUNDLE_DIR, filename))
-        candidates.append(os.path.join(cwd, "..", BUNDLE_DIR, filename))
-    except Exception:
-        pass
+    stem = bundle_name[:-len(".yaml")] if bundle_name.endswith(".yaml") else bundle_name
+    filename = f"{stem}.yaml"
+    # Defense-in-depth: a display label ("FHIR R4", "OMOP CDM") may reach here
+    # instead of the file stem ("fhir_r4", "omop_cdm") -- e.g. from a stale
+    # localStorage value or a hand-typed --params. Try the verbatim name first,
+    # then a slugified fallback (lowercased, non-alphanumerics -> underscore) so
+    # curated bundles resolve either way. The verbatim path is always tried first
+    # so a real file whose stem contains spaces/caps still wins.
+    slug = re.sub(r"[^a-z0-9]+", "_", stem.lower()).strip("_")
+    stems = [stem] if slug == stem else [stem, slug]
+
+    def _paths_for(fn: str) -> list:
+        out = [
+            os.path.join(BUNDLE_DIR, fn),
+            os.path.join("..", BUNDLE_DIR, fn),
+            os.path.join(os.path.dirname(__file__), "..", "..", BUNDLE_DIR, fn),
+        ]
+        try:
+            cwd = os.getcwd()
+            out.append(os.path.join(cwd, BUNDLE_DIR, fn))
+            out.append(os.path.join(cwd, "..", BUNDLE_DIR, fn))
+        except Exception:
+            pass
+        return out
+
+    candidates = []
+    for s in stems:
+        candidates.extend(_paths_for(f"{s}.yaml"))
 
     vol_path = None
     if catalog_name and schema_name:
@@ -811,6 +873,17 @@ def resolve_bundle_path(
         if os.path.exists(path):
             logger.info("Resolved bundle '%s' -> %s", bundle_name, path)
             return path
+
+    # Neither the verbatim stem nor the slug matched a file. A curated bundle's
+    # display label (metadata.name, e.g. "General Cross-Industry" -> general.yaml,
+    # "Healthcare & Life Sciences" -> healthcare.yaml) may have leaked in where a
+    # stem was expected -- slugifying those does NOT yield the stem, so scan the
+    # bundle dir and match on metadata.name (case-insensitive). Local dir only;
+    # runs only on a miss.
+    matched = _match_bundle_by_display_name(bundle_name)
+    if matched:
+        logger.info("Resolved bundle '%s' via metadata.name -> %s", bundle_name, matched)
+        return matched
 
     # FUSE may not expose /Volumes on serverless job compute; fall back to an
     # SDK download (same mechanism the app uses to read imported bundles).
@@ -1409,9 +1482,13 @@ class EntityDiscoverer:
 
     def _get_batch_column_llm(self):
         from dbxmetagen.chat_client import invoke_structured
+        # ON-19: raised 4096 -> 8192. One column emits ~75-80 output tokens of JSON;
+        # a wide chunk (see _COLS_PER_CLASSIFY_CHUNK) plus headroom must fit under
+        # this. A truncation still surfaces as StructuredTruncationError and drives
+        # a sub-chunk retry, but the higher ceiling makes that rare.
         return _StructuredInvoker(
             invoke_structured, self._model_endpoint,
-            BatchColumnClassificationResult, 0.0, 4096, 2,
+            BatchColumnClassificationResult, 0.0, 8192, 2,
         )
 
     def _get_batch_table_llm(self):
@@ -2702,47 +2779,71 @@ class EntityDiscoverer:
         """Classify all columns for a single table, chunking if needed.
 
         Returns list of (column_name, entity_type, confidence).
-        Falls back to ai_query batch classification on chunk failure.
-        """
-        n = self.config.metadata_cols_per_chunk
-        # Merge small remainder into last chunk to avoid wasteful splits
-        if len(columns) <= n or (len(columns) <= n * 1.25):
-            try:
-                return self._classify_column_chunk(short_name, columns)
-            except Exception as e:
-                msg = (
-                    f"Batch column classification failed for {table_name} ({len(columns)} cols): "
-                    f"{type(e).__name__}: {e}. Retrying with sub-chunks before ai_query fallback."
-                )
-                logger.warning(msg)
-                # Sub-chunk retry: split in half
-                mid = len(columns) // 2
-                results = []
-                for sub in (columns[:mid], columns[mid:]):
-                    try:
-                        results.extend(self._classify_column_chunk(short_name, sub))
-                    except Exception as sub_e:
-                        msg = (
-                            f"Sub-chunk ({len(sub)} cols) also failed for {table_name}: "
-                            f"{type(sub_e).__name__}. Falling back to ai_query."
-                        )
-                        logger.warning(msg)
-                        results.extend(self._ai_query_classify_columns(sub))
-                return results
 
+        Columns are split into token-budget-sized chunks (`_COLS_PER_CLASSIFY_CHUNK`);
+        a chunk that truncates at the token limit is bisected and retried (ON-19),
+        falling back to ai_query only when even a single-column chunk fails.
+        """
+        n = _COLS_PER_CLASSIFY_CHUNK
         num_chunks = -(-len(columns) // n)
         all_results = []
         for i in range(0, len(columns), n):
             chunk = columns[i : i + n]
-            chunk_idx = i // n + 1
-            logger.info(f"Classifying {table_name}: chunk {chunk_idx}/{num_chunks} ({len(chunk)} cols)")
-            try:
-                all_results.extend(self._classify_column_chunk(short_name, chunk))
-            except Exception as e:
-                msg = f"Chunk {chunk_idx} failed for {table_name} ({len(chunk)} cols), using ai_query fallback: {type(e).__name__}"
-                logger.warning(msg)
-                all_results.extend(self._ai_query_classify_columns(chunk))
+            if num_chunks > 1:
+                logger.info(
+                    f"Classifying {table_name}: chunk {i // n + 1}/{num_chunks} ({len(chunk)} cols)"
+                )
+            all_results.extend(self._classify_column_chunk_resilient(table_name, short_name, chunk))
         return all_results
+
+    def _classify_column_chunk_resilient(
+        self, table_name: str, short_name: str, columns: List
+    ) -> List[Tuple[str, str, float]]:
+        """Classify one chunk; on truncation bisect and retry, else ai_query fallback.
+
+        A `StructuredTruncationError` means the batch was too large for the output
+        budget -- bisecting and retrying recovers the content (ON-19). Any other
+        failure on an already-small chunk falls back to per-column ai_query.
+        """
+        from dbxmetagen.chat_client import StructuredTruncationError
+        try:
+            return self._classify_column_chunk(short_name, columns)
+        except StructuredTruncationError as e:
+            if len(columns) <= 1:
+                _cn = getattr(columns[0], "column_name", "?") if columns else "?"
+                logger.warning(
+                    f"Single-column chunk still truncated for {table_name} "
+                    f"({_cn}); falling back to ai_query: {e}"
+                )
+                return self._ai_query_classify_columns(columns)
+            mid = len(columns) // 2
+            logger.warning(
+                f"Batch column classification truncated for {table_name} "
+                f"({len(columns)} cols); bisecting into {mid}+{len(columns) - mid}."
+            )
+            results = []
+            for sub in (columns[:mid], columns[mid:]):
+                results.extend(self._classify_column_chunk_resilient(table_name, short_name, sub))
+            return results
+        except Exception as e:
+            if len(columns) <= 1:
+                logger.warning(
+                    f"Chunk failed for {table_name} ({len(columns)} cols), "
+                    f"ai_query fallback: {type(e).__name__}: {e}"
+                )
+                return self._ai_query_classify_columns(columns)
+            # A non-truncation error on a multi-column chunk: try one bisection
+            # before giving the whole chunk to ai_query (a single bad column
+            # shouldn't sink its neighbors).
+            mid = len(columns) // 2
+            logger.warning(
+                f"Chunk classification failed for {table_name} ({len(columns)} cols): "
+                f"{type(e).__name__}: {e}. Bisecting before ai_query fallback."
+            )
+            results = []
+            for sub in (columns[:mid], columns[mid:]):
+                results.extend(self._classify_column_chunk_resilient(table_name, short_name, sub))
+            return results
 
     def _ai_classify_column(self, col_row) -> Tuple[str, float]:
         """AI classification for a single column using structured output."""
@@ -4859,22 +4960,33 @@ class OntologyBuilder:
         """
         ent_table = self.config.fully_qualified_entities
         try:
+            # Require the SAME ontology_bundle on both sides. Without this guard, two
+            # DISCONNECTED datasets classified under different bundles that happen to share
+            # a type name (e.g. "Person" under schema_org and under fhir_r4) get linked by a
+            # spurious same_entity_type edge -- the "way too many connections" problem. Every
+            # other entity-concept edge builder already enforces same-bundle
+            # (_build_structural_edges, discover_inter_entity_relationships); this one was
+            # missing it. COALESCE so single-bundle / null-bundle deployments still match.
             pairs = self.spark.sql(f"""
                 SELECT a.table_name AS src, b.table_name AS dst, a.entity_type,
                        CAST(1.0 AS DOUBLE) AS weight
                 FROM (
-                    SELECT EXPLODE(source_tables) AS table_name, entity_type
+                    SELECT EXPLODE(source_tables) AS table_name, entity_type,
+                           COALESCE(ontology_bundle, '_default') AS ontology_bundle
                     FROM {ent_table}
                     WHERE COALESCE(entity_role, 'primary') = 'primary'
                       AND source_tables IS NOT NULL AND SIZE(source_tables) > 0
                 ) a
                 JOIN (
-                    SELECT EXPLODE(source_tables) AS table_name, entity_type
+                    SELECT EXPLODE(source_tables) AS table_name, entity_type,
+                           COALESCE(ontology_bundle, '_default') AS ontology_bundle
                     FROM {ent_table}
                     WHERE COALESCE(entity_role, 'primary') = 'primary'
                       AND source_tables IS NOT NULL AND SIZE(source_tables) > 0
                 ) b
-                ON a.entity_type = b.entity_type AND a.table_name < b.table_name
+                ON a.entity_type = b.entity_type
+                   AND a.ontology_bundle = b.ontology_bundle
+                   AND a.table_name < b.table_name
             """)
             count = pairs.count()
             if count == 0:

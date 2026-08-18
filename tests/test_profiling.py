@@ -10,6 +10,78 @@ from dbxmetagen.profiling import (
     ProfilingBuilder,
     run_profiling
 )
+from dbxmetagen.databricks_utils import quote_fqn
+
+
+class TestQuoteFqn:
+    """MG-20: backtick-quote dotted identifiers so special chars (e.g. `$` in
+    federated Redshift names like `schema.tbl$raw`) don't break the SQL parser."""
+
+    def test_plain_fqn(self):
+        assert quote_fqn("cat.sch.tbl") == "`cat`.`sch`.`tbl`"
+
+    def test_dollar_sign_the_reported_bug(self):
+        # rdl_redshift_prod.vitrain_dwh.rz_hybridoma1$raw -> each segment quoted
+        assert quote_fqn("c.s.rz_hybridoma1$raw") == "`c`.`s`.`rz_hybridoma1$raw`"
+
+    def test_embedded_backtick_escaped(self):
+        assert quote_fqn("c.s.a`b") == "`c`.`s`.`a``b`"
+
+    def test_already_quoted_segment_idempotent(self):
+        assert quote_fqn("`cat`.`sch`.`tbl`") == "`cat`.`sch`.`tbl`"
+
+    def test_mixed_quoted_and_bare(self):
+        assert quote_fqn("cat.`sch`.tbl$x") == "`cat`.`sch`.`tbl$x`"
+
+    def test_single_segment(self):
+        assert quote_fqn("tbl$raw") == "`tbl$raw`"
+
+    def test_empty_passthrough(self):
+        assert quote_fqn("") == ""
+
+
+class TestGenerationPathIdentifierQuoting:
+    """MG-20 regression: every generation/profiling SQL site that interpolates a
+    CUSTOMER source-table FQN must go through quote_fqn, or a `$`/special-char name
+    silently drops (control table = completed, but zero metadata rows). These are
+    source-inspection guards so a future edit can't reintroduce a bare FQN."""
+
+    def test_get_column_types_describe_quoted(self):
+        import inspect
+        from dbxmetagen import processing
+        src = inspect.getsource(processing.get_column_types_from_describe)
+        assert "DESCRIBE TABLE {quote_fqn(" in src
+
+    def test_read_type_conversion_select_quoted(self):
+        import inspect
+        from dbxmetagen import processing
+        src = inspect.getsource(processing.read_table_with_type_conversion)
+        assert "FROM {quote_fqn(full_table_name)}" in src
+
+    def test_describe_extended_column_quoted(self):
+        import inspect
+        from dbxmetagen import processing
+        src = inspect.getsource(processing)
+        # the get_extended_metadata_for_column DESCRIBE EXTENDED site
+        assert "DESCRIBE EXTENDED {fq}" in src and "quote_fqn(" in src
+
+    def test_prompts_describe_extended_quoted(self):
+        import inspect
+        from dbxmetagen import prompts
+        src = inspect.getsource(prompts)
+        assert "DESCRIBE EXTENDED {quote_fqn(self.full_table_name)}" in src
+
+    def test_profiling_sites_quoted(self):
+        import inspect
+        from dbxmetagen import profiling
+        src = inspect.getsource(profiling)
+        # DESCRIBE DETAIL + FROM sample/agg sites
+        assert "DESCRIBE DETAIL {quote_fqn(table_name)}" in src
+        assert "FROM {quote_fqn(table_name)}" in src
+        # Table read goes through quoted SQL, NOT spark.read.table (which parses
+        # the identifier and breaks on `$` the same as spark.table) -- MG-22.
+        assert "self.spark.read.table(" not in src
+        assert 'SELECT * FROM {quote_fqn(table_name)}' in src
 
 
 # Since pyspark.sql.types is mocked globally by conftest, we need real-ish
@@ -172,6 +244,38 @@ class TestProfilingBuilder:
         assert builder.DATE_PATTERN.match("2024/01/15")
         assert not builder.DATE_PATTERN.match("January 15, 2024")
 
+    def test_npi_ndc_cusip_patterns(self, builder):
+        # PQ-2: domain identifier formats used by the value-overlap FK bucketing.
+        assert builder.NPI_PATTERN.match("1700000037")       # 10-digit NPI
+        assert not builder.NPI_PATTERN.match("170000")        # too short
+        assert builder.NDC_PATTERN.match("50001-1234-56")     # NDC 5-4-2
+        assert builder.CUSIP_PATTERN.match("037833100")       # 9-char alnum
+        assert builder.CUSIP_PATTERN.match("30303M102")
+
+    def test_npi_classified_as_npi_not_numeric_id(self, builder):
+        # A 10-digit NPI must dominant-classify as 'npi', not swallowed by numeric_id.
+        assert builder._detect_pattern(["1700000037", "1700000044", "1700000051"]) == "npi"
+        # A generic short integer id still classes as numeric_id.
+        assert builder._detect_pattern(["1", "2", "3", "42"]) == "numeric_id"
+        # NDC dominant.
+        assert builder._detect_pattern(["50001-1234-56", "50002-1000-10"]) == "ndc"
+
+
+def _agg_sql(mock_spark):
+    """Return the aggregate profiling SQL (the COUNT(*) AS `_row_count` query),
+    regardless of its position in the call list. The schema-read `SELECT *` query
+    (MG-22) now precedes it, so call_args_list[0] is no longer the aggregate."""
+    for call in mock_spark.sql.call_args_list:
+        q = call[0][0]
+        if "_row_count" in q:
+            return q
+    # Fallback: first non-`SELECT *` query.
+    for call in mock_spark.sql.call_args_list:
+        q = call[0][0]
+        if not q.strip().startswith("SELECT * FROM"):
+            return q
+    return mock_spark.sql.call_args_list[0][0][0]
+
 
 class TestDeltaSinglePass:
     """Tests for _profile_table_delta single-pass SQL generation."""
@@ -187,6 +291,7 @@ class TestDeltaSinglePass:
         mock_df = MagicMock()
         mock_df.schema = schema
         spark.table.return_value = mock_df
+        spark.read.table.return_value = mock_df
         return spark
 
     @pytest.fixture
@@ -230,10 +335,19 @@ class TestDeltaSinglePass:
         mode_row2 = MagicMock()
         mode_row2.__getitem__ = lambda self, k: {"col_name": "name", "val": "Bob", "cnt": 30}.get(k)
 
+        typed_schema = _make_schema([
+            ("id", _IntType()),
+            ("name", _StringType()),
+            ("amount", _DoubleType()),
+        ])
+
         def sql_side_effect(query):
             result = MagicMock()
             q = query.strip()
-            if "_row_count" in q and "COUNT(*)" in q:
+            if q.startswith("SELECT * FROM") or "SELECT *  FROM" in q:
+                # Schema-read replacing spark.read.table (MG-22): return the df schema.
+                result.schema = typed_schema
+            elif "_row_count" in q and "COUNT(*)" in q:
                 result.collect.return_value = [agg_row]
             elif "LIMIT 100" in q and "CAST" in q:
                 result.collect.return_value = [sample_row]
@@ -261,7 +375,7 @@ class TestDeltaSinglePass:
         assert result["column_count"] == 3
         assert len(result["column_stat_records"]) == 3
 
-        first_sql = mock_spark.sql.call_args_list[0][0][0]
+        first_sql = _agg_sql(mock_spark)
         assert "COUNT(*) AS `_row_count`" in first_sql
         assert "APPROX_COUNT_DISTINCT" in first_sql
         assert "PERCENTILE_APPROX" in first_sql
@@ -336,6 +450,7 @@ class TestFederatedSinglePass:
         mock_df = MagicMock()
         mock_df.schema = schema
         spark.table.return_value = mock_df
+        spark.read.table.return_value = mock_df
         return spark
 
     @pytest.fixture
@@ -363,10 +478,17 @@ class TestFederatedSinglePass:
         sample_row = MagicMock()
         sample_row.__getitem__ = lambda self, k: sample_data.get(k)
 
+        fed_schema = _make_schema([
+            ("patient_id", _IntType()),
+            ("diagnosis", _StringType()),
+        ])
+
         def sql_side_effect(query):
             result = MagicMock()
             q = query.strip()
-            if "_row_count" in q:
+            if q.startswith("SELECT * FROM"):
+                result.schema = fed_schema
+            elif "_row_count" in q:
                 result.collect.return_value = [agg_row]
             elif "LIMIT 100" in q:
                 result.collect.return_value = [sample_row]
@@ -383,7 +505,7 @@ class TestFederatedSinglePass:
 
         builder._profile_table_federated("fed_cat.fed_sch.patients")
 
-        first_sql = mock_spark.sql.call_args_list[0][0][0]
+        first_sql = _agg_sql(mock_spark)
         assert "APPROX_COUNT_DISTINCT" not in first_sql
 
     @_patch_types
@@ -393,7 +515,7 @@ class TestFederatedSinglePass:
 
         builder._profile_table_federated("fed_cat.fed_sch.patients")
 
-        first_sql = mock_spark.sql.call_args_list[0][0][0]
+        first_sql = _agg_sql(mock_spark)
         assert "PERCENTILE_APPROX" not in first_sql
 
     @_patch_types
@@ -414,7 +536,7 @@ class TestFederatedSinglePass:
 
         builder._profile_table_federated("fed_cat.fed_sch.patients")
 
-        first_sql = mock_spark.sql.call_args_list[0][0][0]
+        first_sql = _agg_sql(mock_spark)
         assert "COUNT(*)" in first_sql
         assert "COUNT(" in first_sql
         assert "MIN(" in first_sql
@@ -473,6 +595,7 @@ class TestNonOrderableTypes:
         mock_df = MagicMock()
         mock_df.schema = schema
         spark.table.return_value = mock_df
+        spark.read.table.return_value = mock_df
         return spark
 
     @pytest.fixture
@@ -510,10 +633,20 @@ class TestNonOrderableTypes:
         detail_row.numFiles = 1
         detail_row.lastModified = None
 
+        nonord_schema = _make_schema([
+            ("id", _IntType()),
+            ("metadata", _MapType()),
+            ("tags", _ArrayType()),
+            ("info", _StructType()),
+            ("name", _StringType()),
+        ])
+
         def sql_side_effect(query):
             result = MagicMock()
             q = query.strip()
-            if "_row_count" in q and "COUNT(*)" in q:
+            if q.startswith("SELECT * FROM"):
+                result.schema = nonord_schema
+            elif "_row_count" in q and "COUNT(*)" in q:
                 result.collect.return_value = [agg_row]
             elif "LIMIT 100" in q:
                 result.collect.return_value = [sample_row]
@@ -536,7 +669,7 @@ class TestNonOrderableTypes:
 
         builder._profile_table_delta("cat.sch.tbl")
 
-        first_sql = mock_spark.sql.call_args_list[0][0][0]
+        first_sql = _agg_sql(mock_spark)
         assert "MIN(`metadata`)" not in first_sql
         assert "MAX(`metadata`)" not in first_sql
         assert "APPROX_COUNT_DISTINCT(`metadata`)" not in first_sql
@@ -550,7 +683,7 @@ class TestNonOrderableTypes:
 
         builder._profile_table_delta("cat.sch.tbl")
 
-        first_sql = mock_spark.sql.call_args_list[0][0][0]
+        first_sql = _agg_sql(mock_spark)
         assert "MIN(`tags`)" not in first_sql
         assert "MAX(`tags`)" not in first_sql
         assert "APPROX_COUNT_DISTINCT(`tags`)" not in first_sql
@@ -562,7 +695,7 @@ class TestNonOrderableTypes:
 
         builder._profile_table_delta("cat.sch.tbl")
 
-        first_sql = mock_spark.sql.call_args_list[0][0][0]
+        first_sql = _agg_sql(mock_spark)
         assert "MIN(`info`)" not in first_sql
         assert "MAX(`info`)" not in first_sql
         assert "APPROX_COUNT_DISTINCT(`info`)" not in first_sql
@@ -574,7 +707,7 @@ class TestNonOrderableTypes:
 
         builder._profile_table_delta("cat.sch.tbl")
 
-        first_sql = mock_spark.sql.call_args_list[0][0][0]
+        first_sql = _agg_sql(mock_spark)
         assert "MIN(`id`)" in first_sql
         assert "MAX(`id`)" in first_sql
         assert "APPROX_COUNT_DISTINCT(`id`)" in first_sql
@@ -599,7 +732,7 @@ class TestNonOrderableTypes:
 
         builder._profile_table_federated("cat.sch.tbl")
 
-        first_sql = mock_spark.sql.call_args_list[0][0][0]
+        first_sql = _agg_sql(mock_spark)
         assert "MIN(`metadata`)" not in first_sql
         assert "MAX(`metadata`)" not in first_sql
         assert "COUNT(`metadata`)" in first_sql

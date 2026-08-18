@@ -454,6 +454,12 @@ if app_spn_uuid:
         f"GRANT CREATE TABLE ON SCHEMA `{catalog_name}`.`{schema_name}` TO `{app_spn_uuid}`",
         f"GRANT SELECT ON SCHEMA `{catalog_name}`.`{schema_name}` TO `{app_spn_uuid}`",
         f"GRANT MODIFY ON SCHEMA `{catalog_name}`.`{schema_name}` TO `{app_spn_uuid}`",
+        # READ/WRITE VOLUME so the SP can read/write UC Volumes (e.g. generated_metadata)
+        # for DDL exports and imported ontology bundles. Without WRITE VOLUME, bundle
+        # imports persist only to the app's ephemeral container; without READ VOLUME,
+        # jobs running as this SP can't load imported bundles. Matches deploy.sh.
+        f"GRANT READ VOLUME ON SCHEMA `{catalog_name}`.`{schema_name}` TO `{app_spn_uuid}`",
+        f"GRANT WRITE VOLUME ON SCHEMA `{catalog_name}`.`{schema_name}` TO `{app_spn_uuid}`",
     ]:
         run_sql(grant)
 else:
