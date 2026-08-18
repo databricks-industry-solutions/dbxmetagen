@@ -26,24 +26,24 @@ All open work items from every roadmap and plan document, organized by theme. Ea
 |----|------|--------|----------|--------|--------|
 | MG-1 | Chat client garbage fallback on JSON parse failure | DONE | -- | -- | RC 1.1 |
 | MG-2 | PII column-to-table rollup (`compute_table_sensitivity`) | OPEN | P1 | M | RC 1.2 |
-| MG-3 | Hardcoded entity suggestions in semantic layer | OPEN | P2 | S | RC 1.3 |
-| MG-4 | Quality metrics exposed to users | OPEN | P2 | L | RC 1.4 |
+| MG-3 | Entity suggestions in semantic layer — CLOSED (non-issue): already data-driven, not hardcoded (semantic_layer.py:731). | DONE | P2 | S | RC 1.3 |
+| MG-4 | Quality metrics exposed to users — PARTIAL: quality_score exists in schema; not yet exposed to users. | PARTIAL | P2 | L | RC 1.4 |
 | MG-5 | Day-2 re-run lifecycle / `_review_status` tracking | OPEN | P1 | M | RC 1.5 |
 | MG-6 | Structured output vs regex JSON recovery | PARTIAL (v0.10.61) | P2 | M | RC 2.1 |
 | MG-7 | Schema-level PII reconciliation via FK graph | OPEN | P2 | M | RC 2.3 |
-| MG-8 | Ontology as generation context (inject entity type into prompts) | OPEN | P2 | M | RC 2.4 |
-| MG-9 | Audit trail for metadata state transitions | OPEN | P2 | M | RC 2.5 |
-| MG-10 | `enrich_from_knowledge_base()` should override stale UC comments | OPEN | P2 | S | apply_ddl analysis |
+| MG-8 | Ontology as generation context (inject entity type into prompts) — DONE: ontology context injected via enrich_from_ontology() (prompts.py:180-216, called processing.py:2450). | DONE | P2 | M | RC 2.4 |
+| MG-9 | Audit trail for metadata state transitions — DONE: entity_tag_audit_log (ontology.py:3910/4032/4045). | DONE | P2 | M | RC 2.5 |
+| MG-10 | `enrich_from_knowledge_base()` should override stale UC comments — PARTIAL: injects KB but fills EMPTY slots only (prompts.py:244/264); does NOT override stale UC comments (the open part; see KB-2). | PARTIAL | P2 | S | apply_ddl analysis |
 | MG-11 | `MetadataConfig` schema validation (Pydantic model with field validators) | OPEN | P2 | M | code audit |
-| MG-12 | PI prompt: add negative examples for clinical vocabulary | OPEN | P1 | S | PI precision analysis |
-| MG-13 | PI prompt: tighten Presidio deference rule (#10) | OPEN | P1 | S | PI precision analysis |
-| MG-14 | Presidio `diagnosis_code` regex too broad -- raise threshold or gate | OPEN | P2 | S | PI precision analysis |
-| MG-15 | Preserve `type` field downstream instead of collapsing to `protected` | OPEN | P2 | S | PI precision analysis |
-| MG-16 | PI confidence threshold gating (discard low-confidence classifications) | OPEN | P2 | S | PI precision analysis |
+| MG-12 | PI prompt: add negative examples for clinical vocabulary — PARTIAL: positive clinical examples exist; no explicit negative examples. | PARTIAL | P1 | S | PI precision analysis |
+| MG-13 | Tighten Presidio deference rule (#10) — the rule exists (prompts.py:957) but is intentionally loose; make it stricter. | OPEN | P1 | S | PI precision analysis |
+| MG-14 | Presidio `diagnosis_code` regex too broad -- raise threshold or gate — PARTIAL: score_threshold gating exists; diagnosis_code regex still broad (deterministic_pi.py:127). | PARTIAL | P2 | S | PI precision analysis |
+| MG-15 | Preserve `type` field downstream instead of collapsing to `protected` — PARTIAL: type preserved at column level; collapsed to protected only at table level (processing.py:3217). | PARTIAL | P2 | S | PI precision analysis |
+| MG-16 | PI confidence threshold gating (discard low-confidence classifications) — DONE: Presidio score_threshold gating (deterministic_pi.py:158/172). | DONE | P2 | S | PI precision analysis |
 | MG-17 | SWIFT/BIC dropped: `swift`/`iban` patterns were under supported_entity=CREDIT_CARD -> hit the card Luhn gate -> SWIFT (non-numeric) always dropped. Fixed: own recognizers emitting SWIFT_CODE/IBAN_CODE (bypass Luhn). | DONE | P2 | S | UAT PI scenario |
 | MG-18 | UAT PI gold not normalized for equivalent classes (pi/pii, phi/medical_information) | OPEN | P3 | S | UAT PI scenario |
 | FK-11 | Provably-disjoint FK pair (join probe ran, join_matched=0 AND ri_score=0) still scored final_confidence ~0.6. Fixed: collapse final_confidence 0.25x on the same never_joins signal, so it drops below threshold (not just is_fk=false). | DONE | P2 | S | UAT FK scenario (uat_fk_hard region_id trap) |
-| MG-19 | `luhn_checksum(res.score)` in classify_column passes the SCORE (float) not the matched TEXT -> always False -> every deterministic CREDIT_CARD match dropped. Needs matched-text plumbing + presidio to verify (risk: order_ref trap). Not fixed blind. | OPEN | P2 | S | UAT PI scenario (deep-dive during MG-17) |
+| MG-19 | `luhn_checksum(res.score)` in classify_column passes the SCORE (float) not the matched TEXT -> always False -> every deterministic CREDIT_CARD match dropped. Needs matched-text plumbing + presidio to verify (risk: order_ref trap). Not fixed blind. — CONFIRMED bug: luhn_checksum(res.score) passes score not text (deterministic_pi.py:279) → every deterministic CREDIT_CARD match dropped. PRIORITIZE. | OPEN | P1 | S | UAT PI scenario (deep-dive during MG-17) |
 | MG-20 | Special-char table identifiers (e.g. a `$` in a federated Redshift table name like `…1$raw`) break SQL that interpolates the FQN bare -> `PARSE_SYNTAX_ERROR at '$'`. **DONE (v0.10.61-64):** shared `quote_fqn()` (`databricks_utils.py`) backtick-quotes each dotted segment; applied to every customer-source-table SQL site -- profiling, FK source sampling, `extended_metadata` DESCRIBE DETAIL + DESCRIBE CATALOG, `processing.get_column_types_from_describe` (DESCRIBE TABLE), the type-conversion read, DESCRIBE EXTENDED (processing + `prompts.py`). The final gap (the actual data read) was MG-22. **Verified live on `uat_ddl_edges.dollar$raw`:** generation "Table processed" + 4 metadata rows; profiling covers it. `very_wide_table` (120 cols) also clean (242 rows -> ON-19 confirmed). | DONE | P1 | M | Customer log + live UAT |
 | MG-22 | **Silent `$`-table skip (the read path, sub-bug of MG-20).** `read_table_with_type_conversion` read the table via `spark.read.table(fqn)` in the no-special-types branch. `spark.read.table` parses the identifier through the SAME `parseTableIdentifier` as `spark.table()`, so `$` raised `PARSE_SYNTAX_ERROR`; the exception was caught in `get_generated_metadata_data_aware` -> returned `[]` -> `review_and_generate_metadata` -> `(None,None)` -> "Skipped - No metadata generated", yet `mark_table_completed` still ran (control=`completed`, zero metadata rows). An earlier assumption that `spark.read.table` tolerates `$` was WRONG. **DONE (v0.10.64):** route ALL source reads through `spark.sql(f"SELECT * FROM {quote_fqn(name)}")` (parse-safe) -- `read_table_with_type_conversion` (both branches), profiling `_profile_table_delta`/`_federated`, and the override source-col check; corrected the `quote_fqn` docstring. Verified live: `dollar$raw` now processes with 4 metadata rows. Regression scenario `uat_ddl_edges.dollar$raw` + `TestGenerationPathIdentifierQuoting` guard against reintroduction. | DONE | P1 | M | Live UAT (uat_ddl_edges) |
 | MG-21 | Log spam: `[NOTICE] Using a notebook authentication token` repeats ~90x in a single run, burying real errors. **DONE (v0.10.61):** shared `new_workspace_client()` passes `product='dbxmetagen', disable_notice=True` (graceful fallback for older SDKs), routed through the hot-path `chat_client` auth-fallback + secret-fetch sites. Deliberately NOT a shared singleton -- each call gets its own client so concurrent LLM calls don't contend on shared SDK auth/HTTP state (per Eli: singleton would add latency at 50-100+ concurrent calls). | DONE | P3 | S | Customer log |
@@ -69,6 +69,7 @@ what's broken/missing — the current approach works fairly well. Full design:
 | PQ-5 | Role inference + Genie `id_cols` naming reduction (`_infer_role` naming 0.35->0.20 as constants; genie prefer FK/ontology PK signals over `_id` suffix) | DONE | P2 | M | UAT |
 | PQ-6 | Suffix-less + `_code`-not-FK benchmark scenario (`uat_fk_suffixless`) + eval_compare harness extension; the measurement gate for PQ-1 | DONE | P1 | M | UAT |
 | PQ-7 | Bound MV `_validate_expr`/`_yaml_dry_run` federation round-trip counts (LIMIT 0/schema-only, lower sev) | DONE | P3 | S | federation audit |
+| PQ-8 | **Federation validation mode for KPI dry-runs (LIMIT 1 → LIMIT 0).** `_validate_kpi_formula` validates with `SELECT {formula} FROM {table} LIMIT 1`. Since KPI formulas are aggregates, `LIMIT 1` does NOT bound the scan — it computes the aggregate over the whole table, and on a federated source may not push down (full remote scan + transfer). **Bounded to ~1 query/KPI today** by PQ-4's cap(5)+dedup+stop-at-first, so acceptable for now — this is a follow-up, not a blocker. Add a federation-aware mode (foreign/`FOREIGN`/`EXTERNAL` catalog via `_is_federated_catalog`, or `FEDERATION_MODE`) that swaps the probe to `LIMIT 0`. **Reasoning (the whole point):** the only difference is that `LIMIT 0` *skips the actual query to avoid repeated table scans* and validates the *logical plan* instead — the analyzer still fully resolves the formula (column existence, types, aggregate/GROUP BY legality, syntax; all analysis-phase, independent of LIMIT), while Spark's `OptimizeLimitZero` prunes the subtree to an empty `LocalTableScan` so **no rows are scanned or pulled**. Verified on-warehouse: `EXPLAIN … LIMIT 0` → `LocalTableScan <empty>` (billion-row source fully pruned) vs `LIMIT 1` → full `Range` scan + aggregate; and `SUM(bad_col) … LIMIT 0` still errors `UNRESOLVED_COLUMN`. The ONLY thing skipped is data-dependent RUNTIME errors (div/0, cast/overflow on real values) — fragile/time-varying, can false-fail a structurally-valid KPI, and already not checked for metric views (`_validate_expr` is already `LIMIT 0`, per PQ-7). Requires redefining KPI-validation success as "query did not throw" (not row-count based), else `LIMIT 0`'s 0-rows result mislabels every KPI "empty" in `reduce_kpi_validation` (kpi_logic.py). Refs: `_validate_kpi_formula` (api_server.py), `_is_federated_catalog`. | OPEN | P2 | S | federation audit (Eli) |
 
 ### MG-1: Chat client garbage fallback on JSON parse failure
 
@@ -253,7 +254,7 @@ pragmatically).
 | ON-9 | Composite component grouping | DEFERRED | P3 | M | OF 2B |
 | ON-10 | Subdomain -> entity affinity | DEFERRED | P2 | S+M | OF 2C |
 | ON-11 | JSON-LD export -- add column properties + Schema.org mappings | PARTIAL | P2 | M | OF 3A, OE 4 |
-| ON-12 | Bundle version in UC tags | OPEN | P2 | S | OF 3B |
+| ON-12 | Bundle version in UC tags — DONE: bundle version written to UC tags (ontology.py:3943-4009). | DONE | P2 | S | OF 3B |
 | ON-13 | 5GNF trait nodes | KILLED | -- | -- | OE, OF |
 | ON-14 | Row-level instance nodes | KILLED | -- | -- | OE, OF |
 | ON-15 | OWL/TTL import | DEFERRED | P3 | L | OF, OE |
@@ -263,7 +264,7 @@ pragmatically).
 | ON-19 | Batch column classification truncates on WIDE tables: a 144-col table produced an 11424-char response cut off at `max_tokens=4096` -> invalid/partial JSON. The `len(columns) <= n*1.25` remainder-merge (n=120 -> up to 150 cols in ONE call) sent oversized batches, and truncation wasn't detected as truncation. **DONE (v0.10.61):** replaced count-merge with output-token-budget chunking (`_COLS_PER_CLASSIFY_CHUNK=60`), raised `max_tokens` 4096->8192, and `_classify_column_chunk_resilient` recursively BISECTS on `StructuredTruncationError` (ai_query only as last resort on a single column) so no column is lost. | DONE | P1 | M | Customer log (wide biotech tables) |
 | ON-20 | Empty/`{}` responses (`Expecting value: line 1 column 1`; `classifications Field required`) parse-failed with no finish-reason context, so a retryable empty/truncated response looked identical to genuine garbage. **DONE (v0.10.61)** with MG-6: `invoke_structured` now reads `finish_reason` and raises `StructuredTruncationError` (length) or `StructuredEmptyResponseError` (empty/`{}`) -- both `ValueError` subclasses (backward compatible) -- and logs finish_reason + length. This is the signal ON-19/ON-21 bisect on. | DONE | P2 | S | Customer log |
 | ON-21 | **geo_classifier has the SAME truncation bug as ON-19, worse**: `max_tokens=2048`, called `with_structured_output` directly (no fallback), and SILENTLY defaulted every column to non_geographic on any failure -> wide tables mis-classified with no error. **DONE (v0.10.61):** routed through `invoke_structured` (gains truncation signal), output-token chunking (`_GEO_COLS_PER_CHUNK=60`), `max_tokens` 2048->8192, and `_classify_geo_chunk_resilient` bisects on truncation -- defaulting only as a true last resort on a single column. | DONE | P1 | S | ON-19 sibling audit |
-| ON-22 | **Table-scope ontology relationship reads (two-bundles-per-schema, different table sets).** Confirmed real customer config: multiple ontology bundles coexisting in ONE output schema on DIFFERENT table sets (finance/commercial/life-sciences data + their own ontologies in one `metadata_results`). Bundle is a PROVENANCE tag, not a scoping key. Storage is already correct; entities/FKs/joins are already table-scoped. **LOW severity, cosmetic:** ontology relationships are consumed as DESCRIPTIVE TEXT ONLY (`context.py:993,1053`; `semantic_layer.py:766-768`) — NOT joins (those come from `fk_predictions`, table-scoped, intentionally cross-bundle) — so a shared entity-type name (both bundles have `Organization`) only bleeds a wrong descriptive relationship line across table sets. **Fix (table-keyed, never bundle-keyed):** (a) reuse existing `evidence_table` to require the originating table be in scope; (b) add nullable `source_tables` to `ontology_relationships` for bundle-defined rows. Structural cross-ontology integration (FK/joins across table sets) MUST be preserved — ON-22 does not touch it. Extends ON-18; multi-schema UI-swap/enterprise-connect are EN-1/EN-2. | OPEN | P2 | M | Customer ask (Mohit/Eli) + multi-bundle consumer audit |
+| ON-22 | **Table-scope ontology relationship reads (two-bundles-per-schema, different table sets).** Confirmed real customer config: multiple ontology bundles coexisting in ONE output schema on DIFFERENT table sets (finance/commercial/life-sciences data + their own ontologies in one `metadata_results`). Bundle is a PROVENANCE tag, not a scoping key. Storage is already correct; entities/FKs/joins are already table-scoped. **LOW severity, cosmetic:** ontology relationships are consumed as DESCRIPTIVE TEXT ONLY (`context.py:993,1053`; `semantic_layer.py:766-768`) — NOT joins (those come from `fk_predictions`, table-scoped, intentionally cross-bundle) — so a shared entity-type name (both bundles have `Organization`) only bleeds a wrong descriptive relationship line across table sets. **Fix (table-keyed, never bundle-keyed):** (a) reuse existing `evidence_table` to require the originating table be in scope; (b) add nullable `source_tables` to `ontology_relationships` for bundle-defined rows. Structural cross-ontology integration (FK/joins across table sets) MUST be preserved — ON-22 does not touch it. Extends ON-18; multi-schema UI-swap/enterprise-connect are EN-1/EN-2. — PARTIAL: multi-bundle infra DONE (table-scoped storage/sweep/edges); remaining = consumer-side evidence_table filtering (genie/context.py:507, semantic_layer.py:714) + a source_tables column on ontology_relationships. | PARTIAL | P2 | M | Customer ask (Mohit/Eli) + multi-bundle consumer audit |
 
 ### ON-4: Remove legacy `link` SQL filter
 
@@ -484,7 +485,7 @@ upsert with provenance, then let the existing graph/VS builders consume it.
 | SL-1 | **MV definition read-back parser.** Read a deployed MV's YAML body from UC (`information_schema.views.view_definition` / DESCRIBE) and parse it into the internal `json_definition` shape -- the inverse of `metric_view_core._serialize_to_yaml`. Must tolerate constructs dbxmetagen never emits (hand-authored YAML). This is the core new primitive everything else depends on. | OPEN | P2 | L | Reverse-sync feature |
 | SL-2 | **Provenance + drift columns on `metric_view_definitions`.** Add `source_origin` (`dbxmetagen`/`external_import`/`external_edit`), `deployed_owner`, `last_synced_at`, and a drift flag. Analogous to `graph_edges.source_system` + entity `auto_discovered`. Lets graph/VS attribute sources and lets re-generation avoid clobbering imported defs. | OPEN | P2 | S | Reverse-sync feature |
 | SL-3 | **Reconcile pass (exact match).** For each UC MV, match on `metric_view_name` + `deployed_catalog.deployed_schema` (name is unique within a UC schema; a *different owner* is the SAME object -> record owner, don't fork). Import unknown MVs as `source_origin=external_import`. **Authority: UC is truth for imports; for a dbxmetagen-authored MV edited outside, do NOT silently overwrite the stored def -- flag drift for review** (mirrors the `review_updated_at` steward-lock). Never destructive. | OPEN | P2 | M | Reverse-sync feature |
-| SL-4 | **Sync imported/updated MVs to the three consumers.** Once SL-3 upserts a definition, drive `semantic_graph` (metric_view/measure/dimension nodes+edges) and `vector_index` (`metadata_documents` + VS) off it -- reuse existing builders; add MV `source_origin` attribution to nodes/docs. Confirm `merge_edges`/doc sweeps treat imported MVs like any other source (no orphan/clobber). | OPEN | P2 | M | Reverse-sync feature |
+| SL-4 | **Sync imported/updated MVs to the three consumers.** Once SL-3 upserts a definition, drive `semantic_graph` (metric_view/measure/dimension nodes+edges) and `vector_index` (`metadata_documents` + VS) off it -- reuse existing builders; add MV `source_origin` attribution to nodes/docs. Confirm `merge_edges`/doc sweeps treat imported MVs like any other source (no orphan/clobber). — PARTIAL: graph-sync infra exists (api_server.py:15253+); upstream reconcile (SL-3) missing; VS-index sync not implemented. | PARTIAL | P2 | M | Reverse-sync feature |
 | SL-5 | **Fuzzy 'possibly-related' suggestions (NOT auto-merge).** Same source table + measure/dimension overlap but a DIFFERENT name is surfaced as a review-UI suggestion only -- never auto-merged into one node (auto-merge risks collapsing two genuinely-distinct views / corrupting the graph). Preserves the human-in-the-loop contract. | OPEN | P3 | M | Reverse-sync feature |
 | SL-6 | **Drift dashboard / review surface.** Show UC MVs missing from the graph, dbxmetagen MVs whose deployed YAML has drifted from the stored def, and orphaned graph/VS entries for MVs deleted in UC. The human decides import/overwrite/ignore per row. | OPEN | P3 | M | Reverse-sync feature |
 
@@ -513,21 +514,21 @@ preserved).
 
 | ID | Item | Status | Priority | Effort | Source |
 |----|------|--------|----------|--------|--------|
-| DE-1 | Batch log writes (per-table single-row Delta writes) | OPEN | P2 | S | RC DE-1 |
-| DE-2 | Parallelize DDL execution (sequential collect-then-loop) | OPEN | P1 | M | RC DE-2 |
+| DE-1 | Batch log writes (per-table single-row Delta writes) — DONE: batched Delta append (processing.py:188). | DONE | P2 | S | RC DE-1 |
+| DE-2 | Parallelize DDL execution (sequential collect-then-loop) — PARTIAL: column comments batch per-table on DBR 16.3+; table-level DDL still sequential. | PARTIAL | P1 | M | RC DE-2 |
 | DE-3 | Remove redundant DataFrame materializations | OPEN | P1 | S | RC DE-3 |
 | DE-6 | Error messages fed as metadata into LLM prompts | DONE | -- | -- | RC DE-6 |
-| DE-7a | Triple materialization in `write_ddl_df_to_volume` | OPEN | P2 | S | RC DE-7 |
-| DE-7b | Dead temp view + unused var in `sample_values()` | OPEN | P2 | S | RC DE-7 |
-| DE-7c | Unused constant `JOIN_SAMPLE_SIZE` | OPEN | P2 | S | RC DE-7 |
+| DE-7a | Triple materialization in `write_ddl_df_to_volume` — DONE. | DONE | P2 | S | RC DE-7 |
+| DE-7b | Dead temp view + unused var in `sample_values()` — DONE. | DONE | P2 | S | RC DE-7 |
+| DE-7c | Unused constant `JOIN_SAMPLE_SIZE` — DONE (constant removed). | DONE | P2 | S | RC DE-7 |
 | DE-8 | Codebase-wide `.collect()` audit (~232 calls, 21 files) | OPEN | P3 | L | RC DE-8 |
 
 ### 5b. Full Pipeline Performance (Ontology, FK, Extended Metadata)
 
 | ID | Item | Status | Priority | Effort | Source |
 |----|------|--------|----------|--------|--------|
-| DE-4 | FK prediction collect-then-loop (700+ sequential SQL) | OPEN | P1 | L | RC DE-4 |
-| DE-5 | DESCRIBE DETAIL in for-loop with hard cap at 100 | OPEN | P2 | M | RC DE-5 |
+| DE-4 | FK prediction collect-then-loop (700+ sequential SQL) — PARTIAL: batch sampling + concurrent RI checks added; not fully vectorized. | PARTIAL | P1 | L | RC DE-4 |
+| DE-5 | DESCRIBE DETAIL is per-table now (extended_metadata.py:413), not a 100-capped loop — original framing stale; verify no batching/rate-limit needed. | OPEN | P2 | M | RC DE-5 |
 
 ### 5c. Scaling Recommendations
 
@@ -567,11 +568,11 @@ preserved).
 
 | ID | Item | Status | Priority | Effort | Source |
 |----|------|--------|----------|--------|--------|
-| AQ-1 | Batch column classification (O(NC) -> O(N)) | OPEN | P1 | M | AQ 1 |
+| AQ-1 | Batch column classification (O(NC) -> O(N)) — PARTIAL: chunked by columns_per_call (O(N/chunk)); not a single AI_QUERY call. | PARTIAL | P1 | M | AQ 1 |
 | AQ-2 | Batch table classification (O(N) -> O(N/20)) | OPEN | P1 | M | AQ 2 |
-| AQ-3 | Raise FK AI threshold (0.3 -> 0.5+) | OPEN | P2 | S | AQ 3 |
+| AQ-3 | Raise FK AI threshold (0.3 -> 0.5+) — DONE: FK AI threshold already 0.7 (fk_prediction.py:227), above the 0.5 target. | DONE | P2 | S | AQ 3 |
 | AQ-4 | Vectorized SQL AI_QUERY for ontology | OPEN | P2 | L | AQ 4 |
-| AQ-5 | Async/concurrent Python LLM calls | OPEN | P2 | M | AQ 5 |
+| AQ-5 | Async/concurrent Python LLM calls — PARTIAL: async classify_table_domain_async() exists (domain_classifier.py:888) but not wired into the pipeline. | PARTIAL | P2 | M | AQ 5 |
 
 ### 5e. Graph Edge Quality
 
@@ -585,8 +586,9 @@ preserved).
 
 | ID | Item | Status | Priority | Effort | Source |
 |----|------|--------|----------|--------|--------|
-| DE-9 | God-module decomposition (`api_server.py` 9.8K lines, `ontology.py` 5.3K, `processing.py` 4K) | OPEN | P2 | L | code audit |
+| DE-9 | God-module decomposition (`api_server.py` **16.1K** lines, `ontology.py` 5.3K, `processing.py` 4K) — FULL decomposition; see DE-11 for the minimal enabling subset to do first. | OPEN | P2 | L | code audit |
 | DE-10 | Dependency injection for testability (7+ internal module stubs required to test `processing.py`) | OPEN | P2 | L | code audit |
+| DE-11 | **Minimal `api_server.py` split (prep/enabler — do FIRST).** api_server.py is 16.1K lines / ~190 endpoints and forces serialization of any workstream that touches it (DP-13, EN-1, SLG-1). Behavior-preserving minimal split (NOT the full DE-9): (1) extract the shared foundation into a `_common.py` — `execute_sql`/`execute_sql_meta`, `fq`, `CATALOG`/`SCHEMA`, `get_workspace_client`, the TTL caches+locks, model config, error regexes, `_MAX_RESULT_ROWS`; (2) move the two largest cohesive route groups (candidates by size: ontology 40, semantic-layer 39, genie 21 — pick the two with the LOWEST shared-state coupling at spec time) into `routers/*.py` as FastAPI `APIRouter`s wired via `app.include_router()`. No endpoint paths or behavior change. Acceptance: the registered-route set (`app.routes` paths) is IDENTICAL before/after (add a test asserting this), app boots, core suite green. Removes ~79 endpoints from api_server.py and unblocks parallel workstreams. Scoped subset of DE-9. | OPEN | P1 | M | workstream enabler (Eli) |
 
 ### 5g. Pipeline Incrementality (May 2026)
 
@@ -635,8 +637,8 @@ These survived verification against the code (F3 SQL-skeleton-dedup was checked 
 
 | ID | Item | Status | Priority | Effort | Source |
 |----|------|--------|----------|--------|--------|
-| CR-1 | **Loose distinctive-format regexes** (`profiling.py`): `NPI_PATTERN=^\d{10}$` matches any 10-digit number (phone/account/order id); `CUSIP_PATTERN=^[0-9A-Z]{9}$` matches any 9-char code (SKU). Both feed the relaxed 0.30 value-overlap containment bar, so unrelated same-shape columns can bucket together and emit spurious FK candidates. MITIGATED today by the parent-uniqueness gate + join probe + never_joins veto, so precision impact is bounded, not zero. Fix: tighten (NPI checksum / NDC-style segmenting; treat CUSIP as advisory) or require ontology/name corroboration before applying the relaxed bar to `npi`/`cusip`. | OPEN | P2 | S | Code review (Isaac) |
-| CR-2 | **Truncation detection only in the fallback path** (`chat_client.invoke_structured`): the `finish_reason=='length'` -> `StructuredTruncationError` classification lives only in the `except` branch; the primary `with_structured_output(...).invoke()` path returns directly with no finish_reason check. A tool-calling endpoint that returns a truncated-but-parseable structure without raising would bypass ON-19's bisect. In practice the batch-classify endpoints fall through to the JSON branch (so ON-19 works there), but this isn't universal. Fix: inspect finish_reason on the primary path too (where the SDK surfaces it). | OPEN | P2 | S | Code review (Isaac) |
+| CR-1 | **Loose distinctive-format regexes** (`profiling.py`): `NPI_PATTERN=^\d{10}$` matches any 10-digit number (phone/account/order id); `CUSIP_PATTERN=^[0-9A-Z]{9}$` matches any 9-char code (SKU). Both feed the relaxed 0.30 value-overlap containment bar, so unrelated same-shape columns can bucket together and emit spurious FK candidates. MITIGATED today by the parent-uniqueness gate + join probe + never_joins veto, so precision impact is bounded, not zero. Fix: tighten (NPI checksum / NDC-style segmenting; treat CUSIP as advisory) or require ontology/name corroboration before applying the relaxed bar to `npi`/`cusip`. — CONFIRMED loose (profiling.py:70/72). PRIORITIZE. | OPEN | P1 | S | Code review (Isaac) |
+| CR-2 | **Truncation detection only in the fallback path** (`chat_client.invoke_structured`): the `finish_reason=='length'` -> `StructuredTruncationError` classification lives only in the `except` branch; the primary `with_structured_output(...).invoke()` path returns directly with no finish_reason check. A tool-calling endpoint that returns a truncated-but-parseable structure without raising would bypass ON-19's bisect. In practice the batch-classify endpoints fall through to the JSON branch (so ON-19 works there), but this isn't universal. Fix: inspect finish_reason on the primary path too (where the SDK surfaces it). — PARTIAL: truncation detection exists but only in the fallback path, not the primary tool-calling path. | PARTIAL | P2 | S | Code review (Isaac) |
 | CR-3 | **`StructuredEmptyResponseError` never specially handled** downstream: it's raised on an empty/`{}` completion but only `StructuredTruncationError` is caught in geo/ontology; empty falls to the generic fallback, so its documented "retryable transient empty" intent is unrealized (not broken -- the fallback still returns a result). Fix: catch it for one bare retry before defaulting. | OPEN | P3 | S | Code review (Isaac) |
 | CR-4 | **O(n^2) value-overlap bucket loop** (`fk_prediction.get_value_overlap_candidates`): the nested `i x j` over each `(dtype-family, pattern)` bucket does set-intersections for every ordered pair; the `emitted >= ceiling` break bounds ACCEPTED candidates, not the rejected-pair work (the common case). A wide schema with hundreds of `numeric_id` columns in one bucket runs the full n^2 on the driver. Fix: pre-filter bucket members (e.g. require compatible distinct-count ranges / a MinHash prefilter) or cap bucket size before the pairwise loop. | OPEN | P2 | M | Code review (Isaac) |
 | CC-1 | **customer-context re-seed MERGE clobbered `created_by`.** The MATCHED branch set `tgt.created_by = src.created_by` (always `'yaml_seed'`) + `tgt.scope`/`tgt.scope_type`, contradicting the adjacent comment ("updates only text/label/priority + updated_at") and resetting UI-set operator provenance on every re-seed. **DONE (v0.10.65):** MATCHED branch now updates only `context_text`/`context_label`/`priority`/`updated_at` (scope/scope_type are derived from the `context_id` key so invariant); test extended to assert `tgt.created_by` is absent from the MERGE. | DONE | P3 | S | Code review (Isaac) |
@@ -693,7 +695,6 @@ These survived verification against the code (F3 SQL-skeleton-dedup was checked 
 |----|------|--------|----------|--------|
 | T3-1 | SQL injection via f-strings | LOW RISK | P3 | RC 3.1 |
 | T3-2 | Sequential processing within a task | ADDRESSED | -- | RC 3.2 |
-| T3-3 | MetadataReview component decomposition | OPEN | P3 | RC 2.2 |
 | T3-4 | TypeScript migration | NICE-TO-HAVE | P3 | RC 3.6 |
 | T3-5 | React Router | NICE-TO-HAVE | P3 | RC 3.6 |
 | T3-6 | Multi-person approval workflow | ENTERPRISE | P3 | RC 3.7 |
@@ -729,12 +730,11 @@ Recommended gate before promoting: one live backward-compat smoke test (feature 
 
 | ID | Item | Status | Priority | Effort | Source |
 |----|------|--------|----------|--------|--------|
-| EN-1 | Runtime metadata-result-schema selection in the app (schema picker; make `fq()`/`CATALOG`/`SCHEMA` request-scoped instead of startup globals — ~28 call sites; caches keyed by schema). Top customer ask. Builds on `schema_name` filter params + per-MV `deployed_catalog`/`deployed_schema` precedent. | OPEN | P1 | L | Customer ask (Mohit) |
-| EN-2 | Cross-schema semantic-layer stitching at enterprise level (schema registry + federated/union reads across `metadata_results` schemas + cross-schema entity/FK disambiguation). Design-spike first. Depends on EN-1. | OPEN | P2 | L | Customer ask (Mohit) |
-| EN-3 | External context sources for the agent — a structured UC table or an EXTERNAL vector index (already-ingested data; NOT reaching out to SharePoint). Index/endpoint are hardwired to `{CATALOG}.{SCHEMA}.{VS_INDEX_SUFFIX}` today; add `EXTERNAL_VECTOR_INDEXES`/`EXTERNAL_KB_TABLES` config + union into retrieval with source attribution. | OPEN | P2 | M | Customer ask (Mohit) |
-| EN-4 | Review-only user role (review + save/apply in Review-and-Apply only). No role system today — OBO identity only. Add role context + `require_role` gate on write/generation endpoints + frontend nav hiding. Relates to T3-6. | OPEN | P2 | M | Customer ask (Mohit) |
-| EN-5 | Read-only deployment mode (`READ_ONLY_MODE` central write gate over KB PATCH / apply-ddl / ontology+tag apply / job submit; document restricted-SP fallback). `federation_mode`/`apply_ddl` exist but there is no centralized gate. Shares plumbing with EN-4. | OPEN | P2 | M | Customer ask (Mohit) |
-| EN-6 | Production-readiness — a DEFINED MINIMUM BAR, not an open epic (see detail for the 5-point checklist + explicit punt list). Bar: API test suite in CI (`test_app_logic.py` excluded, `pyproject.toml:54`; + TG-1..TG-6), OBO trust-boundary documented + guardrail, graceful-degradation verified, ops monitors + auth/action audit log (MG-9), read-only mode (EN-5) available. PUNTED (not prod-blockers): god-module split (DE-9), DI refactor (DE-10), rate limiting, full pagination, full RBAC. Open Q gates size: self-hosted vs managed offering. | OPEN | P1 | M | Customer ask (Mohit) + code audit |
+| EN-1 | Runtime metadata-result-schema selection in the app (schema picker; make `fq()`/`CATALOG`/`SCHEMA` request-scoped instead of startup globals — ~28 call sites; caches keyed by schema). Top customer ask. Builds on `schema_name` filter params + per-MV `deployed_catalog`/`deployed_schema` precedent. — PRIORITIZED this cycle. | OPEN | P1 | L | Customer ask (Mohit) |
+| EN-2 | Cross-schema semantic-layer stitching at enterprise level (schema registry + federated/union reads across `metadata_results` schemas + cross-schema entity/FK disambiguation). Design-spike first. Depends on EN-1. — FOLDED into EV-* (Enterprise Unified View); see new EV section. | OPEN | P2 | L | Customer ask (Mohit) |
+| EN-3 | External context sources for the agent — a structured UC table or an EXTERNAL vector index (already-ingested data; NOT reaching out to SharePoint). Index/endpoint are hardwired to `{CATALOG}.{SCHEMA}.{VS_INDEX_SUFFIX}` today; add `EXTERNAL_VECTOR_INDEXES`/`EXTERNAL_KB_TABLES` config + union into retrieval with source attribution. — FOLDED into CTX-3 (agent-side external context). | OPEN | P2 | M | Customer ask (Mohit) |
+| EN-4 | Review-only user role (review + save/apply in Review-and-Apply only). No role system today — OBO identity only. Add role context + `require_role` gate on write/generation endpoints + frontend nav hiding. Relates to T3-6. — DEFERRED: OBO+UC already enforce per-user data security; in-app roles are lower marginal value. | OPEN | P3 | M | Customer ask (Mohit) |
+| EN-5 | Restricted / no-job-execution mode (DISABLE_JOB_EXECUTION) — gate the run-a-job endpoints (metadata gen, analytics pipeline, sync). Rationale: jobs run under their configured run_as (SP/owner) regardless of OBO, so OBO does NOT stop a viewer from launching SP-privileged compute; 'read-only' really means 'no job execution' (optionally also gate in-app writes). Absorbs EN-6's read-only intent. | OPEN | P2 | M | Customer ask (Mohit) |
 
 ### EN-1: Runtime metadata-result-schema selection
 
@@ -777,39 +777,41 @@ central write gate. **Work:** `READ_ONLY_MODE` env flag gating all write endpoin
 apply-ddl(+bundle), ontology/tag apply, job submit) → 403 with a clear message; document the
 restricted-service-principal fallback. Shares the enforcement point with EN-4. **Files:** `apps/.../api_server.py`.
 
-### EN-6: Production-readiness (defined minimum bar)
+### EN-6 (removed)
 
-**Status: OPEN** -- "Production-ready" is defined here as an explicit acceptance bar so it cannot
-become an open-ended sink. Most of it is documentation + wiring existing pieces, not new architecture.
+REMOVED (decomposed): production-readiness epic split into — API test suite → a QA item; audit log → MG-9 (done); OBO trust-boundary → a small doc item; read-only → EN-5. Not tracked as one epic.
 
-**Minimum bar (the actual gate) — 5 dimensions:**
-1. **Security/auth:** document the OBO trust boundary — the app trusts `x-forwarded-access-token`, which
-   is safe ONLY behind Databricks Apps ingress and must never be exposed directly; confirm the app SP
-   is least-privilege; secrets/PII never logged (already enforced). Mostly docs + one guardrail.
-2. **Reliability/correctness:** the API test suite runs in CI (`test_app_logic.py` is excluded today,
-   `pyproject.toml:54`) + API-route tests (TG-1..TG-6); no unbounded client loops (one class fixed
-   this session — see the `execute_sql_meta` pagination guard); graceful degradation on a dependency
-   outage verified (VS-down → UC-Delta fallback already exists).
-3. **Operability:** the two ops monitors (`notebooks/monitors/job_activity_monitor.py`,
-   `pipeline_health_check.py`) wired/documented; structured logging (log-spam already fixed, MG-21); a
-   basic **auth/action audit log** (MG-9) so "who applied what" is answerable.
-4. **Data safety:** review-before-apply (exists), steward-lock preservation (exists), and read-only
-   mode (EN-5) available for cautious rollouts.
-5. **Deployability:** backward-compat verified (done this session), single deploy path (done), clear
-   versioning/rollback.
+---
 
-**Explicitly PUNTED (do NOT gate prod-ready on these):** `api_server.py` god-module split (DE-9) and
-DI refactor (DE-10) are dev-velocity, not prod blockers — deferring them is the biggest scope-saver;
-rate limiting, full result pagination, cost dashboards (P3 hardening); full RBAC (EN-4's cheap
-reviewer flag suffices for the customer).
+## Enterprise Unified View (EV) — cross-schema stitching across multiple dbxmetagen OUTPUT schemas
 
-**Open question that sets the true size:** production-ready for a **customer self-hosting the app in
-their own workspace** (mostly: document boundaries + tests + audit — bounded M) vs **us running it as a
-managed multi-tenant offering** (adds tenant isolation, rate limiting, SLOs — much larger). The row's
-`M` assumes self-hosted; managed is a separate, larger scope.
+| ID | Item | Status | Priority | Effort | Source |
+|----|------|--------|----------|--------|--------|
+| EV-1 | Output-schema registry — system-of-record table + app config listing registered metadata_results schemas (catalog.schema, domain, owner, last_run). Foundation the rest reads. | OPEN | P2 | M | Enterprise (Eli) |
+| EV-2 | Federated vector retrieval — agent queries MULTIPLE per-schema VS indexes at once; fan-out + reciprocal-rank-fusion merge; results schema-attributed. | OPEN | P2 | M | Enterprise (Eli) |
+| EV-3 | A2A orchestrator over per-schema metadata agents — orchestrator routes a question to domain/schema-specialized agents and aggregates with provenance. | OPEN | P2 | L | Enterprise (Eli) |
+| EV-4 | Enterprise KB union — union/federated view over per-schema table_knowledge_base + metadata_documents, keyed by the EV-1 registry. | OPEN | P2 | M | Enterprise (Eli) |
+| EV-5 | Enterprise knowledge-graph overlay — merge per-schema graph_nodes/edges with cross-schema entity resolution (link entity::X across schemas) + inter-schema edges. | OPEN | P2 | L | Enterprise (Eli) |
+| EV-6 | Cross-schema FK/relationship discovery — candidate pairs spanning schemas (cross-domain joins), registry-gated. | OPEN | P2 | M | Enterprise (Eli) |
+| EV-7 | Verify + harden cross-schema metric-view / Genie assembly (reportedly partly works already) — make explicit, guard, and test. | OPEN | P3 | S | Enterprise (Eli) |
 
-Cross-links TG-1..TG-6, DE-9/DE-10, MG-9, MG-21, EN-5, and the tracked scaling items R3/R4/R5/R6.
-**Files:** `pyproject.toml`, `apps/.../api_server.py`, `tests/`, docs.
+*Sequencing: EV-1 → (EV-2, EV-4) → (EV-3, EV-5, EV-6); EV-7 standalone.*
+
+---
+
+## New Feature & Quality Backlog (this cycle)
+
+| ID | Item | Status | Priority | Effort | Source |
+|----|------|--------|----------|--------|--------|
+| CTX-1 | External-context layer: design/architect ingesting/consolidating/indexing an external source (VS index, volume, table, or schema) into a queryable context store with a clean access API. Foundation. | OPEN | P2 | L | Eli |
+| CTX-2 | Generation-side consumption of CTX-1 — wire external context into comment/PI/domain/FK prompts (extends existing enrich_from_ontology / enrich_from_knowledge_base hooks). | OPEN | P2 | M | Eli |
+| CTX-3 | Agent-side consumption of CTX-1 — retrieval agents (metadata research, analyst) query the context layer. Absorbs former EN-3. | OPEN | P2 | M | Eli |
+| KB-2 | Sync EXISTING UC comments into the knowledge base (ingest, not generate). Complements MG-10 (which only fills empty slots). | OPEN | P2 | M | Eli |
+| FK-2 | Explicit FK hints from a user-supplied JSON/dtype file — seed/boost/lock FK candidate generation. | OPEN | P2 | M | Eli |
+| PROF-2 | Federation-safe profiling correctness — current profiling is often wrong and unguarded on federated sources (no federation guard in _fetch_column_stats_concurrent prompts.py:490 = R3a; caps hardcoded profiling.py:82 = R9). Fix accuracy while bounding federated scans (pushdown-friendly stats / bounded sample / clean skip). | OPEN | P1 | M | Eli |
+| AGT-1 | Metadata research agent: add MLflow tracing + reduce token consumption, preserving effectiveness. | OPEN | P2 | M | Eli |
+| SLG-1 | Semantic-layer knowledge-graph de-dup correctness — graph node dedup currently keys on node_id = definition_id+name (api_server.py:15438), NOT source/filter; fix so same-name/different-expression measures are distinguished and identical measures across defs can merge. | OPEN | P2 | M | Eli |
+| UX-2 | Button tooltips/explanations (e.g. the Sync button) across the app UI. | OPEN | P3 | S | Eli |
 
 ---
 
