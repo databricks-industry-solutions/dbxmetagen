@@ -22,6 +22,7 @@ from __future__ import annotations
 
 import json
 import math
+import re
 from dataclasses import dataclass, field, asdict
 from typing import Any, Optional
 
@@ -146,35 +147,103 @@ def _looks_like_mart(short: str) -> bool:
     return any(kw in short for kw in _MART_KEYWORDS)
 
 
-# Column-name semantics: disambiguate a high-cardinality numeric that is an
-# identifier (a grain/PK) from one that is a continuous MEASURE. Profiling flags
-# both as `is_unique_candidate`, so name is what tells `instrument_revenue`
-# (a measure) apart from `account_id` (a key). Used by _grain_column /
-# _measurable_columns so a measure is never mistaken for the grain and vice versa.
-_KEY_SUFFIXES = ("_id", "_key", "_guid", "_uuid", "_sk", "_pk", "_fk", "_code", "_no", "_num", "_nbr")
-_MEASURE_KEYWORDS = (
-    "revenue", "amount", "amt", "total", "count", "cnt", "qty", "quantity", "price",
-    "cost", "sum", "avg", "average", "balance", "volume", "spend", "value", "rate",
+# Key-vs-measure discrimination is DATA-DRIVEN, never name-based -- column-name
+# conventions don't generalize across schemas, so DATA decides everything it
+# can, in priority order:
+#   1. FK PARTICIPATION (`key_hints`): a column that joins is a key, whatever it
+#      is called. Primary, fully schema-agnostic signal.
+#   2. TYPE + UNIQUENESS, for the ambiguous case -- a unique numeric with NO FK
+#      evidence, where profiling alone can't tell a surrogate key from a
+#      continuous measure (both are `is_unique_candidate`). A CONTINUOUS numeric
+#      (float/double/decimal) is a measure even when unique; a unique INTEGER is
+#      an identifier.
+#   3. NAME, as a MILD tiebreaker ONLY where the data is genuinely silent -- a
+#      unique numeric whose `data_type` is unknown (thin/federated profiling).
+#      The lexical prior is a weak nudge, never a gate: it cannot override FK
+#      participation or a clear continuous/integer type, and defaults to
+#      "identifier" when the name is uninformative.
+# `data_type` is profiling's readable type string, e.g. "long", "integer",
+# "double", "decimal(18,2)", "string" (Spark type name, lower-cased).
+_CONTINUOUS_NUMERIC_PREFIXES = ("double", "float", "decimal", "numeric", "real")
+_INTEGER_NUMERIC_PREFIXES = (
+    "int", "integer", "long", "bigint", "short", "smallint", "byte", "tinyint",
 )
 
+# Weak lexical priors (token-based, not substring, so "account" never matches
+# "count"). Used only as a tiebreaker per rule 3 above and to lightly order grain
+# candidates -- deliberately small; missing a term just means "no hint", not a
+# wrong answer.
+_KEY_NAME_TOKENS = frozenset((
+    "id", "key", "code", "guid", "uuid", "sk", "pk", "num", "no", "nbr", "number",
+))
+_MEASURE_NAME_TOKENS = frozenset((
+    "amount", "amt", "total", "qty", "quantity", "price", "cost", "revenue",
+    "sales", "balance", "count", "sum", "avg", "rate", "value", "volume", "spend",
+))
 
-def _looks_like_key(name: Optional[str], key_hints: Optional[set] = None) -> bool:
-    """True when a column name reads like an identifier / join key (or is one of
-    the table's actual FK columns)."""
-    if not name:
+
+def _is_continuous_numeric(data_type: Optional[str]) -> bool:
+    """True for fractional numeric types (a continuous MEASURE shape)."""
+    if not data_type:
         return False
-    n = name.lower()
-    if key_hints and n in key_hints:
+    return data_type.strip().lower().startswith(_CONTINUOUS_NUMERIC_PREFIXES)
+
+
+def _is_integer_numeric(data_type: Optional[str]) -> bool:
+    """True for integer numeric types (an identifier/surrogate-key shape)."""
+    if not data_type:
+        return False
+    return data_type.strip().lower().startswith(_INTEGER_NUMERIC_PREFIXES)
+
+
+def _name_hint(name: Optional[str]) -> Optional[str]:
+    """A MILD lexical prior: 'key' | 'measure' | None from name tokens. A weak
+    tiebreaker only -- callers must let FK/type signals win first. Token-based
+    (split on non-alphanumerics, trailing plural 's' stripped) so it never fires
+    on a substring (e.g. "account" is not "count")."""
+    if not name:
+        return None
+    key_hit = measure_hit = False
+    for tok in re.split(r"[^a-z0-9]+", name.lower()):
+        if not tok:
+            continue
+        base = tok[:-1] if tok.endswith("s") and len(tok) > 1 else tok
+        if tok in _KEY_NAME_TOKENS or base in _KEY_NAME_TOKENS:
+            key_hit = True
+        if tok in _MEASURE_NAME_TOKENS or base in _MEASURE_NAME_TOKENS:
+            measure_hit = True
+    if key_hit == measure_hit:      # neither, or ambiguous both -> no signal
+        return None
+    return "key" if key_hit else "measure"
+
+
+def _is_key_like(col: dict, key_hints: Optional[set] = None) -> bool:
+    """Data-driven: is this column an identifier / join key (not a measure)?
+
+    Priority: FK participation (`key_hints`) wins outright; otherwise a column
+    must be near-unique to be a key at all. Among unique columns, TYPE decides
+    where it can -- a continuous numeric (e.g. a high-precision amount) is a
+    measure even if unique, a unique integer/string/date is an identifier -- and
+    only when the type is UNKNOWN does the mild name prior (`_name_hint`) break
+    the tie, defaulting to identifier."""
+    name = (col.get("column_name") or "").lower()
+    if key_hints and name in key_hints:
         return True
-    return n == "id" or n.endswith(_KEY_SUFFIXES)
-
-
-def _looks_like_measure(name: Optional[str]) -> bool:
-    """True when a column name reads like a continuous/additive measure."""
-    if not name:
+    is_unique = (
+        bool(col.get("is_unique_candidate"))
+        or float(col.get("cardinality_ratio") or 0.0) >= PK_UNIQUENESS_MIN
+    )
+    if not is_unique:
         return False
-    n = name.lower()
-    return any(kw in n for kw in _MEASURE_KEYWORDS)
+    if col.get("has_numeric_stats"):
+        dt = col.get("data_type")
+        if _is_continuous_numeric(dt):
+            return False            # continuous numeric = measure (type wins)
+        if _is_integer_numeric(dt):
+            return True             # integer + unique = identifier (type wins)
+        # Type is silent -> mild name prior breaks the tie; default to identifier.
+        return _name_hint(name) != "measure"
+    return True                     # unique non-numeric (string/date) = key
 
 
 def _coerce_list(val: Any) -> list:
@@ -243,11 +312,12 @@ def _build_edges(fk_rows: list[dict]) -> list[ErdEdge]:
     return edges
 
 
-def _measurable_columns(profiling_rows: list[dict]) -> list[str]:
-    """Numeric, low-null columns that make good measures. A near-unique numeric
-    is only treated as an ID (and skipped) when its NAME looks like a key -- a
-    measure-named high-cardinality numeric (e.g. `instrument_revenue`) is still a
-    measure, not a key."""
+def _measurable_columns(profiling_rows: list[dict], key_hints: Optional[set] = None) -> list[str]:
+    """Numeric, low-null columns that make good measures. A column is dropped only
+    when it is KEY-LIKE (`_is_key_like`): it participates in an FK, or it is a
+    unique non-continuous numeric (a surrogate/natural key). A unique CONTINUOUS
+    numeric (e.g. a high-precision amount) stays a measure. This is symmetric with
+    `_grain_column`, so the two never disagree, and it is name-independent."""
     out = []
     for c in profiling_rows or []:
         if not c.get("has_numeric_stats"):
@@ -258,24 +328,28 @@ def _measurable_columns(profiling_rows: list[dict]) -> list[str]:
         name = c.get("column_name")
         if not name:
             continue
-        # A near-unique numeric is usually an ID -- but only when its name reads
-        # like a key. Otherwise a continuous measure would be wrongly dropped.
-        if c.get("is_unique_candidate") and _looks_like_key(name):
+        # A key/identifier is not a measure. Continuous numerics are never keys
+        # (see _is_key_like), so a unique amount/price is correctly kept here.
+        if _is_key_like(c, key_hints):
             continue
         out.append(name)
     return out
 
 
 def _grain_column(profiling_rows: list[dict], key_hints: Optional[set] = None) -> Optional[str]:
-    """Best natural-key candidate: unique + low null, but NEVER a measure and with
-    a strong preference for id/key-named columns (and the table's actual FK
-    columns). A high-cardinality continuous measure like `instrument_revenue` is
-    unique + low-null too, so uniqueness alone must not win -- name semantics
-    decide, otherwise a measure gets mislabeled the grain (which also poisons role
-    inference via the 'has key, few measures -> dimension' nudge)."""
-    # rank: 2 = key-named / FK column, 1 = non-numeric key candidate, 0 = numeric
+    """Best identifier/grain candidate, chosen from DATA not names: unique + low
+    null and NOT a continuous-numeric measure. A high-cardinality continuous
+    measure is unique + low-null too, so uniqueness alone must not win -- type
+    tells them apart (`_is_key_like`), otherwise a measure gets mislabeled the
+    grain (which also poisons role inference via the 'has key, few measures ->
+    dimension' nudge). Ranking prefers FK-participating columns, then non-numeric
+    keys (natural keys/codes), then integer identifiers, with a MILD name nudge
+    among equals; ties break on cardinality."""
+    # rank: 2 = FK column, 1 = non-numeric key candidate, 0 = integer identifier.
+    # +0.5 name nudge lets an id-named candidate edge out an unnamed peer of the
+    # same structural rank -- ordering only, it excludes nothing.
     best = None
-    best_key: tuple = (-1, -1.0)  # (name_rank, cardinality_ratio)
+    best_key: tuple = (-1.0, -1.0)  # (rank, cardinality_ratio)
     for c in profiling_rows or []:
         name = c.get("column_name")
         if not name:
@@ -285,16 +359,17 @@ def _grain_column(profiling_rows: list[dict], key_hints: Optional[set] = None) -
         is_unique = bool(c.get("is_unique_candidate")) or ratio >= PK_UNIQUENESS_MIN
         if not (is_unique and low_null):
             continue
-        is_numeric = bool(c.get("has_numeric_stats"))
-        # A measure-named column is never the grain, even if it happens to be unique.
-        if _looks_like_measure(name) and is_numeric and not _looks_like_key(name, key_hints):
+        # A continuous numeric is a measure, never the grain.
+        if not _is_key_like(c, key_hints):
             continue
-        if _looks_like_key(name, key_hints):
-            rank = 2
-        elif not is_numeric:
-            rank = 1
+        if key_hints and name.lower() in key_hints:
+            rank = 2.0
+        elif not c.get("has_numeric_stats"):
+            rank = 1.0
         else:
-            rank = 0
+            rank = 0.0
+        if _name_hint(name) == "key":
+            rank += 0.5
         cand = (rank, ratio)
         if cand > best_key:
             best_key = cand
@@ -344,7 +419,7 @@ def _infer_role(
     # 3. Profiling shape (naming-independent -- this is what lets an unlabeled
     #    mart / wide table be classified sensibly).
     grain = _grain_column(profiling_rows, key_hints)
-    measures = _measurable_columns(profiling_rows)
+    measures = _measurable_columns(profiling_rows, key_hints)
     n_measures = len(measures)
     n_cols = len(profiling_rows)
     if grain and n_measures <= 1:
@@ -534,7 +609,7 @@ def recommend_erd(
             role=role,
             confidence=conf,
             reasons=reasons,
-            measurable_columns=_measurable_columns(prof),
+            measurable_columns=_measurable_columns(prof, hints),
             grain=_grain_column(prof, hints),
         ))
 
@@ -568,11 +643,15 @@ def recommend_erd(
         anchor_nodes = [n for n in nodes if n.role in ("fact", "source", "bridge")]
     no_clear_anchor = False
     if not anchor_nodes:
-        # No structural signal at all. Do NOT default to "every table is a fact"
-        # (the old bug that reported N fact tables for an all-dimension schema);
-        # anchor only on tables that at least have measures.
+        # No structural fact/source/bridge signal at all. Do NOT invent anchors:
+        # neither from every table (the old bug that reported N fact tables / N
+        # views for an all-dimension schema) nor from every measurable table
+        # (that just re-degenerates to one-view-per-table). Leave anchors empty --
+        # the count collapses to a single starter view (base = max(0, 1)) and any
+        # disconnected measurable table still earns the diminishing orphan bump
+        # below, so we never approach the raw table count.
         no_clear_anchor = True
-        anchor_nodes = [n for n in nodes if n.measurable_columns] or list(nodes)
+        anchor_nodes = []
     anchors = [n.table for n in anchor_nodes]
     anchor_set = {t.lower() for t in anchors}
 
