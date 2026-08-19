@@ -139,7 +139,7 @@ Given a user's question and evidence gathered from SQL queries on metadata
 knowledge base tables, produce a concise, focused analysis.
 
 Available tables queried:
-- table_knowledge_base: table_name, comment, domain, subdomain, has_pii, has_phi, row_count
+- table_knowledge_base: table_name, catalog, `schema`, comment, domain, subdomain, has_pii, has_phi (NO row_count -- use profiling_snapshots.row_count)
 - column_knowledge_base: table_name, column_name, comment, data_type, classification
 - schema_knowledge_base: catalog_name, schema_name, comment, tables_count
 

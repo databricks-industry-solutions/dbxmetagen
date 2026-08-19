@@ -10,9 +10,42 @@ variables:
       of DAB development mode. In development mode, DAB already
       prefixes with the deploying user's name.
     default: "dbxmetagen-app"
-  app_service_principal_application_id:
-    description: Application ID of the service principal used for the Databricks app. This service principal will be granted CAN_MANAGE permissions on the bundle resources. If not set, the app will use the current user context.
-    default: "None"
+  app_name_suffix:
+    description: >-
+      Optional suffix appended to the app name and job-name prefix (e.g.
+      "-dev", "-team1"). Empty by default so the app is named exactly
+      app_name. Set this to deploy multiple independent instances to ONE
+      workspace (e.g. different targets or teams) without them overwriting
+      each other's single app resource.
+    default: ""
+  app_display_name:
+    description: >-
+      Display name shown in the app UI title bar. Overridable via
+      variable-overrides.json, but the value MUST be non-empty -- an empty value
+      is stripped by the DAB SDK (omitempty) and the Apps deploy then rejects it.
+      Defaults to the app name.
+    default: "dbxmetagen"
+  user_api_scopes:
+    description: >-
+      OAuth scopes the app DECLARES for On-Behalf-Of user auth. Declared on EVERY
+      deploy (requires the workspace "Apps - user token passthrough" feature). Scopes:
+      files.files (UC volumes), sql.statement-execution (SQL), dashboards.genie
+      (Genie) -- the three the app actively uses under the user token -- plus
+      serving.serving-endpoints (model serving under the user token; declared for
+      parity with the notebook deploy path and future OBO serving calls, not exercised
+      by the app today -- drop it if you want a minimal consent surface). enable_obo is
+      a SEPARATE runtime switch for WHICH principal makes the call (user token vs app
+      SP) and does NOT gate this declaration. Override only to add/remove scopes.
+    type: complex
+    default: ["files.files", "serving.serving-endpoints", "sql.statement-execution", "dashboards.genie"]
+  app_permissions:
+    description: >-
+      Who can open the app UI (CAN_USE). Empty by default; the deploying user
+      already has CAN_MANAGE via the target permissions block. Override this
+      complex variable to grant groups/users, e.g.
+      [{"group_name": "account users", "level": "CAN_USE"}].
+    type: complex
+    default: []
   lakebase_catalog:
     description: "Lakebase catalog name for GraphRAG graph data"
     default: "dbxmetagen_graphrag"

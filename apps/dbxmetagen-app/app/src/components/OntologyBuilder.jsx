@@ -890,7 +890,7 @@ export default function OntologyBuilder({ onNavigate }) {
     })
     setSuggesting(false)
     if (err) { setError(err); return }
-    setSuggestions(data?.suggestions || [])
+    setSuggestions(Array.isArray(data?.suggestions) ? data.suggestions : [])
   }, [selectedTables, domain, entityNames, includeColumnMeta])
 
   // Suggest relationships
@@ -903,7 +903,7 @@ export default function OntologyBuilder({ onNavigate }) {
     })
     setSuggestingRels(false)
     if (err) { setError(err); return }
-    setRelSuggestions(data?.suggestions || [])
+    setRelSuggestions(Array.isArray(data?.suggestions) ? data.suggestions : [])
   }, [entityNames, selectedTables, domain, includeColumnMeta])
 
   // Suggest properties for selected entity
@@ -917,7 +917,7 @@ export default function OntologyBuilder({ onNavigate }) {
     })
     setSuggestingProps(false)
     if (err) { setError(err); return }
-    setPropSuggestions(data?.suggestions || [])
+    setPropSuggestions(Array.isArray(data?.suggestions) ? data.suggestions : [])
   }, [selectedNode, state.entities, selectedTables, includeColumnMeta])
 
   // Accept helpers

@@ -2,53 +2,209 @@
   <img src="images/dbxmetagen_logo.png" alt="dbxmetagen logo" width="120" />
 </p>
 
-# dbxmetagen: GenAI-Assisted Metadata Generation and Management for Databricks
+# dbxmetagen: AI-Native Metadata Platform for Databricks
 
 <img src="images/DBXMetagen_arch_hl.png" alt="High-level DBXMetagen Architecture" width="800" top-margin="50">
 
-**dbxmetagen** is an AI-powered toolkit for generating, managing, and analyzing metadata across Unity Catalog. It provides:
+**dbxmetagen** turns raw Unity Catalog tables into governed, AI-queryable knowledge. It
+generates AI-reviewed metadata (descriptions, PII/PHI/PCI tags, business-domain
+classification), builds a knowledge graph and formal-ontology layer on top of it, and uses
+that model to auto-generate a semantic layer (UC metric views) and Genie spaces — with
+human review at every step. The pipeline runs in four stages:
 
+**1. Metadata generation** — the foundation
 - **Comment generation**: AI-generated descriptions for tables and columns
-- **PI classification**: Identify and tag PII, PHI, and PCI with Unity Catalog tags
+- **PI classification**: Identify and tag PII, PHI, and PCI (LLM + rule-based spaCy/Presidio)
 - **Domain classification**: Categorize tables into business domains and subdomains
-- **Data profiling**: Statistical profiling and quality scoring
-- **Knowledge graph**: Graph-based metadata analytics with embeddings, similarity, and clustering
-- **Ontology discovery**: Business entity extraction and validation against standard ontologies (FHIR, OMOP, etc.)
-- **FK prediction**: AI-assisted foreign key relationship discovery using column similarity and LLM judgment
-- **Semantic layer**: Auto-generated metric views and Genie space creation from knowledge base
 - **Customer context**: Inject domain-specific knowledge into prompts, scoped by catalog/schema/table/pattern
-- **Metadata review**: Interactive review, edit, and apply workflow for generated metadata
-- **Web dashboard**: FastAPI + React app covering the full metadata lifecycle
+- **Metadata review**: Human-in-the-loop review, edit, and apply workflow — the governance centerpiece
 
+**2. Knowledge platform** — metadata → a queryable graph
+- **Knowledge base**: Aggregated table/column/schema metadata with extended system properties
+- **Formal ontologies + entity discovery**: Map tables/columns to standard ontologies — FHIR R4, OMOP CDM, Schema.org, Dublin Core, FIBO Foundations (financial services) — with multiple bundles coexisting in one schema
+- **Knowledge graph**: Entity-relationship model with embeddings, similarity, clustering, and quality scores
+- **FK prediction**: AI + heuristic foreign-key discovery (distinct from join-key suggestion), with column-similarity ranking and ontology hints
+- **Data profiling & quality scoring**: Automated profiling with gradient-boosted quality grades
+- **Vector Search indexes**: Hybrid semantic + lexical retrieval over metadata and ontology entities
 
-The core value of dbxmetagen is **metadata generation and a governed knowledge graph**. The web dashboard manages the full lifecycle -- generate, review, and apply -- but the outputs are standard Delta tables and Vector Search indexes that you can consume from any tool: notebooks, dashboards, Genie spaces, agents, or your own applications.
+**3. Semantic layer & Genie** — a business model from your data
+- **Metric view generation**: Auto-generated UC metric views (measures, dimensions, joins, filtered measures, windows) with SQL validation + autofix
+- **Genie space builder**: Generate Genie spaces with instructions and example SQL — and **pull curated SQL from existing Genie spaces to seed new metric views** (cover a data-mart layer without touching the room)
+- **ERD recommender**: Hybrid LLM + heuristic engine that proposes metric-view structure from your table relationships
+
+**4. Agents & serving** — explore it in natural language
+- **Deep analysis & analyst agents**: GraphRAG-style natural-language exploration of the catalog and its relationships
+- **Metric-view agent**: chat-driven metric discovery over deployed views
+- **Web dashboard**: FastAPI + React app covering the full lifecycle (Generate · Review · Explore)
+
+The core value is **metadata generation and a governed knowledge graph**. The dashboard drives the
+full lifecycle, but every output is a standard Delta table or Vector Search index you can consume
+from any tool: notebooks, dashboards, Genie spaces, agents, or your own applications.
+
+> [!NOTE]
+> **dbxmetagen is a Solutions Accelerator.** Every output — comments, PII/PHI/PCI tags, domain
+> classifications, ontology mappings, FK predictions, metric views, Genie spaces — is AI-generated
+> and meant to be reviewed by a human before it's applied or trusted. Nothing touches your catalog
+> until you review and apply it (`apply_ddl=false` by default). See [Human Review](#human-review).
 
 
 ## Quickstart
 
 **Prerequisites:** Databricks CLI (>=0.283.0), Python 3.10+, [uv](https://docs.astral.sh/uv/) (for dependency management), Node.js (for frontend build), a Databricks workspace with Unity Catalog enabled, and a Foundation Model endpoint (e.g. `databricks-claude-sonnet-4-6`).
 
-1. Clone the repo and configure:
+1. Clone the repo and set your per-workspace bundle variables. `databricks.yml`
+   is static and committed — supply `catalog_name`, `schema_name`, and
+   `warehouse_id` (and optionally `vs_endpoint_name`) in a gitignored
+   `variable-overrides.json`. **DAB auto-loads it from
+   `.databricks/bundle/<target>/variable-overrides.json`** (a repo-root file is
+   NOT picked up). Copy the committed example into place for your target:
    ```bash
    git clone https://github.com/databricks-industry-solutions/dbxmetagen
    cd dbxmetagen
-   cp example.env dev.env   # Edit with your workspace URL, catalog, schema, warehouse_id
+   mkdir -p .databricks/bundle/dev          # match your deploy target (-t)
+   cp variable-overrides.example.json .databricks/bundle/dev/variable-overrides.json
+   # then edit that file with your catalog / schema / warehouse ID
    ```
+   (Alternatively pass them with `--var "catalog_name=...,schema_name=...,warehouse_id=..."`
+   or `BUNDLE_VAR_*` env vars. The workspace host comes from your CLI profile.
+   The full list of overridable variables is **declared** in `variables.yml` /
+   `variables.advanced.yml` / `resources/app_variables.yml`; `variable-overrides.example.json`
+   (basic) and `variable-overrides.advanced.example.json` are copy-ready starting points; and
+   `example.env` is an annotated human reference — no tool reads it, so you never edit it in place.)
 
-2. **Azure / GCP users:** The default job cluster node type is `i3.2xlarge` (AWS). Update `node_type` in `variables.yml` before deploying:
-   - **Azure:** `Standard_DS4_v2`
+   > **First deploy:** `.databricks/` is git-ignored and does **not** exist in a fresh clone,
+   > so the `mkdir -p` above is required before the file will be picked up (a repo-root file is
+   > ignored). If you deploy before setting `catalog_name`, the deploy still succeeds and the app
+   > shows a clear "CATALOG_NAME not set" banner telling you what to fix — it won't fail cryptically.
+
+   > **Prefer the workspace UI?** The Databricks bundle editor's **Deploy**
+   > button is a first-class alternative to the CLI (same DAB engine, same
+   > `artifacts.build` hook — the wheel is built for you in the workspace). See
+   > [`docs/MANUAL_DEPLOYMENT.md`](docs/MANUAL_DEPLOYMENT.md). In the UI you set
+   > variables through the **⋮** (three-dots) menu next to the **Deploy** button
+   > → **Configure variable overrides** (the UI equivalent of `--var`, which is
+   > CLI-only). **Important:** that editor stores overrides in a **workspace-managed
+   > store the UI deploy reads** — it is a *separate* store from the CLI's
+   > `.databricks/bundle/<target>/variable-overrides.json` file, it is **not**
+   > written into your Git Folder, and it is **not** committed to git. So editing
+   > one does not populate the other: use the ⋮ editor for UI deploys, and the
+   > `.databricks/...` file (or `--var`/`BUNDLE_VAR_*`) for CLI/`deploy.sh` deploys.
+
+2. **Azure / GCP users:** The default job cluster node type is `i3.2xlarge` (AWS). Update `node_type` in `variables.yml` (or set it in `variable-overrides.json`) before deploying:
+   - **Azure:** `Standard_D8s_v3`
    - **GCP:** `n2-highmem-8`
 
-3. Deploy:
-   ```bash
-   ./deploy.sh --profile <your-profile> --target dev
-   ```
-   This builds the wheel, compiles the React frontend, deploys jobs + app via Asset Bundles, and starts the dashboard.
+3. Deploy. **Pick the path that matches your environment:**
 
-   To deploy jobs only (skip app build, SP detection, and app start):
+   | Path | Use when | Creates | Notes |
+   |------|----------|---------|-------|
+   | **A. CLI — 3 commands** | You can run the Databricks CLI locally / in CI | **All 24 jobs** + app | Recommended. Most explicit; env applied via `bundle deploy` (not affected by the UI caveat). |
+   | **A2. `./deploy.sh` — one command** | You want route A as a single command, or you have a legacy `{target}.env` | **All 24 jobs** + app | Legacy but **fully supported**. Chains route A's 3 commands; also reads `{target}.env` and bridges a pip proxy to `uv`. |
+   | **B. Workspace UI** | No local machine, but you have the workspace UI | **All 24 jobs** + app | First-class peer to the CLI (same bundle + build hook). Grants are manual. **See the "UI env" known limitation below.** |
+   | **C. Notebook pipeline** | You can run **neither** the CLI nor the UI Deploy button | **8 of 24 jobs** (core only) | True fallback — see [`notebook_deployment_pipeline/README.md`](notebook_deployment_pipeline/README.md). Some dashboard features unavailable. |
+
+   Paths **A**, **A2**, and **B** run the same bundle, build the wheel via the
+   `artifacts.build` hook, and register jobs + the app — they are equivalent.
+   Databricks Asset Bundles deliberately separate *deploying* an app from
+   *starting* it (starting consumes app compute), so at the platform level this is
+   **two steps: deploy, then deploy-source-and-start the app.** Route A does both
+   steps explicitly; route **A2 (`./deploy.sh`)** chains them into one command for
+   you; the UI (route B) does them as two button clicks.
+
+   **Option A — CLI** (scriptable, best for CI):
    ```bash
-   ./deploy.sh --profile <your-profile> --target dev --no-app
+   databricks bundle deploy -t dev -p <your-profile>                  # builds wheel + registers jobs & app
+   databricks bundle run   -t dev -p <your-profile> dbxmetagen_app    # deploys app source to compute + starts it
+   scripts/grant_app_permissions.sh -t dev -p <your-profile>          # UC grants + Vector Search endpoint (only needed for OBO / app-SP catalog access)
    ```
+
+   **Option A2 — `./deploy.sh`** (the same three commands, one invocation):
+   ```bash
+   ./deploy.sh -t dev -p <your-profile>
+   ```
+   `deploy.sh` is a **legacy-but-fully-supported** wrapper that chains the three
+   Option A commands. It does **not** generate any YAML (`databricks.yml`,
+   `app.yaml`, and the app resource are static committed files). It adds two
+   conveniences for existing customers:
+   - **`{target}.env` support.** If a `dev.env` / `demo.env` / `prod.env` exists,
+     it is sourced and its scalar values (`catalog_name`, `schema_name`,
+     `warehouse_id`, `vs_endpoint_name`, `node_type`, `budget_policy_id`,
+     `enable_obo`, `app_name`, `app_name_suffix`, `app_display_name`, `model`) are
+     forwarded as `--var` overrides — so a legacy `.env`-based deploy keeps working
+     with no migration. (Knobs whose *shape* changed — `policy_id`, `spn_id`,
+     `permission_groups/users` — are **not** forwarded; the script prints how to
+     move them to `variable-overrides.json`.) If you use `.databricks/bundle/<target>/variable-overrides.json`
+     instead, `deploy.sh` works too — the values resolve through the bundle.
+   - **pip → uv proxy bridge.** If `pip` is configured with a private index
+     (`global.index-url`) and `UV_INDEX_URL` is unset, it forwards that index to
+     `uv` for the wheel build (corporate-proxy environments).
+
+   Flags: `-t/--target`, `-p/--profile`, `--no-app` (jobs/code only, skip app
+   start), `--no-frontend`, `--no-vs`. If no `catalog_name` is found in any source,
+   it prints a clear warning and still deploys (the app then shows a "CATALOG_NAME
+   not set" banner until you configure it).
+
+   **Option B — Workspace UI** (no local machine required):
+   1. Clone the repo as a **Git Folder**.
+   2. Open `databricks.yml`, click the **Deployments** (rocket) icon, and pick
+      your target. Before deploying, set your variables: open the **⋮** menu next
+      to **Deploy**, choose **Configure variable overrides**, and fill in
+      `catalog_name` / `schema_name` / `warehouse_id`. These are saved to a
+      **workspace-managed store that the UI deploy reads** — *not* to a
+      `.databricks/...` file in your Git Folder, and not to git (see step 1's
+      note). Don't go looking for a `.databricks` folder; you won't see one, and
+      you don't need to create one for the UI path. Then click **Deploy** — this
+      builds the wheel and registers jobs + the app, but does **not** start it.
+   3. Go to **Workspace > Apps > dbxmetagen-app**, click **Deploy** (deploys the
+      app source), then **Start** (brings up compute). This is the UI equivalent
+      of `bundle run dbxmetagen_app`. Takes a few minutes as it installs the wheel.
+   4. For OBO / app-SP catalog access, run `scripts/grant_app_permissions.sh` (or
+      grant the app service principal UC access manually — see
+      [`docs/MANUAL_DEPLOYMENT.md`](docs/MANUAL_DEPLOYMENT.md)).
+
+   > **⚠️ Known limitation — UI deploy may start the app without its config.** On
+   > the workspace-UI path, the app compute can start but come up **without its
+   > environment** (`CATALOG_NAME` / `WAREHOUSE_ID` missing), even when the
+   > variable overrides were set correctly — you'll see the app's built-in
+   > "CATALOG_NAME not set" banner. The env is applied reliably by the **CLI**
+   > path (`bundle deploy` writes it), so if you hit this, deploy with Option A /
+   > A2 instead (or run `databricks bundle deploy` once from a workspace web
+   > terminal, then Start the app from the Apps page). This is a known issue under
+   > active investigation; the banner is your signal that it happened.
+
+   > **Only using On-Behalf-Of (OBO) user auth?** (Default is off — skip this if
+   > you deploy with `enable_obo=false`.) Two OBO-specific gotchas:
+   > - **After enabling or re-scoping OBO, re-consent in the browser.** The app
+   >   requests the user's authorization on first visit; a stale cached consent
+   >   shows up as auth/scope errors. Open the app in an **incognito window** (or
+   >   sign out/in) to force a fresh consent after any OBO change.
+   > - **Scopes are declared by default — no need to set them.** `user_api_scopes`
+   >   defaults to `files.files`, `serving.serving-endpoints`, `sql.statement-execution`,
+   >   `dashboards.genie` on every deploy, so enabling OBO needs no scope wrangling.
+   >   Declaring scopes requires the workspace's user-token-passthrough feature; if a
+   >   target workspace lacks it, override `user_api_scopes` to `[]` to opt out.
+
+   Notes:
+   - The React frontend is **prebuilt and committed** (`apps/dbxmetagen-app/app/src/dist/`).
+     You do NOT run `npm` to deploy — only contributors who change the frontend rebuild it
+     (`cd apps/dbxmetagen-app/app/src && npm install && npm run build`).
+   - The grants script is separate because DAB cannot grant an app's own service
+     principal UC access or provision a Vector Search endpoint natively. If you are
+     not using OBO and the app SP already has catalog access, you can skip it.
+   - **To deploy jobs only**, do just the `bundle deploy` (CLI) or the bundle Deploy
+     (UI) and skip the app start + grants.
+   - **One workspace, one instance:** the app is a singleton by name. If you deploy
+     more than one target/instance to the same workspace, set `app_name_suffix`
+     (e.g. `-dev`) in your overrides so they don't overwrite each other's app.
+   - **`./deploy.sh` (Option A2 above):** legacy but **fully supported** — it
+     chains the three Option A commands, reads a `{target}.env` if present, and
+     bridges a pip proxy to `uv`. It is **not** the old template-generating script
+     (no YAML is generated). See Option A2 for details and flags.
+   - **Advanced overrides:** for cluster policy, serverless budget, `run_as` SP,
+     app permissions, OBO scopes, or lakebase, copy
+     `variable-overrides.advanced.example.json` into
+     `.databricks/bundle/<target>/variable-overrides.json` (CLI) or paste the same
+     keys into the UI's ⋮ **Configure variable overrides** editor.
 
 4. Access the app at **Workspace > Apps > dbxmetagen-app** and follow the instructions there.
 
@@ -89,6 +245,42 @@ main({
 
 Use `"my_catalog.my_schema.*"` to process all tables in a schema.
 
+#### Customer context (optional)
+
+Inject your own business meaning into every prompt — glossary terms, column
+semantics, "what this schema really is" — so generated comments and classifications
+reflect domain knowledge, not just the data shape. Write a YAML file with a
+top-level `contexts:` list (see `examples/customer_context.yaml`):
+
+```yaml
+# ./contexts/my_context.yaml
+contexts:
+  - scope: my_catalog.my_schema        # catalog | schema | table | pattern (glob)
+    scope_type: schema
+    context_text: >-
+      Investment-ops warehouse. "Position" = a portfolio holding, not a job role.
+      Amounts are USD unless a currency column says otherwise.
+```
+
+Then point `main()` at the folder — it seeds the `customer_context` table (a MERGE,
+so re-runs are idempotent) before generating. **Both keys are required:**
+
+```python
+main({
+    "catalog_name": "my_catalog",
+    "table_names": "my_catalog.my_schema.*",
+    "mode": "comment",
+    "schema_name": "metadata_results",
+    "table_names_source": "parameter",
+    "use_customer_context": "true",
+    "customer_context_yaml_dir": "./contexts",   # folder of *.yaml files
+})
+```
+
+More specific scopes win (table > pattern > schema > catalog); matches are
+concatenated in that order. This is the same `customer_context` table the app UI
+manages, so context seeded here also shows up there.
+
 ### 3. Run analytics (optional)
 
 After metadata generation, build the knowledge base and graph:
@@ -116,10 +308,20 @@ The `examples/` notebooks show how to use dbxmetagen as a **standalone pip-insta
 
 ## Disclaimer
 
-- AI-generated metadata must be human-reviewed for compliance.
-- Generated comments may include data samples depending on settings.
-- Compliance (e.g., HIPAA) is the user's responsibility.
-- Unless configured otherwise, dbxmetagen sends data to the specified model endpoint.
+> **Regulatory compliance — including HIPAA — is always the sole responsibility of the user.**
+> dbxmetagen is a tool that generates and classifies metadata; it does **not** guarantee, certify,
+> or ensure HIPAA (or any other regulatory) compliance. PII/PHI/PCI detection is AI-assisted and
+> **not** a substitute for a compliance review. You are responsible for validating all output,
+> controlling what data is sent to model endpoints, and meeting every legal and regulatory
+> obligation that applies to your data and jurisdiction.
+
+- AI-generated metadata must be human-reviewed for compliance — PII/PHI/PCI detection can produce
+  false negatives, and you must review all sensitivity classifications before relying on them.
+- Generated comments may include data samples depending on settings (`sample_size`, `allow_data`);
+  set `sample_size=0` to send no row data to the model.
+- Unless configured otherwise, dbxmetagen sends data to the specified model endpoint. You control
+  the endpoint and what data leaves your environment.
+- Compliance (e.g., HIPAA, GDPR, PCI-DSS) is the user's responsibility, as stated above.
 
 ## Architecture
 
@@ -239,7 +441,7 @@ The ontology and graph system is inspired by semantic web standards (RDF, OWL, S
 
 ## Human Review
 
-Every pipeline step produces AI-generated output that should be reviewed before applying to Unity Catalog. By default, `apply_ddl=false` -- nothing touches your catalog until you explicitly review and apply.
+Every pipeline step produces AI-generated output meant to be reviewed before it's applied to Unity Catalog. By default, `apply_ddl=false` -- nothing touches your catalog until you review and apply.
 
 Review guidance by step:
 
@@ -251,6 +453,15 @@ Review guidance by step:
 - **Metric views**: verify SQL expressions are valid and semantically correct before applying
 
 The app's **Review & Apply** page is the primary review interface. The **Coverage** page tracks completeness across your schema.
+
+### How FK review works
+
+The review UI lists **every** candidate join for the tables in scope, ranked by confidence -- not only the pairs the model predicted as foreign keys (`is_fk=true`). Confidence is shown as a signal to help you decide, not as a filter. Your review decision is authoritative in **both** directions:
+
+- **Reject** a predicted FK you don't want, and it stops flowing downstream.
+- **Approve** a join the model did *not* predict as an FK (a lower-confidence or `is_fk=false` pair). Approving sets `is_fk=true` and marks the row reviewed.
+
+Only reviewed-and-approved (or model-predicted `is_fk=true`) joins are synced into the knowledge graph, Vector Search index, metric views, and DDL -- these consumers all filter on `is_fk`. A prediction that lingers in the review list but is never approved has no downstream effect. Approved rows are locked: re-running FK prediction (including a `sweep_stale` refresh) never overwrites a reviewed decision. Use **Sync Knowledge Graph** after reviewing to propagate your decisions.
 
 ## Interpreting Ontology Results
 
@@ -358,7 +569,7 @@ Settings are in `variables.yml`. Key options:
 | `mode` | `comment` | Generation mode: `comment`, `pi`, or `domain` |
 | `apply_ddl` | `false` | Apply generated metadata directly to Unity Catalog |
 | `allow_data` | `true` | Set `false` to prevent data from being sent to LLMs |
-| `node_type` | `i3.2xlarge` | Job cluster node type. Change for Azure (`Standard_DS4_v2`) or GCP (`n2-highmem-8`) |
+| `node_type` | `i3.2xlarge` | Job cluster node type. Change for Azure (`Standard_D8s_v3`) or GCP (`n2-highmem-8`) |
 | `include_deterministic_pi` | `true` | Enable SpaCy/Presidio for rule-based PI detection (default model: `en_core_web_md`; set `spacy_model_names=en_core_web_lg` for higher accuracy -- see [Configuration docs](docs/CONFIGURATION.md)) |
 | `federation_mode` | `false` | Enable for federated catalog sources (Redshift, Snowflake) |
 
@@ -383,7 +594,7 @@ The app is in `apps/dbxmetagen-app/` and provides a FastAPI backend with a React
 - **Agent** -- Deep analysis chat with GraphRAG, graph explorer, semantic search, and MLflow trace links
 - **Entity Browser** -- Entity-first navigation with conformance view
 
-**Permissions model:** The app uses two separate identities. The **app service principal** (SPN) controls what the app UI can *read* -- it needs SELECT on your catalog to browse tables, coverage, metadata, and graph data. The **deployer's identity** (the user who ran `deploy.sh`) controls what jobs can *write* -- jobs run as the deployer and need CREATE TABLE, ALTER TABLE, and SET TAGS on the target catalog. This means a user can see metadata in the app even if they don't have permission to generate or apply it, and conversely, the app SPN doesn't need write access to your tables. UC grants for the app SPN are applied automatically on every deploy. See [docs/PERMISSIONS.md](docs/PERMISSIONS.md) for the full permissions reference including OBO mode, Vector Search, and end-user access.
+**Permissions model:** The app uses two separate identities. The **app service principal** (SPN) controls what the app UI can *read* -- it needs SELECT on your catalog to browse tables, coverage, metadata, and graph data. The **deployer's identity** (the user who ran `databricks bundle deploy`) controls what jobs can *write* -- jobs run as the deployer and need CREATE TABLE, ALTER TABLE, and SET TAGS on the target catalog. This means a user can see metadata in the app even if they don't have permission to generate or apply it, and conversely, the app SPN doesn't need write access to your tables. UC grants for the app SPN are applied by `scripts/grant_app_permissions.sh` (run after each deploy). See [docs/PERMISSIONS.md](docs/PERMISSIONS.md) for the full permissions reference including OBO mode, Vector Search, and end-user access.
 
 **Deep Analysis Agent:** Natural-language queries using a LangGraph GraphRAG pipeline that combines Vector Search retrieval, multi-hop graph traversal via Lakebase, FK/KB lookups, and LLM-generated data queries. Results include MLflow trace links for observability.
 
@@ -417,7 +628,8 @@ dbxmetagen exposes its knowledge base, knowledge graph, and vector index as [Dat
 |-------|-------------|
 | [Configuration](docs/CONFIGURATION.md) | All runtime parameters, ontology bundles, Vector Search, Lakebase, OBO, and community summaries |
 | [Permissions](docs/PERMISSIONS.md) | Two-identity model (app SPN vs job owner), UC grants, OBO mode, and end-user access |
-| [Manual Deployment](docs/MANUAL_DEPLOYMENT.md) | Step-by-step deployment without `deploy.sh` (CLI-only or CI/CD) |
+| [Workspace UI Deployment](docs/MANUAL_DEPLOYMENT.md) | First-class Databricks Asset Bundles deploy from the workspace UI (peer to the CLI path; the wheel is built in-workspace) |
+| [Migration Guide](docs/MIGRATION.md) | Upgrading a workspace deployed with the old `deploy.sh` -- one-time cleanup of stale synced files, and what's safe (your generated data is untouched) |
 | [Domain & Ontology Architecture](docs/DOMAIN_ONTOLOGY_ARCHITECTURE.md) | Formal vs custom ontology bundles, domain YAML, and how they interact |
 | [MCP Servers](docs/MCP_SERVERS.md) | Managed MCP server setup, tool reference, and agent integration |
 | [QA Checklist](docs/QA_CHECKLIST.md) | Pre-release validation checklist |
@@ -428,7 +640,8 @@ dbxmetagen exposes its knowledge base, knowledge graph, and vector index as [Dat
 
 ```bash
 uv sync                     # core deps (comment/domain modes)
-uv sync --extra pi          # also install the spaCy model for PI dev
+uv sync --extra pi          # spaCy/Presidio libs for PI dev (model installed separately)
+uv pip install -r requirements-pi.txt   # the en_core_web_md spaCy model (required for PI mode)
 ./run_tests.sh              # runs 3 test suites in isolated processes
 ./run_tests.sh -q           # quick mode (core tests only)
 
@@ -459,11 +672,21 @@ export UV_INDEX_URL=https://pypi-proxy.dev.databricks.com/simple
 export UV_NATIVE_TLS=1
 ```
 
-Use that for `uv sync`, `uv lock`, `./deploy.sh`, and `./publish.sh`. Local `uv.lock` is gitignored; never commit it (it may contain internal proxy URLs). When bumping deps, export `requirements.txt` with `bash scripts/export_requirements.sh` and commit that file.
+Use that for `uv sync`, `uv lock`, `databricks bundle deploy`, and `./publish.sh`. Local `uv.lock` is gitignored; never commit it (it may contain internal proxy URLs). When bumping deps, export `requirements.txt` with `bash scripts/export_requirements.sh` and commit that file.
 
-**External customers** need no special config — `uv` defaults to public PyPI. `./deploy.sh` only runs `uv build` (hatchling) and does not use `uv.lock`.
+**External customers on public PyPI** need no special config — `uv` defaults to public PyPI, and the deploy build hook (`scripts/build_artifacts.sh`) only runs `uv build` (hatchling) and does not use `uv.lock`.
 
-### `deploy.sh` fails downloading from `pypi-proxy.dev.databricks.com`
+**External customers behind a proxy / on a private PyPI mirror (air-gapped):** the build hook does **not** scrub your environment, so standard `uv`/pip settings flow straight through to `uv build`. Set them in your shell before `databricks bundle deploy` (or in the workspace-UI build environment):
+
+```bash
+export UV_INDEX_URL=https://your-private-mirror/simple   # or UV_EXTRA_INDEX_URL
+export UV_NATIVE_TLS=1                                    # trust the corporate CA
+export HTTPS_PROXY=http://proxy.your-corp:8080           # if you route through an HTTP proxy
+```
+
+The **app's runtime `pip install`** (of `apps/dbxmetagen-app/app/requirements.txt`) runs in the Databricks Apps *platform* environment, which this repo cannot configure per-deploy. To route that install at a private mirror, either configure your workspace's package access (a Databricks workspace setting) or add an `--index-url` / `--extra-index-url` line to `apps/dbxmetagen-app/app/requirements.txt.template` and rebuild.
+
+### `bundle deploy` fails downloading from `pypi-proxy.dev.databricks.com`
 
 This URL is only reachable on Databricks internal networks. If you are **not** on a corp laptop, unset any internal proxy:
 
@@ -492,21 +715,19 @@ export UV_NATIVE_TLS=1
 
 Add this to your shell profile (`~/.zshrc`, `~/.bashrc`, etc.) to make it permanent.
 
-### `deploy.sh` hangs or fails at "Building frontend"
+### Frontend build (`npm run build`) hangs or fails
 
-The deploy script runs `npm install` and `npm run build` to compile the React frontend. Common issues:
+Building the React frontend runs `npm install` and `npm run build`. Common issues:
 
 - **npm not installed:** Install Node.js (which includes npm) from https://nodejs.org/ or via `brew install node`.
 - **npm registry unreachable:** Corporate firewalls or VPNs may block `registry.npmjs.org`. Check your network/proxy settings.
 - **npm crashes ("Exit handler never called"):** This is a [known npm 11.x bug](https://github.com/npm/cli/issues). Fix by clearing the cache and retrying.
   If that doesn't help, downgrade npm: `npm install -g npm@10`
 
-Then redeploy with `./deploy.sh`.
-
-**Workaround:** The pre-built frontend (`apps/dbxmetagen-app/app/src/dist/`) is committed to the repo, so you can skip the build entirely if you haven't changed any frontend code:
+**Workaround:** The pre-built frontend (`apps/dbxmetagen-app/app/src/dist/`) is committed to the repo, so if you haven't changed any frontend code you can skip the `npm run build` step entirely and deploy the committed `dist/` directly:
 
 ```bash
-./deploy.sh --profile <your-profile> --target dev --no-frontend
+databricks bundle deploy -t dev -p <your-profile>
 ```
 
 ### Jobs fail with "Instance type not supported" or "NODE_TYPE_NOT_SUPPORTED"
@@ -518,14 +739,54 @@ The default `node_type` in `variables.yml` is `i3.2xlarge`, which is an AWS inst
 | Cloud | Recommended `node_type` |
 |-------|------------------------|
 | AWS   | `i3.2xlarge` (default) |
-| Azure | `Standard_DS4_v2`      |
+| Azure | `Standard_D8s_v3`      |
 | GCP   | `n2-highmem-8`         |
 
 You may need to try a couple different node types if your organization doesn't have capacity for these in your cloud.
 
+### App serves the wrong config after deploying more than one target to the same workspace
+
+The app is a **singleton by name** in a workspace. Jobs are keyed by ID (dev mode prefixes their
+names so targets coexist), but the app resource name is **not** dev-prefixed — so deploying two
+targets (e.g. `dev` and `demo`) into one workspace makes both own the single app, and **last deploy
+wins**. Symptoms are the app reporting `WAREHOUSE_ID not configured`, OBO disabled, or missing job
+IDs, because the last-deployed target's overrides are now active.
+
+**Fix:** set `app_name_suffix` (default `""`, fully backward compatible) in your overrides to run
+separate instances in one workspace — it is appended to both the app name and the job-name prefix
+(e.g. `-dev`). Alternatively, deploy each target to its own workspace.
+
+### Workspace UI deploy builds a stale or missing wheel
+
+When you deploy from the **workspace UI Deploy button**, the `artifacts.build` hook
+(`scripts/build_artifacts.sh`) runs in the workspace-hosted build environment, which must have `uv`
+and Python 3.11+. If either is missing, the UI deploy can fail or ship a stale wheel / missing
+`configurations/`. The **CLI** path builds on your own machine and is unaffected. If you hit this,
+prefer the CLI deploy, or see [docs/MANUAL_DEPLOYMENT.md](docs/MANUAL_DEPLOYMENT.md) for the
+in-workspace build requirements.
+
+### Known Limitations
+
+- **`sample_size=0` degrades PI and domain quality.** With no row sampling, PI detection and domain
+  classification rely on column names, types, and existing comments rather than data values. Keep a
+  non-zero `sample_size` (or set `allow_data=false` only when you specifically must not send data to
+  the LLM) for best results.
+- **Very large catalogs need tuning.** Defaults are tuned for tens-to-thousands of tables. For
+  10,000+ tables, raise multi-task parallelism and `columns_per_call` (see [Scaling](#scaling)).
+  Further throughput/cost work — batching column/table classification LLM calls and batching
+  `DESCRIBE EXTENDED` via `information_schema` — is tracked in
+  [docs/CONSOLIDATED_ROADMAP.md](docs/CONSOLIDATED_ROADMAP.md) (items AQ-1/2, R3) and is not required
+  for typical runs.
+- **Federated sources.** In `federation_mode`, `DESCRIBE EXTENDED`, `ALTER TABLE`, and `SET TAGS` are
+  disabled and all output is Delta-native; start with a small table set to gauge source-query load
+  before scaling up.
+
 ## Dependencies
 
-All packages use permissive licenses (Apache 2.0, MIT, BSD, PSF). See [docs/DEPENDENCIES.md](docs/DEPENDENCIES.md) for the full package analysis.
+The core library and all frontend packages use permissive licenses (Apache 2.0, MIT, BSD, PSF).
+The one exception is the app's Postgres/Lakebase driver `psycopg2-binary` (**LGPL v3 with
+exceptions**, used unmodified as a dynamically-linked app dependency). See
+[docs/DEPENDENCIES.md](docs/DEPENDENCIES.md) for the full package/version/license table.
 
 ## License
 

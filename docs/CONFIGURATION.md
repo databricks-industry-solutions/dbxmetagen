@@ -12,7 +12,7 @@ Most important settings in `variables.yml`:
 
 **Model & Performance:**
 - `model`: LLM endpoint (recommend `databricks-claude-sonnet-4-6`)
-- `columns_per_call`: Columns per LLM call (5-10 recommended)
+- `columns_per_call`: Columns per LLM call (default 20; 5-10 for richer per-column context)
 - `temperature`: Model creativity (0.1 for consistency)
 - `max_tokens`: Maximum output length
 
@@ -36,7 +36,7 @@ Most important settings in `variables.yml`:
 | allow_data_in_comments | Include data in comments | true |
 | sample_size | Rows to sample | 5 |
 | add_metadata | Include extended metadata | true |
-| include_datatype_from_metadata | Include data types | false |
+| include_datatype_from_metadata | Include data types | true |
 | include_possible_data_fields_in_metadata | Include min/max (may leak PII) | true |
 | disable_medical_information_value | Treat medical data as PHI | false |
 | solo_medical_identifier | MRN classification (pii or phi) | pii |
@@ -45,13 +45,13 @@ Most important settings in `variables.yml`:
 | max_tokens | Maximum output tokens | 8192 |
 | max_prompt_length | Maximum prompt length | 16384 |
 | columns_per_call | Columns per LLM call | 20 |
-| word_limit_per_cell | Max words per cell | 100 |
+| word_limit_per_cell | Max words per cell | 200 |
 | limit_prompt_based_on_cell_len | Truncate long cells | true |
 | apply_ddl | Apply DDL to tables | false |
 | ddl_output_format | DDL format (sql/tsv/excel) | sql |
 | reviewable_output_format | Review file format | tsv |
 | review_input_file_type | Review input format | tsv |
-| review_output_file_type | Review output format | excel |
+| review_output_file_type | Review output format (sql/excel/tsv) | tsv |
 | review_apply_ddl | Apply reviewed DDL | false |
 | include_deterministic_pi | Use Presidio detection | true |
 | spacy_model_names | SpaCy model for Presidio | en_core_web_md |
@@ -246,7 +246,9 @@ Configure with `solo_medical_identifier` and `disable_medical_information_value`
 
 Categorizes tables into business domains using a two-stage LLM pipeline: keyword pre-filter, then domain classification, then subdomain classification. Domain configuration is defined in the `domain_config` section of an ontology bundle YAML (e.g. `configurations/ontology_bundles/example_iot.yaml`) or as a standalone YAML file passed via `domain_config_path`.
 
-**12 default domains** (aligned with DAMA DMBOK, FHIR, OMOP): clinical, diagnostics, payer, pharmaceutical, quality_safety, research, finance, operations, workforce, customer, technology, governance. Each domain includes subdomains with keywords and descriptions.
+**Domain source resolution** (`load_domain_config`): domains come from (1) the `domains:` section of the ontology bundle if present, else (2) a standalone `domain_config_path` YAML, else (3) a hardcoded fallback to `configurations/domain_config_healthcare.yaml`. Note: the **default** bundle `general` has **no** `domains:` section, so a default-config domain run falls through to the healthcare fallback below. Set `ontology_bundle` to a bundle that defines domains (or set `domain_config_path`) to override this.
+
+**Healthcare fallback (12 domains, aligned with DAMA DMBOK, FHIR, OMOP):** clinical, diagnostics, payer, pharmaceutical, quality_safety, research, finance, operations, workforce, customer, technology, governance. Each domain includes subdomains with keywords and descriptions.
 
 Customize domains and subdomains by editing the bundle's `domain_config` section or providing a standalone YAML via `domain_config_path`.
 
@@ -264,6 +266,21 @@ When `federation_mode=true`, dbxmetagen adapts for federated catalogs in Unity C
 | ALTER TABLE / COMMENT ON | Skipped | Cannot modify federated tables |
 | SET TAGS / UNSET TAGS | Skipped | Cannot tag federated tables |
 | Output tables | Works | All output tables are Delta |
+
+### Sampling against federated sources — start small
+
+In federation mode, row sampling uses a plain `LIMIT {sample_size}` (not Spark's `.sample()`, which
+does **not** push down through JDBC and would pull the entire remote table into Spark). Because
+`LIMIT N` pushes down to the remote engine (Redshift, Snowflake, etc.), its cost is bounded by
+`sample_size`, **not** by the size of the remote table — so raising `sample_size` a little (say from
+the default 5 to 10–20) fetches a few more rows without scanning the whole source.
+
+**Recommendation: start small.** Begin with the default `sample_size` (5) on federated sources,
+confirm the query cost is acceptable on your remote engine, then raise it incrementally if you want
+richer samples for description quality. Avoid large values on federated sources with per-query cost
+or rate limits, and remember `sample_size=0` sends no row data at all (metadata-only). The
+null-heavy-row filtering that the native path applies is skipped in federation mode (it would require
+a full scan), so a slightly higher `LIMIT` is the simplest way to get more non-null example rows.
 
 ## Lakebase (Optional)
 
@@ -289,14 +306,16 @@ The sync job uses the Databricks SDK's synced database tables API to replicate D
 
 ## On-Behalf-Of User Auth (Optional)
 
-When `enable_obo=true` is set in your `.env` file, the app executes SQL queries and catalog operations under the logged-in user's identity instead of the app service principal. This honors per-user Unity Catalog permissions.
+When `enable_obo=true`, the app executes SQL queries and catalog operations under the logged-in user's identity instead of the app service principal, honoring per-user Unity Catalog permissions. `enable_obo` is a RUNTIME switch for *which principal* makes the call — it is separate from the `user_api_scopes` the app *declares*.
+
+**Scopes are declared on every deploy.** `user_api_scopes` defaults (in `app_variables.yml`) to `files.files`, `serving.serving-endpoints`, `sql.statement-execution`, `dashboards.genie`, independent of `enable_obo`. So enabling OBO needs no scope wrangling.
 
 **Prerequisites:**
 
-1. A workspace admin must enable the **"Databricks Apps - On-Behalf-Of User Authorization"** preview (Admin Console > Previews)
-2. Set `enable_obo=true` in your `<target>.env` file before running `deploy.sh`
+1. The workspace must have the **"Databricks Apps - user token passthrough"** feature (now GA; formerly the "On-Behalf-Of User Authorization" preview). Declaring `user_api_scopes` requires it.
+2. Set `enable_obo=true` at deploy time to actually use the user token at runtime.
 
-If the preview is not enabled and `enable_obo=true` is set, the deploy will fail with: `Databricks Apps - user token passthrough feature is not enabled for organization`. By default (`enable_obo` unset or `false`), user API scopes are not declared and this preview is not required.
+If a target workspace does NOT have the feature, override `user_api_scopes` to `[]` (empty) so no scopes are declared — otherwise the deploy fails with `Databricks Apps - user token passthrough feature is not enabled for organization`.
 
 ## Community Summaries
 
@@ -308,7 +327,7 @@ The `build_community_summaries` task runs as part of `full_analytics_pipeline_jo
 
 ## Vector Search
 
-dbxmetagen uses Databricks Vector Search for hybrid (ANN + keyword) semantic search. All indexes share a single endpoint and use the `databricks-gte-large-en` embedding model.
+dbxmetagen uses Databricks Vector Search for hybrid (ANN + keyword) semantic search. All indexes share a single endpoint. The `graph_nodes_vs_index` is self-managed and uses the `databricks-bge-large-en` embedding model (1024-dim -- see `embedding_dimension` below); other indexes use Databricks-managed embeddings.
 
 ### Endpoint
 

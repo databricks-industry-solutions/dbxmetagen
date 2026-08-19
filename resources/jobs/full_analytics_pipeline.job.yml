@@ -1,7 +1,7 @@
 resources:
   jobs:
     full_analytics_pipeline_job:
-      name: "${var.app_name}_full_analytics_pipeline"
+      name: "${var.app_name}${var.app_name_suffix}_full_analytics_pipeline"
       budget_policy_id: ${var.budget_policy_id}
 
       permissions:
@@ -50,6 +50,10 @@ resources:
         - name: apply_ddl
           default: "false"
         - name: federation_mode
+          default: "false"
+        - name: metadata_companion_path
+          default: ""
+        - name: skip_ai_for_declared_fk
           default: "false"
         - name: sweep_stale_edges
           default: "false"
@@ -122,6 +126,7 @@ resources:
               incremental: "{{job.parameters.incremental}}"
               table_names: "{{job.parameters.table_names}}"
               federation_mode: "{{job.parameters.federation_mode}}"
+              metadata_companion_path: "{{job.parameters.metadata_companion_path}}"
           libraries:
             - whl: ../../dist/*.whl
 
@@ -324,6 +329,7 @@ resources:
               sweep_stale_edges: "{{job.parameters.sweep_stale_edges}}"
               table_names: "{{job.parameters.table_names}}"
               federation_mode: "{{job.parameters.federation_mode}}"
+              skip_ai_for_declared_fk: "{{job.parameters.skip_ai_for_declared_fk}}"
           libraries:
             - whl: ../../dist/*.whl
 
@@ -410,14 +416,4 @@ resources:
 
       job_clusters:
         - job_cluster_key: analytics_cluster
-          new_cluster:
-            apply_policy_default_values: true
-            policy_id: ${var.policy_id}
-            spark_version: 17.3.x-cpu-ml-scala2.13
-            node_type_id: ${var.node_type}
-            data_security_mode: SINGLE_USER
-            autoscale:
-              min_workers: 2
-              max_workers: 4
-            custom_tags:
-              project: dbxmetagen
+          new_cluster: ${var.metadata_job_cluster}

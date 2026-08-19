@@ -8,7 +8,7 @@
 resources:
   jobs:
     metadata_import_comments_job:
-      name: "${var.app_name}_import_comments_job"
+      name: "${var.app_name}${var.app_name_suffix}_import_comments_job"
       budget_policy_id: ${var.budget_policy_id}
       max_concurrent_runs: 5
 

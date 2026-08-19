@@ -147,6 +147,13 @@ def infer_role_from_column_name(
     if c == "id" or c == f"{ent_lower}_id" or c == f"{ent_lower}_key":
         return "primary_key"
 
+    # URI-style keys when stem matches entity (e.g. disease_uri on Disease)
+    for suffix in ("_uri", "_uuid", "_guid"):
+        if c.endswith(suffix):
+            stem = c[: -len(suffix)]
+            if stem == ent_lower or stem == ent_lower.rstrip("s") or stem + "s" == ent_lower:
+                return "primary_key"
+
     # FK / object_property: {other_entity}_id where other entity exists
     if c.endswith(("_id", "_key")):
         stem = c.rsplit("_", 1)[0]

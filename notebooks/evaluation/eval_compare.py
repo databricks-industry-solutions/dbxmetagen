@@ -663,6 +663,83 @@ except Exception as e:
 
 # COMMAND ----------
 # MAGIC %md
+# MAGIC ## FK benchmark: uat_expected_fk (scenario-tagged, name-independence + traps)
+# MAGIC Scores the `uat_expected_fk` gold (from build_uat_scenarios) PER SCENARIO against
+# MAGIC `fk_predictions`, using the same directed/undirected TP/FN/FP logic as the FHIR
+# MAGIC `eval_expected_fk` block above. Additive -- does not touch that block. Rows land in
+# MAGIC `eval_results` with dimension `fk_uat` so per-scenario precision/recall/F1 trend
+# MAGIC (this is the PQ-6 measurement gate for the data-overlap generator: pre-change the
+# MAGIC suffix-less keys are FN; the `_code`/disjoint traps must stay out of the predictions).
+
+# COMMAND ----------
+
+try:
+    uat_fk_rows = spark.table(eval_fq("uat_expected_fk")).collect()
+    # Group gold by scenario; each scenario's tables live in <catalog>.<scenario>.<table>.
+    from collections import defaultdict
+    by_scenario = defaultdict(list)
+    for row in uat_fk_rows:
+        by_scenario[row.scenario].append(row)
+
+    for scenario, rows in sorted(by_scenario.items()):
+        # Predictions whose endpoints are in THIS scenario schema.
+        sch_prefix = f"{catalog_name}.{scenario}."
+        pred_df = spark.sql(f"""
+            SELECT src_table, src_column, dst_table, dst_column, final_confidence, is_fk
+            FROM {pipe_fq('fk_predictions')}
+            WHERE src_table LIKE '{sch_prefix}%' AND dst_table LIKE '{sch_prefix}%'
+              AND is_fk = true
+        """)
+        actual_dir, actual_undir = set(), set()
+        for r in pred_df.collect():
+            st = r.src_table.split(".")[-1]; dt = r.dst_table.split(".")[-1]
+            sc = r.src_column.split(".")[-1]; dc = r.dst_column.split(".")[-1]
+            actual_dir.add((st, sc, dt, dc))
+            actual_undir.add((st, sc, dt, dc)); actual_undir.add((dt, dc, st, sc))
+
+        exp_true_both, exp_all_both = set(), set()
+        tp = fn = fp_expected_false = 0
+        for row in rows:
+            key = (row.src_table, row.src_column, row.dst_table, row.dst_column)
+            rev = (row.dst_table, row.dst_column, row.src_table, row.src_column)
+            exp_all_both.add(key); exp_all_both.add(rev)
+            found = key in actual_undir or rev in actual_undir
+            if row.expected_is_fk:
+                exp_true_both.add(key); exp_true_both.add(rev)
+                if found:
+                    tp += 1; rtype = "TP"
+                else:
+                    fn += 1; rtype = "FN"
+                add_result("fk_uat", rtype, f"{scenario}.{row.src_table}.{row.src_column}",
+                           None, f"{row.dst_table}.{row.dst_column}",
+                           "found" if found else "missing", found, 1.0 if found else 0.0,
+                           {"scenario": scenario})
+            else:
+                # Trap: must NOT be predicted. If it is, that's a false positive.
+                if found:
+                    fp_expected_false += 1
+                    add_result("fk_uat", "FP", f"{scenario}.{row.src_table}.{row.src_column}",
+                               None, f"{row.dst_table}.{row.dst_column}", "trap-predicted",
+                               False, 0.0, {"scenario": scenario, "reason": "trap pair predicted as FK"})
+                else:
+                    add_result("fk_uat", "TN", f"{scenario}.{row.src_table}.{row.src_column}",
+                               None, f"{row.dst_table}.{row.dst_column}", "trap-correctly-absent",
+                               True, 1.0, {"scenario": scenario})
+
+        # Unexpected FPs: predicted pairs not in the gold set at all.
+        fp_unexpected = sum(1 for t in actual_dir if t not in exp_all_both)
+        fp_total = fp_expected_false + fp_unexpected
+        n_true = tp + fn
+        recall_s = tp / n_true if n_true else 0.0
+        precision_s = tp / (tp + fp_total) if (tp + fp_total) > 0 else (1.0 if n_true == 0 else 0.0)
+        f1_s = 2 * precision_s * recall_s / (precision_s + recall_s) if (precision_s + recall_s) > 0 else 0.0
+        print(f"FK[{scenario}]: F1={f1_s:.2f} P={precision_s:.2f} R={recall_s:.2f} "
+              f"({tp} TP, {fn} FN, {fp_total} FP [{fp_expected_false} trap + {fp_unexpected} unexpected])")
+except Exception as e:
+    print(f"uat_expected_fk benchmark skipped: {e}")
+
+# COMMAND ----------
+# MAGIC %md
 # MAGIC ## Write Results
 
 # COMMAND ----------

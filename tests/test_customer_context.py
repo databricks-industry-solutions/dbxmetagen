@@ -4,7 +4,7 @@ import logging
 import os
 import tempfile
 import unittest
-from unittest.mock import MagicMock
+from unittest.mock import MagicMock, patch
 
 import yaml
 
@@ -274,6 +274,159 @@ class TestPromptEnrichment(unittest.TestCase):
         if ctx:
             p.prompt_content["customer_context"] = ctx
         self.assertNotIn("customer_context", p.prompt_content)
+
+
+class TestExampleCustomerContextYaml(unittest.TestCase):
+    """The pip-install example YAML must parse and use valid scope types."""
+
+    def test_examples_yaml_parses(self):
+        example = os.path.join(
+            os.path.dirname(__file__), "..", "examples", "customer_context.yaml"
+        )
+        if not os.path.exists(example):
+            self.skipTest("examples/customer_context.yaml not found")
+        with open(example) as f:
+            data = yaml.safe_load(f)
+        self.assertIn("contexts", data)
+        # If a user uncomments entries, types must be valid.
+        valid_types = {"catalog", "schema", "table", "pattern"}
+        for entry in (data.get("contexts") or []):
+            self.assertIn(entry["scope_type"], valid_types)
+
+    def test_shipped_example_seeds_without_crashing(self):
+        """The all-commented shipped YAML (contexts: None) must NOT crash the
+        seeder -- it's the exact happy path when a user first enables the flag."""
+        example = os.path.join(
+            os.path.dirname(__file__), "..", "examples", "customer_context.yaml"
+        )
+        if not os.path.exists(example):
+            self.skipTest("examples/customer_context.yaml not found")
+        tmpdir = tempfile.mkdtemp()
+        import shutil
+        shutil.copy(example, os.path.join(tmpdir, "customer_context.yaml"))
+        # Should return 0 (no entries), not raise.
+        n = seed_customer_context_table(MagicMock(), "cat", "sch", tmpdir)
+        self.assertEqual(n, 0)
+
+    def test_empty_and_comment_only_files_do_not_crash(self):
+        tmpdir = tempfile.mkdtemp()
+        with open(os.path.join(tmpdir, "empty.yaml"), "w") as f:
+            f.write("# only a comment\n")
+        with open(os.path.join(tmpdir, "nullkey.yaml"), "w") as f:
+            f.write("contexts:\n")   # explicit key, no value -> None
+        n = seed_customer_context_table(MagicMock(), "cat", "sch", tmpdir)
+        self.assertEqual(n, 0)
+
+    def test_malformed_priority_does_not_abort_seed(self):
+        """A null or non-numeric priority defaults to 0 instead of crashing the
+        whole seed (so other valid entries in the file still seed)."""
+        content = (
+            "contexts:\n"
+            "  - scope: cat.sch\n"
+            "    scope_type: schema\n"
+            "    context_text: valid one\n"
+            "    priority:\n"            # None
+            "  - scope: cat.sch.t\n"
+            "    scope_type: table\n"
+            "    context_text: valid two\n"
+            "    priority: high\n"       # non-numeric
+        )
+        tmpdir = tempfile.mkdtemp()
+        with open(os.path.join(tmpdir, "c.yaml"), "w") as f:
+            f.write(content)
+        n = seed_customer_context_table(MagicMock(), "cat", "sch", tmpdir)
+        self.assertEqual(n, 2)   # both entries seeded, priorities defaulted
+
+    def test_merge_preserves_active_and_created_at(self):
+        """The re-seed MERGE must not overwrite app-managed `active` / `created_at` /
+        `created_by` (a UI soft-delete and operator provenance must survive a re-seed).
+        The MATCHED branch updates ONLY the YAML-authored content fields + updated_at."""
+        content = {
+            "contexts": [
+                {"scope": "cat.sch", "scope_type": "schema", "context_text": "hi"},
+            ]
+        }
+        tmpdir = tempfile.mkdtemp()
+        with open(os.path.join(tmpdir, "c.yaml"), "w") as f:
+            yaml.dump(content, f)
+        mock_spark = MagicMock()
+        seed_customer_context_table(mock_spark, "cat", "sch", tmpdir)
+        merge_sql = next(
+            (str(c) for c in mock_spark.sql.call_args_list if "MERGE INTO" in str(c)), ""
+        )
+        # WHEN MATCHED updates content but NOT active/created_at/created_by.
+        self.assertIn("context_text = src.context_text", merge_sql)
+        self.assertIn("tgt.updated_at = src.updated_at", merge_sql)
+        self.assertNotIn("tgt.active", merge_sql)
+        self.assertNotIn("tgt.created_at", merge_sql)
+        # created_by is operator provenance; a re-seed must not reset it to 'yaml_seed'.
+        self.assertNotIn("tgt.created_by", merge_sql)
+
+
+class TestSeedCustomerContextGating(unittest.TestCase):
+    """main.seed_customer_context only seeds when BOTH the flag and dir are set."""
+
+    def _import(self):
+        try:
+            from dbxmetagen.main import seed_customer_context
+        except Exception as e:  # heavy deps unavailable under some harnesses
+            self.skipTest(f"dbxmetagen.main not importable: {e}")
+        return seed_customer_context
+
+    def _config(self, **attrs):
+        cfg = MagicMock()
+        # MagicMock returns truthy mocks for any attr; set explicit values so
+        # getattr(config, ..., default) reflects the test's intent.
+        cfg.use_customer_context = attrs.get("use_customer_context", False)
+        cfg.customer_context_yaml_dir = attrs.get("customer_context_yaml_dir", "")
+        cfg.catalog_name = "cat"
+        cfg.schema_name = "sch"
+        return cfg
+
+    def test_noop_when_flag_off(self):
+        seed = self._import()
+        with patch(
+            "dbxmetagen.customer_context.seed_customer_context_table"
+        ) as m:
+            seed(self._config(use_customer_context=False,
+                              customer_context_yaml_dir="/tmp/x"))
+            m.assert_not_called()
+
+    def test_noop_when_dir_missing(self):
+        seed = self._import()
+        with patch(
+            "dbxmetagen.customer_context.seed_customer_context_table"
+        ) as m:
+            seed(self._config(use_customer_context=True,
+                              customer_context_yaml_dir=""))
+            m.assert_not_called()
+
+    def test_seeds_when_both_set(self):
+        seed = self._import()
+        with patch(
+            "dbxmetagen.customer_context.seed_customer_context_table",
+            return_value=3,
+        ) as m:
+            seed(self._config(use_customer_context=True,
+                              customer_context_yaml_dir="/tmp/ctx"))
+            m.assert_called_once()
+            # positional: (spark, catalog, schema, yaml_dir)
+            args = m.call_args[0]
+            self.assertEqual(args[1], "cat")
+            self.assertEqual(args[2], "sch")
+            self.assertEqual(args[3], "/tmp/ctx")
+
+    def test_seed_failure_is_non_fatal(self):
+        """A seeder exception must NOT propagate -- optional enrichment cannot
+        abort core metadata generation."""
+        seed = self._import()
+        with patch(
+            "dbxmetagen.customer_context.seed_customer_context_table",
+            side_effect=RuntimeError("delta boom"),
+        ):
+            # Should swallow the error and return normally, not raise.
+            seed(self._config(use_customer_context=True,
+                              customer_context_yaml_dir="/tmp/ctx"))
 
 
 if __name__ == "__main__":

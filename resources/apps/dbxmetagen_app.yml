@@ -1,0 +1,190 @@
+resources:
+  apps:
+    dbxmetagen_app:
+      name: "${var.app_name}${var.app_name_suffix}"
+      description: "dbxmetagen dashboard: metadata review, profiling, ontology, and graph analytics"
+      source_code_path: ../../apps/dbxmetagen-app/app
+      # Deploy the app SOURCE (not just register the resource) and START it as part
+      # of `bundle deploy`, so a SINGLE deploy works from BOTH the CLI and the
+      # workspace-UI bundle editor -- no separate `bundle run` / Apps-page Deploy
+      # step. Without this, `bundle deploy` only registers the app + syncs files
+      # (active_deployment stays empty; app shows "not deployed yet"), and the
+      # config.env below never reaches a running deployment. `lifecycle.started` is
+      # supported only by the DIRECT deploy engine (CLI v1.8.0+ and the workspace
+      # UI, both of which use it). NOTE: on the very FIRST deploy after a destroy it
+      # may start compute but skip the code push -- if the app shows "not deployed
+      # yet", re-run `bundle deploy` (or click the app's run icon once).
+      lifecycle:
+        started: true
+      # App runtime env. This is the single source of truth: on a bundle deploy,
+      # config.env is sent in the deploy API call and OVERRIDES the app's app.yaml,
+      # so app.yaml carries only the `command`. Job IDs use `value_from` (snake_case!)
+      # referencing the named entries in the `resources:` block below.
+      config:
+        env:
+          - name: CATALOG_NAME
+            value: "${var.catalog_name}"
+          - name: SCHEMA_NAME
+            value: "${var.schema_name}"
+          - name: WAREHOUSE_ID
+            value_from: sql_warehouse
+          - name: GRAPHRAG_MODEL
+            value: "${var.model}"
+          - name: NODE_TYPE
+            value: "${var.node_type}"
+          - name: METADATA_GENERATOR_JOB_ID
+            value_from: metadata_generator_job
+          - name: METADATA_PARALLEL_MODES_JOB_ID
+            value_from: metadata_parallel_modes_job
+          - name: FULL_ANALYTICS_PIPELINE_JOB_ID
+            value_from: full_analytics_pipeline_job
+          - name: FULL_ANALYTICS_PIPELINE_SERVERLESS_JOB_ID
+            value_from: analytics_serverless_job
+          - name: FK_PREDICTION_JOB_ID
+            value_from: fk_prediction_job
+          - name: SYNC_GRAPH_LAKEBASE_JOB_ID
+            value_from: sync_graph_lakebase_job
+          - name: PROFILING_JOB_ID
+            value_from: profiling_job
+          - name: METADATA_KB_BUILD_JOB_ID
+            value_from: metadata_kb_build_job
+          - name: METADATA_PARALLEL_KB_BUILD_JOB_ID
+            value_from: parallel_kb_build_job
+          - name: METADATA_SERVERLESS_JOB_ID
+            value_from: metadata_serverless_job
+          - name: METADATA_PARALLEL_SERVERLESS_JOB_ID
+            value_from: parallel_serverless_job
+          - name: KB_ENRICHED_MODES_JOB_ID
+            value_from: kb_enriched_modes_job
+          - name: KB_ENRICHED_SERVERLESS_JOB_ID
+            value_from: kb_enriched_serverless_job
+          - name: IMPORT_COMMENTS_JOB_ID
+            value_from: import_comments_job
+          - name: SETUP_MCP_SERVERS_JOB_ID
+            value_from: setup_mcp_servers_job
+          - name: BUILD_VECTOR_INDEX_JOB_ID
+            value_from: build_vector_index_job
+          - name: BUILD_KNOWLEDGE_GRAPH_JOB_ID
+            value_from: build_knowledge_graph_job
+          - name: VECTOR_SEARCH_ENDPOINT
+            value: "${var.vs_endpoint_name}"
+          - name: VECTOR_SEARCH_INDEX
+            value: "metadata_vs_index"
+          - name: LLM_MODEL
+            value: "${var.model}"
+          - name: ENABLE_OBO
+            value: "${var.enable_obo}"
+          # ENABLE_AGENT_MCP: mount a custom MCP server at /mcp/ exposing the
+          # metadata research AGENT (single ask_metadata_agent tool -- not just the
+          # managed UC-function/vector-search MCP servers) so another agent can
+          # delegate whole metadata questions. Off by default. Runs under the invoking
+          # user's identity via OBO -- set enable_obo true and the OBO user_api_scopes
+          # too. Optional MCP_ALLOWED_HOSTS pins the route to specific app hostnames
+          # (default: host check disabled, since Apps ingress authenticates). See
+          # docs/MCP_SERVERS.md.
+          - name: ENABLE_AGENT_MCP
+            value: "${var.enable_agent_mcp}"
+          # APP_DISPLAY_NAME is driven by the app_display_name bundle variable
+          # (resources/app_variables.yml), which has a NON-EMPTY default so it survives
+          # the DAB SDK omitempty strip (empty values are dropped, then the Apps deploy
+          # rejects with "must specify value or valueFrom"). Override via
+          # variable-overrides.json with a NON-EMPTY value. The app reads it as
+          # os.environ.get("APP_DISPLAY_NAME", "").
+          - name: APP_DISPLAY_NAME
+            value: "${var.app_display_name}"
+          - name: MLFLOW_TRACE_TIMEOUT_SECONDS
+            value: "120"
+          # MLFLOW_EXPERIMENT: optional override for trace experiment path.
+          # Default (unset): auto-resolves to /Users/{app_spn}/experiments/dbxmetagen_app_traces
+          # which is only visible to the app service principal and workspace admins.
+          # Uncomment to route traces to a custom path (e.g. /Shared/ for demos):
+          # - name: MLFLOW_EXPERIMENT
+          #   value: "/Shared/dbxmetagen/dbxmetagen_agent_traces"
+      resources:
+        - name: sql_warehouse
+          sql_warehouse:
+            id: ${var.warehouse_id}
+            permission: CAN_USE
+        # vector_search_index is not yet supported in DAB YAML (UI-only resource).
+        # VS endpoint CAN_USE is granted by scripts/grant_app_permissions.sh; index
+        # UC perms are covered by the schema grants in that same script.
+        - name: metadata_generator_job
+          job:
+            id: ${resources.jobs.metadata_generator_job.id}
+            permission: CAN_MANAGE_RUN
+        - name: metadata_parallel_modes_job
+          job:
+            id: ${resources.jobs.metadata_parallel_modes_job.id}
+            permission: CAN_MANAGE_RUN
+        - name: full_analytics_pipeline_job
+          job:
+            id: ${resources.jobs.full_analytics_pipeline_job.id}
+            permission: CAN_MANAGE_RUN
+        - name: analytics_serverless_job
+          job:
+            id: ${resources.jobs.full_analytics_pipeline_serverless_job.id}
+            permission: CAN_MANAGE_RUN
+        - name: fk_prediction_job
+          job:
+            id: ${resources.jobs.fk_prediction_job.id}
+            permission: CAN_MANAGE_RUN
+        - name: sync_graph_lakebase_job
+          job:
+            id: ${resources.jobs.sync_graph_lakebase_job.id}
+            permission: CAN_MANAGE_RUN
+        - name: profiling_job
+          job:
+            id: ${resources.jobs.profiling_job.id}
+            permission: CAN_MANAGE_RUN
+        - name: metadata_kb_build_job
+          job:
+            id: ${resources.jobs.metadata_kb_build_job.id}
+            permission: CAN_MANAGE_RUN
+        - name: parallel_kb_build_job
+          job:
+            id: ${resources.jobs.metadata_parallel_kb_build_job.id}
+            permission: CAN_MANAGE_RUN
+        - name: metadata_serverless_job
+          job:
+            id: ${resources.jobs.metadata_serverless_job.id}
+            permission: CAN_MANAGE_RUN
+        - name: parallel_serverless_job
+          job:
+            id: ${resources.jobs.metadata_parallel_serverless_job.id}
+            permission: CAN_MANAGE_RUN
+        - name: kb_enriched_modes_job
+          job:
+            id: ${resources.jobs.metadata_kb_enriched_modes_job.id}
+            permission: CAN_MANAGE_RUN
+        - name: kb_enriched_serverless_job
+          job:
+            id: ${resources.jobs.metadata_kb_enriched_serverless_job.id}
+            permission: CAN_MANAGE_RUN
+        - name: import_comments_job
+          job:
+            id: ${resources.jobs.metadata_import_comments_job.id}
+            permission: CAN_MANAGE_RUN
+        - name: setup_mcp_servers_job
+          job:
+            id: ${resources.jobs.setup_mcp_servers_job.id}
+            permission: CAN_MANAGE_RUN
+        - name: build_vector_index_job
+          job:
+            id: ${resources.jobs.build_vector_index_job.id}
+            permission: CAN_MANAGE_RUN
+        - name: build_knowledge_graph_job
+          job:
+            id: ${resources.jobs.build_knowledge_graph_job.id}
+            permission: CAN_MANAGE_RUN
+      # OAuth scopes the app declares for On-Behalf-Of user auth. Declared on EVERY
+      # deploy (default set in app_variables.yml: files.files, serving.serving-endpoints,
+      # sql.statement-execution, dashboards.genie) -- requires the workspace "Apps -
+      # user token passthrough" feature. enable_obo (above) is a SEPARATE runtime switch
+      # for WHICH principal makes calls; it does NOT gate this declaration. Override the
+      # var to customize scopes.
+      user_api_scopes: ${var.user_api_scopes}
+      # Who can open the app UI (CAN_USE). Empty by default; the deploying user
+      # already has CAN_MANAGE via the target-level permissions block. Override
+      # to grant groups/users, e.g.:
+      #   {"app_permissions": [{"group_name": "account users", "level": "CAN_USE"}]}
+      permissions: ${var.app_permissions}

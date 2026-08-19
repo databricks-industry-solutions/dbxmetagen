@@ -26,7 +26,60 @@ from pydantic import BaseModel, Field
 from databricks.sdk import WorkspaceClient
 from databricks.sdk.service.sql import StatementParameterListItem
 from db import pg_execute, get_engine, pg_configured
+from kpi_logic import find_similar_kpi, reduce_kpi_validation, resolve_kpi_target
 from dbxmetagen.ddl_bundle_utils import rewrite_ddl_catalog_schema as _rewrite_ddl_catalog_schema, dq_grade as _dq_grade
+# FK-vs-join-key constants: dependency-free, shared with the Spark library so the
+# discriminator value / SQL predicate cannot drift between the two DDL gates.
+from dbxmetagen.fk_constants import (
+    JOIN_KEY as _FK_JOIN_KEY_CONST,
+    FOREIGN_KEY as _FK_FOREIGN_KEY_CONST,
+    NOT_JOIN_KEY_SQL as _FK_NOT_JOIN_KEY_SQL_CONST,
+)
+# Shared, substrate-agnostic metric-view helpers -- single source of truth, also
+# used by the library generator. These were previously duplicated inline below.
+from dbxmetagen.metric_view_core import (
+    _infer_display_name,
+    _infer_synonyms,
+    _backfill_agent_metadata,
+    _drop_broken_measures,
+    _dedup_new_items,
+    _drop_placeholder_dimensions,
+    _normalize_window_specs,
+    _strip_kpi_references,
+    _infer_format_specs,
+    _fix_percentage_scaling,
+    _KPI_REF_RE,
+    _SELF_DIV_RE,
+    _ALIAS_DOT_RE,
+    _ALIAS_DOT_RE as _ALIAS_DOT_PH_RE,  # app's historical alias for the same regex
+    _CURRENCY_PATTERNS,
+    _PERCENTAGE_PATTERNS,
+    _PERCENTAGE_NAME_PATTERNS,
+    _autofix_expr,
+    _fix_dquote_identifier,
+    _fix_bare_comparison,
+    _fix_unquoted_literals,
+    _fix_then_else_literals,
+    _fix_in_clause_literals,
+    _fix_concat_separators,
+    _fix_like_patterns,
+    _fix_instr_bare_arg,
+    _fix_position_bare_char,
+    _fix_double_commas,
+    _fix_bare_whitespace_separator,
+    _fix_none_literal,
+    _fix_concat_bare_first_arg,
+    _fix_percentile_cont,
+    _DATE_TRUNC_INTERVALS,
+    _SQL_RESERVED,
+    _normalize_joins,
+    _restructure_chained_to_nested,
+    _qualify_nested_refs,
+    _definition_to_yaml,
+    _IndentYamlDumper,
+    _parse_join_condition,
+    _render_join_condition,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -68,6 +121,22 @@ _AVAILABLE_MODELS = [
     "databricks-gpt-oss-120b",
 ]
 
+# Serving-endpoint names are a constrained identifier charset (letters, digits,
+# and _ . -). AI_QUERY's first arg is a literal that CANNOT be a bind parameter,
+# so a request-supplied model name is interpolated into SQL -- validate it here
+# to close the injection vector (a quote/paren/space would break out of the
+# quoted literal). Fail loudly rather than silently substituting a default.
+_MODEL_ENDPOINT_RE = re.compile(r"^[A-Za-z0-9_.-]{1,128}$")
+
+
+def _safe_model_endpoint(model: Optional[str]) -> str:
+    """Validate a serving-endpoint name before it is interpolated into AI_QUERY
+    SQL. Returns the name unchanged when safe; raises HTTP 400 otherwise."""
+    name = (model or _LLM_MODEL).strip()
+    if not _MODEL_ENDPOINT_RE.match(name):
+        raise HTTPException(400, detail=f"Invalid model endpoint name: {model!r}")
+    return name
+
 # Background Genie builder tasks: task_id -> {status, stage, result, error, created}
 _genie_tasks: dict[str, dict] = {}
 
@@ -77,6 +146,13 @@ _genie_tasks: dict[str, dict] = {}
 
 _ws: Optional[WorkspaceClient] = None
 _OBO_ENABLED = os.environ.get("ENABLE_OBO", "false").lower() == "true"
+# Custom agent MCP route (mcp_server.py). Off by default -- opt-in via env so it
+# never ships enabled to customers. Also requires the `mcp` package to be present.
+try:
+    from mcp_server import mcp_enabled as _mcp_enabled
+    _AGENT_MCP_ENABLED = _mcp_enabled()
+except Exception:  # mcp_server import issues must never block app startup
+    _AGENT_MCP_ENABLED = False
 _obo_token_var: contextvars.ContextVar[Optional[str]] = contextvars.ContextVar(
     "_obo_token_var", default=None
 )
@@ -178,12 +254,47 @@ _PERMISSION_DENIED_RE = re.compile(
 )
 
 
-def execute_sql(query: str, warehouse_id: Optional[str] = None, timeout: int = 30, parameters: Optional[list] = None):
-    """Execute SQL via Statement Execution API and return rows as list[dict].
+# Delta optimistic-concurrency conflicts: two writes touched the same rows at the
+# same time (e.g. a user double-clicking Save fires two MERGEs on the same row).
+# These are transient -- retrying almost always succeeds -- so we translate the
+# noisy Delta stack into a friendly 409 the UI can show verbatim.
+_CONCURRENCY_CONFLICT_RE = re.compile(
+    r"DELTA_CONCURRENT_(APPEND|WRITE|DELETE_READ|DELETE_DELETE|TRANSACTION)"
+    r"|ConcurrentAppendException|ConcurrentModificationException"
+    r"|Transaction conflict detected",
+    re.IGNORECASE,
+)
 
-    Returns [] for missing-table/schema/catalog errors (expected before
-    pipelines have run).  Raises HTTPException for other failures.
-    Polls for completion when the initial wait_timeout is exceeded.
+_CONCURRENCY_CONFLICT_MSG = (
+    "This entry was being saved by another request at the same time "
+    "(often from clicking Save more than once). Nothing was lost -- "
+    "please wait a moment and try again."
+)
+
+
+# Hard cap on rows materialized from a single query. The Statement Execution
+# API chunks large result sets; we follow chunks up to this many rows so callers
+# never silently receive only the first chunk, but stop here so a pathological
+# query can't OOM the app compute. Callers needing the truncation signal use
+# execute_sql_meta().
+_MAX_RESULT_ROWS = 100_000
+
+
+def execute_sql_meta(
+    query: str, warehouse_id: Optional[str] = None, timeout: int = 30,
+    parameters: Optional[list] = None, max_rows: int = _MAX_RESULT_ROWS,
+) -> tuple[list[dict], bool]:
+    """Execute SQL via the Statement Execution API.
+
+    Returns (rows, truncated). Follows result chunks (next_chunk_index) so large
+    result sets are returned in full, not just the API's first chunk. Stops at
+    max_rows and sets truncated=True (logging a warning) if more rows existed, so
+    huge results degrade to a bounded, *signalled* result instead of a silent
+    partial one or an OOM.
+
+    Returns ([], False) for missing-table/schema/catalog errors (expected before
+    pipelines have run). Raises HTTPException for other failures. Polls for
+    completion when the initial wait_timeout is exceeded.
     """
     wh = warehouse_id or os.environ.get("WAREHOUSE_ID", "")
     if not wh:
@@ -206,6 +317,9 @@ def execute_sql(query: str, warehouse_id: Optional[str] = None, timeout: int = 3
                 403,
                 detail=f"Permission denied (running as {identity}). {_obo_permission_hint()}{sanitized}",
             )
+        if _CONCURRENCY_CONFLICT_RE.search(str(exc)):
+            logger.warning("Delta concurrency conflict (running as %s): %s", identity, sanitized)
+            raise HTTPException(409, detail=_CONCURRENCY_CONFLICT_MSG)
         raise HTTPException(500, detail=f"SQL execution error (running as {identity}): {sanitized}")
 
     deadline = time.time() + timeout
@@ -234,12 +348,67 @@ def execute_sql(query: str, warehouse_id: Optional[str] = None, timeout: int = 3
                 403,
                 detail=f"Permission denied (running as {identity}). {_obo_permission_hint()}{msg}",
             )
+        if _CONCURRENCY_CONFLICT_RE.search(msg):
+            logger.warning("Delta concurrency conflict (running as %s): %s", identity, msg)
+            raise HTTPException(409, detail=_CONCURRENCY_CONFLICT_MSG)
         raise HTTPException(500, detail=f"SQL error (running as {identity}): {msg}")
+
     cols = [c.name for c in resp.manifest.schema.columns] if resp.manifest else []
-    rows = []
-    if resp.result and resp.result.data_array:
-        for row in resp.result.data_array:
+    rows: list[dict] = []
+    truncated = False
+    statement_id = resp.statement_id
+    result = resp.result
+    current_chunk = 0  # resp.result is always the first result chunk (index 0)
+    while result is not None:
+        for row in (result.data_array or []):
             rows.append(dict(zip(cols, row)))
+            if len(rows) >= max_rows:
+                break
+        # Stop if we hit the cap; flag truncation when the API says more remained.
+        if len(rows) >= max_rows:
+            more_remained = getattr(result, "next_chunk_index", None) is not None
+            total = getattr(resp.manifest, "total_row_count", None) if resp.manifest else None
+            if more_remained or (total is not None and total > len(rows)):
+                truncated = True
+                logger.warning(
+                    "execute_sql result truncated at %d rows (total_row_count=%s) for query: %.200s",
+                    max_rows, total, query,
+                )
+            break
+        next_idx = getattr(result, "next_chunk_index", None)
+        if next_idx is None:
+            break  # normal end of stream
+        # Defensive termination: next_chunk_index must be an int that strictly advances
+        # past the chunk we just consumed. A malformed / non-advancing / cyclic value
+        # would otherwise spin this loop forever and pin the worker thread (chunk indices
+        # are sequential, so a valid next index is always > the current one).
+        if not isinstance(next_idx, int) or next_idx <= current_chunk:
+            logger.warning(
+                "Stopping result pagination for %s: next_chunk_index=%r did not advance past chunk %d",
+                statement_id, next_idx, current_chunk,
+            )
+            truncated = True
+            break
+        current_chunk = next_idx
+        try:
+            result = ws.statement_execution.get_statement_result_chunk_n(statement_id, next_idx)
+        except Exception as exc:
+            # A chunk fetch failing mid-stream means we have a partial result;
+            # signal truncation rather than pretend it's complete.
+            logger.warning("Error fetching result chunk %s for %s: %s", next_idx, statement_id, exc)
+            truncated = True
+            break
+    return rows, truncated
+
+
+def execute_sql(query: str, warehouse_id: Optional[str] = None, timeout: int = 30, parameters: Optional[list] = None):
+    """Execute SQL and return rows as list[dict] (see execute_sql_meta).
+
+    Thin wrapper that drops the truncation flag, preserving the long-standing
+    signature used by ~100 call sites. Callers that must detect truncation call
+    execute_sql_meta() directly.
+    """
+    rows, _ = execute_sql_meta(query, warehouse_id=warehouse_id, timeout=timeout, parameters=parameters)
     return rows
 
 
@@ -250,6 +419,28 @@ def execute_sql(query: str, warehouse_id: Optional[str] = None, timeout: int = 3
 CATALOG = os.environ.get("CATALOG_NAME", "")
 SCHEMA = os.environ.get("SCHEMA_NAME", "metadata_results")
 
+# Required-config validation (DP-2). The deploy still succeeds even when a required
+# per-workspace value is missing; instead the frontend renders a blocking banner from
+# /api/config's `config_valid`/`config_errors`, and lifespan logs a prominent error.
+# `catalog_name` is REQUIRED and cannot be none/null/empty (see variables.yml).
+def _compute_config_errors(catalog: str, warehouse_id: str) -> list[str]:
+    """Return human-readable messages for missing required deploy config (DP-2)."""
+    errors: list[str] = []
+    if (catalog or "").strip().lower() in ("", "none", "null"):
+        errors.append(
+            "CATALOG_NAME is not set. Set `catalog_name` in your variable-overrides.json "
+            "(at .databricks/bundle/<target>/variable-overrides.json) and redeploy."
+        )
+    if not (warehouse_id or "").strip():
+        errors.append(
+            "WAREHOUSE_ID is not set. Set `warehouse_id` in your variable-overrides.json "
+            "and redeploy — dashboard and SQL queries require it."
+        )
+    return errors
+
+
+_CONFIG_ERRORS: list[str] = _compute_config_errors(CATALOG, os.environ.get("WAREHOUSE_ID", ""))
+
 
 def fq(table: str) -> str:
     return f"`{CATALOG}`.`{SCHEMA}`.`{table}`"
@@ -259,15 +450,56 @@ def fq(table: str) -> str:
 _SAFE_IDENT_RE = re.compile(r"^[a-zA-Z0-9_.\- %]*$")
 
 
-def _ensure_column(table_fqn: str, col_name: str, col_type: str = "STRING"):
-    """Add a column to a table if it doesn't already exist (schema evolution helper)."""
+def _ensure_column(table_fqn: str, col_name: str, col_type: str = "STRING") -> bool:
+    """Add a column to a table if it doesn't already exist (schema evolution helper).
+
+    Returns True when the column is confirmed present (already existed or was just
+    added), False when the operation could not be completed (e.g. the table does
+    not exist yet). Callers that cache a 'done' flag must gate it on this result."""
     try:
         cols = execute_sql(f"DESCRIBE TABLE {table_fqn}", timeout=15)
         if any(r.get("col_name") == col_name for r in cols):
-            return
+            return True
         execute_sql(f"ALTER TABLE {table_fqn} ADD COLUMN {col_name} {col_type}", timeout=15)
+        return True
     except Exception as e:
         logger.debug("_ensure_column(%s, %s) skipped: %s", table_fqn, col_name, e)
+        return False
+
+
+# fk_predictions.relationship_kind discriminates a true referential FK
+# ('foreign_key' / legacy NULL) from a broad join key ('join_key'). Only true FKs
+# may become ALTER TABLE ADD CONSTRAINT; join keys still feed metric-view / Genie
+# joins. Constants are imported from the shared dependency-free fk_constants module
+# (single source of truth; the app is Spark-free so it cannot import fk_prediction).
+_FK_JOIN_KEY = _FK_JOIN_KEY_CONST
+_FK_FOREIGN_KEY = _FK_FOREIGN_KEY_CONST
+_FK_NOT_JOIN_KEY_SQL = _FK_NOT_JOIN_KEY_SQL_CONST
+_fk_relationship_cols_ensured = False
+
+
+def _normalize_fk_kind(kind: Optional[str]) -> str:
+    """Normalize a user-supplied relationship kind. Anything other than an
+    explicit 'foreign_key' becomes 'join_key' — so confirming a join never
+    silently asserts a referential constraint."""
+    return _FK_FOREIGN_KEY if (kind or "").strip().lower() == _FK_FOREIGN_KEY else _FK_JOIN_KEY
+
+
+def _ensure_fk_relationship_columns():
+    """Idempotently add the Phase-1 relationship columns to fk_predictions so the
+    app can write/filter them even when the table predates the library schema bump.
+
+    Only latches the process-global 'done' flag when ALL columns are confirmed
+    present; if fk_predictions does not exist yet (_ensure_column returns False),
+    the flag stays False so a later call retries once the table appears."""
+    global _fk_relationship_cols_ensured
+    if _fk_relationship_cols_ensured:
+        return
+    tbl = fq("fk_predictions")
+    ok = _ensure_column(tbl, "relationship_kind", "STRING")
+    ok = _ensure_column(tbl, "is_composite", "BOOLEAN") and ok
+    ok = _ensure_column(tbl, "join_condition", "STRING") and ok
+    _fk_relationship_cols_ensured = ok
 
 
 def _safe_sql_str(s: Optional[str]) -> str:
@@ -495,6 +727,8 @@ def multi_hop_traverse(
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     logger.info("dbxmetagen API starting – catalog=%s schema=%s obo=%s", CATALOG, SCHEMA, _OBO_ENABLED)
+    for _err in _CONFIG_ERRORS:
+        logger.error("CONFIG ERROR (deploy incomplete): %s", _err)
     if _OBO_ENABLED:
         logger.info(
             "OBO mode active – ensure workspace preview "
@@ -521,6 +755,16 @@ async def lifespan(app: FastAPI):
     for r in app.routes:
         if hasattr(r, "methods"):
             logger.info("  %s %s", r.methods, r.path)
+
+    # Custom agent MCP route (gated on ENABLE_AGENT_MCP): the mounted streamable-HTTP
+    # sub-app needs its session manager driven by the parent app's lifespan.
+    if _AGENT_MCP_ENABLED:
+        from mcp_server import get_mcp_server
+        logger.info("Custom agent MCP route enabled -- starting MCP session manager at /mcp")
+        async with get_mcp_server().session_manager.run():
+            yield
+        return
+
     yield
 
 
@@ -627,6 +871,8 @@ def get_config():
         "obo_enabled": _OBO_ENABLED,
         "mlflow_experiment_id": _get_mlflow_experiment_id(),
         "app_display_name": os.environ.get("APP_DISPLAY_NAME", ""),
+        "config_valid": len(_CONFIG_ERRORS) == 0,
+        "config_errors": _CONFIG_ERRORS,
         "version": pkg_version,
     }
 
@@ -825,6 +1071,8 @@ class SemanticGenerateRequest(BaseModel):
     business_context: Optional[str] = None
     generation_style: str = "comprehensive"  # "comprehensive" (one broad view per grain) or "targeted" (themed views)
     max_views: Optional[int] = None  # user cap on planned views; None = server-recommended default
+    materialize: bool = False  # attach an unaggregated materialization to each generated view
+    materialization_schedule: str = "every 6 hours"  # refresh schedule (MV schedule clause syntax)
 
 
 class SemanticProjectRequest(BaseModel):
@@ -903,50 +1151,79 @@ def _get_job_with_retry(ws, job_id: int, retries: int = 3):
 
 
 def _list_dbxmetagen_jobs(ws):
-    """Return project jobs using known IDs (env var), falling back to list(). Cached 30s."""
+    """Return project jobs. Cached 30s.
+
+    Merges two discovery sources so every deployed job is reachable:
+      1. Jobs wired into the app via `valueFrom` (fast, resolved by ID).
+      2. Name-keyword-matched jobs from `ws.jobs.list()`.
+
+    The app can only carry ~20 resources, so several standalone jobs (e.g.
+    sync_ddl, ontology_prediction, knowledge_base, metagen_with_kb,
+    semantic_layer) are deployed and granted the app SP CAN_MANAGE_RUN but are
+    NOT wired as `valueFrom` env IDs. Discovering by ID alone hid them; adding
+    the name-match sweep (deduped by job_id) makes them runnable by name. The
+    list() sweep is best-effort -- if it fails but we resolved jobs by ID, we
+    degrade to the ID set rather than erroring.
+    """
     with _job_list_lock:
         if "jobs" in _job_list_cache:
             return _job_list_cache["jobs"]
+
+    jobs = []
+    seen_ids = set()
+    for name, job_id in _KNOWN_JOB_IDS.items():
+        try:
+            j = _get_job_with_retry(ws, job_id)
+            jobs.append(j)
+            seen_ids.add(j.job_id)
+        except Exception as e:
+            logger.warning("ws.jobs.get(%s=%d) failed: %s", name, job_id, e)
     if _KNOWN_JOB_IDS:
-        jobs = []
-        for name, job_id in _KNOWN_JOB_IDS.items():
-            try:
-                j = _get_job_with_retry(ws, job_id)
-                jobs.append(j)
-            except Exception as e:
-                logger.warning("ws.jobs.get(%s=%d) failed: %s", name, job_id, e)
         logger.info(
             "Job discovery via valueFrom: %d/%d reachable",
             len(jobs),
             len(_KNOWN_JOB_IDS),
         )
-        with _job_list_lock:
-            _job_list_cache["jobs"] = jobs
-        return jobs
 
-    logger.info("No job IDs via valueFrom; falling back to ws.jobs.list()")
+    # Name-match sweep to pick up jobs not wired as valueFrom env IDs (deduped).
     try:
         all_jobs = list(ws.jobs.list())
     except Exception as e:
+        if jobs:
+            logger.warning(
+                "ws.jobs.list() failed (%s); using %d valueFrom jobs only",
+                e,
+                len(jobs),
+            )
+            with _job_list_lock:
+                _job_list_cache["jobs"] = jobs
+            return jobs
         logger.error("ws.jobs.list() failed: %s", e)
         raise HTTPException(
             503,
             detail=f"Failed to list jobs from Databricks API: {e}. "
             "Check app SPN permissions and workspace connectivity.",
         )
-    matched = [
-        j
-        for j in all_jobs
-        if j.settings
-        and j.settings.name
-        and any(kw in j.settings.name.lower() for kw in _JOB_NAME_KEYWORDS)
-    ]
+    added = 0
+    for j in all_jobs:
+        if (
+            j.job_id not in seen_ids
+            and j.settings
+            and j.settings.name
+            and any(kw in j.settings.name.lower() for kw in _JOB_NAME_KEYWORDS)
+        ):
+            jobs.append(j)
+            seen_ids.add(j.job_id)
+            added += 1
     logger.info(
-        "Job discovery via list(): %d total, %d matched", len(all_jobs), len(matched)
+        "Job discovery: %d via valueFrom + %d via list() name-match = %d total",
+        len(jobs) - added,
+        added,
+        len(jobs),
     )
     with _job_list_lock:
-        _job_list_cache["jobs"] = matched
-    return matched
+        _job_list_cache["jobs"] = jobs
+    return jobs
 
 
 # ---------------------------------------------------------------------------
@@ -1793,9 +2070,18 @@ def apply_ddl(body: GenerateDDLBody, batch: bool = True):
 
 
 def _fetch_fk_rows(identifiers: Optional[list[str]] = None) -> list[dict]:
-    """Fetch parsed FK prediction rows (shared by tag and constraint builders)."""
+    """Fetch parsed FK prediction rows for the FK **constraint / tag** DDL builders.
+
+    Excludes rows tagged relationship_kind='join_key': those are broad join keys
+    (e.g. ERD-confirmed joins that are not referential FKs) and must not become
+    ALTER TABLE ADD CONSTRAINT / fk_references tags. Legacy NULL rows still count
+    as true FKs (backward compatible)."""
     fk_tbl = fq("fk_predictions")
-    where = "src_table != dst_table AND final_confidence >= 0.5"
+    _ensure_fk_relationship_columns()
+    # A true FK constraint requires is_fk=TRUE (matches the library's generate_ddl);
+    # AI-rejected pairs (is_fk=FALSE) must never become ADD CONSTRAINT / fk_references
+    # tags even at final_confidence>=0.5. Combined with the join-key exclusion below.
+    where = f"src_table != dst_table AND is_fk = 'true' AND final_confidence >= 0.5 AND {_FK_NOT_JOIN_KEY_SQL}"
     if identifiers:
         safe = [_safe_sql_str(x) for x in identifiers if _SAFE_IDENT_RE.match(x)]
         if safe:
@@ -1908,7 +2194,7 @@ def _build_metric_view_ddl(
         mv_cat = row.get("deployed_catalog") or default_cat
         mv_sch = row.get("deployed_schema") or default_sch
         fq_mv = f"`{mv_cat}`.`{mv_sch}`.`{mv_name}`"
-        yaml_body = _definition_to_yaml(defn)
+        yaml_body = _definition_to_yaml(defn, include_materialization=True)
         stmts.append(f"CREATE OR REPLACE VIEW {fq_mv}\nWITH METRICS LANGUAGE YAML AS $$\n{yaml_body}$$;")
     return stmts
 
@@ -2149,18 +2435,29 @@ def apply_ddl_bundle_status(task_id: str):
 # Review Editor combined endpoint
 # ---------------------------------------------------------------------------
 
+_REVIEW_PAGE_MAX = 500
+
+
 class ReviewCombinedRequest(BaseModel):
     tables: Optional[list[str]] = None
     schemas: Optional[list[str]] = None
+    offset: int = 0
+    limit: int = 200
 
 
 @app.post("/api/metadata/review-combined")
 def review_combined(body: ReviewCombinedRequest):
-    """Fetch combined table + column KB data, with ontology and FK info per table."""
+    """Fetch combined table + column KB data, with ontology and FK info per table.
+
+    Paginated: `offset`/`limit` (limit hard-capped at _REVIEW_PAGE_MAX) page over
+    the tables in scope; the response echoes offset/limit and a `has_more` flag.
+    """
     tbl_kb = fq("table_knowledge_base")
     col_kb = fq("column_knowledge_base")
     ent_tbl = fq("ontology_entities")
     fk_tbl = fq("fk_predictions")
+    offset = max(0, int(body.offset or 0))
+    limit = max(1, min(int(body.limit or 200), _REVIEW_PAGE_MAX))
 
     where_parts = []
     if body.tables:
@@ -2177,7 +2474,7 @@ def review_combined(body: ReviewCombinedRequest):
     where = " OR ".join(where_parts)
 
     try:
-        return _review_combined_impl(tbl_kb, col_kb, ent_tbl, fk_tbl, where)
+        return _review_combined_impl(tbl_kb, col_kb, ent_tbl, fk_tbl, where, offset, limit)
     except HTTPException:
         raise
     except Exception as e:
@@ -2185,7 +2482,7 @@ def review_combined(body: ReviewCombinedRequest):
         raise HTTPException(500, detail=str(e))
 
 
-def _review_combined_impl(tbl_kb, col_kb, ent_tbl, fk_tbl, where):
+def _review_combined_impl(tbl_kb, col_kb, ent_tbl, fk_tbl, where, offset=0, limit=200):
     _has_review_status = False
     try:
         cols = execute_sql(f"DESCRIBE TABLE {tbl_kb}", timeout=15)
@@ -2208,10 +2505,11 @@ def _review_combined_impl(tbl_kb, col_kb, ent_tbl, fk_tbl, where):
         SELECT table_name, catalog, `schema`, table_short_name, comment,
                domain, subdomain, has_pii, has_phi,
                {rs_expr}
-        FROM {tbl_kb} WHERE {where} LIMIT 200
+        FROM {tbl_kb} WHERE {where} ORDER BY table_name LIMIT {limit} OFFSET {offset}
     """)
     if not tbl_rows:
-        return {"tables": [], "total_count": total_count or 0, "truncated": False}
+        return {"tables": [], "total_count": total_count or 0, "truncated": False,
+                "offset": offset, "limit": limit, "has_more": False}
 
     tbl_names = [r["table_name"] for r in tbl_rows]
     safe_names = [_safe_sql_str(n) for n in tbl_names]
@@ -2267,6 +2565,7 @@ def _review_combined_impl(tbl_kb, col_kb, ent_tbl, fk_tbl, where):
         fk_rows = execute_sql(f"""
             SELECT src_column, src_table, dst_column, dst_table, final_confidence,
                    ai_reasoning, ai_confidence, col_similarity, rule_score,
+                   ri_score, join_rate, join_matched, pk_uniqueness,
                    is_fk, review_updated_at
             FROM {fk_tbl}
             WHERE (src_table IN ({in_clause}) OR dst_table IN ({in_clause}))
@@ -2356,8 +2655,17 @@ def _review_combined_impl(tbl_kb, col_kb, ent_tbl, fk_tbl, where):
             "column_properties": col_props_by_table.get(tn, []),
             "fk_predictions": fk_by_table.get(tn, []),
         })
-    truncated = total_count is not None and total_count > 200
-    return {"tables": result, "total_count": total_count or len(result), "truncated": truncated}
+    resolved_total = total_count if total_count is not None else (offset + len(result))
+    has_more = (offset + len(result)) < resolved_total
+    return {
+        "tables": result,
+        "total_count": resolved_total,
+        "offset": offset,
+        "limit": limit,
+        "has_more": has_more,
+        # Back-compat: `truncated` historically meant "more than one page exists".
+        "truncated": has_more,
+    }
 
 
 class ExportVolumeRequest(BaseModel):
@@ -2943,33 +3251,103 @@ def review_fk_prediction(body: FKReviewBody):
         raise HTTPException(500, str(e)) from e
 
 
+def _validate_fk_columns(body: "FKAddBody") -> None:
+    """Reject implausible src/dst columns before writing to fk_predictions.
+
+    Guards against the ERD-designer parsing bug that sent a catalog/schema name
+    (e.g. "eswanson_demo") as a column. A valid join column here is a single bare
+    identifier (the frontend sends bare column names + fully-qualified tables), so
+    reject: empty, dotted (a qualified name leaked in), or a value equal to any
+    catalog/schema segment of either table. Raises HTTPException(400) on bad input.
+    """
+    def _segments(tbl: str) -> set:
+        # catalog + schema (everything but the final table segment), lowercased.
+        parts = [p for p in (tbl or "").split(".") if p]
+        return {p.lower() for p in parts[:-1]} if len(parts) > 1 else set()
+
+    bad_segments = _segments(body.src_table) | _segments(body.dst_table)
+    for label, col in (("src_column", body.src_column), ("dst_column", body.dst_column)):
+        c = (col or "").strip()
+        if not c:
+            raise HTTPException(400, detail=f"{label} is empty")
+        if "." in c:
+            raise HTTPException(
+                400, detail=f"{label} must be a bare column name, got qualified '{c}'")
+        if c.lower() in bad_segments:
+            raise HTTPException(
+                400,
+                detail=f"{label}='{c}' matches a catalog/schema name, not a column "
+                "(likely a join-parse error); refusing to store.")
+
+
 class FKAddBody(BaseModel):
     src_column: str
     dst_column: str
     src_table: str
     dst_table: str
     reasoning: Optional[str] = None
+    # 'join_key' (default) = a joinable pair for metric-view / Genie joins that is
+    # NOT asserted to be a referential constraint. 'foreign_key' = a true FK the
+    # user is asserting (eligible for ALTER TABLE ADD CONSTRAINT). Defaulting to
+    # join_key means confirming a join in the ERD never silently arms a constraint.
+    kind: Optional[str] = None
+    # Optional multi-column join condition (e.g. "a.x = b.x AND a.y = b.y"); when
+    # set, is_composite is recorded TRUE. Populated by the composite-key UI (Phase 3).
+    join_condition: Optional[str] = None
 
 
 @app.post("/api/analytics/fk-add")
 def add_fk_prediction(body: FKAddBody):
-    """Manually add a validated FK relationship."""
+    """Manually add a validated relationship (join key by default, or a true FK).
+
+    Writes is_fk=TRUE, final_confidence=1.0 so the pair flows to metric-view / Genie
+    joins immediately. relationship_kind controls FK-constraint eligibility: only
+    'foreign_key' rows can become ALTER TABLE ADD CONSTRAINT; 'join_key' (default)
+    rows never do."""
+    _ensure_fk_relationship_columns()
+    kind = _normalize_fk_kind(body.kind)
+    # --- Validate the columns BEFORE writing. A prior ERD-designer parsing bug
+    # (fixed in _parseOn) sent the CATALOG name as dst_column (e.g. "eswanson_demo"),
+    # and fk-add blindly INSERTed it at confidence=1.0/is_fk=TRUE -> hundreds of
+    # corrupt/duplicated rows that then render as bogus "col = <catalog>" joins.
+    # Reject anything that isn't a plausible bare column so a bad caller can't
+    # re-corrupt the table. _validate_fk_columns raises HTTPException(400) on bad input.
+    _validate_fk_columns(body)
+    is_composite = bool(body.join_condition and body.join_condition.strip())
+    join_condition = _safe_sql_str(body.join_condition) if is_composite else "NULL"
     preds_tbl = fq("fk_predictions")
     src_col = _esc_sql(body.src_column)
     dst_col = _esc_sql(body.dst_column)
     src_tbl = _esc_sql(body.src_table)
     dst_tbl = _esc_sql(body.dst_table)
     reasoning = _safe_sql_str(body.reasoning or "Manually added by user")
+    # MERGE (not INSERT) keyed on the full pair identity so re-saving the same
+    # join UPDATES in place instead of appending a duplicate (the old INSERT grew
+    # ~15 copies per pair across repeated ERD saves). created_at is preserved on
+    # match; only the mutable fields + updated_at change.
     sql = f"""
-        INSERT INTO {preds_tbl}
-        (src_column, dst_column, src_table, dst_table, final_confidence,
-         ai_confidence, ai_reasoning, is_fk, review_updated_at, created_at, updated_at)
-        VALUES ('{src_col}', '{dst_col}', '{src_tbl}', '{dst_tbl}', 1.0,
-                1.0, {reasoning}, TRUE, current_timestamp(), current_timestamp(), current_timestamp())
+        MERGE INTO {preds_tbl} AS t
+        USING (SELECT '{src_col}' AS src_column, '{dst_col}' AS dst_column,
+                      '{src_tbl}' AS src_table, '{dst_tbl}' AS dst_table) AS s
+        ON t.src_column = s.src_column AND t.dst_column = s.dst_column
+           AND t.src_table = s.src_table AND t.dst_table = s.dst_table
+        WHEN MATCHED THEN UPDATE SET
+            t.final_confidence = 1.0, t.ai_confidence = 1.0,
+            t.ai_reasoning = {reasoning}, t.is_fk = TRUE,
+            t.relationship_kind = '{kind}', t.is_composite = {str(is_composite).upper()},
+            t.join_condition = {join_condition},
+            t.review_updated_at = current_timestamp(), t.updated_at = current_timestamp()
+        WHEN NOT MATCHED THEN INSERT
+            (src_column, dst_column, src_table, dst_table, final_confidence,
+             ai_confidence, ai_reasoning, is_fk, relationship_kind, is_composite,
+             join_condition, review_updated_at, created_at, updated_at)
+            VALUES ('{src_col}', '{dst_col}', '{src_tbl}', '{dst_tbl}', 1.0,
+                    1.0, {reasoning}, TRUE, '{kind}', {str(is_composite).upper()},
+                    {join_condition}, current_timestamp(), current_timestamp(), current_timestamp())
     """
     try:
         execute_sql(sql, timeout=45)
-        return {"ok": True}
+        return {"ok": True, "kind": kind}
     except Exception as e:
         raise HTTPException(500, str(e)) from e
 
@@ -3133,8 +3511,8 @@ async def import_ontology(
                     "error": (
                         f"Ontology parsed successfully but could not be saved to the UC Volume "
                         f"({_volume_bundle_prefix()}): {e}. The app service principal likely lacks "
-                        f"WRITE VOLUME on {CATALOG}.{SCHEMA}. Re-run deploy.sh (it grants "
-                        f"READ/WRITE VOLUME) or grant it manually, then re-import."
+                        f"WRITE VOLUME on {CATALOG}.{SCHEMA}. Re-run scripts/grant_app_permissions.sh "
+                        f"(it grants READ/WRITE VOLUME) or grant it manually, then re-import."
                     ),
                     "running_as": _auth_identity_label(),
                 },
@@ -5041,7 +5419,7 @@ async def ontology_builder_save(request: Request):
             detail=(
                 f"Failed to save bundle to UC Volume ({_volume_bundle_prefix()}): {e}. "
                 f"The app service principal likely lacks WRITE VOLUME on {CATALOG}.{SCHEMA}. "
-                f"Re-run deploy.sh (grants READ/WRITE VOLUME) or grant it manually."
+                f"Re-run scripts/grant_app_permissions.sh (grants READ/WRITE VOLUME) or grant it manually."
             ),
         )
 
@@ -5224,6 +5602,87 @@ def get_fk_predictions(limit: int = 200):
     """Return predicted foreign key relationships."""
     q = f"SELECT * FROM {fq('fk_predictions')} WHERE src_table != dst_table ORDER BY final_confidence DESC LIMIT {limit}"
     return execute_sql(q)
+
+
+def _num_or_none(v):
+    """Coerce a SQL numeric cell to a rounded float, or None when absent/NaN.
+
+    NaN must map to None (not a NaN float) so the UI shows an honest '—' for a
+    signal that was never computed, rather than a broken numeric value."""
+    if v is None:
+        return None
+    try:
+        f = float(v)
+    except (TypeError, ValueError):
+        return None
+    if f != f:  # NaN
+        return None
+    return round(f, 3)
+
+
+@app.get("/api/analytics/fk-candidates")
+def get_fk_candidates(src_table: str, dst_table: str, limit: int = 8):
+    """Ranked join-column candidates for a specific table pair, WITH the evidence.
+
+    Powers the ERD designer's join editor: shows suggested (src_column ->
+    dst_column) pairs ordered by confidence so the user can one-click a join
+    instead of hand-picking columns. Matches the pair in EITHER direction
+    (src/dst may be swapped in the predictions table).
+
+    Beyond confidence, returns the signals the predictor already computed so a
+    reviewer can VERIFY rather than trust one opaque number: referential
+    integrity (ri_score), actual join hit rate (join_rate/join_matched), parent
+    uniqueness (pk_uniqueness), column-embedding similarity, the AI's reasoning,
+    and whether the row is already a confirmed FK vs a join key. `stored_reversed`
+    flags that the pair is stored parent->child relative to the request, so the
+    UI can explain that pk_uniqueness/ri_score describe the stored orientation.
+    """
+    _ensure_fk_relationship_columns()
+    s = _safe_sql_str(src_table)
+    d = _safe_sql_str(dst_table)
+    try:
+        rows = execute_sql(
+            f"SELECT src_table, src_column, dst_table, dst_column, final_confidence, "
+            f"       ri_score, join_rate, join_matched, pk_uniqueness, col_similarity, "
+            f"       ai_reasoning, is_fk, relationship_kind "
+            f"FROM {fq('fk_predictions')} "
+            f"WHERE (src_table = {s} AND dst_table = {d}) "
+            f"   OR (src_table = {d} AND dst_table = {s}) "
+            f"ORDER BY final_confidence DESC LIMIT {int(limit)}"
+        ) or []
+    except Exception as e:
+        logger.warning("fk-candidates query failed: %s", e)
+        return {"candidates": []}
+    # Normalize so src_column always belongs to the requested src_table.
+    out = [_normalize_fk_candidate(r, src_table) for r in rows]
+    return {"candidates": out}
+
+
+def _normalize_fk_candidate(r: dict, src_table: str) -> dict:
+    """Shape one fk_predictions row into a join-editor candidate, oriented to the
+    requested src_table and carrying the evidence signals. `stored_reversed` marks
+    that the row is stored parent->child relative to the request (so the UI can
+    caveat that directional signals describe the stored orientation)."""
+    stored_reversed = (r.get("src_table") or "").lower() != src_table.lower()
+    if not stored_reversed:
+        sc, dc = r.get("src_column"), r.get("dst_column")
+    else:
+        sc, dc = r.get("dst_column"), r.get("src_column")
+    return {
+        "src_column": (sc or "").split(".")[-1],
+        "dst_column": (dc or "").split(".")[-1],
+        "confidence": _num_or_none(r.get("final_confidence")) or 0.0,
+        # Evidence (the signals the predictor already measured).
+        "ri_score": _num_or_none(r.get("ri_score")),
+        "join_rate": _num_or_none(r.get("join_rate")),
+        "join_matched": r.get("join_matched"),
+        "pk_uniqueness": _num_or_none(r.get("pk_uniqueness")),
+        "col_similarity": _num_or_none(r.get("col_similarity")),
+        "reasoning": r.get("ai_reasoning"),
+        "is_fk": bool(r.get("is_fk")) if r.get("is_fk") is not None else None,
+        "relationship_kind": r.get("relationship_kind"),
+        "stored_reversed": stored_reversed,
+    }
 
 
 @app.get("/api/analytics/fk-ddl")
@@ -5921,6 +6380,12 @@ def _ensure_semantic_layer_tables():
         execute_sql(f"ALTER TABLE {fq('semantic_layer_projects')} ADD COLUMNS (selected_tables STRING)")
     except Exception:
         pass
+    # erd_json: the user's confirmed ERD (fact/dim roles + layout) for a project,
+    # produced by the ERD designer. Seeds ERD-aware metric-view generation.
+    try:
+        execute_sql(f"ALTER TABLE {fq('semantic_layer_projects')} ADD COLUMNS (erd_json STRING)")
+    except Exception:
+        pass
     try:
         execute_sql(f"ALTER TABLE {fq('semantic_layer_profiles')} ADD COLUMNS (business_context STRING)")
     except Exception:
@@ -5979,7 +6444,9 @@ def list_semantic_definitions(project_id: Optional[str] = None):
         f"validation_errors, genie_space_id, created_at, applied_at, "
         f"COALESCE(version, 1) as version, parent_definition_id, project_id, "
         f"complexity_score, complexity_level, deployed_catalog, deployed_schema, "
-        f"quality_score, quality_level "
+        f"quality_score, quality_level, "
+        f"(get_json_object(json_definition, '$.materialization') IS NOT NULL) AS has_materialization, "
+        f"get_json_object(json_definition, '$.materialization.schedule') AS materialization_schedule "
         f"FROM {fq('metric_view_definitions')} "
         f"{where} "
         f"ORDER BY created_at DESC"
@@ -6013,6 +6480,9 @@ def list_semantic_definitions(project_id: Optional[str] = None):
             for r in applied:
                 fqn = f"{r['deployed_catalog']}.{r['deployed_schema']}.{r['metric_view_name']}".lower()
                 r["deployed_exists"] = fqn in uc_mvs
+    for r in rows:
+        hm = r.get("has_materialization")
+        r["has_materialization"] = hm is True or str(hm).lower() == "true"
     return rows
 
 
@@ -6290,7 +6760,7 @@ def list_projects():
     _ensure_semantic_layer_tables()
     try:
         return execute_sql(
-            f"SELECT project_id, project_name, description, created_at, selected_tables "
+            f"SELECT project_id, project_name, description, created_at, selected_tables, erd_json "
             f"FROM {fq('semantic_layer_projects')} ORDER BY created_at DESC"
         )
     except HTTPException as e:
@@ -6379,8 +6849,10 @@ def create_project(req: SemanticProjectRequest):
     now = _dt.utcnow().isoformat()
     name_esc = req.project_name.replace("'", "''")
     desc_esc = req.description.replace("'", "''")
+    # Column-explicit INSERT so adding columns (e.g. erd_json) never shifts values.
     execute_sql(
-        f"INSERT INTO {fq('semantic_layer_projects')} VALUES "
+        f"INSERT INTO {fq('semantic_layer_projects')} "
+        f"(project_id, project_name, description, created_at, selected_tables) VALUES "
         f"('{pid}', '{name_esc}', '{desc_esc}', '{now}', NULL)"
     )
     return {"project_id": pid, "project_name": req.project_name}
@@ -6412,6 +6884,33 @@ def update_project_tables(project_id: str, req: ProjectTablesUpdate):
         f"WHERE project_id = '{project_id}'"
     )
     return {"project_id": project_id, "selected_tables": req.selected_tables}
+
+
+class ProjectErdUpdate(BaseModel):
+    erd_json: dict
+
+
+@app.patch("/api/semantic-layer/projects/{project_id}/erd")
+def update_project_erd(project_id: str, req: ProjectErdUpdate):
+    """Persist the user's confirmed ERD (fact/dim roles + layout) for a project.
+
+    Join edits are persisted separately through the FK endpoints
+    (/api/analytics/fk-add, /fk-review) so they feed the analytics pipeline and
+    lock against re-runs; this stores only the node designations + layout that
+    have no other home.
+    """
+    _ensure_semantic_layer_tables()
+    erd_str = json.dumps(req.erd_json).replace("'", "''")
+    execute_sql(
+        f"UPDATE {fq('semantic_layer_projects')} SET erd_json = '{erd_str}' "
+        f"WHERE project_id = {_safe_sql_str(project_id)}"
+    )
+    # Invalidate the ERD recommendation cache so the next load reflects this save
+    # instead of serving a pre-save recommendation for up to the 120s TTL. The
+    # cache key varies by table list AND profile/project, so clear all entries
+    # (small cache, maxsize=16) rather than trying to reconstruct the exact key.
+    _erd_cache.clear()
+    return {"project_id": project_id, "saved": True}
 
 
 # --- In-app metric view generation ---
@@ -6780,14 +7279,25 @@ def _build_sl_context(
 
     # KPI library enrichment (skip gracefully if table doesn't exist yet)
     try:
+        # Ensure the table + resolved_table column exist before selecting it.
+        # On an upgraded deployment the pre-existing kpi_definitions table lacks
+        # resolved_table until an ALTER runs; without this, the SELECT below would
+        # throw and the outer `except: pass` would silently drop ALL KPI context.
+        _ensure_kpi_table()
         kpi_where = f" WHERE profile_id = '{profile_id.replace(chr(39), chr(39)*2)}'" if profile_id else ""
         kpi_rows = execute_sql(
-            f"SELECT name, description, formula, domain, target_tables, validation_status FROM {fq('kpi_definitions')}{kpi_where}"
+            f"SELECT name, description, formula, domain, target_tables, validation_status, resolved_table FROM {fq('kpi_definitions')}{kpi_where}"
         )
         if kpi_rows:
-            # Filter KPIs to those whose target_tables overlap with selected tables
+            fq_lower = {t.lower() for t in fq_tables} | {t.split(".")[-1].lower() for t in fq_tables}
+            # Filter KPIs to those whose target_tables overlap with selected tables,
+            # excluding confirmed-invalid ones (their formula resolves against no
+            # target table -- feeding them to the LLM only wastes tokens and invites
+            # hallucinated columns). valid / empty / unchecked / skipped are kept.
             relevant = []
             for k in kpi_rows:
+                if (k.get("validation_status") or "").lower() == "invalid":
+                    continue
                 kt = k.get("target_tables") or []
                 if isinstance(kt, str):
                     try:
@@ -6795,15 +7305,30 @@ def _build_sl_context(
                     except Exception:
                         kt = [kt]
                 kt_set = {t.lower() for t in kt} | {t.split(".")[-1].lower() for t in kt}
-                if not kt or kt_set & {t.lower() for t in fq_tables} | {t.split(".")[-1].lower() for t in fq_tables}:
-                    relevant.append(k)
+                if not kt or kt_set & fq_lower:
+                    # Bind each KPI to the ONE table its formula belongs to, so the
+                    # LLM implements it in the right view instead of dropping it when
+                    # its columns aren't visible in whatever view it picked.
+                    bind = (k.get("resolved_table") or "").strip()
+                    if not bind:
+                        overlap = [t for t in kt if t.lower() in fq_lower or t.split(".")[-1].lower() in fq_lower]
+                        bind = kt[0] if len(kt) == 1 else (overlap[0] if overlap else (kt[0] if kt else ""))
+                    relevant.append((k, bind))
             if relevant:
                 kpi_block = (
-                    "\nREQUIRED KPIs -- implement each as a measure in an appropriate metric view.\n"
-                    "If a KPI cannot be implemented with the available columns, skip it silently."
+                    "\nREQUIRED KPIs -- implement each as a measure in the metric view built on its\n"
+                    "indicated source table. Do NOT silently drop a KPI: only skip one if its columns\n"
+                    "genuinely do not exist in that table (and such cases should be rare here, since\n"
+                    "each KPI's formula was validated against its source table)."
                 )
-                for i, k in enumerate(relevant, 1):
-                    kpi_block += f"\n  {i}. {k['name']} ({k.get('domain', '')}) : {k.get('description', '')} | Formula: {k.get('formula', 'N/A')}"
+                # Group by bind table so KPIs cluster with the view that implements them.
+                by_table = {}
+                for k, bind in relevant:
+                    by_table.setdefault(bind or "(any selected table)", []).append(k)
+                for tbl, ks in by_table.items():
+                    kpi_block += f"\n  Source table {tbl}:"
+                    for k in ks:
+                        kpi_block += f"\n    - {k['name']} ({k.get('domain', '')}): {k.get('description', '')} | Formula: {k.get('formula', 'N/A')}"
                 parts.append(kpi_block)
     except Exception:
         pass
@@ -6941,7 +7466,14 @@ def _select_few_shot(context: str) -> str:
 
 
 def _load_reference_rules() -> str:
-    """Load anti-patterns and validation checklist from metric_view_reference.json."""
+    """Load metric-view quality guidance from metric_view_reference.json.
+
+    Injected into the plan/generate prompts. Pulls the modeling principles and
+    fact/dimension model (so the agent sources from facts and joins to dims)
+    plus the anti-patterns and self-check list. This JSON is the single source
+    of truth for metric-view quality -- edit it (not the prompt strings) to
+    change generation behavior.
+    """
     ref_path = os.path.join(os.path.dirname(__file__), "..", "..", "..", "configurations", "agent_references", "metric_view_reference.json")
     try:
         with open(ref_path) as f:
@@ -6949,6 +7481,17 @@ def _load_reference_rules() -> str:
     except Exception:
         return ""
     parts = []
+    if ref.get("guiding_principles"):
+        parts.append("MODELING PRINCIPLES:")
+        for gp in ref["guiding_principles"]:
+            parts.append(f"  - {gp}")
+    fdm = ref.get("fact_dimension_model")
+    if isinstance(fdm, dict):
+        parts.append("FACT/DIMENSION MODEL:")
+        for k, v in fdm.items():
+            if k == "description":
+                continue
+            parts.append(f"  - {k}: {v}")
     if ref.get("anti_patterns"):
         parts.append("ANTI-PATTERNS (NEVER do these):")
         for ap in ref["anti_patterns"]:
@@ -6958,6 +7501,42 @@ def _load_reference_rules() -> str:
         for vc in ref["validation_checklist"]:
             parts.append(f"  - {vc}")
     return "\n".join(parts)
+
+
+def _load_plan_rules() -> str:
+    """Lean modeling guidance for the PLAN prompt (no SQL-expression detail).
+
+    The plan has no SQL, so it pulls only the modeling principles, fact/dimension
+    model, and anti-patterns from metric_view_reference.json -- keeping the plan
+    prompt focused on structure while staying single-sourced with the generate
+    prompt's fuller rules.
+    """
+    ref_path = os.path.join(os.path.dirname(__file__), "..", "..", "..", "configurations", "agent_references", "metric_view_reference.json")
+    try:
+        with open(ref_path) as f:
+            ref = json.load(f)
+    except Exception:
+        return ""
+    parts = []
+    if ref.get("guiding_principles"):
+        parts.append("MODELING PRINCIPLES:")
+        for gp in ref["guiding_principles"]:
+            parts.append(f"  - {gp}")
+    fdm = ref.get("fact_dimension_model")
+    if isinstance(fdm, dict):
+        parts.append("FACT/DIMENSION MODEL:")
+        for k, v in fdm.items():
+            if k == "description":
+                continue
+            parts.append(f"  - {k}: {v}")
+    if ref.get("anti_patterns"):
+        parts.append("PLANNING ANTI-PATTERNS (NEVER do these):")
+        for ap in ref["anti_patterns"]:
+            parts.append(f"  - {ap}")
+    return "\n".join(parts)
+
+
+_PLAN_RULES_BLOCK = _load_plan_rules()
 
 
 _REFERENCE_RULES_BLOCK = _load_reference_rules()
@@ -7044,7 +7623,7 @@ SQL SYNTAX REMINDERS:
 AGGREGATION CORRECTNESS:
 - Ratios must use NULLIF in denominator: SUM(a) / NULLIF(SUM(b), 0), NEVER SUM(a) / SUM(b)
 - AVG of a pre-aggregated value is usually wrong. For "average revenue per customer", use SUM(revenue) / NULLIF(COUNT(DISTINCT customer_id), 0), not AVG(revenue)
-- Percentages: SUM(CASE WHEN cond THEN 1 ELSE 0 END) * 100.0 / NULLIF(COUNT(*), 0)
+- Percentages/rates with format:percentage must return a 0-to-1 FRACTION -- do NOT multiply by 100, the rendering layer scales for display. Write SUM(CASE WHEN cond THEN 1 ELSE 0 END) * 1.0 / NULLIF(COUNT(*), 0) (returns 0.167 -> "16.7%"), NOT * 100.0 (returns 16.7 -> "1667%"). Do not wrap in ROUND().
 
 {_REFERENCE_RULES_BLOCK}
 
@@ -7418,353 +7997,6 @@ def _validate_definition_structure(defn: dict) -> list[str]:
     return errors
 
 
-_DATE_TRUNC_INTERVALS = {
-    "YEAR",
-    "QUARTER",
-    "MONTH",
-    "WEEK",
-    "DAY",
-    "HOUR",
-    "MINUTE",
-    "SECOND",
-}
-_SQL_RESERVED = {
-    "THEN",
-    "ELSE",
-    "END",
-    "AND",
-    "OR",
-    "NOT",
-    "NULL",
-    "TRUE",
-    "FALSE",
-    "CASE",
-    "WHEN",
-    "IN",
-    "IS",
-    "LIKE",
-    "BETWEEN",
-    "SELECT",
-    "FROM",
-    "WHERE",
-    "FILTER",
-    "DISTINCT",
-    "SUM",
-    "AVG",
-    "COUNT",
-    "MIN",
-    "MAX",
-    "DATE_TRUNC",
-    "IF",
-    "COALESCE",
-    "NULLIF",
-    "OVER",
-    "PARTITION",
-    "BY",
-    "ORDER",
-    "ASC",
-    "DESC",
-    "CURRENT_DATE",
-    "CURRENT_TIMESTAMP",
-    "CURRENT_TIME",
-}
-
-
-def _fix_bare_comparison(expr: str) -> str:
-    """Insert '' when a comparison operator has no RHS value (LLM omitted empty string literal)."""
-    return re.sub(
-        r"([!=<>]+)\s*(?=\s*[,)]|\s+(?:AND|OR|THEN|ELSE|END|WHEN)\b)",
-        r"\1 ''",
-        expr,
-        flags=re.IGNORECASE,
-    )
-
-
-def _fix_unquoted_literals(expr: str) -> str:
-    """Quote bare words/phrases used as string literals in comparisons.
-
-    Masks already-quoted strings before scanning so operators inside quotes
-    (e.g. ``'SMB (<50M)'``) are not mistaken for comparison operators.
-    """
-    placeholders: list[str] = []
-
-    def _mask(m):
-        placeholders.append(m.group(0))
-        return f"__Q{len(placeholders) - 1}__"
-
-    masked = re.sub(r"'[^']*'", _mask, expr)
-
-    def _replacer(m):
-        op = m.group(1)
-        value = m.group(2).strip()
-        trail = m.group(3)
-        if not value:
-            return m.group(0)
-        if value.startswith("'") or value.startswith('"'):
-            return m.group(0)
-        if re.match(r"^__Q\d+__$", value):
-            return m.group(0)
-        if re.match(r"^-?\d+(\.\d+)?$", value):
-            return m.group(0)
-        if "." in value and " " not in value:
-            return m.group(0)
-        if "(" in value and re.match(r"^[A-Za-z_]\w*\(", value):
-            return m.group(0)
-        if value.upper() in _SQL_RESERVED or value.upper() in _DATE_TRUNC_INTERVALS:
-            return m.group(0)
-        return f"{op}'{value}'{trail}"
-
-    fixed = re.sub(
-        r"([=!<>]+\s*)(.*?)(\s+(?:THEN|ELSE|END|AND|OR|WHEN)\b|\s*[,)]|$)",
-        _replacer,
-        masked,
-        flags=re.IGNORECASE,
-    )
-    for i, orig in enumerate(placeholders):
-        fixed = fixed.replace(f"__Q{i}__", orig)
-    return fixed
-
-
-def _fix_then_else_literals(expr: str) -> str:
-    """Quote bare text after THEN/ELSE that isn't already quoted or a number/column/keyword."""
-    def _replacer(m):
-        kw = m.group(1)
-        body = m.group(2).strip()
-        if not body:
-            return m.group(0)
-        if body.startswith("'") or body.startswith('"'):
-            return m.group(0)
-        if re.match(r"^-?\d+(\.\d+)?$", body):
-            return m.group(0)
-        if "." in body and " " not in body:
-            return m.group(0)
-        # Allow parenthesized string literals like "Mild (Grade 1)"
-        # Only skip if the value looks like a function call: word(args)
-        if "(" in body and re.match(r"^[A-Za-z_]\w*\(", body):
-            return m.group(0)
-        tokens = body.split()
-        if len(tokens) == 1 and tokens[0].upper() in _SQL_RESERVED:
-            return m.group(0)
-        if len(tokens) == 1 and tokens[0].upper() in _SQL_RESERVED:
-            return m.group(0)
-        return f"{kw} '{body}'"
-
-    return re.sub(
-        r"\b(THEN|ELSE)\s+(.*?)(?=\s+(?:WHEN|ELSE|END)\b)",
-        _replacer,
-        expr,
-        flags=re.IGNORECASE,
-    )
-
-
-def _fix_in_clause_literals(expr: str) -> str:
-    """Quote bare words inside IN (...) clauses."""
-
-    def _fix_in_body(m):
-        prefix = m.group(1)
-        body = m.group(2)
-        tokens = [t.strip() for t in body.split(",")]
-        fixed = []
-        for tok in tokens:
-            if not tok:
-                continue
-            elif tok.startswith("'") or tok.startswith('"'):
-                fixed.append(tok)
-            elif re.match(r"^-?\d+(\.\d+)?$", tok):
-                fixed.append(tok)
-            elif tok.upper() in _SQL_RESERVED:
-                fixed.append(tok)
-            else:
-                fixed.append(f"'{tok}'")
-        return f"{prefix}{', '.join(fixed)})"
-
-    return re.sub(
-        r"(\bIN\s*\()([^)]+)\)",
-        _fix_in_body,
-        expr,
-        flags=re.IGNORECASE,
-    )
-
-
-def _fix_concat_separators(expr: str) -> str:
-    """Quote bare separator tokens between commas (e.g. -Q, /, : in CONCAT)."""
-    def _repl(m):
-        tok = m.group(1).strip()
-        if re.match(r"^-?\d+(\.\d+)?$", tok):
-            return m.group(0)
-        return f", '{tok}',"
-    return re.sub(
-        r",\s*([^\w\s'\"`(][^'\"`(,)]{0,4})\s*,",
-        _repl,
-        expr,
-    )
-
-
-def _fix_like_patterns(expr: str) -> str:
-    """Quote bare LIKE/NOT LIKE patterns, including multi-word patterns with spaces."""
-    def _repl(m):
-        prefix = m.group(1)
-        pat = m.group(2).strip()
-        if pat.startswith("'") or pat.startswith('"'):
-            return m.group(0)
-        if not pat:
-            return m.group(0)
-        return f"{prefix}'{pat}'"
-    return re.sub(
-        r"(LIKE\s+)(.*?)(?=\s+(?:AND|OR|THEN|ELSE|END|WHEN)\b|\s*[)]|$)",
-        _repl, expr, flags=re.IGNORECASE,
-    )
-
-
-def _fix_dquote_identifier(expr: str) -> str:
-    """Convert dotted double-quoted identifiers to backtick-quoted.
-
-    ``source."assay name"`` -> ``source.`assay name```
-    Only matches ``word."..."`` (dotted identifier), never bare ``"..."``
-    (string literals).
-    """
-    return re.sub(r'(\b\w+)\."([^"]+)"', r"\1.`\2`", expr)
-
-
-def _fix_instr_bare_arg(expr: str) -> str:
-    """Quote bare non-alnum arg in INSTR (2nd arg) and LOCATE (1st arg)."""
-    def _repl_second(m):
-        ch = m.group(2).strip()
-        if ch.startswith("'") or ch.startswith('"'):
-            return m.group(0)
-        return f"{m.group(1)}'{ch}')"
-    expr = re.sub(
-        r"(INSTR\([^,]+,\s*)([^\w\s'\"]+)\)",
-        _repl_second, expr, flags=re.IGNORECASE,
-    )
-    def _repl_first(m):
-        ch = m.group(1).strip()
-        if ch.startswith("'") or ch.startswith('"'):
-            return m.group(0)
-        return f"LOCATE('{ch}'{m.group(2)}"
-    expr = re.sub(
-        r"LOCATE\(\s*([^\w\s'\"]+)(,)",
-        _repl_first, expr, flags=re.IGNORECASE,
-    )
-    return expr
-
-
-def _fix_position_bare_char(expr: str) -> str:
-    """Quote bare non-alnum char in POSITION(X IN ...): POSITION(- IN col) -> POSITION('-' IN col)."""
-    def _repl(m):
-        ch = m.group(1).strip()
-        if ch.startswith("'") or ch.startswith('"'):
-            return m.group(0)
-        return f"POSITION('{ch}' IN{m.group(2)}"
-    return re.sub(r"POSITION\(\s*([^\w\s'\"]+)\s+(IN\b)", _repl, expr, flags=re.IGNORECASE)
-
-
-def _fix_double_commas(expr: str) -> str:
-    """Collapse empty arguments: CONCAT(a, , b) -> CONCAT(a, b)."""
-    while ", ," in expr:
-        expr = expr.replace(", ,", ",")
-    while ",," in expr:
-        expr = expr.replace(",,", ",")
-    return expr
-
-
-def _fix_bare_whitespace_separator(expr: str) -> str:
-    """Quote bare whitespace between commas: f(a,  , b) -> f(a, ' ', b)."""
-    return re.sub(r",(\s+),", ", ' ',", expr)
-
-
-def _fix_none_literal(expr: str) -> str:
-    """Replace Python None leaked into SQL with NULL."""
-    return re.sub(r"\bNone\b", "NULL", expr)
-
-
-def _fix_concat_bare_first_arg(expr: str) -> str:
-    """Quote bare single-word non-column first arg in CONCAT: CONCAT(Q, ...) -> CONCAT('Q', ...)."""
-    def _repl(m):
-        fn = m.group(1)
-        arg = m.group(2).strip()
-        if arg.startswith("'") or arg.startswith('"'):
-            return m.group(0)
-        if "." in arg or arg.upper() in _SQL_RESERVED or re.match(r"^-?\d", arg):
-            return m.group(0)
-        if len(arg) <= 3 and arg.isalpha():
-            return f"{fn}'{arg}',"
-        return m.group(0)
-    return re.sub(r"(CONCAT\(\s*)([^',\s]+)\s*,", _repl, expr, flags=re.IGNORECASE)
-
-
-def _fix_percentile_cont(expr: str) -> str:
-    """Rewrite 2-arg percentile_cont/disc to ANSI WITHIN GROUP syntax."""
-    def _repl(m):
-        func = m.group(1)
-        pct = m.group(2).strip()
-        col = m.group(3).strip()
-        return f"{func}({pct}) WITHIN GROUP (ORDER BY {col})"
-    return re.sub(
-        r"\b(PERCENTILE_CONT|PERCENTILE_DISC)\s*\(\s*([^,]+?)\s*,\s*([^)]+?)\s*\)",
-        _repl, expr, flags=re.IGNORECASE,
-    )
-
-
-def _autofix_expr(expr: str) -> str:
-    """Fix common AI expression mistakes before validation."""
-    expr = _fix_dquote_identifier(expr)
-
-    # Fix unquoted DATE_TRUNC intervals: DATE_TRUNC(WEEK, col) -> DATE_TRUNC('WEEK', col)
-    def _fix_date_trunc(m):
-        interval = m.group(1)
-        rest = m.group(2)
-        if interval.upper() in _DATE_TRUNC_INTERVALS:
-            return f"DATE_TRUNC('{interval}'{rest}"
-        return m.group(0)
-
-    expr = re.sub(
-        r"DATE_TRUNC\(\s*([A-Za-z]+)(,)", _fix_date_trunc, expr, flags=re.IGNORECASE
-    )
-
-    for iv in _DATE_TRUNC_INTERVALS:
-        pat = re.compile(rf"\b{iv}\s*\(([^)]+)\)", re.IGNORECASE)
-        match = pat.search(expr)
-        if match and expr.strip().upper().startswith(iv.upper()):
-            expr = pat.sub(rf"DATE_TRUNC('{iv}', \1)", expr)
-
-    # Fix DATE_FORMAT with unquoted format strings: DATE_FORMAT(col, yyyy) -> DATE_FORMAT(col, 'yyyy')
-    def _fix_date_format(m):
-        col_part = m.group(1)
-        fmt = m.group(2).strip()
-        if not (fmt.startswith("'") or fmt.startswith('"')):
-            return f"DATE_FORMAT({col_part}, '{fmt}')"
-        return m.group(0)
-
-    expr = re.sub(
-        r"DATE_FORMAT\(([^,]+),\s*([^)]+)\)", _fix_date_format, expr, flags=re.IGNORECASE
-    )
-
-    # SUBSTR(date_col, 1, 7) -> DATE_FORMAT(col, 'yyyy-MM'); SUBSTR(date_col, 1, 4) -> DATE_FORMAT(col, 'yyyy')
-    def _fix_substr_date(m):
-        col = m.group(1).strip()
-        length = m.group(2).strip()
-        if any(kw in col.lower() for kw in ("date", "time", "dt", "_ts", "created", "updated")):
-            fmt = "'yyyy-MM'" if length == "7" else "'yyyy'"
-            return f"DATE_FORMAT({col}, {fmt})"
-        return m.group(0)
-    expr = re.sub(r"SUBSTR\(([^,]+),\s*1\s*,\s*(4|7)\)", _fix_substr_date, expr, flags=re.IGNORECASE)
-
-    expr = _fix_bare_comparison(expr)
-    expr = _fix_none_literal(expr)
-    expr = _fix_double_commas(expr)
-    expr = _fix_position_bare_char(expr)
-    expr = _fix_instr_bare_arg(expr)
-    expr = _fix_concat_bare_first_arg(expr)
-    expr = _fix_then_else_literals(expr)
-    expr = _fix_unquoted_literals(expr)
-    expr = _fix_in_clause_literals(expr)
-    expr = _fix_concat_separators(expr)
-    expr = _fix_like_patterns(expr)
-    expr = _fix_percentile_cont(expr)
-    expr = _fix_bare_whitespace_separator(expr)
-    expr = re.sub(r'\bOVER\s*\(\s*\)', '', expr, flags=re.IGNORECASE)
-    return expr
 
 
 def _build_from_clause(source_table: str, joins: list[dict] | None = None) -> str:
@@ -7835,6 +8067,9 @@ def _validate_expr(expr: str, source_table: str, joins: list[dict] | None = None
     from_clause = _build_from_clause(source_table, joins)
     sql_expr = _dotpath_to_leaf(expr, joins)
     try:
+        # PQ-7: LIMIT 0 is schema/plan-only -- returns no rows and does not scan the
+        # source (federation-safe). The per-generation call count is bounded by the
+        # capped view count + expressions per view; no source-data read here.
         execute_sql(f"SELECT {sql_expr} FROM {from_clause} LIMIT 0")
         return None, expr
     except Exception as e:
@@ -7854,17 +8089,6 @@ def _validate_expr(expr: str, source_table: str, joins: list[dict] | None = None
                 except Exception:
                     pass
         return err_str, expr
-
-
-_CURRENCY_PATTERNS = re.compile(
-    r"SUM\s*\(\s*(total_amount|amount|revenue|cost|price|charge|fee|salary|budget|payment|balance)",
-    re.IGNORECASE,
-)
-_PERCENTAGE_PATTERNS = re.compile(
-    r"(\*\s*1\.0\s*/\s*NULLIF|\*\s*100\.0\s*/\s*NULLIF|THEN\s+1\s+ELSE\s+0\s+END\)\s*\*\s*1\.0)",
-    re.IGNORECASE,
-)
-_PERCENTAGE_NAME_PATTERNS = re.compile(r"\brate\b|\bpct\b|\bpercentage\b|\bratio\b", re.IGNORECASE)
 
 
 def _compute_kpi_coverage(definitions: list[dict], tables: list[str], profile_id: str | None = None) -> dict:
@@ -7933,22 +8157,366 @@ def _compute_kpi_coverage(definitions: list[dict], tables: list[str], profile_id
     }
 
 
-def _infer_format_specs(defn: dict) -> None:
-    """Infer and backfill format specs on measures that lack them."""
-    for m in defn.get("measures", []):
-        fmt = m.get("format")
-        if fmt:
-            if isinstance(fmt, dict) and fmt.get("type") == "currency" and not fmt.get("currency_code"):
-                fmt["currency_code"] = "USD"
+_erd_cache = TTLCache(maxsize=16, ttl=120)
+
+
+def _resolve_project_tables(project_id: Optional[str]) -> list[str]:
+    """selected_tables JSON for a project, else []."""
+    if not project_id:
+        return []
+    try:
+        rows = execute_sql(
+            f"SELECT selected_tables FROM {fq('semantic_layer_projects')} "
+            f"WHERE project_id = '{project_id}'"
+        )
+    except Exception:
+        return []
+    if not rows:
+        return []
+    raw = rows[0].get("selected_tables")
+    if not raw:
+        return []
+    try:
+        val = json.loads(raw) if isinstance(raw, str) else raw
+        return val if isinstance(val, list) else []
+    except Exception:
+        return []
+
+
+def _fetch_erd_inputs(tables: list[str]) -> tuple[list, list, dict, list]:
+    """Fetch (fk_rows, ontology_rows, profiling_by_table, existing_defs) for the
+    ERD recommender. Each source is best-effort -- a missing table degrades to []
+    so the recommender still runs on whatever metadata exists."""
+    safe = [_safe_sql_str(t) for t in tables if _SAFE_IDENT_RE.match(t)]
+    in_clause = ", ".join(safe) if safe else "''"
+
+    fk_rows = []
+    try:
+        fk_rows = execute_sql(
+            f"SELECT src_table, src_column, dst_table, dst_column, final_confidence, "
+            f"is_fk, join_rate, pk_uniqueness FROM {fq('fk_predictions')} "
+            f"WHERE src_table != dst_table AND (src_table IN ({in_clause}) OR dst_table IN ({in_clause}))"
+        ) or []
+    except Exception as e:
+        logger.warning("erd: fk_predictions fetch failed: %s", e)
+
+    ontology_rows = []
+    try:
+        ontology_rows = execute_sql(
+            f"SELECT entity_type, entity_role, source_tables FROM {fq('ontology_entities')}"
+        ) or []
+    except Exception as e:
+        logger.warning("erd: ontology_entities fetch failed: %s", e)
+
+    profiling_by_table: dict[str, list] = {}
+    try:
+        prof_rows = execute_sql(
+            f"SELECT table_name, column_name, data_type, null_rate, cardinality_ratio, "
+            f"is_unique_candidate, has_numeric_stats FROM {CATALOG}.{SCHEMA}.column_profiling_stats "
+            f"WHERE table_name IN ({in_clause})"
+        ) or []
+        for r in prof_rows:
+            profiling_by_table.setdefault(r.get("table_name"), []).append(r)
+    except Exception as e:
+        logger.warning("erd: column_profiling_stats fetch failed: %s", e)
+
+    existing_defs = []
+    try:
+        # Scope to the tables in this request -- otherwise metric_views_current,
+        # the 'covered' set, and KPI-coverage measures would reflect the ENTIRE
+        # catalog (every project's definitions), not the tables being analyzed.
+        existing_defs = execute_sql(
+            f"SELECT source_table, status, json_definition FROM {fq('metric_view_definitions')} "
+            f"WHERE status NOT IN ('superseded', 'deleted') AND source_table IN ({in_clause})"
+        ) or []
+    except Exception as e:
+        logger.warning("erd: metric_view_definitions fetch failed: %s", e)
+
+    return fk_rows, ontology_rows, profiling_by_table, existing_defs
+
+
+def _load_saved_erd(project_id: Optional[str]) -> Optional[dict]:
+    """Return the project's saved erd_json (parsed) or None.
+
+    Persisted by PATCH /api/semantic-layer/projects/{id}/erd. Best-effort: a
+    missing project / column / parse error degrades to None (fresh recommendation).
+    """
+    if not project_id:
+        return None
+    try:
+        rows = execute_sql(
+            f"SELECT erd_json FROM {fq('semantic_layer_projects')} "
+            f"WHERE project_id = {_safe_sql_str(project_id)}"
+        )
+        raw = rows[0].get("erd_json") if rows else None
+        if not raw:
+            return None
+        return json.loads(raw) if isinstance(raw, str) else raw
+    except Exception as e:
+        logger.warning("erd: saved erd_json load failed: %s", e)
+        return None
+
+
+def _erd_edge_key(
+    src: Optional[str], dst: Optional[str], on: Optional[str] = None
+) -> tuple[str, str, str]:
+    """Case-insensitive, order-preserving identity for an ERD edge.
+
+    Includes the join condition (`on`), because the recommender dedupes edges by
+    (src, dst, src_col, dst_col) -- a single table PAIR can carry MULTIPLE edges
+    on different column pairs (common between two fact tables). Keying on the
+    table pair alone would let deleting ONE of those edges fail to stick: the
+    other surviving edge's (src,dst) would keep re-admitting the deleted one on
+    reload. `on` encodes the columns, so it distinguishes them. Whitespace is
+    normalized so cosmetic formatting differences don't break the match.
+
+    src->dst and dst->src stay distinct: the recommender emits directional joins.
+    """
+    on_norm = " ".join((on or "").split()).lower()
+    return ((src or "").lower(), (dst or "").lower(), on_norm)
+
+
+def _overlay_saved_erd(rec: dict, saved: Optional[dict]) -> dict:
+    """Overlay a user's saved ERD (node roles/grain, schema_type, and edge set)
+    onto a fresh recommendation so the visual builder shows what the user
+    confirmed, not a re-derived heuristic.
+
+    Nodes: matched by fully-qualified table name (case-insensitive). Saved nodes
+    for tables no longer in scope are ignored; recommended nodes with no saved
+    role keep their heuristic role, so newly-added tables still get a default.
+
+    Edges: if the saved ERD carries an explicit ``edges`` list, it is treated as
+    AUTHORITATIVE -- the recommendation's edges are filtered to only those the
+    user kept, so a deleted edge stays deleted instead of being re-derived. A
+    saved ERD with NO ``edges`` key (e.g. saved before this field existed, or a
+    node-only save) leaves recommended edges untouched, preserving prior
+    behavior and first-load recommendations. An explicit empty list means the
+    user removed every edge and is honored as such.
+    """
+    if not saved:
+        return rec
+    saved_nodes = {
+        (n.get("table") or "").lower(): n
+        for n in (saved.get("nodes") or [])
+        if n.get("table")
+    }
+    for node in rec.get("nodes") or []:
+        sn = saved_nodes.get((node.get("table") or "").lower())
+        if not sn:
             continue
-        expr = m.get("expr", "")
-        name = m.get("name", "")
-        if _PERCENTAGE_PATTERNS.search(expr) or _PERCENTAGE_NAME_PATTERNS.search(name):
-            m["format"] = {"type": "percentage"}
-        elif _CURRENCY_PATTERNS.search(expr):
-            m["format"] = {"type": "currency", "currency_code": "USD"}
-        else:
-            m["format"] = {"type": "number"}
+        if sn.get("role"):
+            node["role"] = sn["role"]
+        if sn.get("grain") is not None:
+            node["grain"] = sn["grain"]
+        # Mark that this role came from the user so the UI can distinguish it.
+        node["user_confirmed"] = True
+    if saved.get("schema_type"):
+        rec["schema_type"] = saved["schema_type"]
+    # Edge overlay: only when the user has an explicit saved edge set. `is not
+    # None` (not truthiness) so an intentional empty list drops all edges.
+    #
+    # The saved edge set is AUTHORITATIVE in both directions:
+    #  - a recommended edge NOT in the saved set is dropped (deletion sticks), and
+    #  - a saved edge NOT in the recommendation is ADDED BACK. Without the add-back,
+    #    any user-asserted edge the recommender never proposed -- a hand-drawn join
+    #    (onConnect) or an edge whose join columns were cleared so its `on` no longer
+    #    matches a recommended edge's key -- would silently vanish on reload.
+    saved_edges = saved.get("edges")
+    if saved_edges is not None:
+        valid_saved = [e for e in saved_edges if e.get("src") and e.get("dst")]
+        kept = {_erd_edge_key(e.get("src"), e.get("dst"), e.get("on")) for e in valid_saved}
+        rec_by_key = {
+            _erd_edge_key(e.get("src"), e.get("dst"), e.get("on")): e
+            for e in (rec.get("edges") or [])
+        }
+        merged = []
+        seen = set()
+        for e in valid_saved:
+            k = _erd_edge_key(e.get("src"), e.get("dst"), e.get("on"))
+            if k in seen:
+                continue
+            seen.add(k)
+            # Prefer the recommendation's richer edge object (confidence, source,
+            # reasoning) when it exists; otherwise keep the saved edge as-is so a
+            # user-only edge survives.
+            merged.append(rec_by_key.get(k, e))
+        rec["edges"] = merged
+    return rec
+
+
+@app.get("/api/semantic-layer/erd-recommendation")
+def get_erd_recommendation(
+    tables: Optional[str] = None,
+    project_id: Optional[str] = None,
+    profile_id: Optional[str] = None,
+):
+    """Recommend a star-schema ERD + sufficiency for a project (or explicit tables).
+
+    Reuses the structural metadata dbxmetagen already produced (FK predictions,
+    ontology roles, column profiling, existing definitions, KPI coverage) via the
+    pure erd_recommender.recommend_erd(). Cached 120s per (tables, profile).
+    """
+    from dbxmetagen.erd_recommender import recommend_erd
+
+    _ensure_semantic_layer_tables()
+    table_list = [t.strip() for t in tables.split(",") if t.strip()] if tables else []
+    if not table_list:
+        table_list = _resolve_project_tables(project_id)
+    if not table_list:
+        return {"nodes": [], "edges": [], "sufficiency": {}, "schema_type": "SIMPLE",
+                "message": "No tables in scope. Select tables or a project first."}
+
+    cache_key = (tuple(sorted(table_list)), profile_id or project_id or "")
+    if cache_key in _erd_cache:
+        return _erd_cache[cache_key]
+
+    fk_rows, ontology_rows, profiling_by_table, existing_defs = _fetch_erd_inputs(table_list)
+
+    # KPI coverage reuses the existing computation (missing KPIs drive the target).
+    kpi_cov = {}
+    try:
+        defs_json = []
+        for d in existing_defs:
+            jd = d.get("json_definition")
+            if jd:
+                defs_json.append(json.loads(jd) if isinstance(jd, str) else jd)
+        kpi_cov = _compute_kpi_coverage(defs_json, table_list, profile_id or project_id)
+    except Exception as e:
+        logger.warning("erd: kpi coverage failed: %s", e)
+
+    rec = recommend_erd(
+        tables=table_list,
+        fk_rows=fk_rows,
+        ontology_rows=ontology_rows,
+        profiling_by_table=profiling_by_table,
+        existing_defs=existing_defs,
+        kpi_coverage=kpi_cov,
+    )
+    # Overlay the user's saved ERD (confirmed node roles/grain + schema_type) so
+    # the visual builder reflects what they saved rather than a re-derived
+    # heuristic. Without this, saving then leaving and returning to the Model tab
+    # reverts the edits (they persisted to erd_json but were never read back here).
+    result = _overlay_saved_erd(rec.to_dict(), _load_saved_erd(project_id))
+    _erd_cache[cache_key] = result
+    return result
+
+
+class ErdExplainRequest(BaseModel):
+    erd: dict                              # the heuristic recommendation (nodes/edges/sufficiency)
+    business_context: Optional[str] = None
+    model_endpoint: Optional[str] = None
+
+
+@app.post("/api/semantic-layer/erd-recommendation/explain")
+def explain_erd_recommendation(req: ErdExplainRequest):
+    """Optional LLM enrichment: prioritize + explain the heuristic ERD in prose.
+
+    Costs one AI_QUERY. The heuristic recommendation works without this; the UI
+    gates it behind a button. Returns {explanation, suggested_view_themes[]}.
+    """
+    model = req.model_endpoint or _LLM_MODEL
+    nodes = req.erd.get("nodes", [])
+    edges = req.erd.get("edges", [])
+    suff = req.erd.get("sufficiency", {})
+    # "Fact/source tables" are the grain anchors -- include source-role tables
+    # (de-facto facts / marts), not just role=="fact", so the narrative sees the
+    # same anchors the numeric recommendation is built on.
+    facts = [n["table"] for n in nodes if n.get("role") in ("fact", "source", "bridge")]
+    dims = [n["table"] for n in nodes if n.get("role") == "dimension"]
+    ctx = (req.business_context or "").strip()
+
+    prompt = (
+        "You are a Databricks metric-view architect. Given a recommended ERD, explain "
+        "concisely (a) which tables to build metric views on and why, and (b) what analytical "
+        "themes the views should cover. Be specific and prioritize by business value.\n\n"
+        f"Fact/source tables: {', '.join(facts) or 'none clearly identified'}\n"
+        f"Dimension tables: {', '.join(dims) or 'none'}\n"
+        f"Confirmed/predicted joins: {len(edges)}\n"
+        f"Recommended views: {suff.get('metric_views_recommended', 0)} "
+        f"(current {suff.get('metric_views_current', 0)}); "
+        f"uncovered: {', '.join(suff.get('uncovered_tables', []) or []) or 'none'}; "
+        f"missing KPIs: {', '.join(suff.get('missing_kpis', []) or []) or 'none'}\n"
+        + (f"Business context: {ctx}\n" if ctx else "")
+        + '\nReturn JSON: {"explanation": "...", "suggested_view_themes": ["...", "..."]}'
+    )
+    try:
+        rows = execute_sql(
+            f"SELECT AI_QUERY('{_safe_model_endpoint(model)}', :prompt) as response", timeout=120,
+            parameters=[StatementParameterListItem(name="prompt", value=prompt)],
+        )
+        raw = rows[0]["response"] if rows else ""
+        parsed = _parse_single_json_safe(raw) if raw else {}
+        return {
+            "explanation": parsed.get("explanation", raw),
+            "suggested_view_themes": parsed.get("suggested_view_themes", []),
+        }
+    except Exception as e:
+        logger.error("erd explain failed: %s", e)
+        raise HTTPException(500, detail=f"ERD explanation failed: {e}")
+
+
+@app.get("/api/semantic-layer/generation-sufficiency")
+def get_generation_sufficiency(
+    tables: Optional[str] = None,
+    project_id: Optional[str] = None,
+    profile_id: Optional[str] = None,
+):
+    """Coverage-aware 'generate more?' recommendation for questions and KPIs.
+
+    Reuses the ERD recommender's structural analysis (fact tables, domains) plus
+    current question/KPI counts + KPI coverage. Returns
+    {"questions": {...}, "kpis": {...}} where each carries current/recommended/gap
+    and should_generate_more with reasons.
+    """
+    from dbxmetagen.erd_recommender import recommend_questions_kpis
+
+    _ensure_semantic_layer_tables()
+    table_list = [t.strip() for t in tables.split(",") if t.strip()] if tables else []
+    if not table_list:
+        table_list = _resolve_project_tables(project_id)
+    if not table_list:
+        return {"questions": {}, "kpis": {}, "message": "No tables in scope."}
+
+    fk_rows, ontology_rows, profiling_by_table, existing_defs = _fetch_erd_inputs(table_list)
+
+    # Current counts. Questions are global; KPIs are profile-scoped when a profile
+    # is active (mirrors the KPI-coverage endpoint's scoping).
+    current_questions = 0
+    try:
+        r = execute_sql(f"SELECT COUNT(*) AS c FROM {fq('semantic_layer_questions')}")
+        current_questions = int(r[0]["c"]) if r else 0
+    except Exception:
+        pass
+    current_kpis = 0
+    kpi_where = f" WHERE profile_id = '{profile_id.replace(chr(39), chr(39) * 2)}'" if profile_id else ""
+    try:
+        r = execute_sql(f"SELECT COUNT(*) AS c FROM {fq('kpi_definitions')}{kpi_where}")
+        current_kpis = int(r[0]["c"]) if r else 0
+    except Exception:
+        pass
+
+    kpi_cov = {}
+    try:
+        defs_json = []
+        for d in existing_defs:
+            jd = d.get("json_definition")
+            if jd:
+                defs_json.append(json.loads(jd) if isinstance(jd, str) else jd)
+        kpi_cov = _compute_kpi_coverage(defs_json, table_list, profile_id or project_id)
+    except Exception as e:
+        logger.warning("generation-sufficiency: kpi coverage failed: %s", e)
+
+    out = recommend_questions_kpis(
+        tables=table_list,
+        current_questions=current_questions,
+        current_kpis=current_kpis,
+        kpi_coverage=kpi_cov,
+        fk_rows=fk_rows,
+        ontology_rows=ontology_rows,
+        profiling_by_table=profiling_by_table,
+        existing_defs=existing_defs,
+    )
+    return {k: v.to_dict() for k, v in out.items()}
 
 
 def _count_joins(joins: list[dict] | None) -> tuple[int, int]:
@@ -7982,11 +8550,125 @@ _COMPUTED_DIM_RE = re.compile(r"CASE\b|DATE_TRUNC\b|CONCAT\b|EXTRACT\b", re.IGNO
 _ALIAS_REF_RE = re.compile(r"\b([A-Za-z_]\w*)\.\w+")
 
 
-def _score_definition_complexity(defn: dict) -> dict:
+_MAX_RECOMMENDED_VIEWS = 15
+
+
+def _compute_view_cap(num_eligible: int, erd_recommended: int = 0,
+                      max_views: int | None = None) -> tuple[int, int, int]:
+    """Resolve (recommended, hard_cap, effective_max) for metric-view generation.
+
+    The ERD recommender's count is fact-grain-aware (~1 view per fact table +
+    uncovered/KPI needs), so when present it is BOTH the default recommendation
+    and the floor of the anti-runaway hard_cap. The prior `num_eligible // 2`
+    hard_cap silently crushed the fact-grain strategy whenever facts dominated
+    the selection (e.g. 4 facts -> hard_cap 2 -> the LLM was forced to merge 4
+    grains into 2 overlapping views that then flag as duplicates). Without an ERD
+    we can't know the fact count pre-plan, so we keep the half-tables heuristic.
+
+    - recommended: the pre-filled "recommended" count (ERD count, else ~1/3 tables)
+    - hard_cap: the ceiling a user's explicit max_views is clamped to
+    - effective_max: the count actually used = clamp(max_views or recommended, 1, hard_cap)
+    """
+    num_eligible = max(0, int(num_eligible))
+    erd_recommended = max(0, int(erd_recommended or 0))
+    hard_cap = min(max(num_eligible // 2, erd_recommended, 2), _MAX_RECOMMENDED_VIEWS)
+    recommended = erd_recommended or min(max(num_eligible // 3, 2), _MAX_RECOMMENDED_VIEWS)
+    effective_max = min(max(max_views or recommended, 1), hard_cap)
+    return recommended, hard_cap, effective_max
+
+
+def _coverage_factor(n_dims: int, n_measures: int, available_cols: int | None) -> dict:
+    """Score how well a metric view exploits its available source+join columns.
+
+    A production-quality view over complex data should surface MOST source
+    columns as dimensions and expose a healthy set of measures -- a 3-dim/3-measure
+    view over a 40-column fact table is thin, not "rich", even if every expression
+    is sophisticated. `available_cols` is the distinct column count across the
+    source table and every joined table (from column_knowledge_base).
+
+    Returns {ratio, penalty, level, detail, thin_dims, thin_measures}. `penalty`
+    (0..COVERAGE_MAX_PENALTY) is subtracted from the complexity score so thin views
+    stop scoring in the "rich"/"production" band. When `available_cols` is unknown
+    (None or <=0) this is a no-op (penalty 0) -- fully backward compatible.
+    """
+    if not available_cols or available_cols <= 0:
+        return {"ratio": None, "penalty": 0, "level": "unknown",
+                "detail": "source column count unavailable", "thin_dims": False,
+                "thin_measures": False}
+    covered = n_dims + n_measures
+    ratio = covered / available_cols
+    # Dimensions should cover most columns; measures should be a healthy fraction.
+    thin_dims = n_dims < 0.5 * available_cols
+    thin_measures = n_measures < max(3, 0.15 * available_cols)
+    if ratio >= 0.8:
+        penalty, level = 0, "comprehensive"
+    elif ratio >= 0.5:
+        penalty, level = 3, "adequate"
+    elif ratio >= 0.3:
+        penalty, level = 6, "partial"
+    else:
+        penalty, level = 10, "thin"
+    detail = (f"{covered} fields (dims {n_dims} + measures {n_measures}) vs "
+              f"{available_cols} source+join columns ({ratio:.0%})")
+    return {"ratio": ratio, "penalty": penalty, "level": level, "detail": detail,
+            "thin_dims": thin_dims, "thin_measures": thin_measures}
+
+
+def _mv_defn_tables(defn: dict) -> list[str]:
+    """All source + joined table identifiers referenced by a definition."""
+    tables = []
+    if defn.get("source"):
+        tables.append(defn["source"])
+
+    def _walk(jlist):
+        for j in jlist or []:
+            if j.get("source"):
+                tables.append(j["source"])
+            _walk(j.get("joins"))
+
+    _walk(defn.get("joins"))
+    # Dedup preserving order.
+    seen, out = set(), []
+    for t in tables:
+        if t and t not in seen:
+            seen.add(t)
+            out.append(t)
+    return out
+
+
+def _mv_available_cols(defn: dict) -> int | None:
+    """Distinct column count across a definition's source + joined tables.
+
+    Reads the local column_knowledge_base (no source-table access, federation-safe).
+    Returns None on any error / no rows so scoring degrades to the column-agnostic
+    behavior instead of penalizing a view we simply can't measure.
+    """
+    tables = _mv_defn_tables(defn)
+    if not tables:
+        return None
+    try:
+        table_list = ", ".join(f"'{_esc_sql(t)}'" for t in tables)
+        rows = execute_sql(
+            f"SELECT COUNT(*) AS c FROM {fq('column_knowledge_base')} "
+            f"WHERE table_name IN ({table_list})",
+            timeout=30,
+        )
+        c = int(rows[0]["c"]) if rows else 0
+        return c or None
+    except Exception as e:
+        logger.debug("MV available-column count skipped: %s", e)
+        return None
+
+
+def _score_definition_complexity(defn: dict, available_cols: int | None = None) -> dict:
     """Score a metric view definition's analytical richness and agent readiness.
 
     Returns complexity_score (0-30) / complexity_level and
     quality_score (0-20) / quality_level.  Combined max = 50.
+
+    When `available_cols` (distinct source+join column count) is provided, a
+    coverage penalty is applied to the complexity score so thin views over wide
+    tables no longer score as "rich" -- see _coverage_factor.
     """
     # --- Complexity sub-score (0-30) ---
 
@@ -8038,7 +8720,8 @@ def _score_definition_complexity(defn: dict) -> dict:
     if len(defn.get("dimensions", [])) >= 4:
         struct_score += 1
 
-    cx_score = join_score + meas_score + dim_score + struct_score
+    cov = _coverage_factor(len(defn.get("dimensions", [])), len(measures), available_cols)
+    cx_score = max(0, join_score + meas_score + dim_score + struct_score - cov["penalty"])
     if cx_score >= 20:
         cx_level = "rich"
     elif cx_score >= 10:
@@ -8120,6 +8803,9 @@ def _score_definition_complexity(defn: dict) -> dict:
         "complexity_level": cx_level,
         "quality_score": q_score,
         "quality_level": q_level,
+        "coverage_ratio": cov["ratio"],
+        "coverage_level": cov["level"],
+        "coverage_detail": cov["detail"],
     }
 
 
@@ -8160,7 +8846,7 @@ Return ONLY the fixed JSON definition (single object, not array)."""
 
     try:
         rows = execute_sql(
-            f"SELECT AI_QUERY('{model}', :prompt) as response", timeout=120,
+            f"SELECT AI_QUERY('{_safe_model_endpoint(model)}', :prompt) as response", timeout=120,
             parameters=[StatementParameterListItem(name="prompt", value=prompt)],
         )
         response = rows[0]["response"] if rows else ""
@@ -8171,27 +8857,6 @@ Return ONLY the fixed JSON definition (single object, not array)."""
     except Exception as exc:
         logger.warning("Self-repair AI call failed: %s", exc)
         return None
-
-
-def _normalize_joins(defn: dict) -> dict:
-    """Rewrite join 'on' clauses to use source.col instead of raw tablename.col for the source table."""
-    source_short = (defn.get("source") or "").split(".")[-1]
-    if not source_short:
-        return defn
-
-    def _rewrite(joins: list[dict], parent_alias: str = "source") -> None:
-        parent_short = parent_alias if parent_alias == "source" else parent_alias
-        for join in joins:
-            on = join.get("on", "")
-            if source_short + "." in on and parent_alias == "source":
-                join["on"] = re.sub(
-                    rf"\b{re.escape(source_short)}\.", "source.", on
-                )
-            if join.get("joins"):
-                _rewrite(join["joins"], join.get("name", ""))
-
-    _rewrite(defn.get("joins", []))
-    return defn
 
 
 def _fix_join_alias_refs(defn: dict) -> dict:
@@ -8245,155 +8910,9 @@ def _fix_join_alias_refs(defn: dict) -> dict:
     return defn
 
 
-def _restructure_chained_to_nested(defn: dict) -> dict:
-    """Convert flat chained joins into proper nested (snowflake) structure.
-
-    Three-tier strategy:
-    1. Joins already nested (have a ``joins`` key) pass through unchanged.
-    2. Flat joins whose ``on`` references a sibling alias get moved inside
-       that parent as nested children.
-    3. If restructuring fails (cycles / unresolvable refs), drop the
-       problematic joins and their dependent dims/measures.
-    """
-    joins = defn.get("joins", [])
-    if not joins:
-        return defn
-
-    # If all joins already have proper structure (on refs source or are nested), skip
-    ref_pat = re.compile(r"\b([A-Za-z_]\w*)\.\w+")
-    join_aliases = {j.get("name", "").lower() for j in joins if j.get("name")}
-
-    # Separate root joins (on references "source") from chained ones
-    root_joins: list[dict] = []
-    chained: list[dict] = []
-    for j in joins:
-        if j.get("joins"):
-            root_joins.append(j)
-            continue
-        on = j.get("on", "")
-        refs = {m.group(1).lower() for m in ref_pat.finditer(on)}
-        refs.discard("source")
-        own = j.get("name", "").lower()
-        parent_refs = refs & join_aliases - {own}
-        if parent_refs:
-            chained.append(j)
-        else:
-            root_joins.append(j)
-
-    if not chained:
-        return defn
-
-    # Build alias -> join dict for root joins to nest children into
-    alias_to_join: dict[str, dict] = {}
-    def _index(jlist: list[dict]) -> None:
-        for j in jlist:
-            alias = j.get("name", "").lower()
-            if alias:
-                alias_to_join[alias] = j
-            if j.get("joins"):
-                _index(j["joins"])
-    _index(root_joins)
-
-    dropped_aliases: set[str] = set()
-    # Try to nest each chained join under its parent
-    for j in chained:
-        on = j.get("on", "")
-        refs = {m.group(1).lower() for m in ref_pat.finditer(on)}
-        refs.discard("source")
-        own = j.get("name", "").lower()
-        parent_refs = refs & set(alias_to_join.keys()) - {own}
-        if parent_refs:
-            parent_alias = next(iter(parent_refs))
-            parent = alias_to_join[parent_alias]
-            parent.setdefault("joins", []).append(j)
-            alias_to_join[own] = j
-            logger.info(
-                "Nested join '%s' under parent '%s'",
-                j.get("name", "?"), parent_alias,
-            )
-        else:
-            logger.warning(
-                "Dropping unchainable join '%s': parent alias not found among root joins",
-                j.get("name", "?"),
-            )
-            dropped_aliases.add(own)
-
-    defn["joins"] = root_joins
-
-    if dropped_aliases:
-        for section in ("dimensions", "measures"):
-            items = defn.get(section, [])
-            cleaned = []
-            for item in items:
-                expr = item.get("expr", "")
-                expr_refs = {m.group(1).lower() for m in ref_pat.finditer(expr)}
-                if expr_refs & dropped_aliases:
-                    logger.warning(
-                        "Dropping %s '%s': references dropped join alias",
-                        section[:-1], item.get("name", "?"),
-                    )
-                else:
-                    cleaned.append(item)
-            defn[section] = cleaned
-
-    return defn
-
-
-def _qualify_nested_refs(defn: dict) -> dict:
-    """Rewrite dimension/measure expressions so nested join aliases use full dot-paths.
-
-    Databricks metric views require nested aliases to be referenced through
-    their parent chain: ``parent.child.column`` not ``child.column``.
-    Flat (top-level) joins can be referenced directly: ``alias.column``.
-    """
-    joins = defn.get("joins", [])
-    if not joins:
-        return defn
-
-    # Build alias -> dot-path and set of top-level aliases
-    top_aliases: set[str] = set()
-    alias_path: dict[str, str] = {}  # lowered alias -> dot-path prefix
-
-    def _walk(jlist: list[dict], prefix: str = "") -> None:
-        for j in jlist:
-            name = j.get("name", "")
-            if not name:
-                continue
-            path = f"{prefix}.{name}" if prefix else name
-            alias_path[name.lower()] = path
-            if not prefix:
-                top_aliases.add(name.lower())
-            if j.get("joins"):
-                _walk(j["joins"], path)
-
-    _walk(joins)
-
-    # Only rewrite aliases that are nested (not top-level)
-    nested = {a: p for a, p in alias_path.items() if a not in top_aliases}
-    if not nested:
-        return defn
-
-    ref_pat = re.compile(r"\b([A-Za-z_]\w*)\.(\w+)")
-
-    def _rewrite(expr: str) -> str:
-        def _sub(m):
-            alias_low = m.group(1).lower()
-            if alias_low in nested:
-                return f"{nested[alias_low]}.{m.group(2)}"
-            return m.group(0)
-        return ref_pat.sub(_sub, expr)
-
-    for section in ("dimensions", "measures"):
-        for item in defn.get(section, []):
-            if item.get("expr"):
-                item["expr"] = _rewrite(item["expr"])
-    if defn.get("filter"):
-        defn["filter"] = _rewrite(defn["filter"])
-    return defn
-
-
 def _build_plan_prompt(questions: list[str], context: str, generation_style: str = "comprehensive",
-                       max_views: int = None, num_eligible: int = None) -> str:
+                       max_views: int = None, num_eligible: int = None,
+                       fact_hint: list[str] = None) -> str:
     q_block = "\n".join(f"  {i+1}. {q}" for i, q in enumerate(questions))
     if generation_style == "targeted":
         org_block = (
@@ -8425,6 +8944,15 @@ def _build_plan_prompt(questions: list[str], context: str, generation_style: str
             "and foreign key relationships. Not every table needs its own view; focus on the views that answer the "
             "most business questions."
         )
+    # A user-confirmed ERD names the fact/source tables -- prefer them as view sources.
+    fact_hint_block = ""
+    if fact_hint:
+        fact_hint_block = (
+            f"\nCONFIRMED FACT/SOURCE TABLES (from the user's reviewed data model): "
+            f"{', '.join(fact_hint)}. Source your metric views from THESE tables; treat other "
+            "tables as dimensions to join to, not as view sources, unless a question clearly "
+            "requires a standalone view elsewhere."
+        )
 
     return f"""You are a data modeler planning a semantic layer for Databricks Unity Catalog.
 
@@ -8440,8 +8968,7 @@ For each metric view in "views", include:
   Include joins supported by high-confidence FK relationships to maximize dimension reach. Use nested joins for dimension hierarchies (e.g. orders -> customers -> regions):
   {{ "name": "customer", ..., "joins": [{{ "name": "nation", ..., "on": "customer.nation_id = nation.id" }}] }}
   Do NOT join the same physical table via multiple paths unless each join serves a genuinely different FK role (e.g. ship_to_address vs bill_to_address). If the source table already has a direct FK to a dimension, do NOT also reach that dimension through a nested join chain.
-  FACT-TO-FACT JOIN PROHIBITION: Do NOT join from a fact source to another fact table (tables prefixed with fact_, fct_, f_ or those with high row counts). Fact-to-fact joins create one-to-many fan-out that inflates ALL aggregates. If you need columns from another fact table, create a SEPARATE metric view sourced from that table.
-  JOIN USAGE REQUIREMENT: Only include joins whose columns you intend to use in dimensions or measures. Do NOT include joins "for completeness."
+  (Join rules -- including the fact-to-fact prohibition and the "no joins for completeness" rule -- are in MODELING PRINCIPLES / ANTI-PATTERNS below.)
 - "dimensions": array of {{ "name": "Display Name", "comment": "what it is" }} (no expr)
 - "measures": array of {{ "name": "Display Name", "comment": "what it measures" }} (no expr)
 - "question_indices": array of 0-based question indices this view answers
@@ -8450,6 +8977,9 @@ Create measures that match the business questions (ratios, rates, KPIs); avoid g
 
 COVERAGE RULE: Plan at least one metric view for every fact or transactional table in the catalog metadata. If a table is marked as "ALREADY COVERED", do NOT create a new view sourced from it, but you MAY join to it. Do not skip tables just because they seem less relevant to the questions -- every data asset deserves coverage.
 {view_limit_block}
+{fact_hint_block}
+
+{_PLAN_RULES_BLOCK}
 
 CATALOG METADATA:
 {context}
@@ -8586,7 +9116,7 @@ def _batch_generate_views(
 
     values_block = ",\n".join(rows_sql)
     batch_sql = (
-        f"SELECT view_name, AI_QUERY('{model}', prompt) AS response "
+        f"SELECT view_name, AI_QUERY('{_safe_model_endpoint(model)}', prompt) AS response "
         f"FROM VALUES\n{values_block}\nAS t(view_name, prompt)"
     )
     timeout = 60 + 120 * min(len(plan_views), 6)
@@ -8622,9 +9152,11 @@ def _inject_fk_joins(plan_views: list[dict], tables: list[str], cat: str, sch: s
     """
     fq_tables = [t if "." in t else f"{cat}.{sch}.{t}" for t in tables]
     in_clause = ", ".join(f"'{t}'" for t in fq_tables)
+    _ensure_fk_relationship_columns()
     try:
         fk_rows = execute_sql(
-            f"SELECT src_table, dst_table, src_column, dst_column "
+            f"SELECT src_table, dst_table, src_column, dst_column, "
+            f"       pk_uniqueness, join_condition, is_composite "
             f"FROM {fq('fk_predictions')} WHERE is_fk = 'true' AND final_confidence >= 0.85 "
             f"AND (src_table IN ({in_clause}) OR dst_table IN ({in_clause}))"
         )
@@ -8659,20 +9191,33 @@ def _inject_fk_joins(plan_views: list[dict], tables: list[str], cat: str, sch: s
             alias = join_table.split(".")[-1]
             fk_col = fk_col.split(".")[-1]
             pk_col = pk_col.split(".")[-1]
+            # Composite key: render the multi-column condition for THIS direction.
+            # The stored condition is authored child->parent with the child side
+            # qualified "source"; the plan source (`src`) may be either endpoint,
+            # so parse + re-render rather than reducing to one column (which would
+            # under-constrain the join) or replaying the wrong-direction string.
+            src_is_child = (fk["src_table"] == src)
+            pairs = (_parse_join_condition(fk["join_condition"], "source")
+                     if (fk.get("is_composite") and fk.get("join_condition")) else None)
+            if pairs:
+                child_al, parent_al = ("source", alias) if src_is_child else (alias, "source")
+                on_clause = _render_join_condition(pairs, child_al, parent_al)
+            else:
+                on_clause = f"source.{fk_col} = {alias}.{pk_col}"
             pv.setdefault("joins", []).append({
                 "name": alias,
                 "source": join_table,
-                "on": f"source.{fk_col} = {alias}.{pk_col}",
+                "on": on_clause,
             })
             existing_join_sources.add(join_table)
             added += 1
     return plan_views, fk_rows
 
 
-def _yaml_dry_run(defn: dict, cat: str, sch: str) -> Optional[str]:
+def _yaml_dry_run(defn: dict, cat: str, sch: str, include_materialization: bool = False) -> Optional[str]:
     """Attempt CREATE VIEW WITH METRICS LANGUAGE YAML; return error string or None."""
     try:
-        yaml_body = _definition_to_yaml(defn)
+        yaml_body = _definition_to_yaml(defn, include_materialization=include_materialization)
         mv_name = defn.get("name", "dry_run_test")
         dry_name = f"`{cat}`.`{sch}`.`_mv_dryrun_{mv_name}`"
         execute_sql(
@@ -8701,6 +9246,8 @@ def _run_sl_generation(
     profile_id: str = None,
     generation_style: str = "comprehensive",
     max_views: int = None,
+    materialize: bool = False,
+    materialization_schedule: str = "every 6 hours",
 ):
     """Background thread for in-app metric view generation (two-phase)."""
     from datetime import datetime as _dt
@@ -8708,6 +9255,22 @@ def _run_sl_generation(
     task = _sl_tasks[task_id]
     try:
         _ensure_semantic_layer_tables()
+
+        # Load the project's confirmed ERD (if the user built one in the designer).
+        # It seeds two things below: the recommended view count and preferred fact
+        # sources. Absent -> behavior is unchanged (full backward-compat).
+        erd = None
+        if project_id:
+            try:
+                erd_rows = execute_sql(
+                    f"SELECT erd_json FROM {fq('semantic_layer_projects')} "
+                    f"WHERE project_id = '{project_id}'"
+                )
+                raw_erd = erd_rows[0].get("erd_json") if erd_rows else None
+                if raw_erd:
+                    erd = json.loads(raw_erd) if isinstance(raw_erd, str) else raw_erd
+            except Exception as exc:
+                logger.warning("Failed to load project ERD: %s", exc)
 
         # Persist questions for traceability
         if questions:
@@ -8789,13 +9352,20 @@ def _run_sl_generation(
                     ", ".join(n for _, n in covered),
                 )
 
-        # Compute effective max_views cap based on eligible (uncovered) tables
+        # Compute effective max_views cap based on eligible (uncovered) tables.
+        # When a confirmed ERD exists, its coverage-aware sufficiency count is the
+        # authoritative recommendation AND the floor for the anti-runaway hard_cap.
         num_eligible = len(uncovered) if (existing_mvs and mode != "replace_all" and uncovered) else len(tables)
-        hard_cap = max(num_eligible // 2, 2)
-        recommended = min(max(num_eligible // 3, 2), 15)
-        effective_max = min(max(max_views or recommended, 1), hard_cap)
-        logger.info("max_views cap: user=%s recommended=%d hard_cap=%d effective=%d (eligible=%d)",
-                     max_views, recommended, hard_cap, effective_max, num_eligible)
+        erd_recommended = 0
+        if erd:
+            er = (erd.get("sufficiency") or {}).get("metric_views_recommended")
+            if isinstance(er, int) and er > 0:
+                erd_recommended = min(er, 15)
+        recommended, hard_cap, effective_max = _compute_view_cap(
+            num_eligible, erd_recommended, max_views
+        )
+        logger.info("max_views cap: user=%s recommended=%d hard_cap=%d effective=%d (eligible=%d, erd=%s)",
+                     max_views, recommended, hard_cap, effective_max, num_eligible, bool(erd))
         task["effective_max"] = effective_max
 
         task["stage"] = "building_context"
@@ -8809,9 +9379,16 @@ def _run_sl_generation(
 
         # Phase 1: Plan
         task["stage"] = "planning"
+        erd_fact_hint = None
+        if erd:
+            erd_fact_hint = [
+                n.get("table") for n in (erd.get("nodes") or [])
+                if n.get("role") in ("fact", "source") and n.get("table")
+            ] or None
         plan_prompt = _build_plan_prompt(questions, context, generation_style=generation_style,
-                                         max_views=effective_max, num_eligible=num_eligible)
-        rows = execute_sql(f"SELECT AI_QUERY('{model}', :prompt) as response", timeout=180,
+                                         max_views=effective_max, num_eligible=num_eligible,
+                                         fact_hint=erd_fact_hint)
+        rows = execute_sql(f"SELECT AI_QUERY('{_safe_model_endpoint(model)}', :prompt) as response", timeout=180,
                            parameters=[StatementParameterListItem(name="prompt", value=plan_prompt)])
         plan_response = rows[0]["response"] if rows else ""
         plan_views = []
@@ -8981,14 +9558,8 @@ def _run_sl_generation(
                 return errs
 
             _infer_format_specs(defn)
+            _fix_percentage_scaling(defn)
             errors = _validate_defn(defn)
-
-            # YAML dry-run: catches metric-YAML-specific failures that pass SELECT validation
-            if not errors and defn.get("source"):
-                yaml_err = _yaml_dry_run(defn, cat, sch)
-                if yaml_err:
-                    errors.append(yaml_err)
-                    logger.info("YAML dry-run failed for '%s': %s", mv_name, yaml_err[:200])
 
             # Phase 3: Self-repair -- up to 2 LLM retries for failed definitions
             for repair_round in range(1, 3):
@@ -9005,11 +9576,8 @@ def _run_sl_generation(
                 if repaired.get("filter"):
                     repaired["filter"] = _autofix_expr(repaired["filter"])
                 _infer_format_specs(repaired)
+                _fix_percentage_scaling(repaired)
                 repair_errors = _validate_defn(repaired)
-                if not repair_errors and repaired.get("source"):
-                    yaml_err = _yaml_dry_run(repaired, cat, sch)
-                    if yaml_err:
-                        repair_errors = [yaml_err]
                 if not repair_errors or len(repair_errors) < len(errors):
                     defn = repaired
                     errors = repair_errors
@@ -9037,10 +9605,6 @@ def _run_sl_generation(
                     swapped = _swap_source_and_join(defn, src_warning["suspected_fact"])
                     swap_errors = _validate_defn(swapped)
                     if not swap_errors:
-                        yaml_err = _yaml_dry_run(swapped, cat, sch)
-                        if yaml_err:
-                            swap_errors = [yaml_err]
-                    if not swap_errors:
                         logger.info("Tier 1 recovery (swap) succeeded for '%s'", mv_name)
                         defn = swapped
                         source = defn.get("source", source)
@@ -9055,10 +9619,6 @@ def _run_sl_generation(
                         ]
                         dim_errors = _validate_defn(dim_only)
                         if not dim_errors:
-                            yaml_err = _yaml_dry_run(dim_only, cat, sch)
-                            if yaml_err:
-                                dim_errors = [yaml_err]
-                        if not dim_errors:
                             logger.info("Tier 2 recovery (dim-only) succeeded for '%s'", mv_name)
                             defn = dim_only
                             errors = []
@@ -9069,11 +9629,25 @@ def _run_sl_generation(
             defn = _restructure_chained_to_nested(defn)
             defn = _qualify_nested_refs(defn)
             _infer_format_specs(defn)
+            _fix_percentage_scaling(defn)
             _backfill_agent_metadata(defn)
             _strip_kpi_references(defn)
             _drop_broken_measures(defn)
             _drop_placeholder_dimensions(defn)
-            cx = _score_definition_complexity(defn)
+            cx = _score_definition_complexity(defn, available_cols=_mv_available_cols(defn))
+
+            if materialize:
+                defn["materialization"] = _build_materialization(defn, materialization_schedule)
+                errors = (errors or []) + _validate_materialization(defn)
+
+            if not errors and defn.get("source"):
+                yaml_err = _yaml_dry_run(
+                    defn, cat, sch,
+                    include_materialization=materialize or bool(defn.get("materialization")),
+                )
+                if yaml_err:
+                    errors.append(yaml_err)
+                    logger.info("YAML dry-run failed for '%s': %s", mv_name, yaml_err[:200])
 
             json_str = json.dumps(defn)
             status = "validated" if not errors else "failed"
@@ -9096,7 +9670,14 @@ def _run_sl_generation(
                 "validation_errors": errors if errors else None,
                 "complexity": cx.get("complexity_level"),
                 "quality": cx.get("quality_level"),
+                "has_materialization": bool(defn.get("materialization")),
             })
+
+        stats["materialize"] = materialize
+        stats["materialization_schedule"] = materialization_schedule if materialize else None
+        stats["materialized_count"] = sum(
+            1 for r in per_definition_results if r.get("has_materialization")
+        )
 
         # Flag duplicate-source views (same grain generated more than once)
         source_seen: dict[str, list[str]] = {}
@@ -9132,7 +9713,7 @@ BUSINESS QUESTIONS:
 {q_block}
 
 Return ONLY a JSON object: {{"covered": [<1-based question indices>], "not_covered": [<1-based question indices>]}}"""
-                cov_rows = execute_sql(f"SELECT AI_QUERY('{model}', :prompt) as response", timeout=60,
+                cov_rows = execute_sql(f"SELECT AI_QUERY('{_safe_model_endpoint(model)}', :prompt) as response", timeout=60,
                                        parameters=[StatementParameterListItem(name="prompt", value=cov_prompt)])
                 cov_resp = cov_rows[0]["response"] if cov_rows else ""
                 coverage = _parse_single_json_safe(cov_resp)
@@ -9148,6 +9729,16 @@ Return ONLY a JSON object: {{"covered": [<1-based question indices>], "not_cover
                 kpi_cov = _compute_kpi_coverage(definitions, tables, project_id)
                 if kpi_cov:
                     stats["kpi_coverage"] = kpi_cov
+                    # Surface un-implemented KPIs as a user-visible warning so a
+                    # gap is actionable (the user can use Add measures per view).
+                    missing = kpi_cov.get("missing") or []
+                    if missing:
+                        shown = ", ".join(missing[:10])
+                        more = f" (+{len(missing) - 10} more)" if len(missing) > 10 else ""
+                        stats.setdefault("warnings", []).append(
+                            f"{len(missing)} KPI(s) not implemented as a measure: {shown}{more}. "
+                            "Use 'Add measures' on the relevant view to add them."
+                        )
             except Exception as exc:
                 logger.warning("KPI coverage check failed: %s", exc)
 
@@ -9200,6 +9791,8 @@ def start_sl_generation(req: SemanticGenerateRequest):
             req.profile_id,
             req.generation_style,
             req.max_views,
+            req.materialize,
+            req.materialization_schedule,
         ),
     )
 
@@ -9256,9 +9849,35 @@ def _parse_single_json(text: str) -> dict:
     return json.loads(text[start : end + 1])
 
 
+def _parse_json_array(text: str) -> list[dict]:
+    """Extract a JSON array of items from an AI response.
+
+    Tolerant of code fences and of the model wrapping the array in an object
+    (``{"measures": [...]}`` / ``{"items": [...]}`` / ``{"dimensions": [...]}``).
+    Returns a list of dicts; non-dict entries are dropped by the caller."""
+    text = re.sub(r"^```(?:json)?\s*", "", (text or "").strip())
+    text = re.sub(r"\s*```$", "", text)
+    start = text.find("[")
+    end = text.rfind("]")
+    if start != -1 and end != -1 and end > start:
+        parsed = json.loads(text[start : end + 1])
+        return parsed if isinstance(parsed, list) else []
+    # Fallback: an object wrapping the array under a known key.
+    obj_start = text.find("{")
+    obj_end = text.rfind("}")
+    if obj_start != -1 and obj_end != -1:
+        obj = json.loads(text[obj_start : obj_end + 1])
+        for key in ("measures", "dimensions", "items", "new_measures", "new_dimensions"):
+            val = obj.get(key)
+            if isinstance(val, list):
+                return val
+    raise ValueError("No JSON array found in AI response")
+
+
 def _validate_definition(defn: dict, source: str) -> tuple[str, str]:
     """Two-tier validation: structural then expression. Returns (status, errors_str)."""
     _infer_format_specs(defn)
+    _fix_percentage_scaling(defn)
     for item_type in ("dimensions", "measures"):
         for item in defn.get(item_type, []):
             if item.get("expr"):
@@ -9311,11 +9930,12 @@ def _update_definition_row(definition_id: str, defn: dict, status: str, errors: 
     now = _dt.utcnow().isoformat()
     proj_val = f"'{proj_id}'" if proj_id else "NULL"
     _infer_format_specs(defn)
+    _fix_percentage_scaling(defn)
     _backfill_agent_metadata(defn)
     _strip_kpi_references(defn)
     _drop_broken_measures(defn)
     _drop_placeholder_dimensions(defn)
-    cx = _score_definition_complexity(defn)
+    cx = _score_definition_complexity(defn, available_cols=_mv_available_cols(defn))
     json_str = json.dumps(defn)
     execute_sql(
         f"INSERT INTO {fq('metric_view_definitions')} VALUES ("
@@ -9333,110 +9953,6 @@ def _yaml_esc(s: str) -> str:
     return s.replace("\\", "\\\\").replace('"', '\\"')
 
 
-def _infer_display_name(name: str) -> str:
-    """Convert snake_case/kebab-case measure/dimension names to Title Case."""
-    return name.replace("_", " ").replace("-", " ").title()
-
-
-def _infer_synonyms(name: str, comment: str | None) -> list[str]:
-    """Extract 2-3 keyword synonyms from the name and comment."""
-    synonyms = set()
-    clean = name.replace("_", " ").lower()
-    words = clean.split()
-    _STOP = {"the", "a", "an", "of", "for", "by", "in", "to", "and", "or", "is", "as", "per", "with", "from"}
-    if len(words) >= 2:
-        abbr = "".join(w[0] for w in words if w not in _STOP).upper()
-        if len(abbr) >= 2:
-            synonyms.add(abbr)
-    if comment:
-        for w in comment.lower().split():
-            w = w.strip(".,;:()")
-            if len(w) > 3 and w not in _STOP and w not in clean:
-                synonyms.add(w)
-                if len(synonyms) >= 3:
-                    break
-    return list(synonyms)[:5]
-
-
-def _backfill_agent_metadata(defn: dict) -> None:
-    """Backfill display_name and synonyms on measures/dimensions that lack them."""
-    for item in defn.get("measures", []) + defn.get("dimensions", []):
-        if not item.get("display_name"):
-            item["display_name"] = _infer_display_name(item.get("name", ""))
-        if not item.get("synonyms"):
-            item["synonyms"] = _infer_synonyms(item.get("name", ""), item.get("comment"))
-
-
-_KPI_REF_RE = re.compile(
-    r"\.?\s*(?:Implements|Supports|Addresses|Answers|Covers|Partially implements)"
-    r"\s+(?:KPI|question|Q)s?\s*(?::\s*[^.]*(?:\.\s*)?|[\d,\s\-and#()]+\.?)"
-    r"|\s*\(KPI:\s*[^)]+\)"
-    r"|\s*\bKPI\s*#\d+\b(?:\s*\([^)]*\))?\.?"
-    r"|\s*\(#\d+\)",
-    re.IGNORECASE,
-)
-
-
-def _strip_kpi_references(defn: dict) -> None:
-    """Remove KPI/question number references from comments."""
-    def _clean(text: str) -> str:
-        text = _KPI_REF_RE.sub("", text)
-        text = re.sub(r"  +", " ", text).strip().rstrip(".")
-        return (text + ".") if text else ""
-    for field in ("comment",):
-        if defn.get(field):
-            defn[field] = _clean(defn[field])
-    for item in defn.get("measures", []) + defn.get("dimensions", []):
-        if item.get("comment"):
-            item["comment"] = _clean(item["comment"])
-
-
-_ALIAS_DOT_PH_RE = re.compile(r"\b([A-Za-z_]\w*)\.\w+")
-
-
-def _drop_placeholder_dimensions(defn: dict) -> None:
-    """Drop dimensions whose name implies a join alias but whose expr uses a different alias."""
-    joins = defn.get("joins", [])
-    if not joins:
-        return
-
-    def _collect_aliases(jlist: list[dict]) -> set[str]:
-        out: set[str] = set()
-        for j in jlist:
-            alias = j.get("name", "").lower()
-            if alias:
-                out.add(alias)
-            if j.get("joins"):
-                out |= _collect_aliases(j["joins"])
-        return out
-
-    all_aliases = _collect_aliases(joins)
-    if not all_aliases:
-        return
-
-    cleaned: list[dict] = []
-    for d in defn.get("dimensions", []):
-        name_lower = d.get("name", "").lower().replace("_", " ")
-        expr = d.get("expr", "")
-        refs = {m.group(1).lower() for m in _ALIAS_DOT_PH_RE.finditer(expr)}
-
-        implied_alias = None
-        for alias in all_aliases:
-            if alias in name_lower:
-                implied_alias = alias
-                break
-
-        if implied_alias and implied_alias not in refs:
-            continue
-        cleaned.append(d)
-    defn["dimensions"] = cleaned
-
-
-_SELF_DIV_RE = re.compile(
-    r"^(SUM|COUNT|AVG|MIN|MAX)\s*\(([^)]+)\)\s*/\s*NULLIF\s*\(\s*\1\s*\(\2\)",
-    re.IGNORECASE,
-)
-
 _AGG_FN_RE = re.compile(
     r"\b(SUM|COUNT|AVG|MIN|MAX|STDDEV|VARIANCE|PERCENTILE|"
     r"COLLECT_LIST|COLLECT_SET|APPROX_COUNT_DISTINCT|"
@@ -9445,116 +9961,65 @@ _AGG_FN_RE = re.compile(
 )
 
 
-def _drop_broken_measures(defn: dict) -> None:
-    """Remove self-dividing share measures (always=1.0) and deduplicate identical exprs."""
-    measures = defn.get("measures", [])
-    if not measures:
-        return
-
-    cleaned: list[dict] = []
-    seen_exprs: set[str] = set()
-    for m in measures:
-        expr = re.sub(r"\s+", " ", m.get("expr", "").strip())
-        if _SELF_DIV_RE.search(expr):
-            continue
-        norm = expr.upper()
-        if norm in seen_exprs:
-            continue
-        seen_exprs.add(norm)
-        cleaned.append(m)
-    defn["measures"] = cleaned
+def _build_materialization(defn: dict, schedule: str = "every 6 hours") -> dict:
+    """Default materialization block: one unaggregated baseline MV (mode relaxed)."""
+    mv_name = defn.get("name") or "metric_view"
+    block: dict = {"mode": "relaxed"}
+    if schedule and schedule.strip():
+        block["schedule"] = schedule.strip()
+    block["materialized_views"] = [{"name": f"{mv_name}_baseline", "type": "unaggregated"}]
+    return block
 
 
-def _normalize_window_specs(w) -> list[dict]:
-    """Normalize window field to YAML 1.1 spec: array of {order, range/rows, semiadditive}."""
-    if w is None:
+def _validate_materialization(defn: dict) -> list[str]:
+    """Structurally validate a materialization block. Returns error strings (empty if valid/absent)."""
+    mat = defn.get("materialization")
+    if mat is None:
         return []
-    if isinstance(w, dict):
-        w = [w]
-    if not isinstance(w, list):
-        return []
-    result = []
-    for spec in w:
-        if not isinstance(spec, dict):
+    if not isinstance(mat, dict):
+        return ["materialization must be a mapping"]
+    errors: list[str] = []
+    if mat.get("mode") != "relaxed":
+        errors.append("materialization.mode must be 'relaxed'")
+    schedule = mat.get("schedule")
+    if schedule is not None:
+        if not isinstance(schedule, str):
+            errors.append("materialization.schedule must be a string")
+        elif "TRIGGER ON UPDATE" in schedule.upper():
+            errors.append("materialization.schedule does not support TRIGGER ON UPDATE")
+    mvs = mat.get("materialized_views")
+    if not isinstance(mvs, list) or not mvs:
+        errors.append("materialization.materialized_views must be a non-empty list")
+        return errors
+    dim_names = {d.get("name") for d in defn.get("dimensions", []) if d.get("name")}
+    measure_names = {m.get("name") for m in defn.get("measures", []) if m.get("name")}
+    seen: set[str] = set()
+    for entry in mvs:
+        if not isinstance(entry, dict):
+            errors.append("each materialized_views entry must be a mapping")
             continue
-        order = spec.get("order") or spec.get("order_by")
-        if not order:
-            continue
-        rng = spec.get("range", "")
-        if isinstance(rng, str) and "INTERVAL" in rng.upper():
-            import re as _re
-            m = _re.search(r"INTERVAL\s+(\d+)\s+(\w+)", rng, _re.IGNORECASE)
-            if m:
-                rng = f"trailing {m.group(1)} {m.group(2).lower().rstrip('s')}"
-        rows = spec.get("rows", "")
-        if isinstance(rows, str) and "UNBOUNDED" in rows.upper():
-            rng = "unbounded"
-            rows = ""
-        entry = {"order": order}
-        if rng:
-            entry["range"] = rng
-        if rows:
-            entry["rows"] = rows
-        entry["semiadditive"] = spec.get("semiadditive", "last")
-        result.append(entry)
-    return result
-
-
-class _IndentYamlDumper(yaml.Dumper):
-    """Dumper that always indents list items under their parent key.
-
-    Default yaml.Dumper uses compact style where list items sit at the same
-    indent as the parent mapping key.  Databricks' metric-view YAML parser
-    requires the indented style where list items are nested one level deeper
-    (matching the format shown in the official documentation).
-    """
-    def increase_indent(self, flow=False, indentless=False):
-        return super().increase_indent(flow, False)
-
-
-def _definition_to_yaml(defn: dict) -> str:
-    """Convert a JSON definition to the YAML body for CREATE VIEW WITH METRICS.
-
-    Uses yaml.dump with an indenting Dumper so nested join lists are
-    properly indented (Databricks' parser rejects the compact style for
-    nested joins).  Pre-processing backfills currency_code and normalises
-    window specs.
-    """
-    source = defn.get("source", "")
-    if not source:
-        raise ValueError("Metric view definition missing 'source' table")
-    mv: dict = {"version": "1.1", "source": source}
-    if defn.get("comment"):
-        mv["comment"] = defn["comment"]
-    if defn.get("filter"):
-        mv["filter"] = defn["filter"]
-    mv["dimensions"] = [
-        {k: v for k, v in ((k, d.get(k)) for k in ("name", "expr", "comment", "display_name", "synonyms")) if v}
-        for d in defn.get("dimensions", [])
-    ]
-    measures_out = []
-    for m in defn.get("measures", []):
-        entry = {k: v for k, v in ((k, m.get(k)) for k in ("name", "expr", "comment", "display_name", "synonyms")) if v}
-        if m.get("format") and isinstance(m["format"], dict):
-            fmt = dict(m["format"])
-            if fmt.get("type") == "currency" and not fmt.get("currency_code"):
-                fmt["currency_code"] = "USD"
-            entry["format"] = fmt
-        if m.get("window"):
-            w = m["window"]
-            if isinstance(w, str):
-                try:
-                    w = json.loads(w)
-                except (json.JSONDecodeError, TypeError):
-                    w = None
-            specs = _normalize_window_specs(w)
-            if specs:
-                entry["window"] = specs
-        measures_out.append(entry)
-    mv["measures"] = measures_out
-    if defn.get("joins"):
-        mv["joins"] = defn["joins"]
-    return yaml.dump(mv, Dumper=_IndentYamlDumper, default_flow_style=False, sort_keys=False)
+        name = entry.get("name")
+        if not name:
+            errors.append("materialized_views entry missing 'name'")
+        elif name in seen:
+            errors.append(f"duplicate materialized_views name '{name}'")
+        else:
+            seen.add(name)
+        mtype = entry.get("type")
+        if mtype not in ("aggregated", "unaggregated"):
+            errors.append(f"materialized_views '{name}': type must be aggregated or unaggregated")
+        if mtype == "aggregated":
+            dims = entry.get("dimensions") or []
+            meas = entry.get("measures") or []
+            if not dims and not meas:
+                errors.append(f"materialized_views '{name}': aggregated requires dimensions and/or measures")
+            for d in dims:
+                if d not in dim_names:
+                    errors.append(f"materialized_views '{name}': unknown dimension '{d}'")
+            for m in meas:
+                if m not in measure_names:
+                    errors.append(f"materialized_views '{name}': unknown measure '{m}'")
+    return errors
 
 
 _agent_ref_cache: dict[str, dict] = {}
@@ -9690,6 +10155,14 @@ class PutDefinitionRequest(BaseModel):
 class CreateDefinitionRequest(BaseModel):
     target_catalog: str
     target_schema: str
+    materialize: Optional[bool] = None
+    materialization_schedule: str = "every 6 hours"
+    strip_materialization: bool = False
+
+
+class MaterializationPatchRequest(BaseModel):
+    enabled: bool
+    schedule: str = "every 6 hours"
 
 
 class DropDefinitionRequest(BaseModel):
@@ -9723,6 +10196,17 @@ def update_definition(definition_id: str, req: PutDefinitionRequest):
     return {"definition_id": definition_id, "status": status, "validation_errors": errs}
 
 
+def _apply_materialization_override(defn: dict, req: CreateDefinitionRequest) -> list[str]:
+    """Apply create-time materialization flags. Returns validation errors."""
+    if req.strip_materialization or req.materialize is False:
+        defn.pop("materialization", None)
+    elif req.materialize is True and not defn.get("materialization"):
+        defn["materialization"] = _build_materialization(defn, req.materialization_schedule)
+    if defn.get("materialization"):
+        return _validate_materialization(defn)
+    return []
+
+
 @app.post("/api/semantic-layer/definitions/{definition_id}/create")
 def create_metric_view(definition_id: str, req: CreateDefinitionRequest):
     """Deploy a validated definition as a real UC metric view."""
@@ -9732,6 +10216,9 @@ def create_metric_view(definition_id: str, req: CreateDefinitionRequest):
     mv_name = defn.get("name") or row.get("metric_view_name", "")
     if not mv_name:
         raise HTTPException(400, detail="Definition has no metric view name")
+    mat_errors = _apply_materialization_override(defn, req)
+    if mat_errors:
+        raise HTTPException(400, detail="; ".join(mat_errors))
     fq_mv = f"`{req.target_catalog}`.`{req.target_schema}`.`{mv_name}`"
     for item_type in ("dimensions", "measures"):
         for item in defn.get(item_type, []):
@@ -9739,7 +10226,8 @@ def create_metric_view(definition_id: str, req: CreateDefinitionRequest):
                 item["expr"] = _autofix_expr(item["expr"])
     if defn.get("filter"):
         defn["filter"] = _autofix_expr(defn["filter"])
-    yaml_body = _definition_to_yaml(defn)
+    include_mat = bool(defn.get("materialization"))
+    yaml_body = _definition_to_yaml(defn, include_materialization=include_mat)
     sql = f"CREATE OR REPLACE VIEW {fq_mv}\nWITH METRICS LANGUAGE YAML AS $$\n{yaml_body}$$"
     try:
         execute_sql(sql, timeout=60)
@@ -9759,8 +10247,10 @@ def create_metric_view(definition_id: str, req: CreateDefinitionRequest):
     execute_sql(
         f"UPDATE {fq('metric_view_definitions')} "
         f"SET status = 'applied', applied_at = current_timestamp(), "
-        f"deployed_catalog = '{req.target_catalog}', deployed_schema = '{req.target_schema}' "
-        f"WHERE definition_id = '{definition_id}'"
+        f"deployed_catalog = '{req.target_catalog}', deployed_schema = '{req.target_schema}', "
+        f"json_definition = :json_def "
+        f"WHERE definition_id = '{definition_id}'",
+        parameters=[StatementParameterListItem(name="json_def", value=json.dumps(defn))],
     )
     # Supersede non-applied siblings with the same name (applied views are never auto-superseded)
     mv_esc = mv_name.replace("'", "''")
@@ -9777,6 +10267,39 @@ def create_metric_view(definition_id: str, req: CreateDefinitionRequest):
     except Exception:
         pass
     return {"definition_id": definition_id, "status": "applied", "metric_view": fq_mv}
+
+
+@app.patch("/api/semantic-layer/definitions/{definition_id}/materialization")
+def patch_definition_materialization(definition_id: str, req: MaterializationPatchRequest):
+    """Enable or disable materialization on a stored definition."""
+    _ensure_semantic_layer_tables()
+    row = _fetch_definition(definition_id)
+    if row.get("status") == "applied":
+        raise HTTPException(400, detail="Cannot change materialization on an applied view. Drop it first.")
+    defn = json.loads(row["json_definition"]) if isinstance(row["json_definition"], str) else row["json_definition"]
+    if req.enabled:
+        defn["materialization"] = _build_materialization(defn, req.schedule)
+    else:
+        defn.pop("materialization", None)
+    errors = _validate_materialization(defn) if defn.get("materialization") else []
+    struct_errors = _validate_definition_structure(defn)
+    errors = errors + struct_errors
+    status = "validated" if not errors else "failed"
+    error_str = "; ".join(errors).replace("'", "''") if errors else ""
+    json_str = json.dumps(defn)
+    execute_sql(
+        f"UPDATE {fq('metric_view_definitions')} "
+        f"SET json_definition = :json_def, status = '{status}', validation_errors = '{error_str}' "
+        f"WHERE definition_id = '{definition_id}'",
+        parameters=[StatementParameterListItem(name="json_def", value=json_str)],
+    )
+    return {
+        "definition_id": definition_id,
+        "status": status,
+        "has_materialization": bool(defn.get("materialization")),
+        "materialization_schedule": (defn.get("materialization") or {}).get("schedule"),
+        "validation_errors": errors or None,
+    }
 
 
 class CertifyRequest(BaseModel):
@@ -9858,7 +10381,7 @@ def export_metric_views_sql(catalog: Optional[str] = None, schema: Optional[str]
         mv_cat = row.get("deployed_catalog") or default_cat
         mv_sch = row.get("deployed_schema") or default_sch
         fq_mv = f"`{mv_cat}`.`{mv_sch}`.`{mv_name}`"
-        yaml_body = _definition_to_yaml(defn)
+        yaml_body = _definition_to_yaml(defn, include_materialization=True)
         statements.append(f"CREATE OR REPLACE VIEW {fq_mv}\nWITH METRICS LANGUAGE YAML AS $$\n{yaml_body}$$")
     if not statements:
         raise HTTPException(404, detail="No valid definitions to export")
@@ -9872,11 +10395,43 @@ def export_metric_views_sql(catalog: Optional[str] = None, schema: Optional[str]
 
 class ImproveRequest(BaseModel):
     analysis_issues: list | None = None
+    # Optional targeted directive from an Analyze refinement button. One of
+    # "add_measures" / "add_dimensions" / "check_filters"; None = general improve.
+    focus: str | None = None
+
+
+# Focus directives injected into the improve prompt so an Analyze button ("Add
+# measures", "Add dimensions", "Check filters") steers what the LLM expands, while
+# still going through the same validated re-generation + persistence path.
+_IMPROVE_FOCUS_DIRECTIVES = {
+    "add_measures": (
+        "PRIMARY GOAL: substantially expand the MEASURES. This view is under-measured "
+        "for its grain. Add every analytically useful aggregate the source+join columns "
+        "support -- sums, counts, count-distincts, averages, ratios (with NULLIF guards), "
+        "conditional FILTER aggregates, and rates. Keep all existing valid measures."
+    ),
+    "add_dimensions": (
+        "PRIMARY GOAL: substantially expand the DIMENSIONS. Most source columns are not "
+        "yet exposed for slicing. Add dimensions for the categorical/attribute/date "
+        "columns available on the source and joined tables (including DATE_TRUNC "
+        "time buckets and sensible categorizations). Keep all existing valid dimensions."
+    ),
+    "check_filters": (
+        "PRIMARY GOAL: review the FILTER. Determine from the column metadata whether this "
+        "grain needs a scope filter (e.g. active/valid records, a status flag, non-null "
+        "keys). Add or correct the top-level `filter` if warranted; otherwise leave it. "
+        "Do not remove valid measures or dimensions."
+    ),
+}
 
 
 @app.post("/api/semantic-layer/definitions/{definition_id}/improve")
 def improve_definition(definition_id: str, req: ImproveRequest | None = None):
-    """Ask AI to improve an existing validated/applied metric view definition."""
+    """Ask AI to improve an existing validated/applied metric view definition.
+
+    An optional `focus` ("add_measures"/"add_dimensions"/"check_filters") from an
+    Analyze refinement button steers what the LLM expands.
+    """
     _ensure_semantic_layer_tables()
     row = _fetch_definition(definition_id)
     if row.get("status") == "applied":
@@ -9898,7 +10453,12 @@ KNOWN ISSUES -- you MUST fix ALL of these:
 {issues_summary}
 """
 
+    focus_block = ""
+    if req and req.focus and req.focus in _IMPROVE_FOCUS_DIRECTIVES:
+        focus_block = f"\n{_IMPROVE_FOCUS_DIRECTIVES[req.focus]}\n"
+
     prompt = f"""You are improving a metric view definition. Make it more comprehensive and useful.
+{focus_block}
 
 CURRENT DEFINITION:
 {json.dumps(defn, indent=2)}
@@ -9936,6 +10496,143 @@ OUTPUT: Return ONLY the improved JSON definition (single object, not array)."""
     status, errs = _validate_definition(new_defn, new_defn.get("source", source))
     new_id = _update_definition_row(definition_id, new_defn, status, errs)
     return {"definition_id": new_id, "parent_id": definition_id, "status": status, "validation_errors": errs}
+
+
+class AddItemsRequest(BaseModel):
+    # "measures" | "dimensions". Filters are a single scalar, not a list, so they
+    # stay on /improve (focus=check_filters) rather than this incremental path.
+    kind: str = "measures"
+    count: int | None = None          # soft cap on how many new items to request
+    guidance: str | None = None       # optional free-text steer
+
+
+_ADD_ITEMS_MAX = 8
+
+
+@app.post("/api/semantic-layer/definitions/{definition_id}/add-items")
+def add_items(definition_id: str, req: AddItemsRequest | None = None):
+    """Incrementally add NEW measures or dimensions to an existing definition.
+
+    Cheaper and less hallucination-prone than /improve: instead of re-sending the
+    whole definition and regenerating every item, we send only the existing item
+    names+exprs (as "already covered -- do NOT duplicate") plus compact column
+    metadata, and ask the LLM for a small JSON array of NEW items. The result is
+    merged + de-duplicated (exact-expr, name, and measure semantic keys) into the
+    current definition, then validated and persisted as a new version -- exactly
+    the same validate+version contract as /improve.
+    """
+    req = req or AddItemsRequest()
+    kind = req.kind if req.kind in ("measures", "dimensions") else "measures"
+    _ensure_semantic_layer_tables()
+    row = _fetch_definition(definition_id)
+    # Same guard as /improve: don't mutate a live UC view out from under its name.
+    if row.get("status") == "applied":
+        raise HTTPException(400, detail="Cannot add items to an applied metric view. Drop it first or add to a validated (unapplied) version.")
+    defn = json.loads(row["json_definition"]) if isinstance(row["json_definition"], str) else row["json_definition"]
+    source = defn.get("source", row.get("source_table", ""))
+    existing = defn.get(kind, []) or []
+
+    # Compact, targeted column context -- NOT _build_sl_context (KB/VS/ontology/
+    # profiling), which is what makes /improve expensive. Just column names+types
+    # for the source + joined tables, plus the join aliases so the LLM can write
+    # alias.col references.
+    col_lines: list[str] = []
+    for t in _mv_defn_tables(defn):
+        try:
+            short = t.split(".")[-1]
+            cols = execute_sql(
+                f"SELECT column_name, data_type FROM {fq('column_knowledge_base')} "
+                f"WHERE table_name = '{_esc_sql(t)}' OR table_name LIKE '%{_esc_sql(short)}'",
+                timeout=30,
+            )
+            if cols:
+                col_lines.append(
+                    f"{short}: " + ", ".join(f"{c['column_name']} ({c.get('data_type', '')})" for c in cols)
+                )
+        except Exception:
+            continue
+    col_context = "\n".join(col_lines) if col_lines else "(column metadata unavailable)"
+
+    join_aliases = [j.get("name", "") for j in defn.get("joins", []) if j.get("name")]
+    alias_line = (
+        f"Join aliases you may reference as alias.column: {', '.join(join_aliases)}"
+        if join_aliases else "This view has no joins; reference source columns directly."
+    )
+    covered = "\n".join(f"  - {it.get('name', '?')} :: {it.get('expr', '')}" for it in existing) or "  (none yet)"
+    ref_sections = ["measure_patterns"] if kind == "measures" else ["yaml_syntax_rules"]
+    ref_rules = _load_agent_reference("metric_view_reference.json", ref_sections)
+    cap = req.count if (req.count and req.count > 0) else _ADD_ITEMS_MAX
+    guidance_line = f"\nADDITIONAL GUIDANCE: {req.guidance}\n" if req.guidance else ""
+
+    if kind == "measures":
+        kind_rules = (
+            "- Each measure MUST be an aggregate (SUM, COUNT, COUNT(DISTINCT ...), AVG, ratios with "
+            "NULLIF guards, FILTER conditional aggregates, etc.) over the SOURCE table's numeric columns.\n"
+            "- NEVER aggregate a numeric column that comes from a JOINED DIMENSION table (e.g. "
+            "SUM(dim_alias.some_amount)); a fact->dimension join fans out and inflates the result. Use "
+            "dimension-table columns only as grouping dimensions.\n"
+            "- Do NOT duplicate any measure already covered above (same aggregate over the same column)."
+        )
+    else:
+        kind_rules = (
+            "- Dimensions are non-aggregated grouping/slicing expressions (categorical columns, "
+            "DATE_TRUNC time buckets, CASE categorizations) from the source OR any joined table.\n"
+            "- Do NOT turn a numeric measure column into a dimension.\n"
+            "- Do NOT duplicate any dimension already covered above."
+        )
+
+    prompt = f"""You are adding NEW {kind} to an existing Databricks metric view. Return ONLY the additions.
+
+METRIC VIEW SOURCE: {source}
+{alias_line}
+
+COLUMNS AVAILABLE (name (type), per table):
+{col_context}
+
+{kind.upper()} ALREADY COVERED -- do NOT duplicate these:
+{covered}
+
+RULES:
+{kind_rules}
+{guidance_line}
+REFERENCE:
+{ref_rules}
+
+Add up to {cap} genuinely NEW, analytically useful {kind}. All string literals MUST be single-quoted.
+comment fields describe user-facing intent (no KPI/question numbers, no generation-process references).
+
+OUTPUT: Return ONLY a JSON array of new {kind}: [{{"name": "...", "expr": "...", "comment": "..."}}]. No prose."""
+
+    rows = execute_sql(
+        f"SELECT AI_QUERY('{_DEFAULT_MODEL}', :prompt) as response", timeout=180,
+        parameters=[StatementParameterListItem(name="prompt", value=prompt)],
+    )
+    response = rows[0]["response"] if rows else ""
+    try:
+        candidates = _parse_json_array(response)
+    except (ValueError, json.JSONDecodeError) as e:
+        raise HTTPException(502, detail=f"AI returned invalid response: {str(e)[:200]}")
+    candidates = [c for c in candidates if isinstance(c, dict) and (c.get("expr") or "").strip()]
+
+    accepted, skipped = _dedup_new_items(existing, candidates, kind)
+    if not accepted:
+        return {
+            "definition_id": definition_id, "parent_id": definition_id,
+            "status": row.get("status", "validated"), "validation_errors": "",
+            "added": [], "skipped_duplicates": skipped, "requested": len(candidates),
+        }
+
+    defn[kind] = existing + accepted
+    status, errs = _validate_definition(defn, source)
+    new_id = _update_definition_row(definition_id, defn, status, errs)
+    # Report names that survived the server-side dedup pass in _update_definition_row.
+    final_names = {(m.get("name") or "").lower() for m in defn.get(kind, [])}
+    added = [a.get("name") for a in accepted if (a.get("name") or "").lower() in final_names]
+    return {
+        "definition_id": new_id, "parent_id": definition_id,
+        "status": status, "validation_errors": errs,
+        "added": added, "skipped_duplicates": skipped, "requested": len(candidates),
+    }
 
 
 @app.post("/api/semantic-layer/definitions/{definition_id}/drop")
@@ -9999,8 +10696,19 @@ Fix the definition so it deploys successfully. Rules:
 # ---------------------------------------------------------------------------
 
 
-def _compute_mv_health(defn: dict) -> dict:
-    """Compute a health score (0-10) for a single metric view definition."""
+def _compute_mv_health(defn: dict, available_cols: int | None = None, fk_rows: list | None = None) -> dict:
+    """Compute a health score for a single metric view definition.
+
+    Base is 0-10 (measures, dimensions, metadata, expression validity, richness).
+    When `available_cols` (distinct source+join column count) is known, a coverage
+    factor adds 2 more points (max 12) rewarding views that surface most source
+    columns, and emits actionable "add measures"/"add dimensions" issues for thin
+    views. Coverage is a no-op when the column count is unavailable.
+
+    `fk_rows` (fk_predictions rows for the definition's tables), when supplied,
+    upgrades the joined-dimension-aggregation fan-out issue to `high` severity when
+    a fact->dimension relationship is confirmed; without it the issue is `medium`.
+    """
     dims = defn.get("dimensions", [])
     measures = defn.get("measures", [])
     joins = defn.get("joins", [])
@@ -10199,7 +10907,109 @@ def _compute_mv_health(defn: dict) -> dict:
                     "suggestion": f"Remove the join to '{join_short}' or create a separate metric view sourced from it.",
                 })
 
-    return {"score": score_total, "max": 10, "dimensions": dimensions_map, "issues": issues}
+    # Joined-dimension numeric-aggregation detection (issues only). The prompt
+    # already forbids aggregating a numeric column from a JOINED dimension table
+    # (a fact->dim join fans out and inflates the aggregate), but that is prompt-
+    # only -- this is the deterministic guard. Best-effort: any failure resolving
+    # column types just skips the check (degrade like _mv_available_cols).
+    if joins and measures:
+        try:
+            # Map each JOIN alias -> its table's numeric column set (source alias
+            # excluded: aggregating source columns is correct).
+            _NUMERIC_TYPES = ("INT", "BIGINT", "SMALLINT", "TINYINT", "FLOAT",
+                              "DOUBLE", "DECIMAL", "NUMERIC", "REAL", "LONG")
+            alias_table: dict[str, str] = {}
+
+            def _walk_aliases(jlist):
+                for j in jlist or []:
+                    a = (j.get("name") or "").lower()
+                    if a and j.get("source"):
+                        alias_table[a] = j["source"]
+                    _walk_aliases(j.get("joins"))
+
+            _walk_aliases(joins)
+            numeric_by_alias: dict[str, set] = {}
+            for alias, tbl in alias_table.items():
+                short = tbl.split(".")[-1]
+                cols = execute_sql(
+                    f"SELECT column_name, data_type FROM {fq('column_knowledge_base')} "
+                    f"WHERE table_name = '{_esc_sql(tbl)}' OR table_name LIKE '%{_esc_sql(short)}'",
+                    timeout=30,
+                )
+                nums = {
+                    (c.get("column_name") or "").lower()
+                    for c in (cols or [])
+                    if any((c.get("data_type") or "").upper().startswith(t) for t in _NUMERIC_TYPES)
+                }
+                if nums:
+                    numeric_by_alias[alias] = nums
+
+            # FK evidence: does a confirmed fact->dim relationship exist for a join
+            # table? If so the aggregation is definitely fan-out (high); else medium.
+            fk_dim_tables = set()
+            for fr in (fk_rows or []):
+                for key in ("dst_table", "src_table"):
+                    t = (fr.get(key) or "")
+                    if t:
+                        fk_dim_tables.add(t.split(".")[-1].lower())
+
+            _ADDITIVE_AGG = re.compile(r"\b(SUM|AVG)\s*\(", re.IGNORECASE)
+            for idx, m in enumerate(measures):
+                expr = m.get("expr", "")
+                if m.get("window") or not _ADDITIVE_AGG.search(expr or ""):
+                    continue
+                for am in _ALIAS_DOT_RE.finditer(expr or ""):
+                    alias = am.group(1).lower()
+                    col = am.group(0).split(".", 1)[1].lower()
+                    if alias in numeric_by_alias and col in numeric_by_alias[alias]:
+                        jtbl = alias_table.get(alias, alias).split(".")[-1]
+                        sev = "high" if jtbl.lower() in fk_dim_tables else "medium"
+                        issues.append({
+                            "field": f"measures[{idx}].expr",
+                            "severity": sev,
+                            "action": "split_dim_measure",
+                            "message": (f"Measure '{m.get('name', '')}' aggregates numeric column "
+                                        f"{alias}.{col} from joined dimension table '{jtbl}'; a "
+                                        f"fact->dimension join fans out and inflates this aggregate."),
+                            "suggestion": ("Move this measure to a metric view sourced from the "
+                                           "dimension table, or aggregate the fact-side column instead."),
+                        })
+                        break  # one issue per measure is enough
+        except Exception as exc:
+            logger.info("Dimension-aggregation fan-out check skipped: %s", exc)
+
+    # Coverage (0-2, only when source column count is known): reward views that
+    # exploit most of their source+join columns, and surface actionable refinement
+    # issues (with an `action` the UI turns into a button) for thin views.
+    max_score = 10
+    if available_cols and available_cols > 0:
+        cov = _coverage_factor(len(dims), len(measures), available_cols)
+        max_score = 12
+        cov_pts = {"comprehensive": 2, "adequate": 1, "partial": 1, "thin": 0}.get(cov["level"], 0)
+        dimensions_map["coverage"] = {"score": cov_pts, "max": 2, "detail": cov["detail"]}
+        score_total += cov_pts
+        if cov["thin_measures"]:
+            issues.append({
+                "field": "measures", "severity": "medium", "action": "add_measures",
+                "message": (f"Only {len(measures)} measure(s) for {available_cols} source+join "
+                            f"columns -- likely under-measured for this grain."),
+                "suggestion": "Add measures covering more numeric/aggregatable columns.",
+            })
+        if cov["thin_dims"]:
+            issues.append({
+                "field": "dimensions", "severity": "medium", "action": "add_dimensions",
+                "message": (f"Only {len(dims)} dimension(s) for {available_cols} source+join "
+                            f"columns -- most columns are not exposed for slicing."),
+                "suggestion": "Add dimensions so analysts can group/filter by more attributes.",
+            })
+        if not (filt and filt.strip()):
+            issues.append({
+                "field": "filter", "severity": "low", "action": "check_filters",
+                "message": "No filter defined -- verify whether the grain needs a scope filter.",
+                "suggestion": "Review candidate filter columns from the source data.",
+            })
+
+    return {"score": score_total, "max": max_score, "dimensions": dimensions_map, "issues": issues}
 
 
 @app.post("/api/semantic-layer/definitions/{definition_id}/health-check")
@@ -10208,26 +11018,38 @@ def mv_health_check(definition_id: str):
     _ensure_semantic_layer_tables()
     row = _fetch_definition(definition_id)
     defn = json.loads(row["json_definition"]) if isinstance(row["json_definition"], str) else row["json_definition"]
-    return _compute_mv_health(defn)
+    return _compute_mv_health(defn, available_cols=_mv_available_cols(defn))
 
 
 @app.post("/api/semantic-layer/definitions/{definition_id}/analyze")
-def mv_analyze(definition_id: str):
-    """LLM-based diagnostic analysis for a metric view definition (does not modify it)."""
+def mv_analyze(definition_id: str, profile_id: str | None = None):
+    """LLM-based diagnostic analysis for a metric view definition (does not modify it).
+
+    Optional `profile_id` scopes the KPI-coverage check (which surfaces KPIs bound
+    to this view's source table that no measure implements).
+    """
     _ensure_semantic_layer_tables()
     row = _fetch_definition(definition_id)
     defn = json.loads(row["json_definition"]) if isinstance(row["json_definition"], str) else row["json_definition"]
-    health = _compute_mv_health(defn)
-
-    # --- FK-based dim-source detection ---
-    dim_source_issues: list[dict] = []
     source = defn.get("source", "")
+
+    # Fetch FK evidence up front so the health check can confirm fact->dim joins
+    # (upgrades the joined-dimension-aggregation fan-out issue to high severity).
+    fk_rows: list = []
     try:
-        from dbxmetagen.semantic_layer import check_dim_source_pattern
         fk_rows = execute_sql(
             f"SELECT * FROM {fq('fk_predictions')} "
             f"WHERE (src_table = '{source}' OR dst_table = '{source}') AND final_confidence >= 0.5"
-        )
+        ) or []
+    except Exception as e:
+        logger.debug("MV analyze FK lookup skipped: %s", e)
+
+    health = _compute_mv_health(defn, available_cols=_mv_available_cols(defn), fk_rows=fk_rows)
+
+    # --- FK-based dim-source detection ---
+    dim_source_issues: list[dict] = []
+    try:
+        from dbxmetagen.semantic_layer import check_dim_source_pattern
         warning = check_dim_source_pattern(defn, fk_rows)
         if warning:
             dim_source_issues.append({
@@ -10324,10 +11146,24 @@ Output JSON in ```json``` fences: {{"issues": [...]}}"""
         logger.warning("MV analyze LLM failed: %s", e)
         llm_issues = []
 
-    # Merge: deterministic + dim-source + LLM issues (dedup by field+message)
+    # KPI coverage: surface KPIs bound to this source that no measure implements.
+    # action=add_measures maps to the (always-available) Add measures refine button.
+    kpi_issues: list[dict] = []
+    try:
+        kpi_cov = _compute_kpi_coverage([defn], _mv_defn_tables(defn), profile_id or row.get("project_id"))
+        for kpi in (kpi_cov.get("missing") or []):
+            kpi_issues.append({
+                "field": "measures", "severity": "medium", "action": "add_measures",
+                "message": f"KPI '{kpi}' targets this view's tables but no measure implements it.",
+                "suggestion": "Use 'Add measures' to implement it.",
+            })
+    except Exception as e:
+        logger.debug("MV analyze KPI coverage skipped: %s", e)
+
+    # Merge: deterministic + dim-source + KPI + LLM issues (dedup by field+message)
     seen = {(i["field"], i["message"]) for i in health["issues"]}
     combined = list(health["issues"])
-    for extra in (dim_source_issues, llm_issues):
+    for extra in (dim_source_issues, kpi_issues, llm_issues):
         for li in extra:
             key = (li.get("field", ""), li.get("message", ""))
             if key not in seen:
@@ -10335,6 +11171,360 @@ Output JSON in ```json``` fences: {{"issues": [...]}}"""
                 seen.add(key)
 
     return {"health": health, "issues": combined}
+
+
+# ---------------------------------------------------------------------------
+# Metric-view test-query runner (item 23)
+# ---------------------------------------------------------------------------
+
+# Catalog types that are federated / foreign — live drill queries against these
+# push down to the remote source (Redshift, Snowflake, etc.), so we cap them.
+_FEDERATED_CATALOG_TYPES = {"FOREIGN", "FOREIGN_CATALOG", "EXTERNAL"}
+
+
+def _is_federated_catalog(catalog: str) -> bool:
+    """Best-effort check: is this catalog a federated/foreign catalog?
+
+    Returns True on a positive detection only. Any lookup error returns False so
+    we do not block Delta-native views on a transient metadata failure — the
+    per-query timeout + row LIMIT are the backstop there.
+    """
+    if not catalog:
+        return False
+    if os.environ.get("FEDERATION_MODE", "false").lower() == "true":
+        return True
+    try:
+        cat_esc = catalog.replace("'", "''")
+        rows = execute_sql(
+            f"SELECT catalog_type FROM system.information_schema.catalogs "
+            f"WHERE catalog_name = '{cat_esc}'",
+            timeout=15,
+        )
+        if rows:
+            ctype = (rows[0].get("catalog_type") or "").upper()
+            return ctype in _FEDERATED_CATALOG_TYPES
+    except Exception as e:
+        logger.debug("Federation catalog check skipped for %s: %s", catalog, e)
+    return False
+
+
+def _build_mv_test_queries(defn: dict, fq_mv: str, max_dims: int = 5) -> list[dict]:
+    """Auto-generate MEASURE() drill queries from a metric-view definition.
+
+    Returns a list of {label, kind, sql} dicts:
+      1. all measures, ungrouped (grand totals)
+      2. all measures GROUP BY each dimension (capped at max_dims)
+      3. all measures GROUP BY the top 2-3 dimensions combined
+      4. the ungrouped query WHERE the definition's own filter (if present)
+    """
+    measures = [m.get("name") for m in defn.get("measures", []) if m.get("name")]
+    dims = [d.get("name") for d in defn.get("dimensions", []) if d.get("name")]
+    queries: list[dict] = []
+    if not measures:
+        return queries
+
+    measure_clause = ", ".join(f"MEASURE(`{m}`) AS `{m}`" for m in measures)
+
+    # 1. Grand totals (all measures, no grouping)
+    queries.append({
+        "label": "Grand totals (all measures, ungrouped)",
+        "kind": "ungrouped",
+        "sql": f"SELECT {measure_clause} FROM {fq_mv} LIMIT 10",
+    })
+
+    # 2. One query per dimension (capped)
+    for dname in dims[:max_dims]:
+        queries.append({
+            "label": f"By {dname}",
+            "kind": "single_dim",
+            "dimension": dname,
+            "sql": f"SELECT `{dname}`, {measure_clause} FROM {fq_mv} "
+                   f"GROUP BY ALL ORDER BY `{dname}` LIMIT 10",
+        })
+
+    # 3. Combined GROUP BY top 2-3 dimensions
+    if len(dims) >= 2:
+        combo = dims[:3]
+        combo_clause = ", ".join(f"`{d}`" for d in combo)
+        queries.append({
+            "label": f"Combined by {', '.join(combo)}",
+            "kind": "combined_dims",
+            "sql": f"SELECT {combo_clause}, {measure_clause} FROM {fq_mv} "
+                   f"GROUP BY ALL LIMIT 10",
+        })
+
+    # 4. Filtered totals (uses the definition's own filter expression, if any)
+    filt = (defn.get("filter") or "").strip()
+    if filt:
+        queries.append({
+            "label": "Filtered totals (definition filter applied)",
+            "kind": "filtered",
+            "sql": f"SELECT {measure_clause} FROM {fq_mv} WHERE {filt} LIMIT 10",
+        })
+
+    return queries
+
+
+def _health_from_test_result(kind: str, dimension: str | None, rows: list) -> dict:
+    """Derive a lightweight health verdict from a single test-query result set."""
+    row_count = len(rows)
+    notes: list[str] = []
+    status = "ok"
+
+    if row_count == 0:
+        return {"status": "warn", "notes": ["Returned 0 rows — the view may be empty or the filter excludes everything."]}
+
+    # All-null measure values across the sample → likely a broken expression / no matching data
+    all_null = True
+    for r in rows:
+        for k, v in r.items():
+            if dimension and k == dimension:
+                continue
+            if v is not None:
+                all_null = False
+                break
+        if not all_null:
+            break
+    if all_null:
+        status = "warn"
+        notes.append("All measure values are NULL in the sample — check the measure expressions or source data.")
+
+    # Fan-out signal: for a single-dimension drill, dimension values should be unique per group
+    if kind == "single_dim" and dimension:
+        dim_vals = [r.get(dimension) for r in rows]
+        if len(dim_vals) != len(set(map(str, dim_vals))):
+            status = "warn"
+            notes.append(f"Dimension '{dimension}' has duplicate rows after GROUP BY — possible join fan-out.")
+
+    if not notes:
+        notes.append(f"Returned {row_count} row(s); measures resolved.")
+    return {"status": status, "notes": notes}
+
+
+# --- Test-query runner: async task pattern + hard bounds ---------------------
+# These queries execute LIVE aggregations against a deployed view. Run them off
+# the request thread (background task + poll) so a slow/large view can't hit the
+# Databricks Apps ingress timeout, and HARD-CAP the query count so nothing --
+# federated or not -- can ever fan out into a large number of aggregations
+# unexpectedly (a single GROUP BY ALL over a huge or federated table is costly).
+_MV_TEST_MAX_QUERIES = 8        # absolute ceiling on drills per run
+_MV_TEST_FEDERATED_MAX = 2      # federated default: grand-total + 1 single-dim
+_MV_TEST_QUERY_TIMEOUT = 45     # per-query SQL timeout (s)
+_MV_TEST_WALL_TIMEOUT = 180     # task-level wall-clock backstop (s)
+_MV_TEST_WORKERS = 4            # parallel drills (bounded)
+
+_mv_test_tasks: TTLCache = TTLCache(maxsize=64, ttl=1800)   # 30-min cleanup
+_mv_test_result_cache: TTLCache = TTLCache(maxsize=32, ttl=120)  # dedupe re-clicks
+_mv_test_lock = threading.Lock()
+
+
+def _select_mv_test_queries(queries: list, federated: bool, allow_federated_full: bool) -> tuple[list, Optional[str]]:
+    """Apply the hard bound + federation policy to the generated drills.
+
+    Non-federated: full set, capped at _MV_TEST_MAX_QUERIES.
+    Federated (default): capped at _MV_TEST_FEDERATED_MAX (grand-total + 1 dim).
+    Federated + allow_federated_full: full bounded set (explicit, warned opt-in).
+    Returns (selected_queries, note).
+    """
+    queries = queries[:_MV_TEST_MAX_QUERIES]
+    if not federated:
+        return queries, None
+    if allow_federated_full:
+        return queries, (
+            "Federated source — running the full set. Each aggregation may pull the "
+            "remote table if it does not push down."
+        )
+    # Default federated policy: grand-total + at most one single-dim drill.
+    capped = [q for q in queries if q["kind"] == "ungrouped"]
+    first_dim = next((q for q in queries if q["kind"] == "single_dim"), None)
+    if first_dim:
+        capped.append(first_dim)
+    capped = capped[:_MV_TEST_FEDERATED_MAX]
+    note = (
+        "Source is a federated catalog — aggregations may not push down. "
+        f"Limited to {len(capped)} drill(s) to avoid heavy load on the remote source. "
+        "Use \"Run full set anyway\" to run all drills."
+    )
+    return capped, note
+
+
+def _run_mv_test_queries_bg(task_id: str, queries: list):
+    """Background worker: run drills in a bounded pool, stream results into the task dict."""
+    task = _mv_test_tasks.get(task_id)
+    if task is None:
+        return
+    results: list[dict] = [None] * len(queries)
+    deadline = time.time() + _MV_TEST_WALL_TIMEOUT
+
+    def _one(q: dict) -> dict:
+        entry = {"label": q["label"], "kind": q["kind"], "sql": q["sql"]}
+        try:
+            qrows = execute_sql(q["sql"], timeout=_MV_TEST_QUERY_TIMEOUT)
+            entry["error"] = None
+            entry["row_count"] = len(qrows)
+            entry["sample_result"] = qrows[:10]
+            entry["health"] = _health_from_test_result(q["kind"], q.get("dimension"), qrows)
+        except Exception as e:
+            entry["error"] = str(e)
+            entry["row_count"] = 0
+            entry["sample_result"] = []
+            entry["health"] = {"status": "fail", "notes": ["Query failed — see error."]}
+        return entry
+
+    def _timed_out_entry(q: dict) -> dict:
+        return {
+            "label": q["label"], "kind": q["kind"], "sql": q["sql"],
+            "error": "Query did not complete within the time budget.", "row_count": 0,
+            "sample_result": [], "health": {"status": "fail", "notes": ["Query did not complete."]},
+        }
+
+    pool = ThreadPoolExecutor(max_workers=min(_MV_TEST_WORKERS, max(1, len(queries))))
+    try:
+        futures = {pool.submit(_one, q): i for i, q in enumerate(queries)}
+        try:
+            # Bound the ENTIRE wait on the wall-clock deadline. as_completed raises
+            # TimeoutError once the budget elapses, even if a drill's own SQL
+            # timeout is being ignored (e.g. a slow federated pull).
+            for f in as_completed(futures, timeout=max(1, deadline - time.time())):
+                idx = futures[f]
+                try:
+                    results[idx] = f.result()
+                except Exception as e:
+                    results[idx] = {**_timed_out_entry(queries[idx]), "error": f"Query failed: {e}"}
+                task["done"] = sum(1 for r in results if r is not None)
+        except TimeoutError:
+            # Deadline hit: fill any unfinished drills as timed-out and stop waiting.
+            for i, r in enumerate(results):
+                if r is None:
+                    results[i] = _timed_out_entry(queries[i])
+            task["done"] = len(results)
+            logger.warning(
+                "MV test-query task %s hit the %ds wall-clock; %d drill(s) marked timed-out",
+                task_id, _MV_TEST_WALL_TIMEOUT, sum(1 for q in queries) - sum(1 for r in results if r and not r.get("error")),
+            )
+    except Exception as e:
+        logger.warning("MV test-query worker error for task %s: %s", task_id, e)
+    finally:
+        # Do NOT block on runaway query threads -- return promptly, let them drain.
+        pool.shutdown(wait=False, cancel_futures=True)
+
+    final = [r for r in results if r is not None]
+    passed = sum(1 for r in final if not r["error"])
+    failed = sum(1 for r in final if r["error"])
+    warn = sum(1 for r in final if not r["error"] and r["health"]["status"] == "warn")
+    overall = "fail" if failed else ("warn" if warn else "ok")
+    task.update({
+        "status": "done",
+        "done": len(final),
+        "results": final,
+        "overall": overall,
+        "summary": {"total": len(final), "passed": passed, "failed": failed, "warned": warn},
+    })
+    # Cache the finished payload so re-clicks within the TTL don't re-hit the warehouse.
+    ck = task.get("cache_key")
+    if ck:
+        with _mv_test_lock:
+            _mv_test_result_cache[ck] = _mv_test_task_payload(task)
+
+
+def _mv_test_task_payload(task: dict) -> dict:
+    """Shape a task dict into the API response payload."""
+    return {
+        "definition_id": task.get("definition_id"),
+        "metric_view": task.get("metric_view"),
+        "federated": task.get("federated"),
+        "federation_note": task.get("federation_note"),
+        "allow_federated_full": task.get("allow_federated_full"),
+        "status": task.get("status"),
+        "total": task.get("total"),
+        "done": task.get("done", 0),
+        "overall": task.get("overall"),
+        "summary": task.get("summary"),
+        "results": task.get("results", []),
+    }
+
+
+class MvTestQueryRequest(BaseModel):
+    allow_federated_full: bool = False
+
+
+@app.post("/api/semantic-layer/definitions/{definition_id}/test-queries")
+def run_mv_test_queries(definition_id: str, req: MvTestQueryRequest | None = None):
+    """Start an async run of auto-generated MEASURE() drills against a metric view.
+
+    Returns a task_id immediately; poll the GET endpoint for progress + results.
+    The drills execute LIVE against the deployed view, so the work runs off the
+    request thread and the query count is hard-bounded. Federated sources are
+    capped to a couple of drills by default (a few full-table pulls are fine, a
+    large number is not); the full set on a federated source is an explicit,
+    warned opt-in via allow_federated_full.
+    """
+    _ensure_semantic_layer_tables()
+    row = _fetch_definition(definition_id)
+    defn = json.loads(row["json_definition"]) if isinstance(row["json_definition"], str) else row["json_definition"]
+    mv_name = defn.get("name") or row.get("metric_view_name", "")
+    if not mv_name:
+        raise HTTPException(400, detail="Definition has no metric view name")
+    if row.get("status") != "applied":
+        raise HTTPException(400, detail="Only applied metric views can be test-queried. Deploy it first.")
+    if not defn.get("measures"):
+        raise HTTPException(400, detail="Definition has no measures to test.")
+
+    allow_federated_full = bool(req.allow_federated_full) if req else False
+    mv_cat = row.get("deployed_catalog") or CATALOG
+    mv_sch = row.get("deployed_schema") or SCHEMA
+    fq_mv = f"`{mv_cat}`.`{mv_sch}`.`{mv_name}`"
+
+    federated = _is_federated_catalog(mv_cat)
+    all_queries = _build_mv_test_queries(defn, fq_mv)
+    queries, federation_note = _select_mv_test_queries(all_queries, federated, allow_federated_full)
+
+    # Short-TTL result cache keyed on view + definition content + policy, so
+    # re-clicking doesn't re-run the warehouse. Skip cache for the full-federated
+    # opt-in (an explicit "run it now" action).
+    import hashlib
+    cache_key = (
+        f"{definition_id}:{hashlib.md5(json.dumps(defn, sort_keys=True).encode()).hexdigest()[:12]}"
+        f":{federated}:{allow_federated_full}"
+    )
+    if not allow_federated_full:
+        with _mv_test_lock:
+            cached = _mv_test_result_cache.get(cache_key)
+        if cached:
+            return {**cached, "cached": True}
+
+    if not queries:
+        # Nothing to run (e.g. no measures survived) -- return an immediate empty result.
+        return {
+            "definition_id": definition_id, "metric_view": fq_mv, "federated": federated,
+            "federation_note": federation_note, "allow_federated_full": allow_federated_full,
+            "status": "done", "total": 0, "done": 0, "overall": "ok",
+            "summary": {"total": 0, "passed": 0, "failed": 0, "warned": 0}, "results": [],
+        }
+
+    task_id = str(_uuid.uuid4())[:12]
+    _mv_test_tasks[task_id] = {
+        "status": "running", "definition_id": definition_id, "metric_view": fq_mv,
+        "federated": federated, "federation_note": federation_note,
+        "allow_federated_full": allow_federated_full, "total": len(queries), "done": 0,
+        "results": [], "overall": None, "summary": None, "cache_key": cache_key,
+    }
+    _spawn_with_obo(_run_mv_test_queries_bg, args=(task_id, queries))
+    return {
+        "task_id": task_id, "definition_id": definition_id, "metric_view": fq_mv,
+        "federated": federated, "federation_note": federation_note,
+        "allow_federated_full": allow_federated_full, "status": "running",
+        "total": len(queries), "done": 0,
+    }
+
+
+@app.get("/api/semantic-layer/definitions/{definition_id}/test-queries/{task_id}")
+def poll_mv_test_queries(definition_id: str, task_id: str):
+    """Poll a running (or finished) metric-view test-query task."""
+    task = _mv_test_tasks.get(task_id)
+    if not task:
+        raise HTTPException(404, detail="Test-query task not found (it may have expired). Re-run.")
+    return _mv_test_task_payload(task)
 
 
 class UpdateFieldRequest(BaseModel):
@@ -10589,6 +11779,20 @@ def _generate_questions_single(req: SuggestQuestionsRequest):
 
     mv_only = bool(req.metric_view_names) and not req.table_identifiers
 
+    # Shared analytical-depth guidance injected into every question-gen prompt so
+    # suggestions span varied, sophisticated patterns instead of only simple
+    # aggregations/trends. Kept business-language only (no SQL/column references).
+    depth_block = """- Deliberately VARY the analytical pattern across the set -- do not return N variations of the same shape. Cover a spread of:
+  * Trends over time (momentum, quarter-over-quarter / year-over-year change, seasonality)
+  * Comparisons across segments (region vs region, product vs product, cohort vs cohort)
+  * Rankings / top-N ("top 10 X by Y", "which segment leads / lags")
+  * Ratios & rates (conversion rate, retention rate, margin %, per-capita, X as a share of Y)
+  * Segmentation / cohort analysis (by lifecycle stage, tenure band, geography, category)
+  * Anomaly / driver questions ("what drove the recent change in X?", "what's unusual about Y?")
+  * Drill-down / decomposition ("break the change in X down by dimension Z")
+- When the metadata describes RELATIONSHIPS between entities, include cross-entity questions (e.g. per-entity efficiency, one entity's outcomes segmented by a related entity)
+- Range across complexity: a few simple ("total X last quarter?"), several mid ("X by segment over time?"), and a couple of deeper analytical questions"""
+
     if req.purpose == "metric_views":
         prompt = f"""You are a business intelligence strategist. Your task is to generate questions that would drive the creation of reusable KPI metric views.
 {biz_ctx_block}
@@ -10602,8 +11806,8 @@ Generate exactly {req.count} questions that a BUSINESS LEADER would ask to track
 - Use the domain and subdomain classifications to frame questions in the right business context
 - Think about what a CEO, CFO, VP, or department head would ask in a weekly review meeting
 - Focus on measurable outcomes: revenue growth, cost efficiency, customer satisfaction, operational throughput, quality metrics
-- Frame questions around time-based trends ("How has X changed over the past quarter?"), comparisons ("Which segment leads in Y?"), and thresholds ("Are we meeting our Z target?")
 - Prefer questions that naturally decompose into a measure (SUM, AVG, COUNT) and dimensions (time, category, region)
+{depth_block}
 - Do NOT mention column names, table names, or SQL concepts -- use business language only
 - A business user who USES the data but doesn't know the data model should understand every question
 {existing_block}
@@ -10619,8 +11823,8 @@ Generate exactly {req.count} questions that a BUSINESS USER would naturally ask 
 - ONLY use the measures and dimensions listed in the metric views above -- do not invent concepts not present
 - Every question must be answerable by querying one of the metric views above using its measures and dimensions
 - Frame questions around the specific KPIs defined (e.g., if a metric view tracks "Total Adverse Events" with dimensions like "System Organ Class", ask about adverse event patterns by organ class)
-- Focus on trends, comparisons, rankings, thresholds, and ratios USING THE ACTUAL MEASURES provided
-- Vary analytical depth: simple breakdowns, comparisons across dimensions, threshold analysis, ratios between measures
+- Every question must use the ACTUAL measures and dimensions provided
+{depth_block}
 - Do NOT reference column names, table names, SQL concepts, or MEASURE() syntax -- use business language only
 - Do NOT ask about concepts not represented in the metric views (no products, orders, invoices unless those are actual measures/dimensions listed)
 {existing_block}
@@ -10637,9 +11841,8 @@ Generate exactly {req.count} questions that a BUSINESS USER would naturally ask.
 - Every question MUST be answerable using ONLY the tables and columns described above -- do not invent data that isn't present
 - Use the domain and subdomain classifications to frame questions in the right business context
 - Questions should be outcome-oriented and insight-driven (e.g. "What are the top performing regions by revenue this quarter?")
+{depth_block}
 - Do NOT reference column names, table names, or technical schema details
-- Focus on trends, comparisons, rankings, anomalies, and KPIs
-- Vary the question types: aggregations, time-series trends, top-N, filters, comparisons
 - A business user who USES the data but doesn't know the data model should understand every question
 {existing_block}
 Return ONLY a JSON array of strings, no other text."""
@@ -11056,6 +12259,41 @@ def _validate_data_sources_exist(ss: dict, warehouse_id: str) -> list[str]:
     return errors
 
 
+def _mv_names_from_serialized_space(ss: dict) -> list[str]:
+    """Extract metric-view NAMES from a serialized space's data_sources.metric_views.
+
+    Each entry's ``identifier`` is fully qualified (``catalog.schema.name``); the
+    assembler's ``_get_metric_views_by_name`` expects the bare name (trailing segment).
+    Used by ``genie_improve`` so a space's existing MVs are re-supplied to the assembler
+    instead of being lost to empty auto-discovery.
+    """
+    ds = (ss or {}).get("data_sources", {}) or {}
+    names = []
+    for mv in ds.get("metric_views", []) or []:
+        name = (mv.get("identifier", "") or "").split(".")[-1]
+        if name:
+            names.append(name)
+    return names
+
+
+def _genie_content_counts(ss: dict) -> dict:
+    """Count the droppable content categories in a serialized Genie space.
+
+    Used to compare what was SENT vs what the Genie API actually persisted (read-back),
+    so the UI can report joins / example-SQL / snippets that were silently dropped.
+    """
+    inst = (ss or {}).get("instructions", {}) or {}
+    joins = inst.get("join_specs") or (ss or {}).get("data_sources", {}).get("join_specs", []) or []
+    examples = inst.get("example_question_sqls") or inst.get("example_sql") or []
+    snip = inst.get("sql_snippets") or {}
+    snippets = (
+        len(snip.get("measures", []) or [])
+        + len(snip.get("filters", []) or [])
+        + len(snip.get("expressions", []) or [])
+    )
+    return {"joins": len(joins), "example_sqls": len(examples), "snippets": snippets}
+
+
 @app.post("/api/genie/create")
 def genie_create(req: GenieCreateRequest):
     """Create or update a Genie space via the Databricks REST API."""
@@ -11206,14 +12444,19 @@ def genie_create(req: GenieCreateRequest):
                 "Genie deploy SUCCESS: space_id=%s, %d tables, %d MVs, %d joins survived, %d warnings",
                 result.get("space_id"), final_tables, final_mvs, len(final_joins), len(deploy_warnings),
             )
-            result["join_count"] = len(final_joins)
+            sent = _genie_content_counts(transformed)
+            result["join_count"] = sent["joins"]
+            result["example_sql_count"] = sent["example_sqls"]
+            result["snippet_count"] = sent["snippets"]
             result["table_count"] = final_tables
             result["mv_count"] = final_mvs
-            # Read-back verification: confirm joins actually persisted
-            persisted_join_count = None
+            # Read-back verification: the Genie API can silently drop joins, snippets, or
+            # example-SQL it rejects, leaving a "reverted"-looking space. Re-fetch and
+            # compare persisted vs sent for EACH content category (not just joins) so the
+            # UI can explain exactly what was dropped.
             try:
                 space_id = result.get("space_id")
-                if space_id and final_joins:
+                if space_id and (sent["joins"] or sent["example_sqls"] or sent["snippets"]):
                     rb = ws.api_client.do(
                         "GET",
                         f"/api/2.0/genie/spaces/{space_id}",
@@ -11224,22 +12467,24 @@ def genie_create(req: GenieCreateRequest):
                         rb_parsed = json.loads(rb_ss)
                     else:
                         rb_parsed = rb_ss if isinstance(rb_ss, dict) else {}
-                    rb_joins = (rb_parsed.get("instructions", {}).get("join_specs", [])
-                                or rb_parsed.get("data_sources", {}).get("join_specs", []))
-                    persisted_join_count = len(rb_joins)
+                    persisted = _genie_content_counts(rb_parsed)
+                    result["persisted_join_count"] = persisted["joins"]
+                    result["persisted_example_sql_count"] = persisted["example_sqls"]
+                    result["persisted_snippet_count"] = persisted["snippets"]
                     logger.info(
-                        "Genie read-back: %d joins persisted (sent %d)",
-                        persisted_join_count, len(final_joins),
+                        "Genie read-back persisted/sent: joins %d/%d, example_sql %d/%d, snippets %d/%d",
+                        persisted["joins"], sent["joins"],
+                        persisted["example_sqls"], sent["example_sqls"],
+                        persisted["snippets"], sent["snippets"],
                     )
-                    if persisted_join_count == 0 and len(final_joins) > 0:
-                        deploy_warnings.append(
-                            f"Joins did NOT persist: sent {len(final_joins)} but API returned 0. "
-                            "The Genie API may have silently dropped them."
-                        )
+                    for label, key in (("join", "joins"), ("example SQL", "example_sqls"), ("snippet", "snippets")):
+                        if sent[key] > 0 and persisted[key] == 0:
+                            deploy_warnings.append(
+                                f"{sent[key]} {label}(s) were sent but the Genie API returned 0 -- "
+                                "they may not have persisted."
+                            )
             except Exception as rb_err:
                 logger.warning("Genie read-back failed: %s", rb_err)
-            if persisted_join_count is not None:
-                result["persisted_join_count"] = persisted_join_count
             if deploy_warnings:
                 result["warnings"] = deploy_warnings
             return result
@@ -11566,6 +12811,10 @@ def _compute_health_score(ss: dict, semantic_gap_result: dict | None = None) -> 
         t for t in table_entries
         if t.get("identifier") and not _looks_like_doc_table(t["identifier"], t.get("description"))
     ]
+    # A metric-view-only space (metric views, no analytical tables) is self-contained: MVs carry
+    # their own joins + measures, so joins/snippets/filters are N/A there, not deficiencies. This
+    # mirrors the metric_views-N/A treatment for tables-only spaces (opposite composition).
+    mv_only = bool(mv_entries) and not analytical_tables
 
     joins = inst.get("join_specs", [])
     if isinstance(joins, dict):
@@ -11584,6 +12833,7 @@ def _compute_health_score(ss: dict, semantic_gap_result: dict | None = None) -> 
 
     dimensions = {}
     score_total = 0
+    max_total = 20  # sum of all dimension maxes; reduced when a dimension is N/A
 
     # Join coverage (2 pts) -- based on analytical tables only
     at_count = len(analytical_tables)
@@ -11611,15 +12861,21 @@ def _compute_health_score(ss: dict, semantic_gap_result: dict | None = None) -> 
     else:
         dimensions["example_sql"] = {"score": 0, "max": 2, "detail": f"{ex_count} examples (target: 8+)"}
 
-    # Snippet coverage (2 pts)
-    snip_score = 0
-    if len(measures) >= 2:
-        snip_score += 1
-    if len(filters_list) >= 2 or len(expressions_list) >= 1:
-        snip_score += 1
-    detail_parts = [f"{len(measures)} measures", f"{len(filters_list)} filters", f"{len(expressions_list)} expressions"]
-    dimensions["snippets"] = {"score": snip_score, "max": 2, "detail": ", ".join(detail_parts)}
-    score_total += snip_score
+    # Snippet coverage (2 pts) -- N/A for a metric-view-only space: applied MVs carry their own
+    # measures/dimensions and dbxmetagen deliberately emits NO snippet measures for them (Genie
+    # auto-discovers them), so 0 snippets is expected, not a deficiency.
+    if mv_only:
+        dimensions["snippets"] = {"score": None, "max": 0, "detail": "N/A -- metric views carry their own measures"}
+        max_total -= 2
+    else:
+        snip_score = 0
+        if len(measures) >= 2:
+            snip_score += 1
+        if len(filters_list) >= 2 or len(expressions_list) >= 1:
+            snip_score += 1
+        detail_parts = [f"{len(measures)} measures", f"{len(filters_list)} filters", f"{len(expressions_list)} expressions"]
+        dimensions["snippets"] = {"score": snip_score, "max": 2, "detail": ", ".join(detail_parts)}
+        score_total += snip_score
 
     # Instruction quality (2 pts)
     text_len = len(text)
@@ -11643,9 +12899,14 @@ def _compute_health_score(ss: dict, semantic_gap_result: dict | None = None) -> 
     else:
         dimensions["sample_questions"] = {"score": 0, "max": 2, "detail": f"{sq_count} questions (target: 5+)"}
 
-    # Metric views (2 pts)
+    # Metric views (2 pts) -- N/A for a tables-only space. A space with tables and no MVs
+    # is a valid choice (Improve deliberately never adds MVs to it), so scoring it 0/2 would
+    # be an unreachable, misleading penalty; mark it N/A and drop its 2 pts from the max.
     mv_count = len(mv_entries)
-    if mv_count >= 2:
+    if mv_count == 0 and table_entries:
+        dimensions["metric_views"] = {"score": None, "max": 0, "detail": "N/A -- tables-only space"}
+        max_total -= 2
+    elif mv_count >= 2:
         dimensions["metric_views"] = {"score": 2, "max": 2, "detail": f"{mv_count} metric views"}
         score_total += 2
     elif mv_count >= 1:
@@ -11654,18 +12915,22 @@ def _compute_health_score(ss: dict, semantic_gap_result: dict | None = None) -> 
     else:
         dimensions["metric_views"] = {"score": 0, "max": 2, "detail": "No metric views"}
 
-    # Filter quality (2 pts) -- penalize oversized/useless filter values
-    fq_score = 2
+    # Filter quality (2 pts) -- penalize oversized/useless filter values. N/A for a metric-view-only
+    # space (filters aren't expected on self-contained MVs); still penalize document-length filter
+    # values if somehow present.
     oversized = sum(1 for f in filters_list if len(str(f.get("sql", ""))) > 500)
-    if oversized:
-        fq_score = 0
+    if mv_only and not oversized:
+        dimensions["filter_quality"] = {"score": None, "max": 0, "detail": "N/A -- metric-view space"}
+        max_total -= 2
+    elif oversized:
         dimensions["filter_quality"] = {"score": 0, "max": 2, "detail": f"{oversized} filters contain document-length SQL values"}
+        # score_total += 0
     elif filters_list:
         dimensions["filter_quality"] = {"score": 2, "max": 2, "detail": f"{len(filters_list)} well-formed filters"}
+        score_total += 2
     else:
-        fq_score = 1
         dimensions["filter_quality"] = {"score": 1, "max": 2, "detail": "No filters defined"}
-    score_total += fq_score
+        score_total += 1
 
     # Semantic gap (6 pts, externally computed via LLM in analyze)
     if semantic_gap_result:
@@ -11674,13 +12939,59 @@ def _compute_health_score(ss: dict, semantic_gap_result: dict | None = None) -> 
     else:
         dimensions["semantic_gap"] = {"score": None, "max": 6, "detail": "Run Analyze to evaluate"}
 
-    return {"score": score_total, "max": 20, "dimensions": dimensions}
+    return {"score": score_total, "max": max_total, "dimensions": dimensions}
+
+
+def _reclassify_metric_views(ss: dict, warehouse_id: Optional[str] = None) -> dict:
+    """Move data_sources.tables entries that are actually UC metric views into metric_views.
+
+    Genie's serialized_space does NOT preserve a separate metric_views bucket -- a deployed
+    metric view round-trips back from the Genie API under data_sources.tables (verified on a
+    live space). Health scoring and the analytical-table/joins logic must treat metric views as
+    self-contained (no joins/snippets/filters needed), so we re-bucket any table identifier whose
+    UC table_type is METRIC_VIEW into metric_views before scoring. Best-effort: any lookup failure
+    returns ss unchanged (no regression vs today).
+    """
+    ds = ss.get("data_sources") or {}
+    idents = [t.get("identifier") for t in (ds.get("tables") or []) if t.get("identifier")]
+    if not idents:
+        return ss
+    try:
+        in_list = ", ".join(_safe_sql_str(i) for i in idents)
+        rows = execute_sql(
+            "SELECT concat_ws('.', table_catalog, table_schema, table_name) AS fqn "
+            "FROM system.information_schema.tables WHERE table_type = 'METRIC_VIEW' "
+            f"AND concat_ws('.', table_catalog, table_schema, table_name) IN ({in_list})",
+            warehouse_id=warehouse_id or os.environ.get("WAREHOUSE_ID", ""), timeout=20,
+        ) or []
+    except Exception as e:
+        logger.info("Metric-view reclassification skipped (%s)", e)
+        return ss
+    mv_fqns = {r.get("fqn") for r in rows if r.get("fqn")}
+    if not mv_fqns:
+        return ss
+    import copy
+    ss2 = copy.deepcopy(ss)
+    ds2 = ss2.setdefault("data_sources", {})
+    moved = list(ds2.get("metric_views") or [])
+    moved_ids = {m.get("identifier") for m in moved}
+    kept = []
+    for t in (ds2.get("tables") or []):
+        if t.get("identifier") in mv_fqns:
+            if t.get("identifier") not in moved_ids:
+                moved.append(t)
+        else:
+            kept.append(t)
+    ds2["tables"] = kept
+    ds2["metric_views"] = moved
+    return ss2
 
 
 @app.post("/api/genie/health-check")
 def genie_health_check(req: GenieHealthCheckRequest):
     """Compute a health score for a Genie space definition."""
-    return _compute_health_score(req.serialized_space)
+    ss = _reclassify_metric_views(req.serialized_space)
+    return _compute_health_score(ss)
 
 
 _DOC_TABLE_KEYWORDS = {"chunk", "parsed", "embedding", "document", "policy_doc"}
@@ -11697,7 +13008,9 @@ def _looks_like_doc_table(identifier: str, desc: str | list | None = None) -> bo
 @app.post("/api/genie/analyze")
 def genie_analyze(req: GenieAnalyzeRequest):
     """Holistic AI analysis: identify gaps across all sections of a Genie space."""
-    ss = req.serialized_space
+    # Re-bucket metric views that Genie round-tripped into data_sources.tables so the whole
+    # analysis (doc-table split, join expectations, health score) treats them as metric views.
+    ss = _reclassify_metric_views(req.serialized_space)
 
     ds = ss.get("data_sources", {})
     inst = ss.get("instructions", {})
@@ -11992,6 +13305,19 @@ def genie_improve(req: GenieImproveRequest):
 
     def _run():
         try:
+            # Fail fast if a referenced table/MV no longer exists (e.g. dropped since the
+            # space was built). genie_create validates this at deploy time, but without an
+            # up-front check here an improve burns a full analyze + multi-phase LLM cycle
+            # (up to 900s) before the user learns a source is gone.
+            missing = _validate_data_sources_exist(req.serialized_space, wh)
+            if missing:
+                _genie_tasks[task_id].update({
+                    "status": "error",
+                    "error": "Data source validation failed: " + "; ".join(missing),
+                    "elapsed_seconds": round(time.time() - started_at),
+                    "rounds_completed": 0,
+                })
+                return
             _genie_tasks[task_id]["stage"] = "analyzing"
             analysis = genie_analyze(GenieAnalyzeRequest(
                 serialized_space=req.serialized_space,
@@ -12048,7 +13374,17 @@ def genie_improve(req: GenieImproveRequest):
             progress_q: queue.Queue = queue.Queue()
 
             assembler = GenieContextAssembler(ws, wh, CATALOG, SCHEMA)
-            ctx = assembler.assemble(req.table_identifiers or [t.get("identifier", "") for t in req.serialized_space.get("data_sources", {}).get("tables", [])])
+            _ds = req.serialized_space.get("data_sources", {}) or {}
+            table_ids = req.table_identifiers or [t.get("identifier", "") for t in _ds.get("tables", [])]
+            # Improve must PRESERVE the space's composition: pass exactly the MV names the
+            # space already has. A space WITH MVs keeps them (a non-empty list avoids the
+            # empty-prebuilt merge that would otherwise drop them). A tables-only space yields
+            # [] -> assemble() takes the explicit-"no MVs" branch and does NOT auto-discover,
+            # so Improve never turns a tables-only space into a mixed one. (Passing None here
+            # would auto-discover every MV sourced from the space's tables and force-merge them
+            # in -- the exact behavior we are preventing.)
+            mv_names = _mv_names_from_serialized_space(req.serialized_space)
+            ctx = assembler.assemble(table_ids, metric_view_names=mv_names)
 
             def _monitor():
                 while True:
@@ -12362,20 +13698,45 @@ def _ensure_kpi_table():
         execute_sql(f"ALTER TABLE {fq('kpi_definitions')} ADD COLUMNS (profile_id STRING)", timeout=15)
     except Exception:
         pass
+    try:
+        execute_sql(f"ALTER TABLE {fq('kpi_definitions')} ADD COLUMNS (resolved_table STRING)", timeout=15)
+    except Exception:
+        pass
 
 
-def _validate_kpi_formula(formula: str, target_tables: list[str]) -> tuple[str, str]:
-    """Dry-run a KPI formula to check syntax and column existence."""
+# PQ-4: cap how many target tables a single KPI-formula validation probes, so a KPI
+# bound to many tables can't fan out into a source-query storm (esp. federated).
+_KPI_VALIDATE_MAX_TABLES = 5
+
+
+def _validate_kpi_formula(formula: str, target_tables: list[str]) -> tuple[str, str, str]:
+    """Dry-run a KPI formula to check syntax and column existence.
+
+    Returns (validation_status, validation_error, resolved_table). The KPI is valid
+    if the formula resolves against ANY one of its target tables (see
+    kpi_logic.reduce_kpi_validation); resolved_table records which table it validated
+    against so metric-view generation can bind the KPI to the right view.
+    """
     if not formula or not target_tables:
-        return "skipped", ""
-    for table in target_tables:
+        return "skipped", "", ""
+    # PQ-4 federation safety: each probe is a bounded `LIMIT 1` (pushes down, cheap),
+    # so the risk is the N×M COUNT of probes (KPIs × target tables), which can hammer a
+    # federated source. Dedup tables (order-preserving), cap how many we probe, and
+    # STOP at the first table the formula resolves against (any-table-valid semantics --
+    # extra probes add nothing once one succeeds).
+    seen: set = set()
+    deduped = [t for t in target_tables if not (t in seen or seen.add(t))]
+    probed = deduped[:_KPI_VALIDATE_MAX_TABLES]
+    results = []
+    for table in probed:
         try:
             rows = execute_sql(f"SELECT {formula} AS kpi_val FROM {table} LIMIT 1", timeout=30)
-            if not rows:
-                return "empty", f"No rows returned from {table}"
+            results.append(("ok" if rows else "empty", table, ""))
+            if rows:
+                break  # resolved -> no need to probe the rest
         except Exception as e:
-            return "invalid", f"Against {table}: {e}"
-    return "valid", ""
+            results.append(("error", table, str(e)))
+    return reduce_kpi_validation(results)
 
 
 class KpiRequest(BaseModel):
@@ -12385,6 +13746,9 @@ class KpiRequest(BaseModel):
     target_tables: list[str] = []
     domain: str = ""
     profile_id: Optional[str] = None
+    # When a likely-duplicate KPI is detected, create_kpi returns 409 with the
+    # match; the client re-POSTs with this flag to create it anyway (warn, not block).
+    override_duplicate: bool = False
 
 
 class KpiSuggestRequest(BaseModel):
@@ -12397,10 +13761,35 @@ class KpiSuggestRequest(BaseModel):
     existing_kpi_names: list[str] = []
 
 
+class SuggestBusinessContextRequest(BaseModel):
+    table_identifiers: list[str]
+    # Source for the table descriptions used to draft the context. Default = the
+    # live UC table comments (system.information_schema); use_kb=true pulls the
+    # generated descriptions from table_knowledge_base instead.
+    use_kb: bool = False
+    model_endpoint: str = _LLM_MODEL
+
+
+# KPI validation_status values the UI can filter on. "invalid" = formula failed to
+# resolve against every target table (reason is stored in validation_error).
+_KPI_STATUS_VALUES = {"valid", "invalid", "empty", "unchecked", "skipped"}
+
+
 @app.get("/api/kpis")
-def list_kpis(profile_id: str = None):
+def list_kpis(profile_id: str = None, status: str = None):
+    """Read-only list of KPIs. A plain GET must NOT mutate or run dry-run SELECTs
+    (that made page loads slow + raced on concurrent UPDATEs -- review finding #2).
+    Stale-'invalid' retro-healing now lives in POST /api/kpis/revalidate, which the
+    UI calls explicitly (e.g. once on first load).
+
+    `status` optionally filters by validation_status (valid/invalid/empty/...)."""
     _ensure_kpi_table()
-    where = f" WHERE profile_id = '{profile_id.replace(chr(39), chr(39)*2)}'" if profile_id else ""
+    conds = []
+    if profile_id:
+        conds.append(f"profile_id = '{profile_id.replace(chr(39), chr(39)*2)}'")
+    if status and status.lower() in _KPI_STATUS_VALUES:
+        conds.append(f"LOWER(validation_status) = '{status.lower()}'")
+    where = (" WHERE " + " AND ".join(conds)) if conds else ""
     rows = execute_sql(f"SELECT * FROM {fq('kpi_definitions')}{where} ORDER BY updated_at DESC")
     for row in rows:
         if row.get("formula"):
@@ -12408,55 +13797,155 @@ def list_kpis(profile_id: str = None):
     return rows
 
 
+@app.post("/api/kpis/revalidate")
+def revalidate_kpis(profile_id: str = None):
+    """Re-validate currently-'invalid' KPIs and persist any that now resolve.
+
+    Explicit (POST) counterpart to the old on-GET retro-heal: KPIs created before
+    the any-table-valid validation carry target_tables=[all tables] + a stale
+    'invalid' status. This dry-runs each (capped) and flips genuinely-fine ones to
+    valid, recording resolved_table. Returns the count healed."""
+    _ensure_kpi_table()
+    conds = ["validation_status = 'invalid'"]
+    if profile_id:
+        conds.append(f"profile_id = '{profile_id.replace(chr(39), chr(39)*2)}'")
+    where = " WHERE " + " AND ".join(conds)
+    rows = execute_sql(
+        f"SELECT kpi_id, formula, target_tables, validation_status "
+        f"FROM {fq('kpi_definitions')}{where} ORDER BY updated_at DESC"
+    )
+    _RETRO_CAP = 8
+    revalidated = 0
+    healed = 0
+    for row in rows or []:
+        if revalidated >= _RETRO_CAP:
+            break
+        kt = row.get("target_tables") or []
+        if isinstance(kt, str):
+            try:
+                kt = json.loads(kt)
+            except Exception:
+                kt = [kt]
+        if not row.get("formula") or not kt:
+            continue
+        revalidated += 1
+        try:
+            v_status, v_error, v_resolved = _validate_kpi_formula(row["formula"], kt)
+        except Exception:
+            continue
+        if v_status != "invalid":
+            healed += 1
+            try:
+                execute_sql(
+                    f"UPDATE {fq('kpi_definitions')} SET validation_status = '{v_status}', "
+                    f"validation_error = '{v_error.replace(chr(39), chr(39)*2)}', "
+                    f"resolved_table = '{v_resolved.replace(chr(39), chr(39)*2)}' "
+                    f"WHERE kpi_id = '{row['kpi_id'].replace(chr(39), chr(39)*2)}'",
+                    timeout=30,
+                )
+            except Exception:
+                pass
+    return {"revalidated": revalidated, "healed": healed}
+
+
 @app.post("/api/kpis")
 def create_kpi(req: KpiRequest):
     _ensure_kpi_table()
+    # Dedup guard (warn, not block): if this looks like an existing KPI, return 409
+    # with the match unless the client explicitly overrides. Scoped to the same
+    # profile so unrelated profiles don't cross-warn. Best-effort — never blocks on
+    # a lookup failure.
+    if not req.override_duplicate:
+        try:
+            dwhere = (
+                f" WHERE profile_id = '{_esc_sql(req.profile_id)}'"
+                if req.profile_id else " WHERE profile_id IS NULL OR profile_id = ''"
+            )
+            existing = execute_sql(
+                f"SELECT name, formula FROM {fq('kpi_definitions')}{dwhere}", timeout=20
+            ) or []
+            match = find_similar_kpi(req.name, req.formula, existing)
+        except Exception as e:
+            logger.warning("KPI dedup check failed (allowing create): %s", e)
+            match = None
+        if match:
+            raise HTTPException(
+                status_code=409,
+                detail={
+                    "warning": (
+                        f"This looks similar to an existing KPI \"{match['kpi'].get('name')}\" "
+                        f"({'same name' if match['reason'] == 'name' else 'near-identical formula'}). "
+                        "Save anyway?"
+                    ),
+                    "existing_name": match["kpi"].get("name"),
+                    "reason": match["reason"],
+                    "score": match["score"],
+                },
+            )
     kpi_id = str(_uuid.uuid4())[:12]
-    name_esc = req.name.replace("'", "''")
-    desc_esc = req.description.replace("'", "''")
-    formula_esc = req.formula.replace("'", "''")
-    arr = ",".join("'" + t + "'" for t in req.target_tables)
-    v_status, v_error = _validate_kpi_formula(req.formula, req.target_tables)
-    v_error_esc = v_error.replace("'", "''")
-    pid = req.profile_id or ""
+    name_esc = _esc_sql(req.name)
+    desc_esc = _esc_sql(req.description)
+    formula_esc = _esc_sql(req.formula)
+    domain_esc = _esc_sql(req.domain)
+    arr = ",".join("'" + _esc_sql(t) + "'" for t in req.target_tables)
+    v_status, v_error, v_resolved = _validate_kpi_formula(req.formula, req.target_tables)
+    v_error_esc = _esc_sql(v_error)
+    v_resolved_esc = _esc_sql(v_resolved)
+    pid = _esc_sql(req.profile_id or "")
+    # Explicit column list (NOT positional VALUES): the table is created with a
+    # fixed column order then extended via ALTER ADD COLUMNS, so a positional
+    # INSERT silently corrupts data the moment a new column is added.
     execute_sql(
         f"INSERT INTO {fq('kpi_definitions')} "
         f"(kpi_id, name, description, formula, target_tables, domain, source, "
-        f"created_at, updated_at, validation_status, validation_error, profile_id) VALUES "
+        f"created_at, updated_at, validation_status, validation_error, profile_id, resolved_table) VALUES "
         f"('{kpi_id}', '{name_esc}', '{desc_esc}', '{formula_esc}', "
-        f"ARRAY({arr}), '{req.domain}', 'manual', current_timestamp(), current_timestamp(), "
-        f"'{v_status}', '{v_error_esc}', '{pid}')",
+        f"ARRAY({arr}), '{domain_esc}', 'manual', current_timestamp(), current_timestamp(), "
+        f"'{v_status}', '{v_error_esc}', '{pid}', '{v_resolved_esc}')",
         timeout=30,
     )
-    return {"kpi_id": kpi_id, "name": req.name, "validation_status": v_status, "validation_error": v_error}
+    return {"kpi_id": kpi_id, "name": req.name, "validation_status": v_status,
+            "validation_error": v_error, "resolved_table": v_resolved}
 
 
 @app.put("/api/kpis/{kpi_id}")
 def update_kpi(kpi_id: str, req: KpiRequest):
     _ensure_kpi_table()
-    name_esc = req.name.replace("'", "''")
-    desc_esc = req.description.replace("'", "''")
-    formula_esc = req.formula.replace("'", "''")
-    arr = ",".join("'" + t + "'" for t in req.target_tables)
-    v_status, v_error = _validate_kpi_formula(req.formula, req.target_tables)
-    v_error_esc = v_error.replace("'", "''")
-    pid = req.profile_id or ""
+    name_esc = _esc_sql(req.name)
+    desc_esc = _esc_sql(req.description)
+    formula_esc = _esc_sql(req.formula)
+    domain_esc = _esc_sql(req.domain)
+    arr = ",".join("'" + _esc_sql(t) + "'" for t in req.target_tables)
+    v_status, v_error, v_resolved = _validate_kpi_formula(req.formula, req.target_tables)
+    v_error_esc = _esc_sql(v_error)
+    v_resolved_esc = _esc_sql(v_resolved)
+    pid = _esc_sql(req.profile_id or "")
     execute_sql(
         f"UPDATE {fq('kpi_definitions')} SET name = '{name_esc}', description = '{desc_esc}', "
-        f"formula = '{formula_esc}', target_tables = ARRAY({arr}), domain = '{req.domain}', "
+        f"formula = '{formula_esc}', target_tables = ARRAY({arr}), domain = '{domain_esc}', "
         f"validation_status = '{v_status}', validation_error = '{v_error_esc}', "
-        f"profile_id = '{pid}', "
-        f"updated_at = current_timestamp() WHERE kpi_id = '{kpi_id}'",
+        f"resolved_table = '{v_resolved_esc}', profile_id = '{pid}', "
+        f"updated_at = current_timestamp() WHERE kpi_id = '{_esc_sql(kpi_id)}'",
         timeout=30,
     )
-    return {"ok": True, "validation_status": v_status, "validation_error": v_error}
+    return {"ok": True, "validation_status": v_status, "validation_error": v_error,
+            "resolved_table": v_resolved}
 
 
 @app.delete("/api/kpis")
-def delete_all_kpis():
+def delete_all_kpis(status: str = None, profile_id: str = None):
+    """Delete KPIs. With no args, deletes ALL. `status` (e.g. 'invalid') scopes the
+    delete to that validation_status -- powering the UI's "Delete all invalid"
+    action -- and `profile_id` further scopes to one profile."""
     _ensure_kpi_table()
-    execute_sql(f"DELETE FROM {fq('kpi_definitions')}", timeout=30)
-    return {"ok": True}
+    conds = []
+    if status and status.lower() in _KPI_STATUS_VALUES:
+        conds.append(f"LOWER(validation_status) = '{status.lower()}'")
+    if profile_id:
+        conds.append(f"profile_id = '{profile_id.replace(chr(39), chr(39)*2)}'")
+    where = (" WHERE " + " AND ".join(conds)) if conds else ""
+    execute_sql(f"DELETE FROM {fq('kpi_definitions')}{where}", timeout=30)
+    return {"ok": True, "status": status, "profile_id": profile_id}
 
 
 @app.delete("/api/kpis/{kpi_id}")
@@ -12464,6 +13953,99 @@ def delete_kpi(kpi_id: str):
     _ensure_kpi_table()
     execute_sql(f"DELETE FROM {fq('kpi_definitions')} WHERE kpi_id = '{kpi_id}'", timeout=30)
     return {"ok": True}
+
+
+def _kpi_profiling_block(table_identifiers: list[str], max_cols_per_table: int = 25) -> str:
+    """Format a DATA PROFILE block from cached column_profiling_stats.
+
+    Reads the local profiling Delta table (NOT the source tables), so it adds no
+    load to federated sources. Surfaces the signals that let the LLM emit
+    data-grounded KPIs: real categorical values (for FILTER literals), cardinality
+    (categorical vs continuous), null rate (avoid sparse columns), numeric range."""
+    if not table_identifiers:
+        return ""
+    in_clause = ", ".join(_safe_sql_str(t) for t in table_identifiers)
+    try:
+        rows = execute_sql(
+            f"SELECT table_name, column_name, data_type, distinct_count, cardinality_ratio, "
+            f"null_rate, sample_values, min_value, max_value "
+            f"FROM {fq('column_profiling_stats')} WHERE table_name IN ({in_clause})",
+            timeout=30,
+        ) or []
+    except Exception as e:
+        logger.info("KPI profiling block skipped (%s)", e)
+        return ""
+    if not rows:
+        return ""
+    by_table: dict[str, list] = {}
+    for r in rows:
+        by_table.setdefault(r.get("table_name", ""), []).append(r)
+    lines = [
+        "\nDATA PROFILE (from actual data — use REAL categorical values in FILTER/CASE WHEN "
+        "conditions; do NOT invent literals. Low-cardinality columns are dimensions/filters; "
+        "high-cardinality numerics are measure inputs; high null_rate columns are unreliable):"
+    ]
+    for tname, cols in by_table.items():
+        lines.append(f"  {tname}:")
+        for c in cols[:max_cols_per_table]:
+            cn = c.get("column_name", "")
+            dt = (c.get("data_type") or "").upper()
+            dc = c.get("distinct_count")
+            card = c.get("cardinality_ratio")
+            nr = c.get("null_rate")
+            bits = [f"distinct={dc}" if dc is not None else "",
+                    f"null={nr:.0%}" if isinstance(nr, (int, float)) else ""]
+            # Real sample values for low-cardinality columns (the FILTER-literal fuel).
+            sv = c.get("sample_values")
+            sample_str = ""
+            if sv and isinstance(dc, int) and dc <= 50:
+                try:
+                    vals = json.loads(sv) if isinstance(sv, str) else sv
+                    if isinstance(vals, list) and vals:
+                        sample_str = " values=[" + ", ".join(str(v) for v in vals[:8]) + "]"
+                except Exception:
+                    pass
+            # Numeric range hint for continuous measures.
+            rng = ""
+            if dt in ("INT", "BIGINT", "DECIMAL", "DOUBLE", "FLOAT", "SMALLINT") and c.get("min_value") is not None:
+                rng = f" range=[{c.get('min_value')}..{c.get('max_value')}]"
+            meta = ", ".join(b for b in bits if b)
+            lines.append(f"    {cn} {dt} ({meta}){sample_str}{rng}")
+    return "\n".join(lines)
+
+
+def _kpi_column_roles_block(table_identifiers: list[str]) -> str:
+    """Format an ontology column-role block from ontology_column_properties.
+
+    property_role (measure/dimension/identifier/temporal/...) is a stronger
+    measure-vs-dimension signal than the keyword heuristic. Best-effort."""
+    if not table_identifiers:
+        return ""
+    in_clause = ", ".join(_safe_sql_str(t) for t in table_identifiers)
+    try:
+        rows = execute_sql(
+            f"SELECT table_name, column_name, property_role, linked_entity_type "
+            f"FROM {fq('ontology_column_properties')} "
+            f"WHERE table_name IN ({in_clause}) AND property_role IS NOT NULL",
+            timeout=20,
+        ) or []
+    except Exception as e:
+        logger.info("KPI column-roles block skipped (%s)", e)
+        return ""
+    if not rows:
+        return ""
+    lines = ["\nCOLUMN ROLES (ontology-assigned — trust these for measure vs dimension routing):"]
+    by_table: dict[str, list] = {}
+    for r in rows:
+        by_table.setdefault(r.get("table_name", ""), []).append(r)
+    for tname, cols in by_table.items():
+        role_bits = []
+        for c in cols[:30]:
+            role = c.get("property_role", "")
+            link = c.get("linked_entity_type")
+            role_bits.append(f"{c.get('column_name')}={role}" + (f"->{link}" if link else ""))
+        lines.append(f"  {tname}: {'; '.join(role_bits)}")
+    return "\n".join(lines)
 
 
 def _build_kpi_context(assembler, table_identifiers: list[str]) -> tuple[str, str, dict]:
@@ -12548,6 +14130,21 @@ def _build_kpi_context(assembler, table_identifiers: list[str]) -> tuple[str, st
         if dimensions:
             parts.append(f"  Dimension columns: {'; '.join(dimensions[:12])}")
 
+    # Data profile (item 22): feed CACHED profiling stats so the LLM grounds KPIs in
+    # the actual data -- real categorical values for FILTER literals, cardinality to
+    # tell dimensions from measures, null rates to avoid sparse columns. This reads
+    # column_profiling_stats (a local Delta table), NOT the source tables, so it adds
+    # ZERO load to federated sources.
+    prof_block = _kpi_profiling_block(table_identifiers)
+    if prof_block:
+        parts.append(prof_block)
+
+    # Ontology column roles (item 22): steward/AI-assigned property roles are a
+    # stronger measure-vs-dimension signal than the keyword heuristic above.
+    role_block = _kpi_column_roles_block(table_identifiers)
+    if role_block:
+        parts.append(role_block)
+
     if fk_rows:
         parts.append("\nFOREIGN KEY RELATIONSHIPS:")
         for fk in fk_rows:
@@ -12558,6 +14155,31 @@ def _build_kpi_context(assembler, table_identifiers: list[str]) -> tuple[str, st
     dominant_domain = Counter(domains).most_common(1)[0][0] if domains else ""
 
     return "\n".join(parts), dominant_domain, col_by_table
+
+
+def _dedup_kpi_suggestions(kpis: list[dict], existing_names: list[str]) -> list[dict]:
+    """Drop KPI suggestions that duplicate an existing KPI or an earlier suggestion
+    in the same batch, using the same find_similar_kpi the manual create path uses.
+
+    Repeated auto-suggest passes plateau (~12 KPIs) because the LLM regenerates close
+    variants and the only dedup was the soft prompt hint + the reviewer. This removes:
+      (a) suggestions matching an EXISTING KPI the user already has (name-based -- the
+          suggest request carries existing names only, not formulas), and
+      (b) intra-batch near-duplicates (keep the first of each cluster).
+    Skips suggestions already marked validation_status='invalid'. Order-preserving.
+    """
+    existing_dicts = [{"name": n, "formula": ""} for n in (existing_names or [])]
+    deduped: list[dict] = []
+    for k in kpis or []:
+        if k.get("validation_status") == "invalid":
+            continue
+        name, formula = k.get("name", ""), k.get("formula", "")
+        if find_similar_kpi(name, formula, existing_dicts):
+            continue  # already have this one
+        if find_similar_kpi(name, formula, deduped):
+            continue  # near-dup of one accepted earlier this batch
+        deduped.append(k)
+    return deduped
 
 
 @app.post("/api/kpis/suggest")
@@ -12593,7 +14215,13 @@ EXISTING KPIs (do NOT regenerate these or close variants -- suggest DIFFERENT me
     if dominant_domain:
         domain_block = f"\nDOMAIN FOCUS: Generate KPIs only for the '{dominant_domain}' domain. Do not mix in unrelated domains.\n"
 
-    prompt = f"""You are a business intelligence architect. Given the data model below, suggest {req.count} concrete KPIs.
+    # Over-generate: repeated suggest passes plateau (~12 KPIs) because the LLM
+    # regenerates close variants of what already exists and the only dedup was the
+    # soft prompt hint + the reviewer. Ask for MORE than requested so that after
+    # algorithmic dedup (intra-batch + vs existing) we still net ~req.count NEW ones.
+    gen_count = min(max(req.count * 2, req.count + 5), 40)
+
+    prompt = f"""You are a business intelligence architect. Given the data model below, suggest {gen_count} concrete KPIs.
 {biz_ctx_block}{domain_block}
 {kpi_context}
 {questions_block}
@@ -12601,6 +14229,8 @@ Rules:
 - Formulas MUST encode ALL filtering or conditional logic implied by the KPI name. If the name says "overdue", "failed", "at risk", etc., the formula must include a CASE WHEN or equivalent filter -- never a bare aggregate that ignores the condition.
 - Prefer RATIO, RATE, and CONDITIONAL KPIs (e.g. SUM(CASE WHEN x THEN 1 ELSE 0 END) / COUNT(*), or SUM(a) / SUM(b)). A bare SUM(x) or COUNT(x) is acceptable ONLY if the KPI genuinely measures a simple total with no implied filter.
 - Each KPI's formula MUST reference only columns that exist in the provided table metadata -- do not invent columns.
+- GROUND EVERY FILTER IN REAL DATA. When the DATA PROFILE lists `values=[...]` for a column, any FILTER/CASE WHEN literal on that column MUST be one of those actual values -- never invent a status/category value. If a needed value is not in the listed samples, use a general condition (IS NOT NULL, > 0, a numeric range from the profile) instead of guessing a literal.
+- USE THE PROFILE TO ROUTE MEASURE vs DIMENSION: low-cardinality columns (small distinct count) are dimensions/filters; high-cardinality numeric columns are measure inputs. Prefer COLUMN ROLES (ontology-assigned) over guessing when present. Avoid aggregating over columns with high null_rate unless the KPI is explicitly about completeness.
 - Use RELATIONSHIPS between entities for cross-entity KPIs (e.g. encounters per patient, revenue per provider).
 - If BUSINESS QUESTIONS are provided, prioritize KPIs that directly support answering those questions.
 - Frame KPI names in business language -- no column names or schema references.
@@ -12646,31 +14276,24 @@ Return ONLY a JSON array of objects with keys: name, description, formula, domai
             if kpi["formula"] != original:
                 logger.info("KPI autofix [%s]: %s -> %s", kpi.get("name", "?"), original[:80], kpi["formula"][:80])
 
-    short_to_fq = {t.split(".")[-1].lower(): t for t in req.table_identifiers}
-    fq_to_fq = {t.lower(): t for t in req.table_identifiers}
     for kpi in kpis:
-        raw = (kpi.get("source_table") or "").lower().strip()
-        if raw in short_to_fq:
-            target = [short_to_fq[raw]]
-        elif raw in fq_to_fq:
-            target = [fq_to_fq[raw]]
-        elif raw.split(".")[-1] in short_to_fq:
-            target = [short_to_fq[raw.split(".")[-1]]]
-        else:
-            # fallback: pick table with most column overlap in the formula
-            formula_lower = kpi.get("formula", "").lower()
-            best, best_score = req.table_identifiers[:1], 0
-            for tbl_fq, cols in col_by_table.items():
-                score = sum(1 for c in cols if c["column_name"].lower() in formula_lower)
-                if score > best_score:
-                    best, best_score = [tbl_fq], score
-            target = best
+        target = resolve_kpi_target(
+            kpi.get("source_table"), kpi.get("formula", ""),
+            req.table_identifiers, col_by_table,
+        )
         kpi["validation_status"] = "unchecked"
         kpi["validation_error"] = ""
         kpi["target_tables"] = target
 
-    # Second LLM pass: review KPI semantic correctness
-    valid_kpis = [k for k in kpis if k.get("validation_status") != "invalid"][:req.count]
+    # Algorithmic dedup (was prompt-reliant only, which let close variants through
+    # and caused the repeated-suggest plateau).
+    deduped = _dedup_kpi_suggestions(kpis, req.existing_kpi_names or [])
+
+    # Second LLM pass: review KPI semantic correctness. Review a bounded slice of the
+    # deduped set (a bit more than req.count) so that if the reviewer rejects some as
+    # "wrong", enough survive to still return ~req.count -- the final [:req.count] slice
+    # happens AFTER review, not before (otherwise rejections shrink the result).
+    valid_kpis = deduped[:min(len(deduped), req.count + 5)]
     if valid_kpis:
         review_prompt = f"""Review these KPIs for correctness. For each, answer: does the formula actually measure what the name/description claims?
 
@@ -12706,6 +14329,219 @@ Return ONLY the JSON array."""
     if not result_kpis:
         result_kpis = valid_kpis  # fallback: return all if reviewer rejected everything
     return {"kpis": result_kpis[:req.count]}
+
+
+@app.post("/api/semantic-layer/suggest-business-context")
+def suggest_business_context(req: SuggestBusinessContextRequest):
+    """Draft a business-context paragraph from the project's table descriptions.
+
+    Default source is the live UC table comments (system.information_schema);
+    use_kb=true reads the generated descriptions (+ domain) from
+    table_knowledge_base instead. Returns {"business_context": str, "source":
+    "uc_comments"|"knowledge_base", "tables_used": int}. Warn-not-block: if no
+    descriptions are found, returns a clear message rather than failing.
+    """
+    return _suggest_business_context_impl(req)
+
+
+def _suggest_business_context_impl(req: SuggestBusinessContextRequest):
+    """Testable core of suggest_business_context (the route decorator is a no-op
+    mock under the test harness, so logic lives here to be called directly)."""
+    from databricks_langchain import ChatDatabricks
+
+    tables = [t.strip() for t in (req.table_identifiers or []) if t and t.strip()]
+    if not tables:
+        raise HTTPException(400, detail="No tables provided.")
+
+    # Cap to keep the prompt bounded on large selections.
+    tables = tables[:100]
+    in_list = ", ".join(_safe_sql_str(t) for t in tables)
+    descriptions: list[tuple[str, str, str]] = []  # (table, comment, domain)
+
+    if req.use_kb:
+        source = "knowledge_base"
+        try:
+            rows = execute_sql(
+                f"SELECT table_name, comment, domain FROM {fq('table_knowledge_base')} "
+                f"WHERE LOWER(table_name) IN ({in_list.lower()}) AND comment IS NOT NULL AND comment != ''",
+                timeout=30,
+            ) or []
+            for r in rows:
+                descriptions.append((r.get("table_name", ""), r.get("comment", ""), r.get("domain", "") or ""))
+        except Exception as e:
+            logger.warning("suggest-business-context: KB fetch failed: %s", e)
+    else:
+        source = "uc_comments"
+        # Split fully-qualified names to query system.information_schema.tables.comment.
+        want = {t.lower() for t in tables}
+        cats = {t.split(".")[0] for t in tables if t.count(".") >= 2}
+        for cat in cats:
+            try:
+                rows = execute_sql(
+                    f"SELECT table_catalog, table_schema, table_name, comment "
+                    f"FROM system.information_schema.tables "
+                    f"WHERE table_catalog = {_safe_sql_str(cat)} AND comment IS NOT NULL AND comment != ''",
+                    timeout=30,
+                ) or []
+                for r in rows:
+                    fqn = f"{r.get('table_catalog','')}.{r.get('table_schema','')}.{r.get('table_name','')}".lower()
+                    if fqn in want:
+                        descriptions.append((r.get("table_name", ""), r.get("comment", ""), ""))
+            except Exception as e:
+                logger.warning("suggest-business-context: info_schema fetch failed for %s: %s", cat, e)
+
+    if not descriptions:
+        msg = (
+            "No table descriptions found to draft from. "
+            + ("Generate core metadata first, then try again."
+               if req.use_kb else
+               "These tables have no UC comments yet — generate/apply core metadata, or enable the knowledge-base source.")
+        )
+        return {"business_context": "", "source": source, "tables_used": 0, "message": msg}
+
+    desc_block = "\n".join(
+        f"- {t}{f' (domain: {d})' if d else ''}: {c}" for t, c, d in descriptions
+    )
+    prompt = f"""You are a data strategy analyst. Below are descriptions of the tables in a data project.
+Write a concise BUSINESS CONTEXT paragraph (3-5 sentences) that a BI tool can use to steer metric and
+question generation. Capture: the apparent industry/domain, what the data is about, and the key business
+entities and terminology. Do NOT list the tables or restate column names; synthesize the business picture.
+Write in plain prose, no headings, no bullet points.
+
+TABLE DESCRIPTIONS:
+{desc_block}
+
+Return ONLY the paragraph text."""
+
+    try:
+        llm = ChatDatabricks(endpoint=req.model_endpoint, temperature=0.3, max_tokens=512)
+        text = (llm.invoke(prompt).content or "").strip()
+    except Exception as e:
+        logger.warning("suggest-business-context: LLM call failed: %s", e)
+        raise HTTPException(502, detail="Could not generate business context — the model call failed.")
+
+    return {"business_context": text, "source": source, "tables_used": len(descriptions)}
+
+
+# ---------------------------------------------------------------------------
+# Genie SQL pull (items 14/15) -- app-native, no job. Lists Genie spaces so the
+# user can pinpoint one at metric-view build time, then pulls its curated example
+# SQL into genie_sql_examples (CDF) + a VS index for Phase-15 retrieval. All via
+# the Statement Execution API + Vector Search SDK (no Spark/cluster).
+# ---------------------------------------------------------------------------
+
+class PullGenieSQLRequest(BaseModel):
+    # Explicit scope -- at least one of these must be non-empty (the puller
+    # refuses to pull from every space by default).
+    space_ids: list[str] = []
+    title_contains: list[str] = []
+    include_sample_questions: bool = False
+
+
+@app.get("/api/genie/available-spaces")
+def list_genie_available_spaces():
+    """List Genie spaces (id/title/description) so the UI can offer a picker for
+    the 'pull curated SQL' action at metric-view build time."""
+    from dbxmetagen.genie_sql_puller import GenieSQLPuller, GenieSQLPullerConfig
+    try:
+        # Use the OBO-aware client: listing Genie spaces needs the caller's
+        # dashboards.genie scope. The app service principal has no Genie access,
+        # so get_workspace_client() returns an empty list even when the user can
+        # see many spaces. Every other Genie endpoint uses _get_effective_client().
+        puller = GenieSQLPuller(
+            GenieSQLPullerConfig(catalog_name=CATALOG, schema_name=SCHEMA),
+            ws=_get_effective_client(),
+        )
+        spaces = puller.list_spaces()
+    except Exception as e:
+        logger.warning("list_genie_available_spaces failed: %s", e)
+        raise HTTPException(502, detail=f"Could not list Genie spaces: {e}")
+    return {"spaces": [
+        {"space_id": s.get("space_id"), "title": s.get("title"),
+         "description": (s.get("description") or "")[:300]}
+        for s in spaces if s.get("space_id")
+    ]}
+
+
+@app.post("/api/semantic-layer/pull-genie-sql")
+def pull_genie_sql(req: PullGenieSQLRequest):
+    """Pull curated example SQL from the chosen Genie space(s) into
+    genie_sql_examples (CDF) and (re)build the genie_examples_vs_index -- all
+    in-app via execute_sql + the Vector Search SDK. Returns counts + index info."""
+    from dbxmetagen.genie_sql_puller import (
+        GenieSQLPuller,
+        GenieSQLPullerConfig,
+        build_genie_examples_index,
+    )
+
+    if not req.space_ids and not req.title_contains:
+        raise HTTPException(400, detail="Provide space_ids and/or title_contains.")
+
+    cfg = GenieSQLPullerConfig(
+        catalog_name=CATALOG, schema_name=SCHEMA, endpoint_name=VS_ENDPOINT,
+        space_ids=req.space_ids, title_contains=req.title_contains,
+        include_sample_questions=req.include_sample_questions,
+    )
+    puller = GenieSQLPuller(cfg, ws=get_workspace_client())
+
+    # 1. REST reads (Spark-free).
+    try:
+        rows = puller.extract_examples()
+    except Exception as e:
+        raise HTTPException(502, detail=f"Genie pull failed: {e}")
+    if not rows:
+        return {"examples_written": 0, "message": "No curated SQL found in the selected space(s)."}
+
+    # 2. Ensure the CDF table + upsert each exemplar via the Statement Execution
+    #    API (idempotent on example_id -- re-pulls update in place).
+    _ensure_genie_sql_examples_table(cfg.fq_documents)
+    written = 0
+    for r in rows:
+        eid = _esc_sql(r["example_id"])
+        try:
+            execute_sql(
+                f"MERGE INTO {cfg.fq_documents} t "
+                f"USING (SELECT '{eid}' AS example_id) s ON t.example_id = s.example_id "
+                f"WHEN MATCHED THEN UPDATE SET "
+                f"space_id='{_esc_sql(r['space_id'])}', space_title='{_esc_sql(r['space_title'])}', "
+                f"question_text='{_esc_sql(r['question_text'])}', sql='{_esc_sql(r['sql'])}', "
+                f"content='{_esc_sql(r['content'])}', question_type='{_esc_sql(r['question_type'])}', "
+                f"table_identifiers='{_esc_sql(r['table_identifiers'])}', updated_at=current_timestamp() "
+                f"WHEN NOT MATCHED THEN INSERT (example_id, space_id, space_title, question_text, sql, "
+                f"content, question_type, table_identifiers, updated_at) VALUES ("
+                f"'{eid}', '{_esc_sql(r['space_id'])}', '{_esc_sql(r['space_title'])}', "
+                f"'{_esc_sql(r['question_text'])}', '{_esc_sql(r['sql'])}', '{_esc_sql(r['content'])}', "
+                f"'{_esc_sql(r['question_type'])}', '{_esc_sql(r['table_identifiers'])}', current_timestamp())",
+                timeout=30,
+            )
+            written += 1
+        except Exception as e:
+            logger.warning("Genie exemplar upsert failed (%s): %s", r.get("example_id"), e)
+
+    # 3. Build/sync the VS index (SDK; best-effort -- table is still useful without it).
+    index_info: dict = {}
+    try:
+        index_info = build_genie_examples_index(cfg)
+    except Exception as e:
+        logger.warning("genie_examples index build deferred: %s", e)
+        index_info = {"index_error": str(e)[:300]}
+
+    return {"examples_written": written, "spaces_pulled": len(set(r["space_id"] for r in rows)), **index_info}
+
+
+_genie_sql_examples_ready = False
+
+
+def _ensure_genie_sql_examples_table(fq_documents: str):
+    global _genie_sql_examples_ready
+    if _genie_sql_examples_ready:
+        return
+    from dbxmetagen.genie_sql_puller import create_table_sql
+    try:
+        execute_sql(create_table_sql(fq_documents), timeout=30)
+        _genie_sql_examples_ready = True
+    except Exception as e:
+        logger.warning("Could not create genie_sql_examples table: %s", e)
 
 
 # ---------------------------------------------------------------------------
@@ -14291,6 +16127,16 @@ def metric_view_agent_stream(req: dict):
 # ---------------------------------------------------------------------------
 # Serve React static files (production build)
 # ---------------------------------------------------------------------------
+
+# Custom agent MCP route -- MUST mount before the "/" static catch-all below, or
+# the SPA StaticFiles handler shadows it. Gated on ENABLE_AGENT_MCP (+ mcp installed).
+if _AGENT_MCP_ENABLED:
+    try:
+        from mcp_server import build_mcp_asgi_app
+        app.mount("/mcp", build_mcp_asgi_app(), name="agent-mcp")
+        logger.info("Mounted custom agent MCP server at /mcp")
+    except Exception as e:
+        logger.error("Failed to mount agent MCP route (continuing without it): %s", e)
 
 static_dir = os.path.join(os.path.dirname(__file__), "src", "dist")
 if os.path.isdir(static_dir):

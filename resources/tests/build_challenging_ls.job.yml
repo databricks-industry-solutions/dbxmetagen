@@ -1,0 +1,40 @@
+resources:
+  jobs:
+    build_challenging_ls_job:
+      name: "${var.app_name}${var.app_name_suffix}_build_challenging_ls"
+      budget_policy_id: ${var.budget_policy_id}
+
+      permissions:
+        - service_principal_name: ${resources.apps.dbxmetagen_app.service_principal_client_id}
+          level: CAN_MANAGE_RUN
+
+      email_notifications:
+        on_failure:
+          - ${var.current_user}
+
+      parameters:
+        - name: catalog_name
+          default: ${var.catalog_name}
+        - name: schema_name
+          default: challenging_ls
+        - name: synthea_url
+          default: "https://synthetichealth.github.io/synthea-sample-data/downloads/latest/synthea_sample_data_csv_latest.zip"
+
+      tasks:
+        - task_key: build_challenging_ls
+          max_retries: 0
+          timeout_seconds: 7200
+          environment_key: default
+          notebook_task:
+            notebook_path: ../../tests/data/build_challenging_ls.py
+            base_parameters:
+              catalog_name: "{{job.parameters.catalog_name}}"
+              schema_name: "{{job.parameters.schema_name}}"
+              synthea_url: "{{job.parameters.synthea_url}}"
+
+      environments:
+        - environment_key: default
+          spec:
+            environment_version: "2"
+            dependencies:
+              - requests

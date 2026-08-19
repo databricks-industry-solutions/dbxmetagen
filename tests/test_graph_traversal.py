@@ -139,10 +139,15 @@ def _make_graph_executor(nodes: list[dict], edges: list[dict]):
         # Edge queries
         if "graph_edges" in q:
             result = list(edges)
-            has_or = " or " in q
+            bidirectional = bool(
+                re.search(
+                    r"where\s+\(e\.src\s+in\s+.+\s+or\s+e\.dst\s+in",
+                    q,
+                    re.IGNORECASE,
+                )
+            )
 
-            if has_or:
-                # "both" direction: (src IN (...) OR dst IN (...))
+            if bidirectional:
                 ids = _extract_in_values(query)
                 result = [e for e in edges if e["src"] in ids or e["dst"] in ids]
             elif "src in" in q:
@@ -156,8 +161,14 @@ def _make_graph_executor(nodes: list[dict], edges: list[dict]):
                 result = [e for e in result if e["src"] == val]
 
             if "relationship = " in query:
-                val = _extract_eq(query, "relationship")
-                result = [e for e in result if e["relationship"] == val]
+                m = re.search(
+                    r"e\.relationship = '([^']+)'(?=\s+AND\s+NOT\s+\()",
+                    query,
+                    re.IGNORECASE,
+                )
+                if m:
+                    val = m.group(1)
+                    result = [e for e in result if e["relationship"] == val]
             return result
 
         return []

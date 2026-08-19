@@ -12,6 +12,7 @@ from pyspark.sql import SparkSession, DataFrame
 from pyspark.sql import functions as F
 
 from dbxmetagen.table_filter import table_filter_sql
+from dbxmetagen.databricks_utils import quote_fqn
 
 logger = logging.getLogger(__name__)
 
@@ -26,6 +27,7 @@ class ExtendedMetadataConfig:
     incremental: bool = True
     table_names: list[str] | None = None
     federation_mode: bool = False
+    metadata_companion_path: str = ""
 
     @property
     def fully_qualified_source(self) -> str:
@@ -129,7 +131,7 @@ class ExtendedMetadataBuilder:
 
         for catalog in catalogs:
             try:
-                rows = self.spark.sql(f"DESCRIBE CATALOG EXTENDED {catalog}").collect()
+                rows = self.spark.sql(f"DESCRIBE CATALOG EXTENDED {quote_fqn(catalog)}").collect()
                 info = {r["info_name"]: r["info_value"] for r in rows}
                 if info.get("Catalog Type", "").lower() == "foreign":
                     conn_name = info.get("Connection Name", "")
@@ -303,11 +305,43 @@ class ExtendedMetadataBuilder:
             logger.debug("referential_constraints unavailable for %s: %s", catalog, e)
         return ref_map
 
+    def _load_companion_constraints(self, tables: List[str]) -> dict:
+        path = (self.config.metadata_companion_path or "").strip()
+        if not path:
+            return {}
+        from dbxmetagen.metadata_import import build_companion_constraints
+        try:
+            return build_companion_constraints(path, tables)
+        except Exception as e:
+            logger.warning("Could not parse companion metadata at %s: %s", path, e)
+            return {}
+
+    def _constraints_to_dataframe(self, tables: List[str], merged: dict) -> DataFrame:
+        from pyspark.sql.types import StructType, StructField, StringType, MapType, ArrayType
+        empty = self.spark.createDataFrame(
+            [], "table_name STRING, primary_key_columns ARRAY<STRING>, foreign_keys MAP<STRING, STRING>"
+        )
+        rows = []
+        for t in tables:
+            pks, fks = merged.get(t, ([], {}))
+            if not pks and not fks:
+                continue
+            rows.append((t, pks or None, fks or None))
+        if not rows:
+            return empty
+        schema = StructType([
+            StructField("table_name", StringType()),
+            StructField("primary_key_columns", ArrayType(StringType())),
+            StructField("foreign_keys", MapType(StringType(), StringType())),
+        ])
+        return self.spark.createDataFrame(rows, schema)
+
     def extract_constraints(self, tables: List[str]) -> DataFrame:
         """Extract primary key and foreign key constraints."""
         if not tables:
             return self.spark.createDataFrame([], "table_name STRING, primary_key_columns ARRAY<STRING>, foreign_keys MAP<STRING, STRING>")
 
+        uc_by_table: dict = {}
         all_dfs = []
         catalogs = set(t.split(".")[0] for t in tables if "." in t)
 
@@ -336,41 +370,32 @@ class ExtendedMetadataBuilder:
             from functools import reduce
             combined = reduce(lambda a, b: a.union(b), all_dfs)
 
-            pk_df = (
-                combined
-                .filter(F.col("constraint_type") == "PRIMARY KEY")
-                .groupBy("table_name")
-                .agg(F.collect_set("column_name").alias("primary_key_columns"))
-            )
-
-            # Build FK map using referential_constraints when available
-            fk_rows = combined.filter(F.col("constraint_type") == "FOREIGN KEY").collect()
+            # Collect once and partition in Python. `combined` is a lazy union of
+            # one information_schema query per catalog; filtering + collecting it
+            # twice would re-execute the entire union/scan for each collect.
+            pk_by_table: dict = {}
             fk_by_table: dict = {}
-            for r in fk_rows:
-                tname = r.table_name
-                col = r.column_name
+            for r in combined.collect():
+                tname, col = r.table_name, r.column_name
                 if not tname or not col:
                     continue
-                cat = tname.split(".")[0]
-                ref_target = fk_ref_maps.get(cat, {}).get(tname, {}).get(col, "")
-                fk_by_table.setdefault(tname, {})[col] = ref_target
+                if r.constraint_type == "PRIMARY KEY":
+                    pk_by_table.setdefault(tname, set()).add(col)
+                elif r.constraint_type == "FOREIGN KEY":
+                    cat = tname.split(".")[0]
+                    ref_target = fk_ref_maps.get(cat, {}).get(tname, {}).get(col, "")
+                    fk_by_table.setdefault(tname, {})[col] = ref_target
 
-            if fk_by_table:
-                fk_data = [(tbl, cols) for tbl, cols in fk_by_table.items()]
-                from pyspark.sql.types import StructType, StructField, StringType, MapType
-                fk_schema = StructType([
-                    StructField("table_name", StringType()),
-                    StructField("foreign_keys", MapType(StringType(), StringType())),
-                ])
-                fk_df = self.spark.createDataFrame(fk_data, fk_schema)
-            else:
-                fk_df = self.spark.createDataFrame([], "table_name STRING, foreign_keys MAP<STRING, STRING>")
+            for tname in set(pk_by_table) | set(fk_by_table):
+                uc_by_table[tname] = (
+                    sorted(pk_by_table.get(tname, [])),
+                    dict(fk_by_table.get(tname, {})),
+                )
 
-            result = pk_df.join(fk_df, "table_name", "full_outer")
-            tables_df = self.spark.createDataFrame([(t,) for t in tables], ["filter_table"])
-            return result.join(tables_df, result.table_name == tables_df.filter_table, "inner").drop("filter_table")
-
-        return self.spark.createDataFrame([], "table_name STRING, primary_key_columns ARRAY<STRING>, foreign_keys MAP<STRING, STRING>")
+        from dbxmetagen.metadata_import import merge_constraint_maps
+        companion = self._load_companion_constraints(tables)
+        merged = merge_constraint_maps(uc_by_table, companion)
+        return self._constraints_to_dataframe(tables, merged)
     
     def extract_table_properties(self, tables: List[str]) -> DataFrame:
         """Extract clustering and partition info using DESCRIBE DETAIL."""
@@ -385,7 +410,7 @@ class ExtendedMetadataBuilder:
         results = []
         for table in tables[:100]:
             try:
-                detail_df = self.spark.sql(f"DESCRIBE DETAIL {table}")
+                detail_df = self.spark.sql(f"DESCRIBE DETAIL {quote_fqn(table)}")
                 row = detail_df.collect()[0]
                 
                 clustering = None
@@ -545,6 +570,7 @@ def extract_extended_metadata(
     incremental: bool = True,
     table_names: list[str] | None = None,
     federation_mode: bool = False,
+    metadata_companion_path: str = "",
 ) -> Dict[str, Any]:
     """Convenience function to extract extended metadata."""
     from dbxmetagen.processing import _check_federation_guard
@@ -556,6 +582,7 @@ def extract_extended_metadata(
         incremental=incremental,
         table_names=table_names,
         federation_mode=federation_mode,
+        metadata_companion_path=metadata_companion_path,
     )
     builder = ExtendedMetadataBuilder(spark, config)
     return builder.run()

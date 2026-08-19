@@ -1,6 +1,7 @@
 import React, { useState, useEffect, useCallback, useMemo } from 'react'
 import { safeFetch, ErrorBanner, PrereqBanner } from '../App'
 import { FKApplyPanel } from './ForeignKeyGeneration'
+import { CoveragePanel } from './Coverage'
 import { PageHeader, EmptyState, SkeletonTable } from './ui'
 import { useCatalogSchemaTables } from '../hooks/useCatalogSchemaTables'
 
@@ -22,6 +23,31 @@ function DataTable({ data, maxRows = 100 }) {
         </tbody>
       </table>
     </div>
+  )
+}
+
+// Compact evidence cell for an FK prediction row: the data probes behind the
+// score (referential integrity · actual join hit rate · parent-key uniqueness),
+// each colored by strength so a reviewer can verify rather than trust the number.
+// Renders "—" for a signal that was never computed (e.g. sampling disabled).
+function fkEvidence(fk) {
+  const pct = (v) => (v == null || v === '' || Number.isNaN(Number(v)))
+    ? null : `${Math.round(Number(v) * 100)}%`
+  const cls = (v) => v == null ? 'text-slate-300 dark:text-slate-600'
+    : Number(v) >= 0.95 ? 'text-emerald-600 dark:text-emerald-400'
+    : Number(v) >= 0.7 ? 'text-amber-600 dark:text-amber-400'
+    : 'text-red-600 dark:text-red-400'
+  const parts = [
+    { k: 'ri_score', label: 'RI', title: 'Referential integrity: fraction of child rows whose key exists in the parent' },
+    { k: 'join_rate', label: 'join', title: 'Actual join hit rate on sampled rows' },
+    { k: 'pk_uniqueness', label: 'PK', title: 'Parent-side key uniqueness (a true FK needs a near-unique parent key)' },
+  ]
+  return (
+    <span className="inline-flex gap-1.5">
+      {parts.map(p => (
+        <span key={p.k} className={cls(fk[p.k])} title={p.title}>{pct(fk[p.k]) ?? '—'}</span>
+      ))}
+    </span>
   )
 }
 
@@ -72,9 +98,13 @@ const LEGACY_ROLE_MAP = {
 }
 
 function ReviewEditor() {
-  const cst = useCatalogSchemaTables()
+  // kbOnly: the Pick Tables list must offer only tables that already have
+  // generated metadata in the knowledge base. information_schema lists every
+  // table in the schema, but review-combined only returns KB rows -- picking an
+  // unprocessed table silently returns nothing ("nothing loads").
+  const cst = useCatalogSchemaTables('', '', { kbOnly: true })
   const { catalogs, schemas, filtered: filteredTables, catalog: selectedCatalog, schema: selectedSchema, filter: tableFilter, setCatalog: setSelectedCatalog, setSchema: setSelectedSchema, setFilter: setTableFilter } = cst
-  const allTables = cst.tables
+  const allSchemaTableCount = cst.allSchemaTableCount
   const [scopeMode, setScopeMode] = useState('schema')
   const [selectedTables, setSelectedTables] = useState([])
   const [activeType, setActiveType] = useState('comments')
@@ -84,6 +114,28 @@ function ReviewEditor() {
   const [error, setError] = useState(null)
   const [info, setInfo] = useState(null)
   const [expanded, setExpanded] = useState({})
+  // Bulk table entry: paste a comma/newline-delimited list of fully-scoped names.
+  const [pasteOpen, setPasteOpen] = useState(false)
+  const [pasteText, setPasteText] = useState('')
+  // Server-side pagination for the review table list. Page size is intentionally
+  // small: each card can expand to ~100 column rows plus FK/ontology detail, so
+  // 25 cards/page keeps a page light and reviewable. Backend caps `limit` at 500.
+  const REVIEW_PAGE_SIZE = 25
+  // Hard cap on how many tables a user can select for one review. Keeps the
+  // review-combined WHERE (an N-way table_name = ... OR) small and keeps a
+  // selection to a human-reviewable batch; larger schemas use schema mode.
+  const MAX_REVIEW_SELECTION = 100
+  // Cap on how many table checkboxes render in the picker at once; the filter
+  // box narrows a large (5k+) schema down to find anything past the cap.
+  const PICK_RENDER_CAP = 300
+  const [reviewOffset, setReviewOffset] = useState(0)
+  const [reviewTotal, setReviewTotal] = useState(0)
+  const [reviewHasMore, setReviewHasMore] = useState(false)
+  // Per-table "show all columns" opt-in. Wide tables render only the first
+  // COL_RENDER_CAP columns until the user expands, so a 1000-column table
+  // doesn't build 1000 <tr> at once.
+  const COL_RENDER_CAP = 100
+  const [colsShowAll, setColsShowAll] = useState({})
   const [saving, setSaving] = useState(false)
   const [ddlSql, setDdlSql] = useState('')
   const [ddlLoading, setDdlLoading] = useState(false)
@@ -171,14 +223,100 @@ function ReviewEditor() {
 
   useEffect(() => { fetch('/api/ontology/entity-type-options').then(r => r.json()).then(d => setEntityTypeOptions(Array.isArray(d) ? d : [])).catch(() => {}) }, [])
 
-  const toggleTable = t => setSelectedTables(prev => prev.includes(t) ? prev.filter(x => x !== t) : [...prev, t])
+  const toggleTable = t => setSelectedTables(prev => {
+    if (prev.includes(t)) return prev.filter(x => x !== t)  // removal always allowed
+    if (prev.length >= MAX_REVIEW_SELECTION) {
+      // Hard cap: never silently ignore — tell the user why the click did nothing.
+      setInfo(`You can review up to ${MAX_REVIEW_SELECTION} tables at a time. Deselect some, or use schema mode to review a whole large schema.`)
+      return prev
+    }
+    return [...prev, t]
+  })
+  // O(1) membership for the per-row checkbox render (avoids .includes() per checkbox).
+  const selectedTableSet = useMemo(() => new Set(selectedTables), [selectedTables])
+  const atSelectionCap = selectedTables.length >= MAX_REVIEW_SELECTION
 
-  const loadData = async () => {
+  // Bulk-add tables from a pasted comma/newline-delimited list of (ideally fully-
+  // scoped) names, e.g. "catalog.schema.t1, catalog.schema.t2". Review & Apply
+  // reviews ONE schema at a time, so every qualified entry must resolve to a single
+  // catalog.schema -- we adopt it (setting the Catalog/Schema selectors) and add the
+  // short names to the current selection, deduped and capped at MAX_REVIEW_SELECTION.
+  // Short ("table") or partial ("schema.table") entries inherit the resolved scope.
+  const addPastedTables = () => {
+    // Per-part char set mirrors the backend _SAFE_IDENT_RE ([a-zA-Z0-9_.\- %]).
+    const IDENT = /^[A-Za-z0-9_\- %]+$/
+    const stripTicks = s => s.trim().replace(/^`|`$/g, '').trim()
+    const raw = pasteText.split(/[\n,]+/).map(stripTicks).filter(Boolean)
+    if (!raw.length) return
+    const parsed = [], invalid = []
+    for (const entry of raw) {
+      const parts = entry.split('.').map(stripTicks)
+      if (parts.length > 3 || parts.some(p => !p || !IDENT.test(p))) { invalid.push(entry); continue }
+      let cat, sch, tbl
+      if (parts.length === 3) [cat, sch, tbl] = parts
+      else if (parts.length === 2) [sch, tbl] = parts
+      else [tbl] = parts
+      parsed.push({ cat, sch, tbl })
+    }
+    const qCats = [...new Set(parsed.map(p => p.cat).filter(Boolean))]
+    const qSchemas = [...new Set(parsed.map(p => p.sch).filter(Boolean))]
+    if (qCats.length > 1 || qSchemas.length > 1) {
+      setInfo(null)
+      setError(`Paste tables from a single schema only — Review & Apply reviews one schema at a time (found ${Math.max(qCats.length, qSchemas.length)} distinct schemas).`)
+      return
+    }
+    const targetCat = qCats[0] || selectedCatalog
+    const targetSch = qSchemas[0] || selectedSchema
+    if (!targetCat || !targetSch) {
+      setInfo(null)
+      setError('Paste fully-scoped names (catalog.schema.table), or select a Catalog and Schema first.')
+      return
+    }
+    // Entries that explicitly named a different scope than the resolved one are skipped.
+    const names = [], wrongScope = []
+    for (const p of parsed) {
+      if ((p.cat && p.cat !== targetCat) || (p.sch && p.sch !== targetSch)) { wrongScope.push(p.tbl); continue }
+      names.push(p.tbl)
+    }
+    // Compute the merge from the current selection (pure; safe under StrictMode).
+    const existing = new Set(selectedTables)
+    let added = 0, overCap = 0
+    const toAdd = []
+    for (const n of names) {
+      if (existing.has(n)) continue
+      if (selectedTables.length + toAdd.length >= MAX_REVIEW_SELECTION) { overCap++; continue }
+      existing.add(n); toAdd.push(n); added++
+    }
+    // Adopt scope + table mode, then apply the merged selection.
+    if (targetCat !== selectedCatalog) setSelectedCatalog(targetCat)
+    if (targetSch !== selectedSchema) setSelectedSchema(targetSch)
+    setScopeMode('table')
+    if (toAdd.length) setSelectedTables(prev => {
+      const set = new Set(prev), next = [...prev]
+      for (const n of toAdd) { if (!set.has(n) && next.length < MAX_REVIEW_SELECTION) { set.add(n); next.push(n) } }
+      return next
+    })
+    const bits = [`Added ${added} table${added === 1 ? '' : 's'}`]
+    if (overCap) bits.push(`${overCap} skipped (cap ${MAX_REVIEW_SELECTION})`)
+    if (wrongScope.length) bits.push(`${wrongScope.length} skipped (different schema)`)
+    if (invalid.length) bits.push(`${invalid.length} skipped (invalid name)`)
+    setError(null); setInfo(bits.join(' · '))
+    setPasteText('')
+  }
+
+  const loadData = async (offset = 0) => {
+    // Belts-and-suspenders: block (don't silently truncate) a table-mode load that
+    // exceeds the selection cap — e.g. a seeded/programmatic selection. Schema mode
+    // is unbounded (server-paginated), so it's exempt.
+    if (scopeMode === 'table' && selectedTables.length > MAX_REVIEW_SELECTION) {
+      setError(`Selected ${selectedTables.length} tables — reduce to ${MAX_REVIEW_SELECTION} or fewer, or switch to schema mode to review a whole large schema.`)
+      return
+    }
     setLoading(true); setError(null); setDdlSql(''); setDdlApplyResult(null); setExportResult(null)
     setResultFilter(''); setResultSchemaFilter('')
     const body = scopeMode === 'schema'
-      ? { schemas: [`${selectedCatalog}.${selectedSchema}`] }
-      : { tables: selectedTables.map(t => `${selectedCatalog}.${selectedSchema}.${t}`) }
+      ? { schemas: [`${selectedCatalog}.${selectedSchema}`], offset, limit: REVIEW_PAGE_SIZE }
+      : { tables: selectedTables.map(t => `${selectedCatalog}.${selectedSchema}.${t}`), offset, limit: REVIEW_PAGE_SIZE }
     try {
       const res = await fetch('/api/metadata/review-combined', {
         method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body)
@@ -193,7 +331,19 @@ function ReviewEditor() {
       setReviewData(tables)
       setOriginal(JSON.parse(JSON.stringify(tables)))
       const exp = {}; tables.forEach(t => { exp[t.table_name] = true }); setExpanded(exp)
-      if (j.truncated) setInfo(`Showing 200 of ${j.total_count} tables. Use the filter to narrow results.`)
+      setReviewOffset(offset)
+      setReviewTotal(j.total_count || tables.length)
+      setReviewHasMore(!!j.has_more)
+      if ((j.total_count || 0) > REVIEW_PAGE_SIZE) {
+        const from = offset + 1, to = offset + tables.length
+        setInfo(`Showing ${from}–${to} of ${j.total_count} tables. Use Prev/Next to page, or the filter to narrow the current page.`)
+      }
+      else if (tables.length === 0) setInfo(
+        scopeMode === 'table'
+          ? 'No generated metadata found for the selected tables. Only tables that have been processed by metadata generation appear here -- run the metadata generator on these tables first.'
+          : 'No generated metadata found for this schema. Run the metadata generator on it first, then reload.'
+      )
+      else setInfo(null)
     } catch (e) { setError(e.message) }
     setLoading(false)
   }
@@ -492,6 +642,10 @@ function ReviewEditor() {
         </div>
       )}
 
+      {/* Catalog coverage & review-status summary (folded in from the old
+          standalone Coverage tab -- collapsed by default). */}
+      <CoveragePanel />
+
       {/* Workflow guide -- shown when no data is loaded yet */}
       {reviewData.length === 0 && !loading && (
         <div className="card p-5 border-l-4 border-l-dbx-teal space-y-3">
@@ -530,29 +684,89 @@ function ReviewEditor() {
             </div>
           </div>
           <div className="flex items-end">
-            <button onClick={loadData} disabled={loading || !selectedCatalog || !selectedSchema || (scopeMode === 'table' && !selectedTables.length)}
+            <button onClick={() => loadData()} disabled={loading || !selectedCatalog || !selectedSchema || (scopeMode === 'table' && (!selectedTables.length || selectedTables.length > MAX_REVIEW_SELECTION))}
               className="px-5 py-1.5 bg-dbx-lava text-white rounded-lg text-sm font-medium hover:bg-red-700 disabled:opacity-50 shadow-sm w-full">
               {loading ? 'Loading...' : 'Load'}
             </button>
           </div>
         </div>
+        {scopeMode === 'table' && (
+          <div className="pt-1">
+            <button type="button" onClick={() => setPasteOpen(o => !o)} className="text-xs text-blue-600 hover:underline">
+              {pasteOpen ? '− Hide paste box' : '+ Paste table names'}
+            </button>
+            {pasteOpen && (
+              <div className="mt-2 space-y-2">
+                <textarea value={pasteText} onChange={e => setPasteText(e.target.value)} rows={3}
+                  className={inp + ' font-mono text-xs'}
+                  placeholder={'catalog.schema.table1, catalog.schema.table2\ncatalog.schema.table3   (comma- or newline-separated, fully-scoped)'}
+                  aria-label="Paste comma-delimited fully-scoped table names" />
+                <div className="flex flex-wrap items-center gap-2">
+                  <button type="button" onClick={addPastedTables} disabled={!pasteText.trim()}
+                    className="px-3 py-1 bg-slate-700 text-white rounded-md text-xs font-medium hover:bg-slate-800 disabled:opacity-50">
+                    Add tables
+                  </button>
+                  <span className="text-xs text-slate-400">
+                    All tables must be in one schema; the Catalog/Schema selectors follow the pasted names. Added to the selection below (cap {MAX_REVIEW_SELECTION}).
+                  </span>
+                </div>
+              </div>
+            )}
+          </div>
+        )}
         {scopeMode === 'table' && selectedSchema && (
           <div>
             <input value={tableFilter} onChange={e => setTableFilter(e.target.value)} placeholder="Filter tables..." className={inp + ' mb-2 max-w-xs'} aria-label="Filter tables" />
-            {filteredTables.length > 0 && (
+            {filteredTables.length > 0 ? (
               <>
                 <div className="flex gap-2 mb-1 text-xs">
-                  <button onClick={() => setSelectedTables(filteredTables)} className="text-blue-600 hover:underline">Select all ({filteredTables.length})</button>
+                  <button
+                    onClick={() => setSelectedTables(prev => {
+                      // Fill up to the cap with the first available filtered tables.
+                      const room = MAX_REVIEW_SELECTION - prev.length
+                      if (room <= 0) return prev
+                      const add = filteredTables.filter(t => !selectedTableSet.has(t)).slice(0, room)
+                      return [...prev, ...add]
+                    })}
+                    className="text-blue-600 hover:underline">
+                    Select first {MAX_REVIEW_SELECTION}
+                  </button>
                   <button onClick={() => setSelectedTables([])} className="text-blue-600 hover:underline">Clear</button>
-                  <span className="text-slate-400 ml-auto">{selectedTables.length} selected</span>
+                  <span className={`ml-auto ${atSelectionCap ? 'text-amber-600 dark:text-amber-400 font-medium' : 'text-slate-400'}`}>
+                    {selectedTables.length} / {MAX_REVIEW_SELECTION} selected
+                    {allSchemaTableCount > cst.tables.length && ` · ${cst.tables.length} of ${allSchemaTableCount} tables have generated metadata`}
+                  </span>
                 </div>
                 <div className="grid grid-cols-2 md:grid-cols-4 gap-1 max-h-36 overflow-y-auto border border-slate-200 rounded-md p-2">
-                  {filteredTables.map(t => (
-                    <label key={t} className="flex items-center gap-1.5 text-xs cursor-pointer py-0.5">
-                      <input type="checkbox" checked={selectedTables.includes(t)} onChange={() => toggleTable(t)} className="rounded" />{t}
-                    </label>))}
+                  {filteredTables.slice(0, PICK_RENDER_CAP).map(t => {
+                    const checked = selectedTableSet.has(t)
+                    // At the cap, disable unchecked boxes so the limit is visible (not a silent no-op).
+                    const disabled = !checked && atSelectionCap
+                    return (
+                    <label key={t} className={`flex items-center gap-1.5 text-xs py-0.5 ${disabled ? 'opacity-40 cursor-not-allowed' : 'cursor-pointer'}`}
+                      title={disabled ? `Selection is capped at ${MAX_REVIEW_SELECTION}` : t}>
+                      <input type="checkbox" checked={checked} disabled={disabled} onChange={() => toggleTable(t)} className="rounded" />{t}
+                    </label>)})}
                 </div>
+                {filteredTables.length > PICK_RENDER_CAP && (
+                  <p className="text-xs text-slate-400 mt-1">
+                    Showing first {PICK_RENDER_CAP} of {filteredTables.length} — type in the filter to find a specific table.
+                  </p>
+                )}
+                {atSelectionCap && (
+                  <p className="text-xs text-amber-600 dark:text-amber-400 mt-1">
+                    Selection is capped at {MAX_REVIEW_SELECTION} tables. Deselect some, or use <strong>Entire Schema</strong> mode to review a whole large schema.
+                  </p>
+                )}
               </>
+            ) : (
+              <p className="text-xs text-slate-500 dark:text-slate-400 py-1">
+                {tableFilter
+                  ? 'No tables match the filter.'
+                  : allSchemaTableCount > 0
+                    ? `None of the ${allSchemaTableCount} tables in this schema have generated metadata yet. Run the metadata generator on them first, then reload.`
+                    : 'No tables with generated metadata in this schema yet.'}
+              </p>
             )}
           </div>
         )}
@@ -734,6 +948,18 @@ function ReviewEditor() {
             <button onClick={() => { setResultFilter(''); setResultSchemaFilter('') }}
               className="text-xs text-blue-600 dark:text-blue-400 hover:underline">Clear filters</button>
           )}
+          {/* Server-side pagination: only when the scope has more than one page. */}
+          {reviewTotal > REVIEW_PAGE_SIZE && (
+            <div className="flex items-center gap-2 text-xs">
+              <button onClick={() => loadData(Math.max(0, reviewOffset - REVIEW_PAGE_SIZE))}
+                disabled={reviewOffset === 0 || loading}
+                className="px-2 py-0.5 rounded border border-slate-300 dark:border-dbx-navy-400/40 disabled:opacity-40 hover:bg-slate-50 dark:hover:bg-dbx-navy-500">Prev</button>
+              <span className="text-slate-400">{reviewOffset + 1}–{reviewOffset + reviewData.length} of {reviewTotal}</span>
+              <button onClick={() => loadData(reviewOffset + REVIEW_PAGE_SIZE)}
+                disabled={!reviewHasMore || loading}
+                className="px-2 py-0.5 rounded border border-slate-300 dark:border-dbx-navy-400/40 disabled:opacity-40 hover:bg-slate-50 dark:hover:bg-dbx-navy-500">Next</button>
+            </div>
+          )}
         </div>
       )}
 
@@ -846,8 +1072,22 @@ function ReviewEditor() {
                           {show('ontology') && <th title="Saves immediately to ontology_column_properties" className="text-left px-3 py-2 text-xs font-semibold text-slate-500 dark:text-slate-400 uppercase">Property Role</th>}
                         </tr></thead>
                         <tbody>
-                          {tbl.columns.map((col, ci) => {
-                            const colProp = (tbl.column_properties || []).find(p => p.column_name === col.column_name)
+                          {(() => {
+                            // Precompute per-table lookups ONCE instead of per-column:
+                            // colProp by column_name, and entities keyed by each
+                            // source column (parsing source_columns JSON a single time).
+                            const colPropByName = {}
+                            for (const p of (tbl.column_properties || [])) colPropByName[p.column_name] = p
+                            const entsByCol = {}
+                            for (const e of (tbl.ontology_entities || [])) {
+                              let sc = e.source_columns
+                              if (typeof sc === 'string') { try { sc = JSON.parse(sc) } catch { sc = [] } }
+                              if (Array.isArray(sc)) for (const cn of sc) (entsByCol[cn] = entsByCol[cn] || []).push(e)
+                            }
+                            const showAllCols = colsShowAll[tbl.table_name]
+                            const renderCols = showAllCols ? tbl.columns : tbl.columns.slice(0, COL_RENDER_CAP)
+                            return renderCols.map((col, ci) => {
+                            const colProp = colPropByName[col.column_name]
                             return (
                             <tr key={col.column_id || ci} className={`border-b border-slate-100 dark:border-dbx-navy-400/20 ${isColDirty(tblIdx, ci) ? 'bg-amber-50 dark:bg-amber-900/20' : ''} hover:bg-orange-50/30 dark:hover:bg-dbx-navy-500/30`}>
                               <td className="px-3 py-1.5 text-slate-600 dark:text-slate-300 font-mono text-xs truncate">{col.column_name}</td>
@@ -861,11 +1101,7 @@ function ReviewEditor() {
                               </td>}
                               {show('pii') && <td className="px-2 py-1"><input value={col.classification_type ?? ''} onChange={e => onColChange(tblIdx, ci, 'classification_type', e.target.value)} className={inp} /></td>}
                               {show('ontology') && <td className="px-2 py-1">{(() => {
-                                const ents = (tbl.ontology_entities || []).filter(e => {
-                                  let sc = e.source_columns
-                                  if (typeof sc === 'string') { try { sc = JSON.parse(sc) } catch { sc = [] } }
-                                  return Array.isArray(sc) && sc.includes(col.column_name)
-                                })
+                                const ents = entsByCol[col.column_name] || []
                                 return ents.length > 0 ? (
                                   <div className="flex flex-wrap gap-1">{ents.map((e, ei) => {
                                     const c = Number(e.confidence ?? 0)
@@ -915,7 +1151,16 @@ function ReviewEditor() {
                                 )
                               })() : <span className="text-[10px] text-slate-300">--</span>}</td>}
                             </tr>
-                          )})}
+                          )})
+                          })()}
+                          {tbl.columns.length > COL_RENDER_CAP && !colsShowAll[tbl.table_name] && (
+                            <tr><td colSpan={6} className="px-3 py-2 text-center">
+                              <button onClick={() => setColsShowAll(p => ({ ...p, [tbl.table_name]: true }))}
+                                className="text-xs text-blue-600 dark:text-blue-400 hover:underline">
+                                Show all {tbl.columns.length} columns (showing first {COL_RENDER_CAP})
+                              </button>
+                            </td></tr>
+                          )}
                         </tbody>
                       </table>
                     </div>
@@ -1372,6 +1617,7 @@ function ReviewEditor() {
                                 ) : null}</td>
                                 <td className="px-2 py-1 text-slate-500 dark:text-slate-400">{Number(fk.ai_confidence ?? 0).toFixed(2)}</td>
                                 <td className="px-2 py-1 text-slate-500 dark:text-slate-400">{Number(fk.col_similarity ?? 0).toFixed(2)}</td>
+                                <td className="px-2 py-1 font-mono text-[10px] whitespace-nowrap">{fkEvidence(fk)}</td>
                                 <td className="px-2 py-1 text-slate-500 dark:text-slate-400 max-w-xs truncate cursor-pointer" title="Click to expand"
                                   onClick={() => setExpandedFKs(p => ({ ...p, [fkKey]: !p[fkKey] }))}>
                                   {fk.ai_reasoning || '--'}
@@ -1401,7 +1647,7 @@ function ReviewEditor() {
                                 </td>
                               </tr>
                               {isExpReasoning && fk.ai_reasoning && (
-                                <tr><td colSpan={9} className="px-3 py-2 bg-slate-50 dark:bg-dbx-navy-500/30 text-xs text-slate-600 dark:text-slate-300 italic">{fk.ai_reasoning}</td></tr>
+                                <tr><td colSpan={10} className="px-3 py-2 bg-slate-50 dark:bg-dbx-navy-500/30 text-xs text-slate-600 dark:text-slate-300 italic">{fk.ai_reasoning}</td></tr>
                               )}
                             </React.Fragment>
                           )
@@ -1421,6 +1667,7 @@ function ReviewEditor() {
                                     <th className="text-left px-1 py-1 font-semibold text-slate-500 dark:text-slate-400">Status</th>
                                     <th className="text-left px-2 py-1 font-semibold text-slate-500 dark:text-slate-400" title="AI model confidence">AI</th>
                                     <th className="text-left px-2 py-1 font-semibold text-slate-500 dark:text-slate-400" title="Column embedding similarity">Sim</th>
+                                    <th className="text-left px-2 py-1 font-semibold text-slate-500 dark:text-slate-400" title="Referential integrity · actual join hit rate · parent-key uniqueness (the data probes behind the score)">RI·join·PK</th>
                                     <th className="text-left px-2 py-1 font-semibold text-slate-500 dark:text-slate-400">Reasoning</th>
                                     <th className="w-8 px-1 py-1"></th>
                                   </tr></thead>
@@ -1445,6 +1692,7 @@ function ReviewEditor() {
                                     <th className="text-left px-1 py-1 font-semibold text-slate-500 dark:text-slate-400">Status</th>
                                     <th className="text-left px-2 py-1 font-semibold text-slate-500 dark:text-slate-400" title="AI model confidence">AI</th>
                                     <th className="text-left px-2 py-1 font-semibold text-slate-500 dark:text-slate-400" title="Column embedding similarity">Sim</th>
+                                    <th className="text-left px-2 py-1 font-semibold text-slate-500 dark:text-slate-400" title="Referential integrity · actual join hit rate · parent-key uniqueness (the data probes behind the score)">RI·join·PK</th>
                                     <th className="text-left px-2 py-1 font-semibold text-slate-500 dark:text-slate-400">Reasoning</th>
                                     <th className="w-8 px-1 py-1"></th>
                                   </tr></thead>

@@ -31,6 +31,27 @@ def _camel_to_snake(name: str) -> str:
     return re.sub(r"([A-Z]+)([A-Z][a-z])", r"\1_\2", s1).lower()
 
 
+def attribute_name_variants(name: str) -> List[str]:
+    """Return snake_case and lowercase variants for column/attribute matching."""
+    snake = _camel_to_snake(name)
+    variants = [snake]
+    joined = re.sub(r"[_\s]+", "", name).lower()
+    if joined and joined != snake:
+        variants.append(joined)
+    low = name.lower()
+    if low not in variants:
+        variants.append(low)
+    if name not in variants:
+        variants.append(name)
+    seen: set[str] = set()
+    out: List[str] = []
+    for v in variants:
+        if v and v not in seen:
+            seen.add(v)
+            out.append(v)
+    return out
+
+
 # ===================================================================
 # OWL-type strategy: formal ontology bundles
 # ===================================================================
@@ -322,9 +343,10 @@ def generate_pattern_properties(
             role = "label"
 
         kind = "object_property" if role == "object_property" else "data_property"
+        variants = attribute_name_variants(attr)
         entry: Dict[str, Any] = {
             "kind": kind, "role": role,
-            "typical_attributes": [attr],
+            "typical_attributes": variants,
         }
 
         if role == "object_property":

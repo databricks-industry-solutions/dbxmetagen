@@ -470,5 +470,154 @@ class TestUserContextResolution:
         assert base_path == "/Shared"
 
 
+class TestKpiValidationReduction:
+    """Pure any-table-valid KPI validation logic (kpi_logic.reduce_kpi_validation).
+
+    A KPI formula belongs to ONE source table, so it is valid if it resolves against
+    AT LEAST ONE target table -- not all of them (the old all-or-nothing loop marked
+    a KPI invalid on the first table where a column was missing)."""
+
+    def _fn(self):
+        app_dir = os.path.join(
+            os.path.dirname(__file__), "..", "apps", "dbxmetagen-app", "app"
+        )
+        sys.path.insert(0, os.path.abspath(app_dir))
+        from kpi_logic import reduce_kpi_validation
+        return reduce_kpi_validation
+
+    def test_first_resolving_table_wins(self):
+        reduce = self._fn()
+        # formula works only against table b (a and c error) -> valid, resolved=b
+        results = [("error", "a", "col missing"), ("ok", "b", ""), ("error", "c", "col missing")]
+        assert reduce(results) == ("valid", "", "b")
+
+    def test_all_tables_fail_is_invalid_with_joined_errors(self):
+        reduce = self._fn()
+        results = [("error", "a", "no revenue"), ("error", "b", "no revenue")]
+        status, error, resolved = reduce(results)
+        assert status == "invalid"
+        assert resolved == ""
+        assert "Against a: no revenue" in error and "Against b: no revenue" in error
+
+    def test_empty_only_is_empty_non_blocking(self):
+        reduce = self._fn()
+        # schema resolves against a but no rows; nothing errors and nothing has rows
+        results = [("empty", "a", ""), ("error", "b", "col missing")]
+        status, error, resolved = reduce(results)
+        assert status == "empty"
+        assert resolved == "a"
+
+    def test_rows_beat_empty(self):
+        reduce = self._fn()
+        results = [("empty", "a", ""), ("ok", "b", "")]
+        assert reduce(results) == ("valid", "", "b")
+
+    def test_no_results_is_skipped(self):
+        reduce = self._fn()
+        assert reduce([]) == ("skipped", "", "")
+
+
+class TestKpiTargetResolution:
+    """Pure suggested-KPI source-table resolution (kpi_logic.resolve_kpi_target).
+    Always returns a single-element list -- a KPI formula belongs to one table."""
+
+    def _fn(self):
+        app_dir = os.path.join(
+            os.path.dirname(__file__), "..", "apps", "dbxmetagen-app", "app"
+        )
+        sys.path.insert(0, os.path.abspath(app_dir))
+        from kpi_logic import resolve_kpi_target
+        return resolve_kpi_target
+
+    def test_short_name_match(self):
+        resolve = self._fn()
+        tables = ["cat.sch.orders", "cat.sch.customers"]
+        assert resolve("orders", "SUM(amount)", tables, {}) == ["cat.sch.orders"]
+
+    def test_fully_qualified_match(self):
+        resolve = self._fn()
+        tables = ["cat.sch.orders", "cat.sch.customers"]
+        assert resolve("cat.sch.customers", "COUNT(*)", tables, {}) == ["cat.sch.customers"]
+
+    def test_dotted_source_resolves_to_short(self):
+        resolve = self._fn()
+        tables = ["cat.sch.orders"]
+        assert resolve("otherdb.orders", "SUM(amount)", tables, {}) == ["cat.sch.orders"]
+
+    def test_fallback_to_column_overlap(self):
+        resolve = self._fn()
+        tables = ["cat.sch.orders", "cat.sch.customers"]
+        col_by_table = {
+            "cat.sch.orders": [{"column_name": "amount"}, {"column_name": "order_id"}],
+            "cat.sch.customers": [{"column_name": "name"}],
+        }
+        # source_table doesn't match any table; formula references amount -> orders wins
+        assert resolve("unknown", "SUM(amount)", tables, col_by_table) == ["cat.sch.orders"]
+
+    def test_returns_all_candidates_when_no_signal(self):
+        # No name match AND no column overlap -> hand ALL tables to any-table-valid
+        # validation rather than arbitrarily binding to table[0] (review finding #3).
+        resolve = self._fn()
+        tables = ["cat.sch.orders", "cat.sch.customers"]
+        col_by_table = {"cat.sch.orders": [{"column_name": "amount"}]}
+        assert resolve("unknown", "SUM(mystery)", tables, col_by_table) == tables
+
+    def test_column_overlap_still_wins_over_all_fallback(self):
+        resolve = self._fn()
+        tables = ["cat.sch.orders", "cat.sch.customers"]
+        col_by_table = {
+            "cat.sch.orders": [{"column_name": "amount"}],
+            "cat.sch.customers": [{"column_name": "name"}],
+        }
+        # formula references amount -> confidently orders, not all
+        assert resolve("unknown", "SUM(amount)", tables, col_by_table) == ["cat.sch.orders"]
+
+
+class TestKpiDedup:
+    """Pure duplicate-KPI detection (kpi_logic.find_similar_kpi). Warn-not-block:
+    returns the closest likely-duplicate or None; never mutates anything."""
+
+    def _fn(self):
+        app_dir = os.path.join(
+            os.path.dirname(__file__), "..", "apps", "dbxmetagen-app", "app"
+        )
+        sys.path.insert(0, os.path.abspath(app_dir))
+        from kpi_logic import find_similar_kpi
+        return find_similar_kpi
+
+    def test_none_when_no_existing(self):
+        find = self._fn()
+        assert find("Total Revenue", "SUM(amount)", []) is None
+
+    def test_exact_normalized_name_match(self):
+        find = self._fn()
+        existing = [{"name": "Total Revenue!", "formula": "SUM(x)"}]
+        m = find("total revenue", "SUM(y)", existing)
+        assert m and m["reason"] == "name" and m["score"] == 1.0
+
+    def test_near_name_match_above_threshold(self):
+        find = self._fn()
+        existing = [{"name": "Total Revenue", "formula": "SUM(x)"}]
+        m = find("Total Revenues", "SUM(y)", existing)
+        assert m and m["reason"] == "name"
+
+    def test_formula_overlap_match(self):
+        find = self._fn()
+        existing = [{"name": "Rev A", "formula": "SUM(revenue) / NULLIF(COUNT(orders), 0)"}]
+        # different name, essentially the same formula tokens
+        m = find("Rev B", "SUM(revenue) / NULLIF(COUNT(orders), 0)", existing)
+        assert m and m["reason"] == "formula" and m["score"] >= 0.8
+
+    def test_distinct_kpi_not_flagged(self):
+        find = self._fn()
+        existing = [{"name": "Total Revenue", "formula": "SUM(amount)"}]
+        assert find("Average Order Latency", "AVG(ship_days)", existing) is None
+
+    def test_blank_name_and_formula_no_match(self):
+        find = self._fn()
+        existing = [{"name": "Total Revenue", "formula": "SUM(amount)"}]
+        assert find("", "", existing) is None
+
+
 if __name__ == "__main__":
     pytest.main([__file__, "-v"])

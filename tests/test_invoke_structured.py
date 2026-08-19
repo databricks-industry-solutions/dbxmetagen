@@ -137,10 +137,11 @@ class TestAppendJsonInstruction:
 # ---------------------------------------------------------------------------
 
 
-def _mock_ai_message(text):
-    """Create a mock AIMessage-like object."""
+def _mock_ai_message(text, finish_reason="stop"):
+    """Create a mock AIMessage-like object with an OpenAI-style finish_reason."""
     msg = MagicMock()
     msg.content = text
+    msg.response_metadata = {"finish_reason": finish_reason}
     return msg
 
 
@@ -187,6 +188,7 @@ class TestInvokeStructuredFallback:
         mock_llm.with_structured_output.return_value.invoke.side_effect = Exception("fail")
         msg = MagicMock()
         msg.content = [{"type": "text", "text": '{"name": "from_list", "score": 0.4}'}]
+        msg.response_metadata = {"finish_reason": "stop"}
         mock_llm.invoke.return_value = msg
 
         result = invoke_structured(
@@ -222,6 +224,98 @@ class TestInvokeStructuredFallback:
                 [{"role": "user", "content": "test"}],
                 SimpleModel,
             )
+
+
+class TestInvokeStructuredFailureClassification:
+    """ON-20/MG-6: the fallback classifies WHY it failed by finish_reason, so a
+    retryable truncation/empty response isn't reported as unparseable garbage."""
+
+    @patch("dbxmetagen.chat_client.ChatDatabricks")
+    def test_truncation_raises_distinct_error(self, MockChat):
+        from dbxmetagen.chat_client import StructuredTruncationError
+        mock_llm = MockChat.return_value
+        mock_llm.with_structured_output.return_value.invoke.side_effect = Exception("fail")
+        # A long-but-incomplete JSON cut off at the token limit.
+        mock_llm.invoke.return_value = _mock_ai_message(
+            '{"classifications": [{"name": "a", "score": 0.5}, {"name": "b"',
+            finish_reason="length",
+        )
+        with pytest.raises(StructuredTruncationError, match="truncated"):
+            invoke_structured(
+                "databricks-claude-sonnet-4-6",
+                [{"role": "user", "content": "classify 200 columns"}],
+                NestedModel,
+                max_tokens=4096,
+            )
+
+    @patch("dbxmetagen.chat_client.ChatDatabricks")
+    def test_empty_response_raises_distinct_error(self, MockChat):
+        from dbxmetagen.chat_client import StructuredEmptyResponseError
+        mock_llm = MockChat.return_value
+        mock_llm.with_structured_output.return_value.invoke.side_effect = Exception("fail")
+        mock_llm.invoke.return_value = _mock_ai_message("", finish_reason="stop")
+        with pytest.raises(StructuredEmptyResponseError, match="empty"):
+            invoke_structured(
+                "databricks-claude-sonnet-4-6",
+                [{"role": "user", "content": "test"}],
+                SimpleModel,
+            )
+
+    @patch("dbxmetagen.chat_client.ChatDatabricks")
+    def test_empty_braces_raises_distinct_error(self, MockChat):
+        from dbxmetagen.chat_client import StructuredEmptyResponseError
+        mock_llm = MockChat.return_value
+        mock_llm.with_structured_output.return_value.invoke.side_effect = Exception("fail")
+        mock_llm.invoke.return_value = _mock_ai_message("{}", finish_reason="stop")
+        with pytest.raises(StructuredEmptyResponseError):
+            invoke_structured(
+                "databricks-claude-sonnet-4-6",
+                [{"role": "user", "content": "test"}],
+                SimpleModel,
+            )
+
+    @patch("dbxmetagen.chat_client.ChatDatabricks")
+    def test_truncation_and_empty_are_valueerror_subclasses(self, MockChat):
+        # Existing callers that catch ValueError keep working (backward compatible).
+        from dbxmetagen.chat_client import (
+            StructuredTruncationError, StructuredEmptyResponseError,
+        )
+        assert issubclass(StructuredTruncationError, ValueError)
+        assert issubclass(StructuredEmptyResponseError, ValueError)
+
+
+class TestNewWorkspaceClient:
+    """MG-21: silence the notebook-auth [NOTICE] spam without a shared singleton."""
+
+    def test_passes_disable_notice(self):
+        import dbxmetagen.databricks_utils as du
+        with patch.object(du, "WorkspaceClient") as MockWC:
+            du.new_workspace_client()
+        MockWC.assert_called_once_with(product="dbxmetagen", disable_notice=True)
+
+    def test_falls_back_when_kwargs_unsupported(self):
+        # Older SDK: neither product nor disable_notice accepted -> bare construct.
+        import dbxmetagen.databricks_utils as du
+        calls = []
+
+        def fake(**kwargs):
+            calls.append(kwargs)
+            if kwargs:  # reject any kwargs until called bare
+                raise TypeError("unexpected keyword argument")
+            return "client"
+
+        with patch.object(du, "WorkspaceClient", side_effect=fake):
+            result = du.new_workspace_client()
+        assert result == "client"
+        assert calls[-1] == {}  # last attempt was bare
+
+    def test_returns_new_instance_each_call_not_singleton(self):
+        import dbxmetagen.databricks_utils as du
+        with patch.object(du, "WorkspaceClient") as MockWC:
+            MockWC.side_effect = lambda **k: object()
+            a = du.new_workspace_client()
+            b = du.new_workspace_client()
+        assert a is not b  # no shared singleton (concurrency safety)
 
 
 # ---------------------------------------------------------------------------

@@ -1,8 +1,20 @@
 import React, { useState, useEffect, useRef, useCallback, useMemo } from 'react'
 import { ErrorBanner } from '../App'
 import { PageHeader } from './ui'
+import { spacesEqual, summarizeSpaceDiff } from './genieDrift'
 
 function uuid() { return crypto.randomUUID?.() || Math.random().toString(36).slice(2) }
+
+// Fetch the current LIVE serialized_space for a space, or null on any failure.
+// Single source of the /live round-trip so callers don't each hand-roll it.
+async function fetchLiveSpace(spaceId) {
+  try {
+    const r = await fetch(`/api/genie/spaces/${spaceId}/live`)
+    if (!r.ok) return null
+    const d = await r.json()
+    return d.serialized_space || {}
+  } catch { return null }
+}
 
 function descToStr(d) {
   if (!d) return ''
@@ -383,6 +395,27 @@ const _healthStyles = {
   bad: 'border-red-300 dark:border-red-700 text-red-700 dark:text-red-400 hover:bg-red-50 dark:hover:bg-red-900/30',
 }
 
+// GN-12: diminishing-returns detector for the Improve loop. Returns null while it's still
+// worth improving; otherwise a guidance object once the last round produced no health gain (or
+// after a few rounds). Residual gaps exclude N/A dimensions (score == null, e.g. snippets/joins
+// on a metric-view space). When the semantic-gap dimension is the residual, the improver
+// structurally can't close it -- that's the "add benchmark questions" signal.
+const IMPROVE_ROUND_CAP = 3
+function computeImproveGuidance(health, preHealth, improveRound) {
+  if (!health || improveRound < 1) return null
+  const gainedThisRound = preHealth ? (health.score - preHealth.score) : null
+  const plateaued = (gainedThisRound !== null && gainedThisRound <= 0) || improveRound >= IMPROVE_ROUND_CAP
+  if (!plateaued) return null
+  const dims = health.dimensions || {}
+  const residual = Object.entries(dims)
+    .filter(([, d]) => d.score != null && d.score < d.max)
+    .map(([key, d]) => ({ key, label: key.replace(/_/g, ' '), score: d.score, max: d.max, gap: d.max - d.score }))
+    .sort((a, b) => b.gap - a.gap)
+  const sg = dims.semantic_gap
+  const recommendBenchmarks = !!(sg && sg.score != null && sg.score < sg.max)
+  return { plateaued, gainedThisRound, residual, recommendBenchmarks }
+}
+
 function HealthBadge({ score, max, onClick }) {
   const pct = max > 0 ? score / max : 0
   const tier = pct >= 0.8 ? 'good' : pct >= 0.5 ? 'ok' : 'bad'
@@ -405,13 +438,19 @@ function HealthDetails({ health, onClose }) {
       </div>
       {Object.entries(health.dimensions || {}).map(([key, dim]) => (
         <div key={key} className="flex items-center gap-2 text-xs">
-          <span className={`w-5 text-center font-bold ${dim.score == null ? 'text-slate-400' : dim.score >= dim.max ? 'text-emerald-600' : dim.score > 0 ? 'text-amber-600' : 'text-red-500'}`}>
-            {dim.score == null ? '-' : dim.score}/{dim.max}
+          <span className={`w-8 text-center font-bold ${dim.score == null ? 'text-slate-400' : dim.score >= dim.max ? 'text-emerald-600' : dim.score > 0 ? 'text-amber-600' : 'text-red-500'}`}>
+            {dim.score == null ? (dim.max === 0 ? 'N/A' : `-/${dim.max}`) : `${dim.score}/${dim.max}`}
           </span>
           <span className="text-slate-600 dark:text-slate-400 capitalize">{key.replace(/_/g, ' ')}</span>
           <span className="text-slate-400 ml-auto">{dim.detail}</span>
         </div>
       ))}
+      <p className="text-xs text-slate-400 dark:text-slate-500 italic pt-1 border-t border-slate-100 dark:border-slate-700/50">
+        A tables-only space is perfectly fine if it answers your questions well — the
+        metric&nbsp;views dimension shows N/A here (excluded from the score, not counted against it).
+        Metric views are generally recommended as a best practice (governed, reusable measures),
+        not a requirement.
+      </p>
     </div>
   )
 }
@@ -517,25 +556,75 @@ function VersionHistory({ spaceId, onRestore, onClose }) {
 // Drift detection banner
 // ---------------------------------------------------------------------------
 
-function DriftBanner({ spaceId, localSs, onPullRemote }) {
+// Readable, per-section summary of what an external edit changed between the
+// loaded baseline and the current live space. Replaces the old raw-JSON dump.
+function _truncate(s, n = 120) {
+  s = String(s == null ? '' : s)
+  return s.length > n ? s.slice(0, n) + '…' : s
+}
+
+function SpaceDiffView({ diff }) {
+  if (!diff || diff.length === 0) {
+    return <p className="text-xs text-slate-500 dark:text-slate-400">No field-level differences detected (only volatile fields changed).</p>
+  }
+  return (
+    <div className="space-y-2 text-xs">
+      {diff.map((d, i) => (
+        <div key={i} className="border-l-2 border-amber-300 dark:border-amber-700 pl-2">
+          <span className="font-medium text-slate-700 dark:text-slate-300">{d.section}</span>
+          {d.type === 'scalar' && (
+            <div className="mt-0.5 space-y-0.5">
+              <div className="text-red-600 dark:text-red-400">− {_truncate(d.before) || <em className="text-slate-400">(empty)</em>}</div>
+              <div className="text-emerald-600 dark:text-emerald-400">+ {_truncate(d.after) || <em className="text-slate-400">(empty)</em>}</div>
+            </div>
+          )}
+          {d.type === 'collection' && (
+            <span className="ml-2 text-slate-500 dark:text-slate-400">
+              {d.added.length > 0 && <span className="text-emerald-600 dark:text-emerald-400">+{d.added.length} added </span>}
+              {d.removed.length > 0 && <span className="text-red-600 dark:text-red-400">−{d.removed.length} removed </span>}
+              {d.changed.length > 0 && <span className="text-amber-600 dark:text-amber-400">~{d.changed.length} changed </span>}
+              {(d.added.length + d.removed.length + d.changed.length) <= 6 && (
+                <span className="text-slate-400 dark:text-slate-500">
+                  ({[...d.added.map(k => '+' + k), ...d.removed.map(k => '−' + k), ...d.changed.map(k => '~' + k)].map(_truncate).join(', ')})
+                </span>
+              )}
+            </span>
+          )}
+          {d.type === 'ordered' && (
+            <span className="ml-2 text-slate-500 dark:text-slate-400">
+              {d.added.length > 0 && <span className="text-emerald-600 dark:text-emerald-400">+{d.added.length} added </span>}
+              {d.removed.length > 0 && <span className="text-red-600 dark:text-red-400">−{d.removed.length} removed </span>}
+              {d.reordered && <span className="text-amber-600 dark:text-amber-400">reordered</span>}
+            </span>
+          )}
+        </div>
+      ))}
+    </div>
+  )
+}
+
+// Drift = the LIVE space differs from what this editor loaded (`baseline`,
+// captured from /definition at load). That covers both a later external edit
+// and a stale tracked copy that already differed from live at load. We never
+// compare against the user's local edits -- those are expected to differ. The
+// effect waits for `baseline` to be set, then fetches live once and compares.
+function DriftBanner({ spaceId, baseline, onPullRemote }) {
   const [drift, setDrift] = useState(null) // null | 'checking' | 'clean' | 'drifted'
   const [liveSs, setLiveSs] = useState(null)
   const [showDiff, setShowDiff] = useState(false)
 
   useEffect(() => {
-    if (!spaceId) return
+    if (!spaceId || !baseline) return
+    let cancelled = false
     setDrift('checking')
-    fetch(`/api/genie/spaces/${spaceId}/live`)
-      .then(r => r.ok ? r.json() : Promise.reject())
-      .then(data => {
-        const live = data.serialized_space || {}
-        setLiveSs(live)
-        const localStr = JSON.stringify(localSs || {}, Object.keys(localSs || {}).sort())
-        const liveStr = JSON.stringify(live, Object.keys(live).sort())
-        setDrift(localStr === liveStr ? 'clean' : 'drifted')
-      })
-      .catch(() => setDrift(null))
-  }, [spaceId])
+    fetchLiveSpace(spaceId).then(live => {
+      if (cancelled) return
+      if (!live) { setDrift(null); return }
+      setLiveSs(live)
+      setDrift(spacesEqual(live, baseline) ? 'clean' : 'drifted')
+    })
+    return () => { cancelled = true }
+  }, [spaceId, baseline])
 
   if (drift !== 'drifted') return null
 
@@ -543,19 +632,23 @@ function DriftBanner({ spaceId, localSs, onPullRemote }) {
     <div className="bg-amber-50 dark:bg-amber-900/20 border border-amber-300 dark:border-amber-700 rounded-lg px-4 py-3 space-y-2">
       <div className="flex items-center gap-3 text-sm text-amber-800 dark:text-amber-300">
         <span className="font-medium">This space was modified outside dbxmetagen.</span>
-        <button onClick={() => { onPullRemote(liveSs); setDrift('clean') }}
+        <button onClick={() => {
+            if (!window.confirm('Pull the remote version? This replaces your current (unsaved) edits in this editor with the live space from Databricks.')) return
+            onPullRemote(liveSs); setDrift('clean')
+          }}
           className="text-xs px-2.5 py-1 rounded border border-amber-400 text-amber-700 hover:bg-amber-100 dark:hover:bg-amber-800/30 transition-colors">
           Pull Remote Changes
         </button>
         <button onClick={() => setDrift('clean')}
           className="text-xs px-2.5 py-1 text-amber-600 hover:text-amber-800">Dismiss</button>
         <button onClick={() => setShowDiff(!showDiff)}
-          className="text-xs px-2.5 py-1 text-amber-600 hover:text-amber-800">{showDiff ? 'Hide' : 'Show'} Diff</button>
+          className="text-xs px-2.5 py-1 text-amber-600 hover:text-amber-800">{showDiff ? 'Hide' : 'Show'} Changes</button>
       </div>
       {showDiff && liveSs && (
-        <pre className="text-xs font-mono bg-white dark:bg-slate-900 border border-slate-200 dark:border-slate-700 rounded p-3 overflow-auto max-h-60 text-slate-600 dark:text-slate-400">
-          {JSON.stringify(liveSs, null, 2).slice(0, 4000)}
-        </pre>
+        <div className="bg-white dark:bg-slate-900 border border-slate-200 dark:border-slate-700 rounded p-3 overflow-auto max-h-72">
+          <p className="text-[10px] text-slate-400 dark:text-slate-500 mb-2 uppercase tracking-wide">What changed remotely since you loaded (− loaded, + live)</p>
+          <SpaceDiffView diff={summarizeSpaceDiff(baseline, liveSs)} />
+        </div>
       )}
     </div>
   )
@@ -698,6 +791,14 @@ export default function GenieUpdater({ spaceId, onBack }) {
   // Version history
   const [showHistory, setShowHistory] = useState(false)
 
+  // Snapshot of the serialized_space as it was LOADED into this editor (from
+  // /definition). Drift detection compares the current LIVE space against this
+  // baseline -- so it flags both a later external edit and a stale tracked copy
+  // that already differs from live at load. Never compared against the user's
+  // edited state (those diffs are expected). State (not a ref) so DriftBanner
+  // re-evaluates when the baseline is captured/refreshed.
+  const [loadedBaseline, setLoadedBaseline] = useState(null)
+
   // ---------------------------------------------------------------------------
   // Parse serialized space from API
   // ---------------------------------------------------------------------------
@@ -804,6 +905,7 @@ export default function GenieUpdater({ spaceId, onBack }) {
   useEffect(() => {
     if (!spaceId) return
     setLoading(true); setError(null); setParseInfo(null)
+    setLoadedBaseline(null)
     fetch(`/api/genie/spaces/${spaceId}/definition`)
       .then(r => r.ok ? r.json() : r.json().then(b => Promise.reject(b.detail || `Error ${r.status}`)))
       .then(data => {
@@ -815,6 +917,11 @@ export default function GenieUpdater({ spaceId, onBack }) {
         if (typeof ss === 'string') { try { ss = JSON.parse(ss) } catch { ss = {} } }
         if (!ss || typeof ss !== 'object') ss = {}
         loadSpaceIntoState(ss, data.title || '', data.description || '')
+        // Drift baseline = exactly what we loaded into the editor. Comparing the
+        // LIVE space against this catches both a later external edit AND the case
+        // where the tracked copy /definition served is already stale vs live.
+        // (Never compare against the user's edits -- those are expected to differ.)
+        setLoadedBaseline(ss)
       })
       .catch(e => setError(typeof e === 'string' ? e : e.message || 'Failed to load'))
       .finally(() => setLoading(false))
@@ -983,27 +1090,26 @@ export default function GenieUpdater({ spaceId, onBack }) {
   // ---------------------------------------------------------------------------
 
   const [conflictWarning, setConflictWarning] = useState(null)
+  const [conflictDiff, setConflictDiff] = useState(null)
 
   const deploy = async (asNew) => {
     if (!title.trim()) { setDeployError('Enter a title'); return }
     setDeploying(true); setDeployError(null); setDeployResult(null); setConflictWarning(null)
     try {
-      // Check for external modifications before updating (not needed for new spaces)
-      if (!asNew && spaceId) {
-        try {
-          const liveRes = await fetch(`/api/genie/spaces/${spaceId}/live`)
-          if (liveRes.ok) {
-            const liveData = await liveRes.json()
-            const liveSs = liveData.serialized_space || {}
-            const localStr = JSON.stringify(rawJson || {}, Object.keys(rawJson || {}).sort())
-            const liveStr = JSON.stringify(liveSs, Object.keys(liveSs).sort())
-            if (localStr !== liveStr && !conflictWarning) {
-              setConflictWarning('This space was modified externally since you loaded it. Click Update again to overwrite.')
-              setDeploying(false)
-              return
-            }
-          }
-        } catch { /* live check failed, proceed anyway */ }
+      // Detect a GENUINE external edit: compare the live space now against what
+      // this editor loaded (loadedBaseline). We deliberately do NOT compare
+      // against the user's local (edited) state -- local differs precisely
+      // because the user made the changes we are about to save. Warn only when
+      // the remote differs from what we loaded (external edit, or a stale tracked
+      // copy that already differed from live at load).
+      if (!asNew && spaceId && loadedBaseline && !conflictWarning) {
+        const liveNow = await fetchLiveSpace(spaceId)
+        if (liveNow && !spacesEqual(liveNow, loadedBaseline)) {
+          setConflictWarning('This space was modified outside dbxmetagen since you loaded it. Review the remote changes below, then click Update again to overwrite them (or pull them in from the banner above first).')
+          setConflictDiff(summarizeSpaceDiff(loadedBaseline, liveNow))
+          setDeploying(false)
+          return
+        }
       }
 
       const payload = rawJsonEditing ? JSON.parse(rawJsonText) : assemble()
@@ -1017,7 +1123,14 @@ export default function GenieUpdater({ spaceId, onBack }) {
       const result = await res.json()
       setDeployResult(result)
       setConflictWarning(null)
+      setConflictDiff(null)
       if (result.updated) setVersion(prev => prev + 1)
+      // We just wrote the space, so live == what we intended. Refresh the drift
+      // baseline to the new live serialization so a follow-up update in the same
+      // session doesn't false-flag against the pre-update snapshot.
+      if (spaceId) {
+        fetchLiveSpace(spaceId).then(live => { if (live) setLoadedBaseline(live) })
+      }
     } catch (e) { setDeployError(e.message) }
     finally { setDeploying(false) }
   }
@@ -1031,9 +1144,11 @@ export default function GenieUpdater({ spaceId, onBack }) {
     setShowHistory(false)
   }
 
-  // Pull remote changes (drift)
+  // Pull remote changes (drift): adopt the live space locally AND make it the
+  // new baseline so the drift banner clears and future edits diff against it.
   const pullRemote = (liveSs) => {
     loadSpaceIntoState(liveSs)
+    setLoadedBaseline(liveSs || {})
   }
 
   // ---------------------------------------------------------------------------
@@ -1080,7 +1195,7 @@ export default function GenieUpdater({ spaceId, onBack }) {
       <ErrorBanner error={error} />
 
       {/* Drift detection */}
-      <DriftBanner spaceId={spaceId} localSs={rawJson} onPullRemote={pullRemote} />
+      <DriftBanner spaceId={spaceId} baseline={loadedBaseline} onPullRemote={pullRemote} />
 
       {/* Health details */}
       {showHealth && <HealthDetails health={health} onClose={() => setShowHealth(false)} />}
@@ -1095,10 +1210,58 @@ export default function GenieUpdater({ spaceId, onBack }) {
           <span className={`text-xs font-medium ${health.score > preHealth.score ? 'text-emerald-600' : 'text-red-500'}`}>
             ({health.score > preHealth.score ? '+' : ''}{health.score - preHealth.score})
           </span>
-          {improveRound >= 3 && <span className="ml-auto text-xs text-amber-600 dark:text-amber-400">Round {improveRound} -- consider manual edits for remaining gaps</span>}
+          {computeImproveGuidance(health, preHealth, improveRound)?.plateaued && <span className="ml-auto text-xs text-amber-600 dark:text-amber-400">Diminishing returns -- see recommendation below</span>}
           <button onClick={() => setPreHealth(null)} className="ml-auto text-xs text-slate-400 hover:text-slate-600">Dismiss</button>
         </div>
       )}
+
+      {/* GN-12: once the improver plateaus, give a reasoned hand-off (add benchmarks / manual /
+          workbench) keyed to the residual gaps; otherwise the generic accelerator hand-off note. */}
+      {improveRound > 0 && (() => {
+        const g = computeImproveGuidance(health, preHealth, improveRound)
+        if (!g?.plateaued) {
+          return (
+            <div className="card p-3 border-l-4 border-slate-300 dark:border-slate-600 text-xs text-slate-600 dark:text-slate-400">
+              dbxmetagen accelerates you to a solid starting space; it isn't a deep Genie optimizer.
+              For further tuning, see Genie best practices
+              (<a href="https://docs.databricks.com/aws/en/genie/best-practices" target="_blank" rel="noopener noreferrer"
+                 className="text-indigo-600 dark:text-indigo-400 hover:underline">curate an effective Genie space</a>
+              {' '}&middot;{' '}
+              <a href="https://docs.databricks.com/aws/en/genie/" target="_blank" rel="noopener noreferrer"
+                 className="text-indigo-600 dark:text-indigo-400 hover:underline">Genie docs</a>)
+              or continue in the Genie workbench.
+            </div>
+          )
+        }
+        return (
+          <div className="card p-3 border-l-4 border-amber-400 dark:border-amber-600 text-sm text-slate-700 dark:text-slate-300 space-y-2">
+            <div className="font-medium text-amber-700 dark:text-amber-400">
+              The improver has plateaued{g.gainedThisRound !== null && g.gainedThisRound <= 0 ? ' (no health gain in the last round)' : ''} — further automated rounds are unlikely to help.
+            </div>
+            {g.recommendBenchmarks && (
+              <p>
+                <span className="font-medium">Add benchmark questions.</span> The main remaining gap is
+                semantic coverage, which the improver can't close on its own — add real sample/benchmark
+                questions that reflect how users will actually ask, then re-analyze.
+              </p>
+            )}
+            {g.residual.length > 0 && (
+              <p className="text-xs text-slate-500 dark:text-slate-400">
+                Remaining gaps: {g.residual.map(r => `${r.label} ${r.score}/${r.max}`).join(', ')}.
+              </p>
+            )}
+            <p className="text-xs">
+              Best next steps: refine <span className="font-medium">manually</span> in the editor above,
+              add benchmark questions, or continue in the{' '}
+              <a href="https://docs.databricks.com/aws/en/genie/" target="_blank" rel="noopener noreferrer"
+                 className="text-indigo-600 dark:text-indigo-400 hover:underline">Genie workbench</a>
+              {' '}(<a href="https://docs.databricks.com/aws/en/genie/best-practices" target="_blank" rel="noopener noreferrer"
+                 className="text-indigo-600 dark:text-indigo-400 hover:underline">best practices</a>).
+              dbxmetagen gets you to a solid starting space; it isn't a deep Genie optimizer.
+            </p>
+          </div>
+        )
+      })()}
 
       {/* Analysis suggestions */}
       {analysisSuggestions && (
@@ -1389,8 +1552,14 @@ export default function GenieUpdater({ spaceId, onBack }) {
           {rawJsonEditing && <span className="text-xs text-amber-600">Deploying from raw JSON</span>}
         </div>
         {conflictWarning && (
-          <div className="bg-amber-50 dark:bg-amber-900/20 border border-amber-300 dark:border-amber-700 rounded-lg px-4 py-2.5 text-sm text-amber-700 dark:text-amber-300">
-            {conflictWarning}
+          <div className="bg-amber-50 dark:bg-amber-900/20 border border-amber-300 dark:border-amber-700 rounded-lg px-4 py-2.5 text-sm text-amber-700 dark:text-amber-300 space-y-2">
+            <div>{conflictWarning}</div>
+            {conflictDiff && conflictDiff.length > 0 && (
+              <div className="bg-white dark:bg-slate-900 border border-slate-200 dark:border-slate-700 rounded p-2.5 overflow-auto max-h-60">
+                <p className="text-[10px] text-slate-400 dark:text-slate-500 mb-2 uppercase tracking-wide">Remote changes you'd overwrite (− your loaded copy, + live)</p>
+                <SpaceDiffView diff={conflictDiff} />
+              </div>
+            )}
           </div>
         )}
         {deployError && (
@@ -1403,6 +1572,22 @@ export default function GenieUpdater({ spaceId, onBack }) {
             {deployResult.updated ? 'Space updated' : 'New space created'}! ID: <span className="font-mono">{deployResult.space_id}</span>
           </div>
         )}
+        {deployResult && (() => {
+          // The Genie API can silently drop joins/snippets/example-SQL it rejects. The
+          // backend read-back compares persisted vs sent for every category and returns
+          // the drop messages in `warnings`; render them so a "reverted"-looking space is
+          // explained. (Single source of truth is the backend -- no client re-derivation.)
+          const warns = [...(deployResult.warnings || [])]
+          if (!warns.length) return null
+          return (
+            <div className="bg-amber-50 dark:bg-amber-900/20 border border-amber-300 dark:border-amber-700 rounded-lg px-4 py-2.5 text-sm text-amber-800 dark:text-amber-300 space-y-1">
+              <div className="font-medium">Some content was adjusted or dropped during deploy:</div>
+              <ul className="list-disc list-inside space-y-0.5">
+                {warns.map((w, i) => <li key={i}>{w}</li>)}
+              </ul>
+            </div>
+          )
+        })()}
       </div>
     </div>
   )

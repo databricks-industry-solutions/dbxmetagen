@@ -9,7 +9,9 @@ globs:
 ## Property Role Vocabulary (closed set)
 
 `_heuristic_classify` returns one of exactly these roles:
-`object_property`, `primary_key`, `pii`, `dimension`, `geographic`, `audit`, `temporal`, `label`, `measure`
+`object_property`, `primary_key`, `business_key`, `dimension`, `geographic`, `audit`, `temporal`, `label`, `measure` (fallback: `dimension`).
+
+The authoritative valid set is `_VALID_PROPERTY_ROLES` in `ontology.py`, which additionally includes `derived` and `composite_component`. Note: `pii` is NOT a property role.
 
 **Never `link`.** The `link` role was removed. If you see it in SQL filters, remove it.
 
@@ -153,12 +155,19 @@ DDL). All other references are READ-ONLY consumers: `vector_index.py`, `semantic
 and eval/monitor notebooks. Because consumers are read-only, the entity-concept graph's correctness is fully
 determined by the producers + the relationships sweep.
 
-LIMITATION: consumers that join the bundle-agnostic `ontology_relationships`/`ontology_entities` by type name
-(`vector_index.py` 188/300, `semantic_layer.py`, `genie/context.py`, `fk_prediction.py`) are clean under the
-supported one-bundle-per-schema pattern and after a sweep, but can mix derived TEXT (not graph edges) under
-same-schema multi-bundle coexistence. Fully closing that needs `ontology_bundle` on `ontology_relationships`
-(deferred). FK pair canonicalization in `fk_prediction.py` (3 sites: name/ontology/column-property generators)
-must swap `col`/`table`/`dtype` in lockstep so each column keeps its own table+dtype.
+LIMITATION (ON-22, table-scoping not bundle-scoping): `ontology_entities` IS table-attributed (`source_tables`)
+and its consumers already scope by table, so entities are clean under multi-bundle coexistence. The gap is
+`ontology_relationships`, which has no table attribution: consumers that join it by type name
+(`semantic_layer.py` 712-715, `genie/context.py` 503-516) can attach a relationship line from one bundle's
+table set to a same-named entity type in another's, when two bundles coexist in one schema on DIFFERENT tables.
+This is DESCRIPTIVE TEXT ONLY (relationship prose) -- NOT graph edges, NOT joins (joins come from
+`fk_predictions`, which is table-level and intentionally cross-bundle), NOT entity scoping -- so the impact is
+cosmetic. Fix is TABLE-keyed, never bundle-keyed: (a) filter reads by the existing `evidence_table` column;
+(b) add nullable `source_tables` to `ontology_relationships` for bundle-defined rows. Bundle stays a provenance
+tag. Do NOT add a bundle filter to consumers -- structural cross-ontology integration (FK/joins across table
+sets in one schema) is a hard requirement and must keep crossing bundles. FK pair canonicalization in
+`fk_prediction.py` (3 sites: name/ontology/column-property generators) must swap `col`/`table`/`dtype` in
+lockstep so each column keeps its own table+dtype.
 
 ## Column Properties Table
 

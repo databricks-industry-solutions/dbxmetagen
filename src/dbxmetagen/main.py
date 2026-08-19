@@ -77,10 +77,44 @@ def setup_environment(config):
         os.environ["DATABRICKS_HOST"] = config.base_url
 
 
+def seed_customer_context(config):
+    """Seed the customer_context table from a YAML dir before generation.
+
+    Enables customer-context enrichment on the pip-install / notebook path (no
+    app UI): pass use_customer_context=true AND customer_context_yaml_dir=<dir>
+    to main(). The dir holds one or more *.yaml files with a top-level
+    `contexts:` list of {scope, scope_type, context_text, [context_label,
+    priority]} entries (scope_type in catalog|schema|table|pattern). Seeding is
+    a MERGE keyed on scope, so re-runs are idempotent. No-op unless BOTH the
+    flag and the dir are set, so existing runs are unaffected.
+    """
+    if not getattr(config, "use_customer_context", False):
+        return
+    yaml_dir = getattr(config, "customer_context_yaml_dir", "") or ""
+    if not yaml_dir:
+        return
+    # Optional enrichment: a bad YAML dir or a transient seed failure must NOT abort
+    # core metadata generation (same non-fatal treatment as grant_permissions_*).
+    try:
+        from pyspark.sql import SparkSession
+        from dbxmetagen.customer_context import seed_customer_context_table
+
+        spark = SparkSession.builder.getOrCreate()
+        n = seed_customer_context_table(
+            spark, config.catalog_name, config.schema_name, yaml_dir
+        )
+        print(f"Seeded {n} customer context entries from {yaml_dir}")
+    except Exception as e:
+        _logger.warning("Customer-context seeding failed (non-fatal): %s", e)
+        print(f"WARNING: customer-context seeding from {yaml_dir} failed ({e}); "
+              "continuing without it.")
+
+
 def initialize_infrastructure(config):
     """Initialize DDL directories, tables, and queue."""
     setup_ddl(config)
     create_tables(config)
+    seed_customer_context(config)
     config.table_names = setup_queue(config)
     if config.control_table:
         upsert_table_names_to_control_table(config.table_names, config)

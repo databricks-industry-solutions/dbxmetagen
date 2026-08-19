@@ -15,6 +15,65 @@ logger = logging.getLogger(__name__)
 _schema_permission_cache = {}
 
 
+def new_workspace_client(**kwargs):
+    """Construct a WorkspaceClient with the notebook-auth `[NOTICE]` silenced.
+
+    The SDK prints ``[NOTICE] Using a notebook authentication token...`` on every
+    ``WorkspaceClient()`` construction; in the per-LLM-call auth-fallback path this
+    floods customer logs (~90x/run) and buries real errors (MG-21). Passing
+    ``product``/``disable_notice`` quiets it.
+
+    This deliberately returns a NEW client each call -- it is NOT a shared
+    singleton. A single WorkspaceClient shared across many concurrent LLM calls
+    would serialize/contend on the SDK's internal auth/HTTP state; each caller
+    owning its own client keeps construction thread-safe (as today). We only
+    silence the print.
+
+    `disable_notice` was added in newer SDKs; fall back gracefully if the running
+    SDK predates it so this never breaks client construction.
+    """
+    try:
+        return WorkspaceClient(product="dbxmetagen", disable_notice=True, **kwargs)
+    except TypeError:
+        # Older SDK without `disable_notice` (and/or `product`) kwargs.
+        try:
+            return WorkspaceClient(disable_notice=True, **kwargs)
+        except TypeError:
+            return WorkspaceClient(**kwargs)
+
+
+def quote_fqn(fqn: str) -> str:
+    """Backtick-quote each segment of a dotted table identifier for safe SQL interpolation.
+
+    Table/column names can legally contain characters the SQL parser treats specially --
+    ``$`` (common in federated Redshift names like ``schema.tbl$raw``), spaces, hyphens,
+    reserved words. Interpolating such a name bare into ``FROM {fqn}`` / ``DESCRIBE ... {fqn}``
+    (or passing it to ``spark.table()``, which parses the identifier) raises
+    ``PARSE_SYNTAX_ERROR``. Quoting each dotted segment makes the identifier parse-safe.
+
+    Embedded backticks are escaped by doubling (``a`b`` -> `` `a``b` ``), per SQL rules.
+    An already-backticked segment is left as-is (idempotent) so callers that quote some
+    segments themselves are not double-quoted.
+
+    ``quote_fqn("cat.sch.tbl$raw")`` -> ``` `cat`.`sch`.`tbl$raw` ```
+
+    Note: BOTH ``spark.table(name)`` and ``spark.read.table(name)`` parse the identifier
+    through ``parseTableIdentifier`` and raise on a special char, so neither is safe for
+    a ``$``-containing name. Read such tables via a backtick-quoted
+    ``spark.sql(f"SELECT * FROM {quote_fqn(name)}")`` instead. Use ``quote_fqn`` at every
+    site that references a *customer source table* by name in SQL.
+    """
+    if not fqn:
+        return fqn
+    parts = []
+    for seg in fqn.split("."):
+        if len(seg) >= 2 and seg.startswith("`") and seg.endswith("`"):
+            parts.append(seg)  # already quoted -- leave idempotent
+        else:
+            parts.append("`" + seg.replace("`", "``") + "`")
+    return ".".join(parts)
+
+
 def setup_databricks_environment(dbutils_instance=None):
     """Set up Databricks environment variables and return current user."""
     current_user = None

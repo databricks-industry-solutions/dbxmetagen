@@ -1,0 +1,483 @@
+metadata:
+  name: Dublin Core
+  version: '1.0'
+  format_version: '2.0'
+  industry: general
+  description: 'Dublin Core (DCMI Terms + DCMI Type vocabulary) - a compact, standards-aligned general
+    ontology for catalog metadata: agents, datasets, documents, locations, rights, and resource types.'
+  standards_alignment: Dublin Core / DCMI
+  bundle_type: formal_ontology
+  source_url: https://www.dublincore.org/specifications/dublin-core/dcmi-terms/
+ontology:
+  version: '3.0'
+  name: Dublin Core DCMI
+  description: DCMI Metadata Terms and Type vocabulary (auto-extracted from published RDF).
+  property_roles:
+    primary_key:
+      description: Surrogate or technical row identifier
+      maps_to_kind: data_property
+      semantic_role: identifier
+    business_key:
+      description: Natural key meaningful to users (MRN, NPI)
+      maps_to_kind: data_property
+      semantic_role: identifier
+    object_property:
+      description: FK or reference to another entity's identifier
+      maps_to_kind: object_property
+      semantic_role: relationship
+    measure:
+      description: Numeric value to aggregate
+      maps_to_kind: data_property
+      semantic_role: metric
+    dimension:
+      description: Categorical filter or grouping attribute
+      maps_to_kind: data_property
+      semantic_role: dimension
+    temporal:
+      description: Date or timestamp of event
+      maps_to_kind: data_property
+      semantic_role: temporal
+    geographic:
+      description: Location-based dimension (country, city, region, coordinates)
+      maps_to_kind: data_property
+      semantic_role: geographic
+    label:
+      description: Human-readable name or title
+      maps_to_kind: data_property
+      semantic_role: label
+    audit:
+      description: System-generated provenance column
+      maps_to_kind: data_property
+      semantic_role: provenance
+    derived:
+      description: Computed from other columns
+      maps_to_kind: data_property
+      semantic_role: derived
+    composite_component:
+      description: Part of a multi-column value object
+      maps_to_kind: data_property
+      semantic_role: component
+  edge_catalog: {}
+  entities:
+    auto_discover: true
+    discovery_confidence_threshold: 0.4
+    definitions:
+      Collection:
+        description: An aggregation of resources.
+        keywords:
+        - collection
+        typical_attributes: []
+        relationships: {}
+        properties: {}
+        uri: http://purl.org/dc/dcmitype/Collection
+        source_ontology: OWL
+        owl_properties: []
+      Dataset:
+        description: Data encoded in a defined structure.
+        keywords:
+        - dataset
+        typical_attributes: []
+        relationships: {}
+        properties: {}
+        uri: http://purl.org/dc/dcmitype/Dataset
+        source_ontology: OWL
+        owl_properties: []
+      Event:
+        description: A non-persistent, time-based occurrence.
+        keywords:
+        - event
+        typical_attributes: []
+        relationships: {}
+        properties: {}
+        uri: http://purl.org/dc/dcmitype/Event
+        source_ontology: OWL
+        owl_properties: []
+      Image:
+        description: A visual representation other than text.
+        keywords:
+        - image
+        typical_attributes: []
+        relationships: {}
+        properties: {}
+        uri: http://purl.org/dc/dcmitype/Image
+        source_ontology: OWL
+        owl_properties: []
+      InteractiveResource:
+        description: A resource requiring interaction from the user to be understood, executed, or experienced.
+        keywords:
+        - interactive resource
+        - interactiveresource
+        typical_attributes: []
+        relationships: {}
+        properties: {}
+        uri: http://purl.org/dc/dcmitype/InteractiveResource
+        source_ontology: OWL
+        owl_properties: []
+      MovingImage:
+        description: A series of visual representations imparting an impression of motion when shown in
+          succession.
+        keywords:
+        - moving image
+        - movingimage
+        typical_attributes: []
+        relationships: {}
+        properties: {}
+        parent: Image
+        parents:
+        - Image
+        uri: http://purl.org/dc/dcmitype/MovingImage
+        source_ontology: OWL
+        subclass_of: Image
+        owl_properties: []
+      PhysicalObject:
+        description: An inanimate, three-dimensional object or substance.
+        keywords:
+        - physical object
+        - physicalobject
+        typical_attributes: []
+        relationships: {}
+        properties: {}
+        uri: http://purl.org/dc/dcmitype/PhysicalObject
+        source_ontology: OWL
+        owl_properties: []
+      Service:
+        description: A system that provides one or more functions.
+        keywords:
+        - service
+        typical_attributes: []
+        relationships: {}
+        properties: {}
+        uri: http://purl.org/dc/dcmitype/Service
+        source_ontology: OWL
+        owl_properties: []
+      Software:
+        description: A computer program in source or compiled form.
+        keywords:
+        - software
+        typical_attributes: []
+        relationships: {}
+        properties: {}
+        uri: http://purl.org/dc/dcmitype/Software
+        source_ontology: OWL
+        owl_properties: []
+      Sound:
+        description: A resource primarily intended to be heard.
+        keywords:
+        - sound
+        typical_attributes: []
+        relationships: {}
+        properties: {}
+        uri: http://purl.org/dc/dcmitype/Sound
+        source_ontology: OWL
+        owl_properties: []
+      StillImage:
+        description: A static visual representation.
+        keywords:
+        - still image
+        - stillimage
+        typical_attributes: []
+        relationships: {}
+        properties: {}
+        parent: Image
+        parents:
+        - Image
+        uri: http://purl.org/dc/dcmitype/StillImage
+        source_ontology: OWL
+        subclass_of: Image
+        owl_properties: []
+      Text:
+        description: A resource consisting primarily of words for reading.
+        keywords:
+        - text
+        typical_attributes: []
+        relationships: {}
+        properties: {}
+        uri: http://purl.org/dc/dcmitype/Text
+        source_ontology: OWL
+        owl_properties: []
+      Agent:
+        description: A resource that acts or has the power to act.
+        keywords:
+        - agent
+        typical_attributes: []
+        relationships: {}
+        properties: {}
+        uri: http://purl.org/dc/terms/Agent
+        source_ontology: OWL
+        owl_properties: []
+      AgentClass:
+        description: A group of agents.
+        keywords:
+        - agent class
+        - agentclass
+        typical_attributes: []
+        relationships: {}
+        properties: {}
+        parent: Class
+        parents:
+        - Class
+        uri: http://purl.org/dc/terms/AgentClass
+        source_ontology: OWL
+        subclass_of: Class
+        owl_properties: []
+      BibliographicResource:
+        description: A book, article, or other documentary resource.
+        keywords:
+        - bibliographic resource
+        - bibliographicresource
+        typical_attributes: []
+        relationships: {}
+        properties: {}
+        uri: http://purl.org/dc/terms/BibliographicResource
+        source_ontology: OWL
+        owl_properties: []
+      FileFormat:
+        description: A digital resource format.
+        keywords:
+        - file format
+        - fileformat
+        typical_attributes: []
+        relationships: {}
+        properties: {}
+        parent: MediaType
+        parents:
+        - MediaType
+        uri: http://purl.org/dc/terms/FileFormat
+        source_ontology: OWL
+        subclass_of: MediaType
+        owl_properties: []
+      Frequency:
+        description: A rate at which something recurs.
+        keywords:
+        - frequency
+        typical_attributes: []
+        relationships: {}
+        properties: {}
+        uri: http://purl.org/dc/terms/Frequency
+        source_ontology: OWL
+        owl_properties: []
+      Jurisdiction:
+        description: The extent or range of judicial, law enforcement, or other authority.
+        keywords:
+        - jurisdiction
+        typical_attributes: []
+        relationships: {}
+        properties: {}
+        parent: LocationPeriodOrJurisdiction
+        parents:
+        - LocationPeriodOrJurisdiction
+        uri: http://purl.org/dc/terms/Jurisdiction
+        source_ontology: OWL
+        subclass_of: LocationPeriodOrJurisdiction
+        owl_properties: []
+      LicenseDocument:
+        description: A legal document giving official permission to do something with a resource.
+        keywords:
+        - license document
+        - licensedocument
+        typical_attributes: []
+        relationships: {}
+        properties: {}
+        parent: RightsStatement
+        parents:
+        - RightsStatement
+        uri: http://purl.org/dc/terms/LicenseDocument
+        source_ontology: OWL
+        subclass_of: RightsStatement
+        owl_properties: []
+      LinguisticSystem:
+        description: A system of signs, symbols, sounds, gestures, or rules used in communication.
+        keywords:
+        - linguistic system
+        - linguisticsystem
+        typical_attributes: []
+        relationships: {}
+        properties: {}
+        uri: http://purl.org/dc/terms/LinguisticSystem
+        source_ontology: OWL
+        owl_properties: []
+      Location:
+        description: A spatial region or named place.
+        keywords:
+        - location
+        typical_attributes: []
+        relationships: {}
+        properties: {}
+        parent: LocationPeriodOrJurisdiction
+        parents:
+        - LocationPeriodOrJurisdiction
+        uri: http://purl.org/dc/terms/Location
+        source_ontology: OWL
+        subclass_of: LocationPeriodOrJurisdiction
+        owl_properties: []
+      LocationPeriodOrJurisdiction:
+        description: A location, period of time, or jurisdiction.
+        keywords:
+        - location, period, or jurisdiction
+        - locationperiodorjurisdiction
+        typical_attributes: []
+        relationships: {}
+        properties: {}
+        uri: http://purl.org/dc/terms/LocationPeriodOrJurisdiction
+        source_ontology: OWL
+        owl_properties: []
+      MediaType:
+        description: A file format or physical medium.
+        keywords:
+        - media type
+        - mediatype
+        typical_attributes: []
+        relationships: {}
+        properties: {}
+        parent: MediaTypeOrExtent
+        parents:
+        - MediaTypeOrExtent
+        uri: http://purl.org/dc/terms/MediaType
+        source_ontology: OWL
+        subclass_of: MediaTypeOrExtent
+        owl_properties: []
+      MediaTypeOrExtent:
+        description: A media type or extent.
+        keywords:
+        - media type or extent
+        - mediatypeorextent
+        typical_attributes: []
+        relationships: {}
+        properties: {}
+        uri: http://purl.org/dc/terms/MediaTypeOrExtent
+        source_ontology: OWL
+        owl_properties: []
+      MethodOfAccrual:
+        description: A method by which resources are added to a collection.
+        keywords:
+        - method of accrual
+        - methodofaccrual
+        typical_attributes: []
+        relationships: {}
+        properties: {}
+        uri: http://purl.org/dc/terms/MethodOfAccrual
+        source_ontology: OWL
+        owl_properties: []
+      MethodOfInstruction:
+        description: A process that is used to engender knowledge, attitudes, and skills.
+        keywords:
+        - method of instruction
+        - methodofinstruction
+        typical_attributes: []
+        relationships: {}
+        properties: {}
+        uri: http://purl.org/dc/terms/MethodOfInstruction
+        source_ontology: OWL
+        owl_properties: []
+      PeriodOfTime:
+        description: An interval of time that is named or defined by its start and end dates.
+        keywords:
+        - period of time
+        - periodoftime
+        typical_attributes: []
+        relationships: {}
+        properties: {}
+        parent: LocationPeriodOrJurisdiction
+        parents:
+        - LocationPeriodOrJurisdiction
+        uri: http://purl.org/dc/terms/PeriodOfTime
+        source_ontology: OWL
+        subclass_of: LocationPeriodOrJurisdiction
+        owl_properties: []
+      PhysicalMedium:
+        description: A physical material or carrier.
+        keywords:
+        - physical medium
+        - physicalmedium
+        typical_attributes: []
+        relationships: {}
+        properties: {}
+        parent: MediaType
+        parents:
+        - MediaType
+        uri: http://purl.org/dc/terms/PhysicalMedium
+        source_ontology: OWL
+        subclass_of: MediaType
+        owl_properties: []
+      PhysicalResource:
+        description: A material thing.
+        keywords:
+        - physical resource
+        - physicalresource
+        typical_attributes: []
+        relationships: {}
+        properties: {}
+        uri: http://purl.org/dc/terms/PhysicalResource
+        source_ontology: OWL
+        owl_properties: []
+      Policy:
+        description: A plan or course of action by an authority, intended to influence and determine decisions,
+          actions, and other matters.
+        keywords:
+        - policy
+        typical_attributes: []
+        relationships: {}
+        properties: {}
+        uri: http://purl.org/dc/terms/Policy
+        source_ontology: OWL
+        owl_properties: []
+      ProvenanceStatement:
+        description: Any changes in ownership and custody of a resource since its creation that are significant
+          for its authenticity, integrity, and interpretation.
+        keywords:
+        - provenance statement
+        - provenancestatement
+        typical_attributes: []
+        relationships: {}
+        properties: {}
+        uri: http://purl.org/dc/terms/ProvenanceStatement
+        source_ontology: OWL
+        owl_properties: []
+      RightsStatement:
+        description: A statement about the intellectual property rights (IPR) held in or over a resource,
+          a legal document giving official permission to do something with a resource, or a statement
+          about access rights.
+        keywords:
+        - rights statement
+        - rightsstatement
+        typical_attributes: []
+        relationships: {}
+        properties: {}
+        uri: http://purl.org/dc/terms/RightsStatement
+        source_ontology: OWL
+        owl_properties: []
+      SizeOrDuration:
+        description: A dimension or extent, or a time taken to play or execute.
+        keywords:
+        - size or duration
+        - sizeorduration
+        typical_attributes: []
+        relationships: {}
+        properties: {}
+        parent: MediaTypeOrExtent
+        parents:
+        - MediaTypeOrExtent
+        uri: http://purl.org/dc/terms/SizeOrDuration
+        source_ontology: OWL
+        subclass_of: MediaTypeOrExtent
+        owl_properties: []
+      Standard:
+        description: A reference point against which other things can be evaluated or compared.
+        keywords:
+        - standard
+        typical_attributes: []
+        relationships: {}
+        properties: {}
+        uri: http://purl.org/dc/terms/Standard
+        source_ontology: OWL
+        owl_properties: []
+  relationships:
+    types: []
+  metrics:
+    auto_discover: false
+    definitions: []
+  validation:
+    min_entity_confidence: 0.5
+    max_entities_per_table: 3
+    ai_validation_enabled: true
+domains: {}

@@ -1,7 +1,7 @@
 resources:
   jobs:
     enriched_first_pipeline_job:
-      name: "${var.app_name}_enriched_first_pipeline"
+      name: "${var.app_name}${var.app_name_suffix}_enriched_first_pipeline"
       budget_policy_id: ${var.budget_policy_id}
       max_concurrent_runs: 5
 
