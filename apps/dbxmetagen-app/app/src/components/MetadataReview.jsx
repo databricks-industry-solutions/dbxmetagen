@@ -114,6 +114,9 @@ function ReviewEditor() {
   const [error, setError] = useState(null)
   const [info, setInfo] = useState(null)
   const [expanded, setExpanded] = useState({})
+  // Bulk table entry: paste a comma/newline-delimited list of fully-scoped names.
+  const [pasteOpen, setPasteOpen] = useState(false)
+  const [pasteText, setPasteText] = useState('')
   // Server-side pagination for the review table list. Page size is intentionally
   // small: each card can expand to ~100 column rows plus FK/ontology detail, so
   // 25 cards/page keeps a page light and reviewable. Backend caps `limit` at 500.
@@ -232,6 +235,74 @@ function ReviewEditor() {
   // O(1) membership for the per-row checkbox render (avoids .includes() per checkbox).
   const selectedTableSet = useMemo(() => new Set(selectedTables), [selectedTables])
   const atSelectionCap = selectedTables.length >= MAX_REVIEW_SELECTION
+
+  // Bulk-add tables from a pasted comma/newline-delimited list of (ideally fully-
+  // scoped) names, e.g. "catalog.schema.t1, catalog.schema.t2". Review & Apply
+  // reviews ONE schema at a time, so every qualified entry must resolve to a single
+  // catalog.schema -- we adopt it (setting the Catalog/Schema selectors) and add the
+  // short names to the current selection, deduped and capped at MAX_REVIEW_SELECTION.
+  // Short ("table") or partial ("schema.table") entries inherit the resolved scope.
+  const addPastedTables = () => {
+    // Per-part char set mirrors the backend _SAFE_IDENT_RE ([a-zA-Z0-9_.\- %]).
+    const IDENT = /^[A-Za-z0-9_\- %]+$/
+    const stripTicks = s => s.trim().replace(/^`|`$/g, '').trim()
+    const raw = pasteText.split(/[\n,]+/).map(stripTicks).filter(Boolean)
+    if (!raw.length) return
+    const parsed = [], invalid = []
+    for (const entry of raw) {
+      const parts = entry.split('.').map(stripTicks)
+      if (parts.length > 3 || parts.some(p => !p || !IDENT.test(p))) { invalid.push(entry); continue }
+      let cat, sch, tbl
+      if (parts.length === 3) [cat, sch, tbl] = parts
+      else if (parts.length === 2) [sch, tbl] = parts
+      else [tbl] = parts
+      parsed.push({ cat, sch, tbl })
+    }
+    const qCats = [...new Set(parsed.map(p => p.cat).filter(Boolean))]
+    const qSchemas = [...new Set(parsed.map(p => p.sch).filter(Boolean))]
+    if (qCats.length > 1 || qSchemas.length > 1) {
+      setInfo(null)
+      setError(`Paste tables from a single schema only — Review & Apply reviews one schema at a time (found ${Math.max(qCats.length, qSchemas.length)} distinct schemas).`)
+      return
+    }
+    const targetCat = qCats[0] || selectedCatalog
+    const targetSch = qSchemas[0] || selectedSchema
+    if (!targetCat || !targetSch) {
+      setInfo(null)
+      setError('Paste fully-scoped names (catalog.schema.table), or select a Catalog and Schema first.')
+      return
+    }
+    // Entries that explicitly named a different scope than the resolved one are skipped.
+    const names = [], wrongScope = []
+    for (const p of parsed) {
+      if ((p.cat && p.cat !== targetCat) || (p.sch && p.sch !== targetSch)) { wrongScope.push(p.tbl); continue }
+      names.push(p.tbl)
+    }
+    // Compute the merge from the current selection (pure; safe under StrictMode).
+    const existing = new Set(selectedTables)
+    let added = 0, overCap = 0
+    const toAdd = []
+    for (const n of names) {
+      if (existing.has(n)) continue
+      if (selectedTables.length + toAdd.length >= MAX_REVIEW_SELECTION) { overCap++; continue }
+      existing.add(n); toAdd.push(n); added++
+    }
+    // Adopt scope + table mode, then apply the merged selection.
+    if (targetCat !== selectedCatalog) setSelectedCatalog(targetCat)
+    if (targetSch !== selectedSchema) setSelectedSchema(targetSch)
+    setScopeMode('table')
+    if (toAdd.length) setSelectedTables(prev => {
+      const set = new Set(prev), next = [...prev]
+      for (const n of toAdd) { if (!set.has(n) && next.length < MAX_REVIEW_SELECTION) { set.add(n); next.push(n) } }
+      return next
+    })
+    const bits = [`Added ${added} table${added === 1 ? '' : 's'}`]
+    if (overCap) bits.push(`${overCap} skipped (cap ${MAX_REVIEW_SELECTION})`)
+    if (wrongScope.length) bits.push(`${wrongScope.length} skipped (different schema)`)
+    if (invalid.length) bits.push(`${invalid.length} skipped (invalid name)`)
+    setError(null); setInfo(bits.join(' · '))
+    setPasteText('')
+  }
 
   const loadData = async (offset = 0) => {
     // Belts-and-suspenders: block (don't silently truncate) a table-mode load that
@@ -619,6 +690,30 @@ function ReviewEditor() {
             </button>
           </div>
         </div>
+        {scopeMode === 'table' && (
+          <div className="pt-1">
+            <button type="button" onClick={() => setPasteOpen(o => !o)} className="text-xs text-blue-600 hover:underline">
+              {pasteOpen ? '− Hide paste box' : '+ Paste table names'}
+            </button>
+            {pasteOpen && (
+              <div className="mt-2 space-y-2">
+                <textarea value={pasteText} onChange={e => setPasteText(e.target.value)} rows={3}
+                  className={inp + ' font-mono text-xs'}
+                  placeholder={'catalog.schema.table1, catalog.schema.table2\ncatalog.schema.table3   (comma- or newline-separated, fully-scoped)'}
+                  aria-label="Paste comma-delimited fully-scoped table names" />
+                <div className="flex flex-wrap items-center gap-2">
+                  <button type="button" onClick={addPastedTables} disabled={!pasteText.trim()}
+                    className="px-3 py-1 bg-slate-700 text-white rounded-md text-xs font-medium hover:bg-slate-800 disabled:opacity-50">
+                    Add tables
+                  </button>
+                  <span className="text-xs text-slate-400">
+                    All tables must be in one schema; the Catalog/Schema selectors follow the pasted names. Added to the selection below (cap {MAX_REVIEW_SELECTION}).
+                  </span>
+                </div>
+              </div>
+            )}
+          </div>
+        )}
         {scopeMode === 'table' && selectedSchema && (
           <div>
             <input value={tableFilter} onChange={e => setTableFilter(e.target.value)} placeholder="Filter tables..." className={inp + ' mb-2 max-w-xs'} aria-label="Filter tables" />
