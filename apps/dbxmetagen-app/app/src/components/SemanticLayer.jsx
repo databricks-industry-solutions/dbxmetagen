@@ -478,7 +478,7 @@ function FoundationRail({ foundation, onNavigate, step2Runner }) {
           title="Analytics pipeline"
           done={analyticsDone}
           current={metadataDone && !analyticsDone}
-          detail={analyticsDone ? 'Ontology, FKs & index built' : (metadataDone ? 'Run it below' : 'Unlocks after core metadata')}
+          detail={analyticsDone ? 'Ontology, FKs & index built' : (metadataDone ? 'Run it below' : 'Run it below (core metadata not detected — you can still run it)')}
         />
         <div className="hidden sm:flex items-center text-slate-300 dark:text-slate-600 self-center">&rarr;</div>
         <Step
@@ -489,10 +489,15 @@ function FoundationRail({ foundation, onNavigate, step2Runner }) {
           detail={metadataDone && analyticsDone ? 'Ready to generate' : 'Unlocks when 1 & 2 are done'}
         />
       </div>
-      {/* Inline analytics-pipeline runner — appears once core metadata is present
-          and the pipeline hasn't produced its outputs yet, so the user never
-          leaves the Semantic Layer to satisfy step 2. */}
-      {metadataDone && !analyticsDone && step2Runner && (
+      {/* Inline analytics-pipeline runner — shown whenever the pipeline hasn't
+          produced its outputs yet, so the user never leaves the Semantic Layer to
+          satisfy step 2. NOT hard-gated on core-metadata detection: the "core
+          metadata" signal reads the knowledge base and can legitimately come back
+          empty even when the user HAS run core metadata (e.g. an app service
+          principal without system-catalog access, or a KB not yet built), so we
+          always let them run advanced metadata — we just don't present it as
+          emphatically as "the next step" until core metadata is detected. */}
+      {!analyticsDone && step2Runner && (
         <div className="mt-3 pt-3 border-t border-amber-200/70 dark:border-amber-700/30">
           {step2Runner}
         </div>
