@@ -3,7 +3,7 @@ Unit tests for PI classification logic.
 
 Tests verify that table classification is correctly determined based on column types,
 particularly ensuring that tables with all "None" column types don't get incorrectly
-classified as "protected".
+classified as "protected". Also tests Luhn checksum validation for credit card detection.
 
 Run with: pytest tests/test_pi_classification.py -v
 """
@@ -21,6 +21,7 @@ from dbxmetagen.processing import (
     get_protected_classification_for_table,
     determine_table_classification,
 )
+from dbxmetagen.deterministic_pi import luhn_checksum
 uninstall_processing_stubs(_saved)
 
 
@@ -119,6 +120,58 @@ class TestEndToEndProtectedClassification:
         assert subclassification == "pii"
         classification = get_protected_classification_for_table(subclassification)
         assert classification == "protected"
+
+
+class TestLuhnChecksum:
+    """Test Luhn algorithm for credit card validation (MG-19 fix)."""
+
+    def test_valid_test_pan_passes_luhn(self):
+        """Well-known test PAN (Visa) should pass Luhn validation."""
+        # 4111111111111111 is a commonly used test Visa card number
+        result = luhn_checksum("4111111111111111")
+        assert result is True, "Valid test PAN should pass Luhn checksum"
+
+    def test_valid_mastercard_pan_passes_luhn(self):
+        """Well-known test MasterCard PAN should pass Luhn validation."""
+        # 5555555555554444 is a commonly used test MasterCard number
+        result = luhn_checksum("5555555555554444")
+        assert result is True, "Valid test MasterCard should pass Luhn checksum"
+
+    def test_invalid_16_digit_fails_luhn(self):
+        """A non-Luhn 16-digit number should fail validation."""
+        # 1234567890123456 is a valid length but fails Luhn
+        result = luhn_checksum("1234567890123456")
+        assert result is False, "Invalid card number should fail Luhn checksum"
+
+    def test_order_reference_fails_luhn(self):
+        """Order reference (16 digits but non-Luhn) should be rejected."""
+        # 1000000000000001 is 16 digits but fails Luhn (non-Luhn format)
+        result = luhn_checksum("1000000000000001")
+        assert result is False, "Order reference should fail Luhn checksum guard"
+
+    def test_luhn_with_spaces_and_dashes(self):
+        """Luhn should work with spaces and dashes in card numbers."""
+        # Same valid test PAN but with spaces and dashes
+        result = luhn_checksum("4111 1111 1111 1111")
+        assert result is True, "Valid PAN with spaces should pass Luhn"
+
+        result = luhn_checksum("4111-1111-1111-1111")
+        assert result is True, "Valid PAN with dashes should pass Luhn"
+
+    def test_too_short_card_fails_luhn(self):
+        """Card number shorter than 13 digits should fail."""
+        result = luhn_checksum("123456789012")
+        assert result is False, "Card too short should fail Luhn"
+
+    def test_too_long_card_fails_luhn(self):
+        """Card number longer than 19 digits should fail."""
+        result = luhn_checksum("12345678901234567890")
+        assert result is False, "Card too long should fail Luhn"
+
+    def test_non_numeric_fails_luhn(self):
+        """Non-numeric input should fail Luhn."""
+        result = luhn_checksum("411111111111111a")
+        assert result is False, "Non-numeric input should fail Luhn"
 
 
 if __name__ == "__main__":

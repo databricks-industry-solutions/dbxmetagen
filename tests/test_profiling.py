@@ -246,15 +246,25 @@ class TestProfilingBuilder:
 
     def test_npi_ndc_cusip_patterns(self, builder):
         # PQ-2: domain identifier formats used by the value-overlap FK bucketing.
-        assert builder.NPI_PATTERN.match("1700000037")       # 10-digit NPI
+        assert builder.NPI_PATTERN.match("1234567893")       # 10-digit (regex shape)
         assert not builder.NPI_PATTERN.match("170000")        # too short
         assert builder.NDC_PATTERN.match("50001-1234-56")     # NDC 5-4-2
         assert builder.CUSIP_PATTERN.match("037833100")       # 9-char alnum
         assert builder.CUSIP_PATTERN.match("30303M102")
 
+    def test_npi_checksum_gate(self, builder):
+        # CR-1: only checksum-valid NPIs pass; arbitrary 10-digit values (phones,
+        # order/account IDs) do not — that was the loose-regex false-positive.
+        assert builder._is_valid_npi("1234567893") is True
+        assert builder._is_valid_npi("1245319599") is True
+        assert builder._is_valid_npi("5551234567") is False   # phone
+        assert builder._is_valid_npi("1234567890") is False   # bad checksum
+
     def test_npi_classified_as_npi_not_numeric_id(self, builder):
-        # A 10-digit NPI must dominant-classify as 'npi', not swallowed by numeric_id.
-        assert builder._detect_pattern(["1700000037", "1700000044", "1700000051"]) == "npi"
+        # CR-1: checksum-VALID NPIs dominant-classify as 'npi'.
+        assert builder._detect_pattern(["1234567893", "1245319599", "1679576722"]) == "npi"
+        # CR-1: arbitrary 10-digit values (e.g. phone-shaped) are NOT npi -> numeric_id.
+        assert builder._detect_pattern(["5551234567", "5551234568", "5551234569"]) == "numeric_id"
         # A generic short integer id still classes as numeric_id.
         assert builder._detect_pattern(["1", "2", "3", "42"]) == "numeric_id"
         # NDC dominant.

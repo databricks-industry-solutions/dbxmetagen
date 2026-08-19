@@ -478,7 +478,7 @@ function FoundationRail({ foundation, onNavigate, step2Runner }) {
           title="Analytics pipeline"
           done={analyticsDone}
           current={metadataDone && !analyticsDone}
-          detail={analyticsDone ? 'Ontology, FKs & index built' : (metadataDone ? 'Run it below' : 'Unlocks after core metadata')}
+          detail={analyticsDone ? 'Ontology, FKs & index built' : (metadataDone ? 'Run it below' : 'Run it below (core metadata not detected — you can still run it)')}
         />
         <div className="hidden sm:flex items-center text-slate-300 dark:text-slate-600 self-center">&rarr;</div>
         <Step
@@ -489,10 +489,15 @@ function FoundationRail({ foundation, onNavigate, step2Runner }) {
           detail={metadataDone && analyticsDone ? 'Ready to generate' : 'Unlocks when 1 & 2 are done'}
         />
       </div>
-      {/* Inline analytics-pipeline runner — appears once core metadata is present
-          and the pipeline hasn't produced its outputs yet, so the user never
-          leaves the Semantic Layer to satisfy step 2. */}
-      {metadataDone && !analyticsDone && step2Runner && (
+      {/* Inline analytics-pipeline runner — shown whenever the pipeline hasn't
+          produced its outputs yet, so the user never leaves the Semantic Layer to
+          satisfy step 2. NOT hard-gated on core-metadata detection: the "core
+          metadata" signal reads the knowledge base and can legitimately come back
+          empty even when the user HAS run core metadata (e.g. an app service
+          principal without system-catalog access, or a KB not yet built), so we
+          always let them run advanced metadata — we just don't present it as
+          emphatically as "the next step" until core metadata is detected. */}
+      {!analyticsDone && step2Runner && (
         <div className="mt-3 pt-3 border-t border-amber-200/70 dark:border-amber-700/30">
           {step2Runner}
         </div>
@@ -1205,10 +1210,10 @@ export default function SemanticLayer({ onNavigate, pipelineStats, onRefreshPipe
   const startGeneration = async (mode = 'replace') => {
     const lines = questionsText.split('\n').filter(l => l.trim())
     if (!selectedTables.length || !lines.length) return
-    if (!foundationReady) {
-      setError('Generate core metadata and run the analytics pipeline before creating metric views.')
-      return
-    }
+    // Soft gate: core metadata + analytics pipeline are RECOMMENDED, not required.
+    // The readiness signal reads the knowledge base and can be empty even when the
+    // user has run them (KB not yet built, or an app SP that can't see a table), so
+    // we let generation proceed rather than hard-block. The amber hint above informs.
     setLoading(true); setError(null); setTaskId(null); setTaskStatus(null)
     try {
       const fqTables = selectedTables.map(t => t.includes('.') ? t : `${selectedCatalog}.${selectedSchema}.${t}`)
@@ -2530,8 +2535,8 @@ export default function SemanticLayer({ onNavigate, pipelineStats, onRefreshPipe
         {!foundationReady && (
           <div className="rounded-lg border border-amber-200 dark:border-amber-700/40 bg-amber-50/80 dark:bg-amber-900/15 px-4 py-3 text-sm text-slate-600 dark:text-slate-300 mb-3">
             {foundation && !foundation.metadataDone
-              ? 'Generate core metadata first — metric views reference table and column descriptions. '
-              : 'Run the analytics pipeline first — metric views build on the ontology, foreign keys, and vector index it produces. '}
+              ? 'For best results, generate core metadata first — metric views reference table and column descriptions. You can still generate now. '
+              : 'For best results, run the analytics pipeline first — metric views build on the ontology, foreign keys, and vector index it produces. You can still generate now. '}
             <button onClick={() => onNavigate?.('jobs')} className="font-semibold text-dbx-lava hover:underline">
               Go to Generate Metadata &rarr;
             </button>
@@ -2539,15 +2544,15 @@ export default function SemanticLayer({ onNavigate, pipelineStats, onRefreshPipe
         )}
         <div className="flex gap-3 flex-wrap">
           <button onClick={() => startGeneration('replace')}
-            disabled={loading || isGenerating || !selectedTables.length || !questionLines.length || !foundationReady}
-            title={!foundationReady ? 'Complete core metadata and the analytics pipeline first' : 'Create new metric view definitions (replaces any pending ones)'}
+            disabled={loading || isGenerating || !selectedTables.length || !questionLines.length}
+            title={!foundationReady ? 'Recommended after core metadata + analytics pipeline, but you can generate now' : 'Create new metric view definitions (replaces any pending ones)'}
             className={btnPrimary}>
             {isGenerating ? 'Generating...' : 'Generate'}
           </button>
           {selectedProjectId && (
             <button onClick={() => { if (!confirm('Regenerate all definitions in this project? Applied metric views are preserved.')) return; startGeneration('replace_all') }}
-              disabled={loading || isGenerating || !selectedTables.length || !questionLines.length || !foundationReady}
-              title={!foundationReady ? 'Complete core metadata and the analytics pipeline first' : 'Replace all draft, validated, and failed definitions in this project and regenerate. Applied metric views are preserved.'}
+              disabled={loading || isGenerating || !selectedTables.length || !questionLines.length}
+              title={!foundationReady ? 'Recommended after core metadata + analytics pipeline, but you can generate now' : 'Replace all draft, validated, and failed definitions in this project and regenerate. Applied metric views are preserved.'}
               className="px-4 py-2 bg-dbx-lava text-white rounded-md text-sm hover:bg-red-700 disabled:opacity-50">
               Regenerate All
             </button>
