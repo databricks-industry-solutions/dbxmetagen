@@ -4,6 +4,18 @@ resources:
       name: "${var.app_name}${var.app_name_suffix}"
       description: "dbxmetagen dashboard: metadata review, profiling, ontology, and graph analytics"
       source_code_path: ../../apps/dbxmetagen-app/app
+      # Deploy the app SOURCE (not just register the resource) and START it as part
+      # of `bundle deploy`, so a SINGLE deploy works from BOTH the CLI and the
+      # workspace-UI bundle editor -- no separate `bundle run` / Apps-page Deploy
+      # step. Without this, `bundle deploy` only registers the app + syncs files
+      # (active_deployment stays empty; app shows "not deployed yet"), and the
+      # config.env below never reaches a running deployment. `lifecycle.started` is
+      # supported only by the DIRECT deploy engine (CLI v1.8.0+ and the workspace
+      # UI, both of which use it). NOTE: on the very FIRST deploy after a destroy it
+      # may start compute but skip the code push -- if the app shows "not deployed
+      # yet", re-run `bundle deploy` (or click the app's run icon once).
+      lifecycle:
+        started: true
       # App runtime env. This is the single source of truth: on a bundle deploy,
       # config.env is sent in the deploy API call and OVERRIDES the app's app.yaml,
       # so app.yaml carries only the `command`. Job IDs use `value_from` (snake_case!)
