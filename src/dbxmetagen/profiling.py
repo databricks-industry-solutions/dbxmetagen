@@ -278,6 +278,29 @@ class ProfilingBuilder:
                 entropy -= p * math.log2(p)
         return entropy
     
+    @staticmethod
+    def _is_valid_npi(npi_str: str) -> bool:
+        """CR-1: Validate a 10-digit NPI using the CMS checksum, so the loose
+        ``^\\d{10}$`` shape (PQ-2) no longer buckets arbitrary 10-digit values
+        (phones, order/account IDs) as ``npi`` for value-overlap FK candidates.
+
+        Issued NPIs are 10 numeric digits (currently beginning with 1 or 2). The
+        check prepends the fixed ISO-7812 issuer prefix ``80840`` and runs Luhn over
+        the whole string; a valid NPI sums to a multiple of 10. (``80840`` is the
+        checksum prefix, NOT part of the NPI itself.)
+        """
+        if not npi_str or len(npi_str) != 10 or not npi_str.isdigit():
+            return False
+        digits = [int(c) for c in ("80840" + npi_str)]
+        total = 0
+        for i, d in enumerate(reversed(digits)):
+            if i % 2 == 1:
+                d *= 2
+                if d > 9:
+                    d -= 9
+            total += d
+        return total % 10 == 0
+
     def _detect_pattern(self, sample_values: List[str]) -> str:
         """Detect common patterns in string values."""
         if not sample_values:
@@ -298,8 +321,8 @@ class ProfilingBuilder:
                 patterns["date"] += 1
             elif self.NDC_PATTERN.match(val_str):
                 patterns["ndc"] += 1
-            elif self.NPI_PATTERN.match(val_str):
-                patterns["npi"] += 1     # 10-digit; checked before generic numeric_id
+            elif self.NPI_PATTERN.match(val_str) and self._is_valid_npi(val_str):
+                patterns["npi"] += 1     # CR-1: 10-digit AND checksum-valid (else numeric_id)
             elif self.CUSIP_PATTERN.match(val_str) and not val_str.isdigit():
                 patterns["cusip"] += 1   # alnum 9-char (pure-digit handled by numeric_id)
             elif self.NUMERIC_ID_PATTERN.match(val_str):
