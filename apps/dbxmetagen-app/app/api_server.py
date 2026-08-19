@@ -6044,7 +6044,7 @@ def get_coverage_holistic(catalog: Optional[str] = None):
                    SUM(CASE WHEN has_pii = true OR has_phi = true THEN 1 ELSE 0 END) as with_pii,
                    SUM(CASE WHEN domain IS NOT NULL AND domain != '' THEN 1 ELSE 0 END) as with_domain
             FROM {fq('table_knowledge_base')}
-            WHERE LOWER(table_name) LIKE LOWER('{cat}.%')
+            WHERE LOWER(catalog) = LOWER('{cat}')
         """)
         if rows:
             r = rows[0]

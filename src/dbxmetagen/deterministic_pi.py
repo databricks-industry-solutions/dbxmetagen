@@ -271,7 +271,7 @@ def classify_column(
     detected_entities = set()
     results = analyze_column(analyzer, column_data, score_threshold=score_threshold)
 
-    for cell_idx, (cell_value, cell_results) in enumerate(zip(column_data, results)):
+    for cell_value, cell_results in zip(column_data, results):
         cell_str = str(cell_value) if cell_value is not None else ""
         for res in cell_results:
             # Skip ignored entities

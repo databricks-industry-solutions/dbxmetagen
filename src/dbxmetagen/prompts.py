@@ -960,6 +960,7 @@ class PIPrompt(Prompt):
                         - If Presidio finds PII, and there is also medical information present: classify as phi with high confidence.
                         - You find PII Presidio missed: Proceed with caution. If it's a clear type (person name, email), confidence 0.7-0.9. If borderline or context-dependent, confidence 0.5-0.7.
                         - Presidio finds nothing but you suspect PII: Only override if you are confident. Lower confidence (0.4-0.6) reflects that Presidio missed it.
+                        - This confidence-lowering applies to PII/PHI only. `medical_information` (de-identified clinical content per rule 8 -- diagnosis/procedure codes, drug/lab/medication names, structured lab values) is classified on the column's CONTENT and is EXPECTED to have empty Presidio results, since Presidio flags PII entities, not medical vocabulary. Classify medical_information with normal confidence based on the content -- do NOT lower it merely because Presidio found nothing.
                     11. If lineage information (upstream/downstream tables) is provided, use it as additional context for understanding the data flow and purpose of the table. This can help disambiguate borderline classifications.
                     """,
                 },
