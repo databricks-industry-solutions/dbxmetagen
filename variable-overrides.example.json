@@ -29,5 +29,8 @@
   "budget_policy_id": "0123456789ABCDEF",
 
   "_comment_app_name": "Alternate app name. app_name_suffix appends to BOTH the app display name and the job-name prefix, so multiple instances can coexist in one workspace (the app is a singleton by name). e.g. \"-dev\". Honored by grant_app_permissions.sh too.",
-  "app_name_suffix": "-dev"
+  "app_name_suffix": "-dev",
+
+  "_comment_app_lifecycle": "ONE-STEP DEPLOY (DIRECT engine only -- workspace UI + fresh CLI). Set {\"started\": true} so a single `bundle deploy` also deploys the app source and starts it (no separate `bundle run` / run-icon click). OMIT (default {}) if your bundle state is on the TERRAFORM engine -- an older deploy.sh/CLI lineage -- because terraform rejects `started` at build time; there, start the app with `bundle run dbxmetagen_app` (deploy.sh does this automatically).",
+  "app_lifecycle": { "started": true }
 }

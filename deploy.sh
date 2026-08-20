@@ -133,6 +133,13 @@ if [ "$_have_catalog" = false ]; then
 fi
 
 # --- Deploy (wheel builds via the artifacts.build hook) ---
+# The app_lifecycle variable defaults to {} (no `started` field), which is safe on
+# BOTH deploy engines -- so this build never trips the terraform engine's
+# "lifecycle.started is only supported in direct deployment mode" error, regardless of
+# whether this bundle's state is on terraform (legacy) or direct. The `bundle run`
+# step below deploys the app source AND starts it, so the started lifecycle is not
+# needed here. (A complex var cannot be set via --var/BUNDLE_VAR_*; the one-step
+# started:true is opt-in via variable-overrides.json on the direct engine only.)
 echo ""
 echo "=== bundle deploy (target=${TARGET}, profile=${PROFILE}) ==="
 databricks bundle deploy -t "$TARGET" -p "$PROFILE" "${DEPLOY_VARS[@]}"

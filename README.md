@@ -105,18 +105,28 @@ from any tool: notebooks, dashboards, Genie spaces, agents, or your own applicat
 
    Options **1**, **2**, and **3** are equivalent, fully-supported peers: they run
    the same bundle, build the wheel via the `artifacts.build` hook, and register the
-   jobs + app. The app resource sets **`lifecycle.started: true`**, so on the
-   **direct** deploy engine (used by the workspace UI and recent CLIs) a single
-   deploy also deploys the app source and starts it — no separate "start" step.
-   (On the older terraform engine, or to be explicit, run `bundle run dbxmetagen_app`
-   / click the app's run icon to start it. On a **cold first deploy** — a brand-new
-   app, or right after `bundle destroy` — the direct engine may start compute but
-   skip the code push; if the app shows "not deployed yet," just deploy once more.)
+   jobs + app. By default (`app_lifecycle` = `{}`) `bundle deploy` registers the app
+   and syncs its files but does **not** start it — you start it with a `bundle run`
+   (Options 1/2 do this for you; in the UI, click the app's run icon). This default is
+   safe on **both** deploy engines. For a true **one-step** deploy on the **direct**
+   engine (workspace UI + fresh CLI) — where a single `bundle deploy` also pushes the
+   app source and starts it — set `app_lifecycle` to `{"started": true}` (see the UI
+   step below / `variable-overrides.example.json`). On a **cold first deploy** with
+   `started:true` — a brand-new app, or right after `bundle destroy` — the direct
+   engine may start compute but skip the code push; if the app shows "not deployed
+   yet," just deploy once more.
+
+   > **Why not `started:true` by default?** The `started` field is **direct-engine-only**.
+   > A bundle whose state was created by an older `deploy.sh`/CLI run stays on the
+   > **terraform** engine (the CLI does not auto-migrate), and terraform **rejects**
+   > `started` at build time (`Error: lifecycle.started is only supported in direct
+   > deployment mode`). The `{}` default keeps every existing customer deploying
+   > unchanged; direct-engine users opt into one-step with one override line.
 
    **Option 1 — CLI** (each step visible; best for CI):
    ```bash
-   databricks bundle deploy -t dev -p <your-profile>                  # builds wheel + registers jobs & app; with lifecycle.started (direct engine) also deploys app source + starts it
-   databricks bundle run   -t dev -p <your-profile> dbxmetagen_app    # explicitly deploy app source + start (required on the terraform engine; harmless belt-and-suspenders on direct)
+   databricks bundle deploy -t dev -p <your-profile>                  # builds wheel + registers jobs & app (does not start it by default)
+   databricks bundle run   -t dev -p <your-profile> dbxmetagen_app    # deploy app source + start the app
    scripts/grant_app_permissions.sh -t dev -p <your-profile>          # UC grants + Vector Search endpoint (only needed for OBO / app-SP catalog access)
    ```
    On a cold first deploy that shows "not deployed yet," run `bundle deploy` again
@@ -160,31 +170,35 @@ from any tool: notebooks, dashboards, Genie spaces, agents, or your own applicat
       `.databricks/bundle/<target>/variable-overrides.json` **inside your Git
       Folder** — the same file the CLI reads (gitignored, so not committed). The ⋮
       editor manages it; you don't create it by hand.
+      **For a one-step deploy (recommended in the UI), also add**
+      `"app_lifecycle": {"started": true}` **here** — the UI always uses the direct
+      engine, so this makes step 4 deploy the app source and start it in one click.
+      (Omit it and you'll start the app manually in step 6.)
    4. Click **Deploy** (the button at the top of the bundle editor). This builds the
-      wheel via the `artifacts.build` hook, registers all jobs + the app, and —
-      because the app resource sets `lifecycle.started: true` — **deploys the app
-      source and starts it in the same step.** Wait for it to finish (a few minutes;
-      it installs the wheel). You do **not** need a separate start action.
+      wheel via the `artifacts.build` hook and registers all jobs + the app. If you
+      set `app_lifecycle` in step 3, it also **deploys the app source and starts it in
+      the same step** (wait a few minutes; it installs the wheel). Otherwise it only
+      registers/syncs the app — start it in step 6.
    5. **Do NOT use the app's own "Deploy" button on the Apps page** to deploy the
       source — that path reads `app.yaml` (which intentionally carries no env) and
       brings the app up **without** its configuration (you'd get the "CATALOG_NAME
       not set" banner). The **bundle-editor Deploy** in step 4 is what applies the
       app's environment.
-   6. If the app shows **"App has not been deployed yet"** (can happen on a cold
-      first deploy — a brand-new app, or right after a destroy): click **Deploy**
-      again, **or** click the **run icon (▶)** on the `dbxmetagen_app` resource in
-      the bundle editor's **Bundle resources** pane (the UI equivalent of
-      `bundle run dbxmetagen_app`).
+   6. **Start the app** (needed if you did NOT set `app_lifecycle` in step 3, or if
+      the app shows **"App has not been deployed yet"** — which can also happen on a
+      cold first deploy even with `started:true`): click the **run icon (▶)** on the
+      `dbxmetagen_app` resource in the bundle editor's **Bundle resources** pane (the
+      UI equivalent of `bundle run dbxmetagen_app`), **or** click **Deploy** again.
    7. For OBO / app-SP catalog access, run `scripts/grant_app_permissions.sh` from a
       workspace **web terminal**, or grant the app service principal UC access
       manually — see [`docs/MANUAL_DEPLOYMENT.md`](docs/MANUAL_DEPLOYMENT.md).
 
    > **If the app shows the "CATALOG_NAME not set" banner:** it was almost always
    > deployed via the **Apps-page "Deploy" button** (which reads `app.yaml`, no env)
-   > rather than the **bundle-editor Deploy** (which applies the bundle's
-   > `config.env` via `lifecycle.started`). Re-deploy from the bundle editor —
-   > step 4 above — to apply the environment. The CLI paths (Options 1 / 2) always
-   > apply it.
+   > rather than through the **bundle** (which applies the bundle's `config.env` when
+   > the app source is deployed — step 4 with `app_lifecycle` set, or the step-6 run
+   > icon). Deploy the app source through the bundle to apply the environment. The CLI
+   > paths (Options 1 / 2) always apply it via `bundle run`.
 
    > **Only using On-Behalf-Of (OBO) user auth?** (Default is off — skip this if
    > you deploy with `enable_obo=false`.) Two OBO-specific gotchas:
