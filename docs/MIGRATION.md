@@ -3,10 +3,13 @@
 Earlier dbxmetagen releases deployed via a `deploy.sh` script that **generated**
 `databricks.yml`, `app.yaml`, and `resources/apps/dbxmetagen_app.yml` from
 `.template` files. That approach has been **replaced** with a plain Databricks
-Asset Bundles (DAB) deploy: those files are now **static and committed**, there is
-**no `deploy.sh`**, and deployment is `databricks bundle deploy` + `bundle run`
-(or the workspace UI equivalent). See the [Quickstart](../README.md#quickstart)
-and [Workspace UI Deployment](MANUAL_DEPLOYMENT.md) for the new flow.
+Asset Bundles (DAB) deploy: those files are now **static and committed**, and
+deployment is `databricks bundle deploy` + `bundle run` (or the workspace UI
+equivalent). The old **template-generating** `deploy.sh` is gone; a thin,
+fully-supported `deploy.sh` wrapper remains that simply chains those bundle
+commands (and reads a legacy `{target}.env` if present) — it no longer generates
+any YAML. See the [Quickstart](../README.md#quickstart) and [Workspace UI
+Deployment](MANUAL_DEPLOYMENT.md) for the new flow.
 
 This guide is for **existing users upgrading a workspace that was deployed with
 the old `deploy.sh`**. A fresh clone into a new workspace needs none of this.

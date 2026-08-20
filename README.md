@@ -134,6 +134,24 @@ from any tool: notebooks, dashboards, Genie spaces, agents, or your own applicat
    > deployment mode`). The `{}` default keeps every existing customer deploying
    > unchanged; direct-engine users opt into one-step with one override line.
 
+   **Notes (apply to all three options):**
+   - **Grants are separate & optional.** `scripts/grant_app_permissions.sh` grants the
+     app service principal UC access and provisions a Vector Search endpoint — things
+     DAB cannot do natively. Skip it if you're not using OBO and the app SP already has
+     catalog access.
+   - **Jobs-only deploy:** run just `bundle deploy` (CLI) or the bundle **Deploy** (UI)
+     and skip the app start + grants.
+   - **One workspace, one instance:** the app is a singleton by name. To run more than
+     one target/instance in the same workspace, set `app_name_suffix` (e.g. `-dev`) in
+     your overrides so they don't overwrite each other's app.
+   - **No `npm` needed to deploy** — the React frontend ships prebuilt and committed;
+     only contributors who change it rebuild
+     (`cd apps/dbxmetagen-app/app/src && npm install && npm run build`).
+   - **Advanced overrides** (cluster policy, serverless budget, `run_as` SP, app
+     permissions, OBO scopes, lakebase): copy `variable-overrides.advanced.example.json`
+     into `.databricks/bundle/<target>/variable-overrides.json` (CLI) or paste the same
+     keys into the UI's ⋮ **Configure variable overrides** editor.
+
    **Option 1 — CLI** (each step visible; best for CI):
    ```bash
    databricks bundle deploy -t dev -p <your-profile>                  # builds wheel + registers jobs & app (does not start it by default)
@@ -222,28 +240,6 @@ from any tool: notebooks, dashboards, Genie spaces, agents, or your own applicat
    >   `dashboards.genie` on every deploy, so enabling OBO needs no scope wrangling.
    >   Declaring scopes requires the workspace's user-token-passthrough feature; if a
    >   target workspace lacks it, override `user_api_scopes` to `[]` to opt out.
-
-   Notes:
-   - The React frontend is **prebuilt and committed** (`apps/dbxmetagen-app/app/src/dist/`).
-     You do NOT run `npm` to deploy — only contributors who change the frontend rebuild it
-     (`cd apps/dbxmetagen-app/app/src && npm install && npm run build`).
-   - The grants script is separate because DAB cannot grant an app's own service
-     principal UC access or provision a Vector Search endpoint natively. If you are
-     not using OBO and the app SP already has catalog access, you can skip it.
-   - **To deploy jobs only**, do just the `bundle deploy` (CLI) or the bundle Deploy
-     (UI) and skip the app start + grants.
-   - **One workspace, one instance:** the app is a singleton by name. If you deploy
-     more than one target/instance to the same workspace, set `app_name_suffix`
-     (e.g. `-dev`) in your overrides so they don't overwrite each other's app.
-   - **`./deploy.sh` (Option 2 above):** a fully-supported deploy option — it
-     chains the Option 1 commands, reads a `{target}.env` if present, and bridges a
-     pip proxy to `uv`. It is **not** the old template-generating script (no YAML is
-     generated). See Option 2 for details and flags.
-   - **Advanced overrides:** for cluster policy, serverless budget, `run_as` SP,
-     app permissions, OBO scopes, or lakebase, copy
-     `variable-overrides.advanced.example.json` into
-     `.databricks/bundle/<target>/variable-overrides.json` (CLI) or paste the same
-     keys into the UI's ⋮ **Configure variable overrides** editor.
 
 4. Access the app at **Workspace > Apps > dbxmetagen-app** and follow the instructions there.
 
