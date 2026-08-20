@@ -8,7 +8,7 @@
 
   "_comment_optional": "Keys above are the minimal required set. The keys below are common OPTIONAL overrides (node type, compute/cluster policy, serverless budget policy, alternate app name). JSON has no comments, so the _comment_* keys are documentation only -- DAB ignores unknown top-level keys, but delete them if your tooling is strict. Delete any optional key you do not need. For the FULL advanced set (run_as SP, OBO user_api_scopes, app_permissions, Lakebase) copy variable-overrides.advanced.example.json instead.",
 
-  "_comment_node_type": "Job-cluster node type -- must match your cloud. AWS i3.2xlarge (default); Azure Standard_DS4_v2; GCP n2-highmem-8.",
+  "_comment_node_type": "Job-cluster node type -- must match your cloud. AWS i3.2xlarge (default); Azure Standard_D8s_v3; GCP n2-highmem-8.",
   "node_type": "i3.2xlarge",
 
   "_comment_model": "LLM endpoint used by BOTH the jobs and the app (comments, PI, domain, agents). Default databricks-claude-sonnet-4-6. Override to point at a different Foundation Model or provisioned-throughput endpoint.",

@@ -192,7 +192,7 @@ if needed:
 
 | Variable | When to change |
 |----------|---------------|
-| `node_type` | Azure (`Standard_DS4_v2`) or GCP (`n2-highmem-8`) users -- default is AWS `i3.2xlarge` |
+| `node_type` | Azure (`Standard_D8s_v3`) or GCP (`n2-highmem-8`) users -- default is AWS `i3.2xlarge` |
 | `model_endpoint` | To use a different foundation model |
 | `federation_mode` | Set `true` for federated catalogs (Redshift, Snowflake via UC) |
 | `ontology_bundle` | Change to `healthcare`, `financial_services`, etc. |
