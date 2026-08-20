@@ -112,6 +112,31 @@ no policy, you don't need to do anything -- a bare deploy applies none.
 
 ---
 
+## App auto-start on deploy (`app_lifecycle`)
+
+The app manifest previously hardcoded `lifecycle.started: true`, so a single
+`bundle deploy` also deployed the app source and started it. That field is
+**direct-engine-only**: a bundle whose state came from an older `deploy.sh`/CLI run
+stays on the **terraform** engine (the CLI does not auto-migrate), which rejects it
+at build time -- `Error: lifecycle.started is only supported in direct deployment
+mode`.
+
+It is now gated behind the `app_lifecycle` variable, **default `{}`** (safe on both
+engines). What this means when you upgrade:
+
+- **CLI / `deploy.sh`:** nothing changes -- `bundle run dbxmetagen_app` (which
+  `deploy.sh` runs for you) deploys the app source and starts it, on either engine.
+- **Workspace UI:** a bare **Deploy** no longer auto-starts the app. For the previous
+  one-step behavior, add `"app_lifecycle": {"started": true}` in the **⋮ Configure
+  variable overrides** editor (direct engine only -- the UI always uses it). Without
+  it, click the app's **run icon (▶)** once after deploying.
+
+`app_lifecycle` is a *complex* variable, so it can only be set via
+`variable-overrides.json` (the CLI rejects `--var`/`BUNDLE_VAR_*` for complex types).
+Do **not** set `"started": true` on a terraform-state bundle; leave the default `{}`.
+
+---
+
 ## No more `npm` for deployment
 
 The React frontend is **prebuilt and committed** (`apps/dbxmetagen-app/app/src/dist/`).

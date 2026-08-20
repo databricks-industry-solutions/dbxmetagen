@@ -50,7 +50,7 @@ from any tool: notebooks, dashboards, Genie spaces, agents, or your own applicat
 
 ## Quickstart
 
-**Prerequisites:** Databricks CLI (>=0.283.0), Python 3.10+, [uv](https://docs.astral.sh/uv/) (for dependency management), Node.js (for frontend build), a Databricks workspace with Unity Catalog enabled, and a Foundation Model endpoint (e.g. `databricks-claude-sonnet-4-6`).
+**Prerequisites:** a Databricks workspace with Unity Catalog enabled and a Foundation Model endpoint (e.g. `databricks-claude-sonnet-4-6`). For the **CLI / `./deploy.sh`** paths you also need the Databricks CLI (>=0.283.0; recent versions use the direct deploy engine), Python 3.10+, and [uv](https://docs.astral.sh/uv/) (which builds the wheel locally during deploy). The **workspace UI** path needs none of those — it builds the wheel for you. **Node.js/`npm` is not required to deploy** — the React frontend ships prebuilt and committed; only contributors who change the frontend rebuild it.
 
 1. Clone the repo and set your per-workspace bundle variables. `databricks.yml`
    is static and committed — supply `catalog_name`, `schema_name`, and
@@ -94,14 +94,25 @@ from any tool: notebooks, dashboards, Genie spaces, agents, or your own applicat
    - **Azure:** `Standard_D8s_v3`
    - **GCP:** `n2-highmem-8`
 
-3. Deploy. **Pick the path that matches your environment:**
+3. Deploy.
+
+   **Fastest path** (CLI — the most common case, once step 1's variables are set):
+   ```bash
+   databricks bundle deploy -t dev -p <your-profile>          # build wheel + register jobs & app
+   databricks bundle run   -t dev -p <your-profile> dbxmetagen_app   # deploy app source + start it
+   ```
+   Then open **Workspace > Apps > dbxmetagen-app**. (Add `scripts/grant_app_permissions.sh`
+   only if you use OBO or the app service principal needs catalog access.) That's the
+   whole happy path — the options below cover other environments and the details.
+
+   **Or pick the path that matches your environment:**
 
    | Option | Use when | Creates | Notes |
    |--------|----------|---------|-------|
    | **1. CLI — explicit commands** | You can run the Databricks CLI locally / in CI | **All 24 jobs** + app | Each step is visible; best for CI. |
    | **2. `./deploy.sh` — one command** | You can run the CLI and want a single command, or you have a `{target}.env` | **All 24 jobs** + app | Fully supported. Chains Option 1's commands; also reads `{target}.env` and bridges a pip proxy to `uv`. |
    | **3. Workspace UI** | No local machine — you have the bundle editor | **All 24 jobs** + app | First-class peer to the CLI (same bundle + build hook). Grants are manual. |
-   | *Fallback:* Notebook pipeline | You can run **neither** the CLI nor the UI | **8 of 24 jobs** (core only) | True fallback — see [`notebook_deployment_pipeline/README.md`](notebook_deployment_pipeline/README.md). Some dashboard features unavailable. |
+   | *Fallback:* Notebook **deployment** pipeline | You can run **neither** the CLI nor the UI | app + **8 of 24 jobs** (core only) | Deploys the app and core jobs from notebooks via the Python SDK — see [`notebook_deployment_pipeline/README.md`](notebook_deployment_pipeline/README.md). Some dashboard features unavailable. **Different** from the library-only [Partial Install](#partial-install-notebook-only) below. |
 
    Options **1**, **2**, and **3** are equivalent, fully-supported peers: they run
    the same bundle, build the wheel via the `artifacts.build` hook, and register the
@@ -239,6 +250,8 @@ from any tool: notebooks, dashboards, Genie spaces, agents, or your own applicat
 ## Partial Install (Notebook Only)
 
 If you only need core metadata generation (comments, PI, domain) without the web dashboard, managed jobs, semantic layer, or Genie Builder, install the library directly on any Databricks cluster. No CLI, Asset Bundles, or repo clone needed.
+
+> **Not the same as the [notebook _deployment_ pipeline](notebook_deployment_pipeline/README.md).** That pipeline *deploys* the app plus core jobs from notebooks (for environments that can run neither the CLI nor the UI). This section instead just **installs the library** so you can call `main()` directly — no app, no jobs, no bundle.
 
 ### 1. Install
 
