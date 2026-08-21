@@ -515,22 +515,17 @@ def _resolve_mv_deploy_location(
 ) -> tuple[str, str]:
     """Choose the ``(catalog, schema)`` where a metric view should be CREATEd.
 
-    Normally the metric view lands in its SOURCE table's own catalog/schema (parsed
-    from the fully-qualified ``catalog.schema.table`` source). But a foreign
-    (federated) source catalog is **read-only** -- Databricks rejects any CREATE
-    inside it ("Not supported (read-only)"), so deriving the deploy location from the
-    source would make ``apply_metric_views`` fail 100% of the time on federated
-    sources. When ``federation_mode`` is set we therefore deploy into the LOCAL
-    default catalog/schema instead; the view still *references* the foreign source, it
-    just *lives* in a writable UC catalog.
+    ALWAYS the local output schema (``default_catalog``/``default_schema`` --
+    i.e. the configured metadata_results location), NEVER the source table's own
+    catalog/schema. Generated results must not silently land back in a caller's
+    source schema; and a foreign/federated source catalog is read-only anyway
+    (Databricks rejects any CREATE inside it), so the source is never a valid deploy
+    target. The metric view still *references* its source table; it just *lives* in a
+    writable UC catalog we control.
 
-    Falls back to the defaults when the source is missing or not fully qualified.
+    ``source``/``federation_mode`` are retained for signature stability (and a possible
+    future explicit-override hook) but no longer change the location.
     """
-    if federation_mode:
-        return default_catalog, default_schema
-    src_parts = source.split(".") if source else []
-    if len(src_parts) >= 3:
-        return src_parts[0], src_parts[1]
     return default_catalog, default_schema
 
 
@@ -1156,19 +1151,19 @@ class SemanticLayerGenerator:
                     errors = (errors or []) + validate_materialization(defn)
 
                 if not errors and self.config.validate_before_store:
-                    # Dry-run in the SAME catalog/schema the view will actually deploy to.
-                    # apply_metric_views() derives the deploy location from the SOURCE table
-                    # (not config), so a view dry-run'd in config.catalog/schema could still
-                    # fail apply in the source's location (cross-catalog perms / referencing)
-                    # -- a "validated" view that fails on apply. Match apply's location here.
+                    # Dry-run the CREATE in the LOCAL metadata_results schema
+                    # (config.catalog_name/schema_name) -- a UC-native, always-writable
+                    # location we can freely CREATE/DROP in. We do NOT dry-run in the source
+                    # table's catalog: a federated/foreign source catalog is read-only, so a
+                    # source-located dry-run fails with UC_LAKEHOUSE_FEDERATION_WRITES_NOT_ALLOWED
+                    # even though the definition (which only *references* the foreign source) is
+                    # valid. apply_metric_views() likewise keeps federated sources out of the
+                    # foreign catalog via _resolve_mv_deploy_location.
                     # NOTE: we intentionally do NOT emit the materialization block in the
                     # dry-run -- it would provision a Lakeflow pipeline. The block is
                     # validated structurally by validate_materialization() above.
                     dry_run_name = f"{mv_name}_dry_run"
-                    src_parts = source.split(".") if source else []
-                    dry_cat = src_parts[0] if len(src_parts) >= 3 else self.config.catalog_name
-                    dry_sch = src_parts[1] if len(src_parts) >= 3 else self.config.schema_name
-                    fq_dry = f"{dry_cat}.{dry_sch}.{dry_run_name}"
+                    fq_dry = f"{self.config.catalog_name}.{self.config.schema_name}.{dry_run_name}"
                     try:
                         yaml_body = self._definition_to_yaml(defn, include_materialization=False)
                         self.spark.sql(

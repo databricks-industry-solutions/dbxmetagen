@@ -18,6 +18,23 @@ variables:
       workspace (e.g. different targets or teams) without them overwriting
       each other's single app resource.
     default: ""
+  app_lifecycle:
+    description: >-
+      App lifecycle block for the app resource. Default {} is SAFE ON BOTH deploy
+      engines -- `bundle deploy` registers the app + syncs files, and you start it
+      with `bundle run dbxmetagen_app` (deploy.sh does this for you; in the UI, click
+      the run icon on the app resource). Set it to {"started": true} for a ONE-STEP
+      deploy that also deploys the app source and starts it -- ONLY on the DIRECT
+      engine (the workspace UI and fresh CLI deploys). IMPORTANT: the `started` field
+      is DIRECT-ENGINE-ONLY; a bundle whose state was created by an older deploy.sh/CLI
+      run stays on the TERRAFORM engine (the CLI does not auto-migrate) and terraform
+      REJECTS `started` at build time ("lifecycle.started is only supported in direct
+      deployment mode"). This is a COMPLEX variable, so it can only be overridden via
+      variable-overrides.json (NOT via --var or BUNDLE_VAR_*, which the CLI rejects for
+      complex types). UI one-step: add "app_lifecycle": {"started": true} in the same
+      ⋮ > Configure variable overrides editor where you set catalog_name.
+    type: complex
+    default: {}
   app_display_name:
     description: >-
       Display name shown in the app UI title bar. Overridable via

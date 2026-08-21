@@ -6029,33 +6029,50 @@ def get_coverage_holistic(catalog: Optional[str] = None):
         "avg_confidence": None, "entity_type_count": 0, "fk_count": 0,
     }
     _ALL_TYPES = "('MANAGED','EXTERNAL','VIEW','STREAMING_TABLE','MATERIALIZED_VIEW','FOREIGN')"
+    # Core-metadata presence + type coverage come DIRECTLY from the knowledge base
+    # (needs only SELECT on the KB, which the app SP has). This is the "has core
+    # metadata run?" signal, so it must NOT be gated behind reading the table
+    # inventory: the old query LEFT-JOINed the KB onto system.information_schema.tables,
+    # so a principal that can't read system.information_schema (e.g. an app service
+    # principal without system-catalog access, no OBO) got an empty left side ->
+    # zero joined rows -> profiled/with_comments = 0 -> "not generated yet" even with a
+    # fully-populated KB. Query the KB itself: if rows exist for the catalog, metadata ran.
     try:
         rows = execute_sql(f"""
-            SELECT COUNT(*) as total_tables,
-                   COUNT(kb.table_name) as profiled,
-                   SUM(CASE WHEN kb.comment IS NOT NULL AND kb.comment != '' THEN 1 ELSE 0 END) as with_comments,
-                   SUM(CASE WHEN kb.has_pii = true OR kb.has_phi = true THEN 1 ELSE 0 END) as with_pii,
-                   SUM(CASE WHEN kb.domain IS NOT NULL AND kb.domain != '' THEN 1 ELSE 0 END) as with_domain
-            FROM (
-                SELECT DISTINCT table_catalog, table_schema, table_name
-                FROM system.information_schema.tables
-                WHERE table_catalog = '{cat}'
-                  AND table_schema NOT IN ('information_schema','__internal')
-                  AND table_type IN {_ALL_TYPES}
-                  AND NOT table_name RLIKE '^(__|event_log_[0-9a-f]{{8}}_)'
-            ) t
-            LEFT JOIN {fq('table_knowledge_base')} kb
-              ON LOWER(CONCAT(t.table_catalog, '.', t.table_schema, '.', t.table_name)) = LOWER(kb.table_name)
+            SELECT COUNT(*) as profiled,
+                   SUM(CASE WHEN comment IS NOT NULL AND comment != '' THEN 1 ELSE 0 END) as with_comments,
+                   SUM(CASE WHEN has_pii = true OR has_phi = true THEN 1 ELSE 0 END) as with_pii,
+                   SUM(CASE WHEN domain IS NOT NULL AND domain != '' THEN 1 ELSE 0 END) as with_domain
+            FROM {fq('table_knowledge_base')}
+            WHERE LOWER(catalog) = LOWER('{cat}')
         """)
         if rows:
             r = rows[0]
-            result["total_tables"] = int(r.get("total_tables") or 0)
             result["profiled"] = int(r.get("profiled") or 0)
             result["with_comments"] = int(r.get("with_comments") or 0)
             result["with_pii"] = int(r.get("with_pii") or 0)
             result["with_domain"] = int(r.get("with_domain") or 0)
     except Exception as e:
-        logger.warning("holistic: main coverage query failed: %s", e)
+        logger.warning("holistic: KB coverage query failed: %s", e)
+
+    # Denominator only ("X of Y tables"): total table count from the inventory. This is
+    # a nice-to-have; wrapped separately so that if it fails (e.g. the SP can't read
+    # system.information_schema) it leaves total_tables at 0 WITHOUT zeroing the
+    # KB-derived signal above. (Catalog-local information_schema is the SP-safe form --
+    # tracked as part of the broader "SP-safe metadata reads" sweep.)
+    try:
+        trows = execute_sql(f"""
+            SELECT COUNT(*) as total_tables
+            FROM system.information_schema.tables
+            WHERE table_catalog = '{cat}'
+              AND table_schema NOT IN ('information_schema','__internal')
+              AND table_type IN {_ALL_TYPES}
+              AND NOT table_name RLIKE '^(__|event_log_[0-9a-f]{{8}}_)'
+        """)
+        if trows:
+            result["total_tables"] = int(trows[0].get("total_tables") or 0)
+    except Exception as e:
+        logger.warning("holistic: total_tables inventory query failed: %s", e)
     cat_like = f"{cat}.%"
     try:
         onto = execute_sql(f"""
@@ -9214,12 +9231,21 @@ def _inject_fk_joins(plan_views: list[dict], tables: list[str], cat: str, sch: s
     return plan_views, fk_rows
 
 
-def _yaml_dry_run(defn: dict, cat: str, sch: str, include_materialization: bool = False) -> Optional[str]:
-    """Attempt CREATE VIEW WITH METRICS LANGUAGE YAML; return error string or None."""
+def _yaml_dry_run(defn: dict, include_materialization: bool = False) -> Optional[str]:
+    """Attempt CREATE VIEW WITH METRICS LANGUAGE YAML; return error string or None.
+
+    The temp validation view is ALWAYS created in the app's own metadata_results schema
+    (``CATALOG``.``SCHEMA``) -- a UC-native, always-writable location we can freely
+    CREATE/read/DROP in. It is deliberately NOT created in the metric view's source
+    catalog: a federated/foreign source catalog is read-only, so a source-located dry-run
+    fails with UC_LAKEHOUSE_FEDERATION_WRITES_NOT_ALLOWED even though the definition (which
+    only *references* the foreign source) is valid. The dry-run view still references the
+    real source; it just *lives* in metadata_results.
+    """
     try:
         yaml_body = _definition_to_yaml(defn, include_materialization=include_materialization)
         mv_name = defn.get("name", "dry_run_test")
-        dry_name = f"`{cat}`.`{sch}`.`_mv_dryrun_{mv_name}`"
+        dry_name = f"`{CATALOG}`.`{SCHEMA}`.`_mv_dryrun_{mv_name}`"
         execute_sql(
             f"CREATE OR REPLACE VIEW {dry_name}\nWITH METRICS LANGUAGE YAML AS $$\n{yaml_body}$$",
             timeout=30,
@@ -9642,7 +9668,7 @@ def _run_sl_generation(
 
             if not errors and defn.get("source"):
                 yaml_err = _yaml_dry_run(
-                    defn, cat, sch,
+                    defn,
                     include_materialization=materialize or bool(defn.get("materialization")),
                 )
                 if yaml_err:
@@ -10210,6 +10236,14 @@ def _apply_materialization_override(defn: dict, req: CreateDefinitionRequest) ->
 @app.post("/api/semantic-layer/definitions/{definition_id}/create")
 def create_metric_view(definition_id: str, req: CreateDefinitionRequest):
     """Deploy a validated definition as a real UC metric view."""
+    # No default output location: the caller MUST pick where the metric view is
+    # deployed. We never silently fall back to the source schema or the app's own
+    # catalog -- results must land in an explicitly-chosen output catalog.schema.
+    if not (req.target_catalog or "").strip() or not (req.target_schema or "").strip():
+        raise HTTPException(
+            400,
+            detail="Select an output catalog and schema before deploying the metric view.",
+        )
     _ensure_semantic_layer_tables()
     row = _fetch_definition(definition_id)
     defn = json.loads(row["json_definition"]) if isinstance(row["json_definition"], str) else row["json_definition"]

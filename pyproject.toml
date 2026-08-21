@@ -1,6 +1,6 @@
 [project]
 name = "dbxmetagen"
-version = "0.10.67"
+version = "0.10.68"
 description = "Generates comments and identifies and classifies other metadata for Delta tables in Databricks."
 readme = "README.md"
 authors = [{ name = "Eli Swanson", email = "eli.swanson@databricks.com" }]
@@ -8,7 +8,12 @@ license = { text = "DB License" }
 requires-python = ">=3.10.12,<3.14.0"
 dependencies = [
     "mlflow==3.11.1",
-    "openai==1.56.1",
+    # Range, not a hard pin: a bare `==` forces pip to DOWNGRADE the runtime's openai
+    # (DBR/serverless ship newer), which then trips the runtime's own langchain-openai/
+    # litellm resolver checks (neither is a dbxmetagen dependency). A range lets pip keep
+    # whatever openai the runtime already has, so no downgrade + no scary conflict warning.
+    # Our openai usage (OpenAI(), chat.completions.create, response types) is stable on 1.x.
+    "openai>=1.56.1,<2",
     "cloudpickle>=3.1.0,<4",
     "pydantic==2.10.3",
     # Cap below 4.18: ydata-profiling 4.18 requires PyYAML>=6.0.3 which conflicts with

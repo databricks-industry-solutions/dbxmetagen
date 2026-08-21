@@ -271,13 +271,18 @@ def classify_column(
     detected_entities = set()
     results = analyze_column(analyzer, column_data, score_threshold=score_threshold)
 
-    for cell_results in results:
+    for cell_value, cell_results in zip(column_data, results):
+        cell_str = str(cell_value) if cell_value is not None else ""
         for res in cell_results:
             # Skip ignored entities
             if res.entity_type in entities_to_ignore:
                 continue
-            if res.entity_type == "CREDIT_CARD" and not luhn_checksum(res.score):
-                continue
+            # For CREDIT_CARD, validate using Luhn checksum on the matched text
+            # (not the confidence score). Extract matched text from cell_str using start:end.
+            if res.entity_type == "CREDIT_CARD":
+                matched_text = cell_str[res.start:res.end]
+                if not luhn_checksum(matched_text):
+                    continue
 
             for typ, ents in entity_map.items():
                 if res.entity_type in ents:

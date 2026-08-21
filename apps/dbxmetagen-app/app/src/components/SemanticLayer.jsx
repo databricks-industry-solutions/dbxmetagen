@@ -478,7 +478,7 @@ function FoundationRail({ foundation, onNavigate, step2Runner }) {
           title="Analytics pipeline"
           done={analyticsDone}
           current={metadataDone && !analyticsDone}
-          detail={analyticsDone ? 'Ontology, FKs & index built' : (metadataDone ? 'Run it below' : 'Unlocks after core metadata')}
+          detail={analyticsDone ? 'Ontology, FKs & index built' : (metadataDone ? 'Run it below' : 'Run it below (core metadata not detected — you can still run it)')}
         />
         <div className="hidden sm:flex items-center text-slate-300 dark:text-slate-600 self-center">&rarr;</div>
         <Step
@@ -489,10 +489,15 @@ function FoundationRail({ foundation, onNavigate, step2Runner }) {
           detail={metadataDone && analyticsDone ? 'Ready to generate' : 'Unlocks when 1 & 2 are done'}
         />
       </div>
-      {/* Inline analytics-pipeline runner — appears once core metadata is present
-          and the pipeline hasn't produced its outputs yet, so the user never
-          leaves the Semantic Layer to satisfy step 2. */}
-      {metadataDone && !analyticsDone && step2Runner && (
+      {/* Inline analytics-pipeline runner — shown whenever the pipeline hasn't
+          produced its outputs yet, so the user never leaves the Semantic Layer to
+          satisfy step 2. NOT hard-gated on core-metadata detection: the "core
+          metadata" signal reads the knowledge base and can legitimately come back
+          empty even when the user HAS run core metadata (e.g. an app service
+          principal without system-catalog access, or a KB not yet built), so we
+          always let them run advanced metadata — we just don't present it as
+          emphatically as "the next step" until core metadata is detected. */}
+      {!analyticsDone && step2Runner && (
         <div className="mt-3 pt-3 border-t border-amber-200/70 dark:border-amber-700/30">
           {step2Runner}
         </div>
@@ -631,10 +636,16 @@ export default function SemanticLayer({ onNavigate, pipelineStats, onRefreshPipe
     } catch {}
   }, [materialize, materializationSchedule, matSchedulePreset])
 
+  // The app's configured output schema (metadata_results). This is the deploy-target
+  // default -- we NEVER derive the deploy location from the source table's schema (that
+  // silently landed metric views in the source, and fails outright on a read-only
+  // federated source). The user may change it, but a deploy always requires an
+  // explicitly-chosen output catalog.schema.
+  const configOutputTarget = (selectedCatalog && selectedSchema) ? `${selectedCatalog}.${selectedSchema}` : ''
+  const isValidTarget = (t) => /^[^.]+\.[^.]+$/.test(t || '')
   const getDefaultTarget = (d) => {
     if (d.deployed_catalog && d.deployed_schema) return `${d.deployed_catalog}.${d.deployed_schema}`
-    const parts = d.source_table?.split('.') || []
-    return parts.length >= 3 ? `${parts[0]}.${parts[1]}` : ''
+    return ''  // no source fallback -- an output schema must be chosen explicitly
   }
   const getEffectiveTarget = (d) => {
     if (globalTargetOverride) return globalTargetOverride
@@ -666,24 +677,18 @@ export default function SemanticLayer({ onNavigate, pipelineStats, onRefreshPipe
     return body
   }
 
-  const schemaOptions = [...new Set(
-    definitions.map(d => getDefaultTarget(d)).filter(Boolean)
-  )]
+  const schemaOptions = [...new Set([
+    ...(configOutputTarget ? [configOutputTarget] : []),
+    ...definitions.map(d => getDefaultTarget(d)).filter(Boolean),
+  ])]
 
-  // Auto-set "Create target" to most common catalog.schema from selected tables
+  // Default the deploy target to the app's OUTPUT schema (metadata_results), never the
+  // source tables' schema. The user can override it; if config exposes no schema it stays
+  // empty and the deploy actions are gated until an output catalog.schema is chosen.
   useEffect(() => {
-    if (userEditedTargetRef.current || !selectedTables.length) return
-    const counts = {}
-    for (const t of selectedTables) {
-      const parts = t.split('.')
-      if (parts.length >= 3) {
-        const key = `${parts[0]}.${parts[1]}`
-        counts[key] = (counts[key] || 0) + 1
-      }
-    }
-    const best = Object.entries(counts).sort((a, b) => b[1] - a[1])[0]
-    if (best) setGlobalTargetOverride(best[0])
-  }, [selectedTables])
+    if (userEditedTargetRef.current) return
+    if (!globalTargetOverride && configOutputTarget) setGlobalTargetOverride(configOutputTarget)
+  }, [configOutputTarget])
 
   // --- Init ---
   useEffect(() => {
@@ -1205,10 +1210,10 @@ export default function SemanticLayer({ onNavigate, pipelineStats, onRefreshPipe
   const startGeneration = async (mode = 'replace') => {
     const lines = questionsText.split('\n').filter(l => l.trim())
     if (!selectedTables.length || !lines.length) return
-    if (!foundationReady) {
-      setError('Generate core metadata and run the analytics pipeline before creating metric views.')
-      return
-    }
+    // Soft gate: core metadata + analytics pipeline are RECOMMENDED, not required.
+    // The readiness signal reads the knowledge base and can be empty even when the
+    // user has run them (KB not yet built, or an app SP that can't see a table), so
+    // we let generation proceed rather than hard-block. The amber hint above informs.
     setLoading(true); setError(null); setTaskId(null); setTaskStatus(null)
     try {
       const fqTables = selectedTables.map(t => t.includes('.') ? t : `${selectedCatalog}.${selectedSchema}.${t}`)
@@ -1459,7 +1464,7 @@ export default function SemanticLayer({ onNavigate, pipelineStats, onRefreshPipe
     const target = getEffectiveTarget(d || {})
     const [tCat, tSch] = target.includes('.') ? target.split('.') : ['', '']
     if (!tCat || !tSch) {
-      setError('No target schema resolved for this metric view')
+      setError('Select an output catalog.schema before deploying (use the Output schema selector).')
       return
     }
     setActionLoading(prev => ({ ...prev, [defId]: 'create' }))
@@ -1490,8 +1495,8 @@ export default function SemanticLayer({ onNavigate, pipelineStats, onRefreshPipe
   const createAllValidated = async () => {
     const validated = definitions.filter(d => d.status === 'validated')
     if (!validated.length) return
-    const anyMissing = validated.some(d => !getEffectiveTarget(d))
-    if (anyMissing) { setError('Some metric views have no target schema resolved'); return }
+    const anyMissing = validated.some(d => !isValidTarget(getEffectiveTarget(d)))
+    if (anyMissing) { setError('Select an output catalog.schema before deploying (use the Output schema selector).'); return }
     setBulkCreating(true)
     setError(null)
     for (const d of validated) setActionLoading(prev => ({ ...prev, [d.definition_id]: 'create' }))
@@ -2530,8 +2535,8 @@ export default function SemanticLayer({ onNavigate, pipelineStats, onRefreshPipe
         {!foundationReady && (
           <div className="rounded-lg border border-amber-200 dark:border-amber-700/40 bg-amber-50/80 dark:bg-amber-900/15 px-4 py-3 text-sm text-slate-600 dark:text-slate-300 mb-3">
             {foundation && !foundation.metadataDone
-              ? 'Generate core metadata first — metric views reference table and column descriptions. '
-              : 'Run the analytics pipeline first — metric views build on the ontology, foreign keys, and vector index it produces. '}
+              ? 'For best results, generate core metadata first — metric views reference table and column descriptions. You can still generate now. '
+              : 'For best results, run the analytics pipeline first — metric views build on the ontology, foreign keys, and vector index it produces. You can still generate now. '}
             <button onClick={() => onNavigate?.('jobs')} className="font-semibold text-dbx-lava hover:underline">
               Go to Generate Metadata &rarr;
             </button>
@@ -2539,15 +2544,15 @@ export default function SemanticLayer({ onNavigate, pipelineStats, onRefreshPipe
         )}
         <div className="flex gap-3 flex-wrap">
           <button onClick={() => startGeneration('replace')}
-            disabled={loading || isGenerating || !selectedTables.length || !questionLines.length || !foundationReady}
-            title={!foundationReady ? 'Complete core metadata and the analytics pipeline first' : 'Create new metric view definitions (replaces any pending ones)'}
+            disabled={loading || isGenerating || !selectedTables.length || !questionLines.length}
+            title={!foundationReady ? 'Recommended after core metadata + analytics pipeline, but you can generate now' : 'Create new metric view definitions (replaces any pending ones)'}
             className={btnPrimary}>
             {isGenerating ? 'Generating...' : 'Generate'}
           </button>
           {selectedProjectId && (
             <button onClick={() => { if (!confirm('Regenerate all definitions in this project? Applied metric views are preserved.')) return; startGeneration('replace_all') }}
-              disabled={loading || isGenerating || !selectedTables.length || !questionLines.length || !foundationReady}
-              title={!foundationReady ? 'Complete core metadata and the analytics pipeline first' : 'Replace all draft, validated, and failed definitions in this project and regenerate. Applied metric views are preserved.'}
+              disabled={loading || isGenerating || !selectedTables.length || !questionLines.length}
+              title={!foundationReady ? 'Recommended after core metadata + analytics pipeline, but you can generate now' : 'Replace all draft, validated, and failed definitions in this project and regenerate. Applied metric views are preserved.'}
               className="px-4 py-2 bg-dbx-lava text-white rounded-md text-sm hover:bg-red-700 disabled:opacity-50">
               Regenerate All
             </button>
@@ -2728,11 +2733,11 @@ export default function SemanticLayer({ onNavigate, pipelineStats, onRefreshPipe
 
           {/* Deploy target override */}
           <div className="flex items-center gap-3 mb-4 p-3 bg-dbx-oat dark:bg-gray-900 rounded-md border dark:border-gray-700 flex-wrap">
-            <span className="text-xs font-medium text-gray-600 dark:text-gray-400 whitespace-nowrap" title="Override deploys all metric views to this schema instead of each view's source table schema">Deploy target override:</span>
+            <span className="text-xs font-medium text-gray-600 dark:text-gray-400 whitespace-nowrap" title="Metric views deploy to this output catalog.schema. Required -- results never land in the source table's (possibly read-only/federated) schema.">Output schema <span className="text-red-500">*</span>:</span>
             <select value={schemaOptions.includes(globalTargetOverride) ? globalTargetOverride : (globalTargetOverride || customTargetMode ? '__custom__' : '')}
               onChange={e => { userEditedTargetRef.current = true; if (e.target.value === '__custom__') { setCustomTargetMode(true); setGlobalTargetOverride('') } else { setCustomTargetMode(false); setGlobalTargetOverride(e.target.value) } }}
               className="input-base !text-xs w-56">
-              <option value="">(None - use each view's source schema)</option>
+              <option value="">(Select an output schema — required)</option>
               {schemaOptions.map(s => <option key={s} value={s}>{s}</option>)}
               <option value="__custom__">Custom catalog.schema...</option>
             </select>
@@ -2744,8 +2749,13 @@ export default function SemanticLayer({ onNavigate, pipelineStats, onRefreshPipe
             {globalTargetOverride && !schemaOptions.includes(globalTargetOverride) && !globalTargetOverride.match(/^[^.]+\.[^.]+$/) && (
               <span className="text-[10px] text-red-500">Format: catalog.schema</span>
             )}
+            {!isValidTarget(globalTargetOverride) && (
+              <span className="text-[10px] text-amber-600 dark:text-amber-400">Pick an output catalog.schema to enable deploy</span>
+            )}
             {definitions.filter(d => d.status === 'validated').length > 0 && (
-              <button onClick={createAllValidated} disabled={bulkCreating}
+              <button onClick={createAllValidated}
+                disabled={bulkCreating || definitions.filter(d => d.status === 'validated').some(d => !isValidTarget(getEffectiveTarget(d)))}
+                title={definitions.filter(d => d.status === 'validated').some(d => !isValidTarget(getEffectiveTarget(d))) ? 'Choose an output catalog.schema first' : ''}
                 className="ml-auto px-3 py-1.5 bg-green-600 text-white rounded text-xs hover:bg-green-700 disabled:opacity-50 whitespace-nowrap">
                 {bulkCreating ? 'Creating...' : `Create All Validated (${definitions.filter(d => d.status === 'validated').length})`}
               </button>
@@ -2971,8 +2981,9 @@ export default function SemanticLayer({ onNavigate, pipelineStats, onRefreshPipe
                                   </button>
                                 </>
                               )}
-                              <button onClick={() => { createDefinition(d.definition_id); setOpenMenuId(null) }} disabled={!!busy}
-                                title={d.status === 'applied' ? 'Re-run CREATE OR REPLACE VIEW in Unity Catalog' : 'Deploy this definition as a UC metric view (CREATE OR REPLACE VIEW)'}
+                              <button onClick={() => { createDefinition(d.definition_id); setOpenMenuId(null) }}
+                                disabled={!!busy || !isValidTarget(getEffectiveTarget(d))}
+                                title={!isValidTarget(getEffectiveTarget(d)) ? 'Select an output catalog.schema first (Output schema selector above)' : (d.status === 'applied' ? 'Re-run CREATE OR REPLACE VIEW in Unity Catalog' : 'Deploy this definition as a UC metric view (CREATE OR REPLACE VIEW)')}
                                 className="w-full text-left px-3 py-1.5 text-xs text-green-600 hover:bg-green-50 dark:hover:bg-green-900/20 disabled:opacity-50">
                                 {busy === 'create' ? 'Deploying...' : d.status === 'applied' ? 'Redeploy' : 'Deploy as UC View'}
                               </button>
