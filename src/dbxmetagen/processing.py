@@ -529,6 +529,86 @@ def append_domain_table_row(
     return rows
 
 
+def _resolve_column_content_pairs(response, full_table_name, source_columns):
+    """
+    Decide which (column_name, column_content) pairs to write for one LLM response.
+
+    Returns a list of ``(column_name, content)`` tuples, or ``None`` to signal an
+    unrecoverable mismatch (the caller must then write nothing for this response/chunk).
+
+    Both ``response.columns`` and ``response.column_contents`` are model output; neither
+    carries a column name of its own, so historically they were paired by POSITION -- a
+    single duplicated/dropped entry silently misaligned the whole table (issue #194).
+
+    Behavior:
+    - **Refuse** (return ``None``) when the two model lists differ in length, or when
+      ``response.columns`` contains a duplicate name. In either case the association between
+      a returned name and its content is not recoverable, so any pairing is a guess.
+    - When ``source_columns`` (the chunk's REAL table column names) is known, resolve each
+      description to a real column BY NAME (case-insensitive, trimmed): skip names the model
+      invented (phantom) and report real columns the model left undescribed.
+    - When ``source_columns`` is falsy (direct callers / unit tests), fall back to positional
+      pairing over the equal-length lists (backward compatible for the happy path).
+    """
+    returned_names = list(response.columns)
+    contents = list(response.column_contents)
+
+    if len(returned_names) != len(contents):
+        logger.error(
+            "Column/description count mismatch for %s: model returned %d column name(s) but "
+            "%d description(s). Refusing to assign by position (would misalign the table); "
+            "wrote no column metadata for this chunk. Re-run to fill it.",
+            full_table_name, len(returned_names), len(contents),
+        )
+        return None
+
+    if len(set(returned_names)) != len(returned_names):
+        dupes = sorted({n for n in returned_names if returned_names.count(n) > 1})
+        logger.error(
+            "Duplicate returned column name(s) %s for %s: ambiguous name->description "
+            "mapping. Wrote no column metadata for this chunk. Re-run to fill it.",
+            dupes, full_table_name,
+        )
+        return None
+
+    # Safe now (equal length, unique names): the response's own name -> content map.
+    content_by_name = dict(zip(returned_names, contents))
+
+    if not source_columns:
+        # No ground-truth column names available: preserve legacy positional pairing.
+        return list(zip(returned_names, contents))
+
+    # Resolve against the real table columns BY NAME (case-insensitive, trimmed).
+    returned_by_norm = {str(n).strip().lower(): n for n in returned_names}
+    real_norms = {str(c).strip().lower() for c in source_columns}
+
+    pairs = []
+    undescribed = []
+    for real_col in source_columns:
+        matched_name = returned_by_norm.get(str(real_col).strip().lower())
+        if matched_name is None:
+            undescribed.append(real_col)
+            continue
+        pairs.append((real_col, content_by_name[matched_name]))
+
+    phantom = [n for n in returned_names if str(n).strip().lower() not in real_norms]
+
+    if undescribed:
+        logger.warning(
+            "%s: %d column(s) received no description from the model and were left "
+            "undocumented: %s. Re-run to fill them.",
+            full_table_name, len(undescribed), undescribed,
+        )
+    if phantom:
+        logger.error(
+            "%s: model returned %d name(s) that are not columns of the table: %s. "
+            "Discarded (not written).",
+            full_table_name, len(phantom), phantom,
+        )
+
+    return pairs
+
+
 def append_column_rows(
     config: MetadataConfig,
     rows: List[Row],
@@ -571,27 +651,14 @@ def append_column_rows(
             logger.error(f"Failed to parse presidio results: {e}")
             logger.debug("Presidio parsing error details: %s", str(e)[:200])
 
-    n_cols = len(response.columns)
-    n_contents = len(response.column_contents)
-    if n_cols != n_contents:
-        paired = min(n_cols, n_contents)
-        skipped = (
-            response.columns[paired:]
-            if n_cols > n_contents
-            else response.column_contents[paired:]
-        )
-        skipped_names = [str(s) for s in skipped]
-        logger.warning(
-            "LLM returned %d contents for %d columns. "
-            "Skipped columns (no metadata): %s. Re-run to fill gaps.",
-            n_contents,
-            n_cols,
-            skipped_names,
-        )
+    source_columns = getattr(response, "_source_columns", None)
+    pairs = _resolve_column_content_pairs(response, full_table_name, source_columns)
+    if pairs is None:
+        # Unrecoverable mismatch (see _resolve_column_content_pairs): write nothing for this
+        # chunk rather than misassign. Chunking makes this cost one chunk, not the whole table.
+        return rows
 
-    for i, (column_name, column_content) in enumerate(
-        zip(response.columns, response.column_contents)
-    ):
+    for i, (column_name, column_content) in enumerate(pairs):
         if (
             isinstance(column_content, dict)
             or isinstance(column_content, PIColumnContent)
@@ -2461,6 +2528,13 @@ def get_generated_metadata_data_aware(
         response, _ = chat_response.get_responses(
             prompt_messages, prompt.prompt_content
         )
+        # Carry the chunk's REAL column names on the response so append_column_rows() can
+        # resolve LLM descriptions to columns by name (not by position). `chunk` (pre-sampling)
+        # holds the true column names for this chunk. Never let name-capture break generation.
+        try:
+            response._source_columns = list(chunk.columns)
+        except Exception:
+            logger.debug("Could not capture source columns for %s chunk %d", full_table_name, i)
         # Store presidio results with the response for PI mode
         if hasattr(prompt, "deterministic_results"):
             response.presidio_results = prompt.deterministic_results

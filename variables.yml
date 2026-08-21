@@ -106,8 +106,8 @@ variables:
     description: whether or not to truncate cells longer than the value in word_limit_per_cell
     default: true
   columns_per_call:
-    description: columns per call - this is the number of columns sent to the prompt per chunk
-    default: 20
+    description: columns per call - number of columns sent to the prompt per chunk. Lower values improve column/description alignment reliability (fewer parallel items for the model to keep aligned) at the cost of more LLM calls on wide tables.
+    default: 10
   max_tokens:
     description: maximum tokens for model
     default: 8192
