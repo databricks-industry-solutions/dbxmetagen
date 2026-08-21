@@ -6,7 +6,7 @@ Validates that:
   3. Genie assembler correctly resolves MV locations from different schemas
   4. generate_metric_views() INSERT includes the two deployed columns as NULL
   5. _get_metric_views deduplicates ambiguous short-name matches across schemas
-  6. apply_metric_views deploys to source table's schema (not hardcoded config)
+  6. apply_metric_views deploys to the local output schema (config catalog/schema), never the source
   7. create_genie_space uses deployed_catalog/schema from definition rows
 """
 
@@ -146,8 +146,11 @@ class TestApplyMetricViewsDeployTracking:
 
         update_call = gen.spark.sql.call_args_list[2]
         update_sql = update_call[0][0]
+        # Deploys to the LOCAL output schema (config), NOT the source table's schema.
+        # Source is mycat.bronze.orders but the MV lands in config mycat.mysch.
         assert "deployed_catalog = 'mycat'" in update_sql
-        assert "deployed_schema = 'bronze'" in update_sql
+        assert "deployed_schema = 'mysch'" in update_sql
+        assert "deployed_schema = 'bronze'" not in update_sql
 
     def test_apply_failed_does_not_set_deployed(self, gen):
         defn = {
@@ -473,9 +476,10 @@ class TestGetMetricViewsPassThrough:
 # ── apply_metric_views deploys to source table's schema ──────────────
 
 
-class TestApplyDeploysToSourceSchema:
-    """apply_metric_views() should deploy each MV to its source table's
-    catalog.schema, not to the hardcoded config schema."""
+class TestApplyDeploysToConfigOutputSchema:
+    """apply_metric_views() should deploy each MV to the LOCAL output schema
+    (config catalog.schema / metadata_results), never to the source table's
+    catalog.schema. Generated results must not land back in the source."""
 
     @pytest.fixture
     def gen(self):
@@ -489,7 +493,7 @@ class TestApplyDeploysToSourceSchema:
         row.__getitem__ = lambda self, k: data[k]
         return row
 
-    def test_deploys_to_source_schema_not_config(self, gen):
+    def test_deploys_to_config_output_schema_not_source(self, gen):
         defn = {
             "name": "mv1",
             "source": "prod.gold.fact_table",
@@ -511,11 +515,13 @@ class TestApplyDeploysToSourceSchema:
 
         gen.apply_metric_views()
         create_sql = gen.spark.sql.call_args_list[1][0][0]
-        assert "prod.gold.mv1" in create_sql, "View should be created in source table's schema"
+        # Deploys to the LOCAL output schema (config mycat.mysch), NEVER the source's prod.gold.
+        assert "mycat.mysch.mv1" in create_sql, "View should be created in the config output schema"
+        assert "prod.gold.mv1" not in create_sql, "View must NOT be created in the source schema"
 
         update_sql = gen.spark.sql.call_args_list[2][0][0]
-        assert "deployed_catalog = 'prod'" in update_sql
-        assert "deployed_schema = 'gold'" in update_sql
+        assert "deployed_catalog = 'mycat'" in update_sql
+        assert "deployed_schema = 'mysch'" in update_sql
 
     def test_non_fq_source_falls_back_to_config(self, gen):
         defn = {

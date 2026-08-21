@@ -4,7 +4,7 @@ import logging
 from pydantic import ValidationError
 from typing import Literal, Tuple, Dict, List, Any, Union, Optional
 from openai.types.chat.chat_completion import ChatCompletion
-from pydantic import BaseModel, ConfigDict, field_validator
+from pydantic import BaseModel, ConfigDict, field_validator, PrivateAttr
 from dbxmetagen.config import MetadataConfig
 from dbxmetagen.error_handling import exponential_backoff
 from dbxmetagen.chat_client import ChatClientFactory
@@ -16,6 +16,13 @@ class Response(BaseModel):
     model_config = ConfigDict(extra="forbid")
     table: str
     columns: List[str]
+    # Real (source-of-truth) table column names for the chunk this response covers.
+    # A PrivateAttr, so it is NOT part of the JSON schema sent to the model and does not
+    # trip `extra="forbid"`. Set post-generation (processing.get_generated_metadata_data_aware)
+    # where the chunk DataFrame is still in scope, and used by append_column_rows() to resolve
+    # descriptions to columns BY NAME rather than by position. None => not captured (fall back
+    # to positional pairing for backward compatibility).
+    _source_columns: Optional[List[str]] = PrivateAttr(default=None)
 
 
 PI_CLASSIFICATIONS = Literal["pi", "phi", "pci", "medical_information", "None"]

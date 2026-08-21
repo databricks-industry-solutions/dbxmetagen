@@ -50,7 +50,7 @@ from any tool: notebooks, dashboards, Genie spaces, agents, or your own applicat
 
 ## Quickstart
 
-**Prerequisites:** Databricks CLI (>=0.283.0), Python 3.10+, [uv](https://docs.astral.sh/uv/) (for dependency management), Node.js (for frontend build), a Databricks workspace with Unity Catalog enabled, and a Foundation Model endpoint (e.g. `databricks-claude-sonnet-4-6`).
+**Prerequisites:** a Databricks workspace with Unity Catalog enabled and a Foundation Model endpoint (e.g. `databricks-claude-sonnet-4-6`). For the **CLI / `./deploy.sh`** paths you also need the Databricks CLI (>=0.283.0; recent versions use the direct deploy engine), Python 3.10+, and [uv](https://docs.astral.sh/uv/) (which builds the wheel locally during deploy). The **workspace UI** path needs none of those — it builds the wheel for you. **Node.js/`npm` is not required to deploy** — the React frontend ships prebuilt and committed; only contributors who change the frontend rebuild it.
 
 1. Clone the repo and set your per-workspace bundle variables. `databricks.yml`
    is static and committed — supply `catalog_name`, `schema_name`, and
@@ -94,29 +94,68 @@ from any tool: notebooks, dashboards, Genie spaces, agents, or your own applicat
    - **Azure:** `Standard_D8s_v3`
    - **GCP:** `n2-highmem-8`
 
-3. Deploy. **Pick the path that matches your environment:**
+3. Deploy.
+
+   **Fastest path** (CLI — the most common case, once step 1's variables are set):
+   ```bash
+   databricks bundle deploy -t dev -p <your-profile>          # build wheel + register jobs & app
+   databricks bundle run   -t dev -p <your-profile> dbxmetagen_app   # deploy app source + start it
+   ```
+   Then open **Workspace > Apps > dbxmetagen-app**. (Add `scripts/grant_app_permissions.sh`
+   only if you use OBO or the app service principal needs catalog access.) That's the
+   whole happy path — the options below cover other environments and the details.
+
+   **Or pick the path that matches your environment:**
 
    | Option | Use when | Creates | Notes |
    |--------|----------|---------|-------|
    | **1. CLI — explicit commands** | You can run the Databricks CLI locally / in CI | **All 24 jobs** + app | Each step is visible; best for CI. |
    | **2. `./deploy.sh` — one command** | You can run the CLI and want a single command, or you have a `{target}.env` | **All 24 jobs** + app | Fully supported. Chains Option 1's commands; also reads `{target}.env` and bridges a pip proxy to `uv`. |
    | **3. Workspace UI** | No local machine — you have the bundle editor | **All 24 jobs** + app | First-class peer to the CLI (same bundle + build hook). Grants are manual. |
-   | *Fallback:* Notebook pipeline | You can run **neither** the CLI nor the UI | **8 of 24 jobs** (core only) | True fallback — see [`notebook_deployment_pipeline/README.md`](notebook_deployment_pipeline/README.md). Some dashboard features unavailable. |
+   | *Fallback:* Notebook **deployment** pipeline | You can run **neither** the CLI nor the UI | app + **8 of 24 jobs** (core only) | Deploys the app and core jobs from notebooks via the Python SDK — see [`notebook_deployment_pipeline/README.md`](notebook_deployment_pipeline/README.md). Some dashboard features unavailable. **Different** from the library-only [Partial Install](#partial-install-notebook-only) below. |
 
    Options **1**, **2**, and **3** are equivalent, fully-supported peers: they run
    the same bundle, build the wheel via the `artifacts.build` hook, and register the
-   jobs + app. The app resource sets **`lifecycle.started: true`**, so on the
-   **direct** deploy engine (used by the workspace UI and recent CLIs) a single
-   deploy also deploys the app source and starts it — no separate "start" step.
-   (On the older terraform engine, or to be explicit, run `bundle run dbxmetagen_app`
-   / click the app's run icon to start it. On a **cold first deploy** — a brand-new
-   app, or right after `bundle destroy` — the direct engine may start compute but
-   skip the code push; if the app shows "not deployed yet," just deploy once more.)
+   jobs + app. By default (`app_lifecycle` = `{}`) `bundle deploy` registers the app
+   and syncs its files but does **not** start it — you start it with a `bundle run`
+   (Options 1/2 do this for you; in the UI, click the app's run icon). This default is
+   safe on **both** deploy engines. For a true **one-step** deploy on the **direct**
+   engine (workspace UI + fresh CLI) — where a single `bundle deploy` also pushes the
+   app source and starts it — set `app_lifecycle` to `{"started": true}` (see the UI
+   step below / `variable-overrides.example.json`). On a **cold first deploy** with
+   `started:true` — a brand-new app, or right after `bundle destroy` — the direct
+   engine may start compute but skip the code push; if the app shows "not deployed
+   yet," just deploy once more.
+
+   > **Why not `started:true` by default?** The `started` field is **direct-engine-only**.
+   > A bundle whose state was created by an older `deploy.sh`/CLI run stays on the
+   > **terraform** engine (the CLI does not auto-migrate), and terraform **rejects**
+   > `started` at build time (`Error: lifecycle.started is only supported in direct
+   > deployment mode`). The `{}` default keeps every existing customer deploying
+   > unchanged; direct-engine users opt into one-step with one override line.
+
+   **Notes (apply to all three options):**
+   - **Grants are separate & optional.** `scripts/grant_app_permissions.sh` grants the
+     app service principal UC access and provisions a Vector Search endpoint — things
+     DAB cannot do natively. Skip it if you're not using OBO and the app SP already has
+     catalog access.
+   - **Jobs-only deploy:** run just `bundle deploy` (CLI) or the bundle **Deploy** (UI)
+     and skip the app start + grants.
+   - **One workspace, one instance:** the app is a singleton by name. To run more than
+     one target/instance in the same workspace, set `app_name_suffix` (e.g. `-dev`) in
+     your overrides so they don't overwrite each other's app.
+   - **No `npm` needed to deploy** — the React frontend ships prebuilt and committed;
+     only contributors who change it rebuild
+     (`cd apps/dbxmetagen-app/app/src && npm install && npm run build`).
+   - **Advanced overrides** (cluster policy, serverless budget, `run_as` SP, app
+     permissions, OBO scopes, lakebase): copy `variable-overrides.advanced.example.json`
+     into `.databricks/bundle/<target>/variable-overrides.json` (CLI) or paste the same
+     keys into the UI's ⋮ **Configure variable overrides** editor.
 
    **Option 1 — CLI** (each step visible; best for CI):
    ```bash
-   databricks bundle deploy -t dev -p <your-profile>                  # builds wheel + registers jobs & app; with lifecycle.started (direct engine) also deploys app source + starts it
-   databricks bundle run   -t dev -p <your-profile> dbxmetagen_app    # explicitly deploy app source + start (required on the terraform engine; harmless belt-and-suspenders on direct)
+   databricks bundle deploy -t dev -p <your-profile>                  # builds wheel + registers jobs & app (does not start it by default)
+   databricks bundle run   -t dev -p <your-profile> dbxmetagen_app    # deploy app source + start the app
    scripts/grant_app_permissions.sh -t dev -p <your-profile>          # UC grants + Vector Search endpoint (only needed for OBO / app-SP catalog access)
    ```
    On a cold first deploy that shows "not deployed yet," run `bundle deploy` again
@@ -143,7 +182,10 @@ from any tool: notebooks, dashboards, Genie spaces, agents, or your own applicat
      `uv` for the wheel build (corporate-proxy environments).
 
    Flags: `-t/--target`, `-p/--profile`, `--no-app` (jobs/code only, skip app
-   start), `--no-frontend`, `--no-vs`. If no `catalog_name` is found in any source,
+   start), `--yes-frontend` (rebuild the React frontend — **off by default**, since the
+   built `dist/` is committed and shipped as-is; pass this only when the app source
+   changed), `--no-frontend` (explicit skip; now the default), `--no-vs`. If no
+   `catalog_name` is found in any source,
    it prints a clear warning and still deploys (the app then shows a "CATALOG_NAME
    not set" banner until you configure it).
 
@@ -160,31 +202,35 @@ from any tool: notebooks, dashboards, Genie spaces, agents, or your own applicat
       `.databricks/bundle/<target>/variable-overrides.json` **inside your Git
       Folder** — the same file the CLI reads (gitignored, so not committed). The ⋮
       editor manages it; you don't create it by hand.
+      **For a one-step deploy (recommended in the UI), also add**
+      `"app_lifecycle": {"started": true}` **here** — the UI always uses the direct
+      engine, so this makes step 4 deploy the app source and start it in one click.
+      (Omit it and you'll start the app manually in step 6.)
    4. Click **Deploy** (the button at the top of the bundle editor). This builds the
-      wheel via the `artifacts.build` hook, registers all jobs + the app, and —
-      because the app resource sets `lifecycle.started: true` — **deploys the app
-      source and starts it in the same step.** Wait for it to finish (a few minutes;
-      it installs the wheel). You do **not** need a separate start action.
+      wheel via the `artifacts.build` hook and registers all jobs + the app. If you
+      set `app_lifecycle` in step 3, it also **deploys the app source and starts it in
+      the same step** (wait a few minutes; it installs the wheel). Otherwise it only
+      registers/syncs the app — start it in step 6.
    5. **Do NOT use the app's own "Deploy" button on the Apps page** to deploy the
       source — that path reads `app.yaml` (which intentionally carries no env) and
       brings the app up **without** its configuration (you'd get the "CATALOG_NAME
       not set" banner). The **bundle-editor Deploy** in step 4 is what applies the
       app's environment.
-   6. If the app shows **"App has not been deployed yet"** (can happen on a cold
-      first deploy — a brand-new app, or right after a destroy): click **Deploy**
-      again, **or** click the **run icon (▶)** on the `dbxmetagen_app` resource in
-      the bundle editor's **Bundle resources** pane (the UI equivalent of
-      `bundle run dbxmetagen_app`).
+   6. **Start the app** (needed if you did NOT set `app_lifecycle` in step 3, or if
+      the app shows **"App has not been deployed yet"** — which can also happen on a
+      cold first deploy even with `started:true`): click the **run icon (▶)** on the
+      `dbxmetagen_app` resource in the bundle editor's **Bundle resources** pane (the
+      UI equivalent of `bundle run dbxmetagen_app`), **or** click **Deploy** again.
    7. For OBO / app-SP catalog access, run `scripts/grant_app_permissions.sh` from a
       workspace **web terminal**, or grant the app service principal UC access
       manually — see [`docs/MANUAL_DEPLOYMENT.md`](docs/MANUAL_DEPLOYMENT.md).
 
    > **If the app shows the "CATALOG_NAME not set" banner:** it was almost always
    > deployed via the **Apps-page "Deploy" button** (which reads `app.yaml`, no env)
-   > rather than the **bundle-editor Deploy** (which applies the bundle's
-   > `config.env` via `lifecycle.started`). Re-deploy from the bundle editor —
-   > step 4 above — to apply the environment. The CLI paths (Options 1 / 2) always
-   > apply it.
+   > rather than through the **bundle** (which applies the bundle's `config.env` when
+   > the app source is deployed — step 4 with `app_lifecycle` set, or the step-6 run
+   > icon). Deploy the app source through the bundle to apply the environment. The CLI
+   > paths (Options 1 / 2) always apply it via `bundle run`.
 
    > **Only using On-Behalf-Of (OBO) user auth?** (Default is off — skip this if
    > you deploy with `enable_obo=false`.) Two OBO-specific gotchas:
@@ -198,33 +244,13 @@ from any tool: notebooks, dashboards, Genie spaces, agents, or your own applicat
    >   Declaring scopes requires the workspace's user-token-passthrough feature; if a
    >   target workspace lacks it, override `user_api_scopes` to `[]` to opt out.
 
-   Notes:
-   - The React frontend is **prebuilt and committed** (`apps/dbxmetagen-app/app/src/dist/`).
-     You do NOT run `npm` to deploy — only contributors who change the frontend rebuild it
-     (`cd apps/dbxmetagen-app/app/src && npm install && npm run build`).
-   - The grants script is separate because DAB cannot grant an app's own service
-     principal UC access or provision a Vector Search endpoint natively. If you are
-     not using OBO and the app SP already has catalog access, you can skip it.
-   - **To deploy jobs only**, do just the `bundle deploy` (CLI) or the bundle Deploy
-     (UI) and skip the app start + grants.
-   - **One workspace, one instance:** the app is a singleton by name. If you deploy
-     more than one target/instance to the same workspace, set `app_name_suffix`
-     (e.g. `-dev`) in your overrides so they don't overwrite each other's app.
-   - **`./deploy.sh` (Option 2 above):** a fully-supported deploy option — it
-     chains the Option 1 commands, reads a `{target}.env` if present, and bridges a
-     pip proxy to `uv`. It is **not** the old template-generating script (no YAML is
-     generated). See Option 2 for details and flags.
-   - **Advanced overrides:** for cluster policy, serverless budget, `run_as` SP,
-     app permissions, OBO scopes, or lakebase, copy
-     `variable-overrides.advanced.example.json` into
-     `.databricks/bundle/<target>/variable-overrides.json` (CLI) or paste the same
-     keys into the UI's ⋮ **Configure variable overrides** editor.
-
 4. Access the app at **Workspace > Apps > dbxmetagen-app** and follow the instructions there.
 
 ## Partial Install (Notebook Only)
 
 If you only need core metadata generation (comments, PI, domain) without the web dashboard, managed jobs, semantic layer, or Genie Builder, install the library directly on any Databricks cluster. No CLI, Asset Bundles, or repo clone needed.
+
+> **Not the same as the [notebook _deployment_ pipeline](notebook_deployment_pipeline/README.md).** That pipeline *deploys* the app plus core jobs from notebooks (for environments that can run neither the CLI nor the UI). This section instead just **installs the library** so you can call `main()` directly — no app, no jobs, no bundle.
 
 ### 1. Install
 

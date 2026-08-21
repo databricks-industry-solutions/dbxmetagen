@@ -9231,12 +9231,21 @@ def _inject_fk_joins(plan_views: list[dict], tables: list[str], cat: str, sch: s
     return plan_views, fk_rows
 
 
-def _yaml_dry_run(defn: dict, cat: str, sch: str, include_materialization: bool = False) -> Optional[str]:
-    """Attempt CREATE VIEW WITH METRICS LANGUAGE YAML; return error string or None."""
+def _yaml_dry_run(defn: dict, include_materialization: bool = False) -> Optional[str]:
+    """Attempt CREATE VIEW WITH METRICS LANGUAGE YAML; return error string or None.
+
+    The temp validation view is ALWAYS created in the app's own metadata_results schema
+    (``CATALOG``.``SCHEMA``) -- a UC-native, always-writable location we can freely
+    CREATE/read/DROP in. It is deliberately NOT created in the metric view's source
+    catalog: a federated/foreign source catalog is read-only, so a source-located dry-run
+    fails with UC_LAKEHOUSE_FEDERATION_WRITES_NOT_ALLOWED even though the definition (which
+    only *references* the foreign source) is valid. The dry-run view still references the
+    real source; it just *lives* in metadata_results.
+    """
     try:
         yaml_body = _definition_to_yaml(defn, include_materialization=include_materialization)
         mv_name = defn.get("name", "dry_run_test")
-        dry_name = f"`{cat}`.`{sch}`.`_mv_dryrun_{mv_name}`"
+        dry_name = f"`{CATALOG}`.`{SCHEMA}`.`_mv_dryrun_{mv_name}`"
         execute_sql(
             f"CREATE OR REPLACE VIEW {dry_name}\nWITH METRICS LANGUAGE YAML AS $$\n{yaml_body}$$",
             timeout=30,
@@ -9659,7 +9668,7 @@ def _run_sl_generation(
 
             if not errors and defn.get("source"):
                 yaml_err = _yaml_dry_run(
-                    defn, cat, sch,
+                    defn,
                     include_materialization=materialize or bool(defn.get("materialization")),
                 )
                 if yaml_err:
@@ -10227,6 +10236,14 @@ def _apply_materialization_override(defn: dict, req: CreateDefinitionRequest) ->
 @app.post("/api/semantic-layer/definitions/{definition_id}/create")
 def create_metric_view(definition_id: str, req: CreateDefinitionRequest):
     """Deploy a validated definition as a real UC metric view."""
+    # No default output location: the caller MUST pick where the metric view is
+    # deployed. We never silently fall back to the source schema or the app's own
+    # catalog -- results must land in an explicitly-chosen output catalog.schema.
+    if not (req.target_catalog or "").strip() or not (req.target_schema or "").strip():
+        raise HTTPException(
+            400,
+            detail="Select an output catalog and schema before deploying the metric view.",
+        )
     _ensure_semantic_layer_tables()
     row = _fetch_definition(definition_id)
     defn = json.loads(row["json_definition"]) if isinstance(row["json_definition"], str) else row["json_definition"]
