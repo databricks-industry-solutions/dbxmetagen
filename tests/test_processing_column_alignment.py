@@ -179,15 +179,19 @@ class TestAppendColumnRows:
         monkeypatch.setattr(proc, "Row", lambda **kw: kw)
         cfg = _cfg(base_config_kwargs, mode="pi")
         real = ["ssn_col", "name_col"]
-        contents = [
-            {"classification": "pi", "type": "SSN", "confidence": 0.95},
-            {"classification": "pi", "type": "PERSON", "confidence": 0.80},
-        ]
-        # returned in a different order than the table -> name resolution must reorder
-        resp = _Resp(["name_col", "ssn_col"],
-                     [contents[1], contents[0]], source_columns=real)
+        # Model echoes DIFFERENT-CASE names in a DIFFERENT order than the table. Old positional
+        # code would key rows on the model's cased echoes ("NAME_COL"/"SSN_COL"); name-keying must
+        # key on the REAL columns ("ssn_col"/"name_col") and map content to them by name. This makes
+        # the test discriminate (it fails on the old positional behavior), not just pass trivially.
+        resp = _Resp(
+            ["NAME_COL", "SSN_COL"],
+            [{"classification": "pi", "type": "PERSON", "confidence": 0.80},
+             {"classification": "pi", "type": "SSN", "confidence": 0.95}],
+            source_columns=real,
+        )
         rows = proc.append_column_rows(cfg, [], "cat.sch.t", resp, "cat.sch.t")
         by_name = {r["column_name"]: r for r in rows}
+        assert set(by_name) == {"ssn_col", "name_col"}   # keyed on REAL names, not the model's case
         assert by_name["ssn_col"]["type"] == "SSN"
         assert by_name["name_col"]["type"] == "PERSON"
 
