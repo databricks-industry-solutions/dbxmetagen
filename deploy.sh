@@ -16,7 +16,9 @@
 #   -t, --target TARGET    Bundle target (default: dev)
 #   -p, --profile PROFILE  Databricks CLI profile (default: DEFAULT)
 #       --no-app           Skip app source deploy + start (jobs + code still deploy)
-#       --no-frontend      Skip the npm frontend build (dist/ is committed anyway)
+#       --yes-frontend     Rebuild the React frontend (npm install && npm run build).
+#                          DEFAULT is NO rebuild -- the built dist/ is committed and shipped as-is.
+#       --no-frontend      Explicitly skip the frontend build (this is the default; kept for compat)
 #       --no-vs            Skip Vector Search endpoint provisioning + grant
 #   -h, --help             Show this help
 set -e
@@ -32,7 +34,7 @@ fi
 TARGET="dev"
 PROFILE="DEFAULT"
 SKIP_APP=false
-SKIP_FRONTEND=false
+SKIP_FRONTEND=true   # default: do NOT rebuild the frontend (dist/ is committed); pass --yes-frontend to force
 SKIP_VS=false
 DEPLOY_VARS=()   # bundle-variable overrides forwarded from a legacy {target}.env, if present
 
@@ -41,10 +43,11 @@ while [[ $# -gt 0 ]]; do
         -t|--target)   TARGET="$2"; shift 2 ;;
         -p|--profile)  PROFILE="$2"; shift 2 ;;
         --no-app)      SKIP_APP=true; shift ;;
+        --yes-frontend) SKIP_FRONTEND=false; shift ;;
         --no-frontend) SKIP_FRONTEND=true; shift ;;
         --no-vs)       SKIP_VS=true; shift ;;
         --permissions) echo "Note: --permissions is no longer needed; grants run automatically below."; shift ;;
-        -h|--help)     sed -n '15,21p' "$0" | sed 's/^# \{0,1\}//'; exit 0 ;;
+        -h|--help)     sed -n '15,23p' "$0" | sed 's/^# \{0,1\}//'; exit 0 ;;
         *)             echo "Unknown option: $1 (use --help)"; exit 1 ;;
     esac
 done
@@ -100,15 +103,19 @@ fi
 REPO_ROOT="$(cd "$(dirname "$0")" && pwd)"
 cd "$REPO_ROOT"
 
-# --- Optional frontend build (dist/ is committed; only needed if the app changed) ---
+# --- Frontend build (opt-in). dist/ is committed and shipped as-is, so a rebuild is only
+#     needed when the app source changed and you want it reflected in this deploy. Default
+#     skips it; pass --yes-frontend to force. ---
 if [ "$SKIP_FRONTEND" = false ] && [ "$SKIP_APP" = false ] && [ -f apps/dbxmetagen-app/app/src/package.json ]; then
     if command -v npm &> /dev/null; then
         echo ""
-        echo "=== Building frontend ==="
+        echo "=== Rebuilding frontend (--yes-frontend) ==="
         (cd apps/dbxmetagen-app/app/src && npm install && npm run build)
     else
-        echo "Note: npm not found -- using the committed prebuilt frontend (dist/). Use --no-frontend to silence."
+        echo "Note: --yes-frontend given but npm not found -- shipping the committed dist/ as-is."
     fi
+elif [ "$SKIP_APP" = false ]; then
+    echo "Skipping frontend rebuild (default) -- shipping the committed dist/. Pass --yes-frontend to rebuild."
 fi
 
 # --- Pre-flight: warn (do NOT fail) if no catalog_name source is visible, so a

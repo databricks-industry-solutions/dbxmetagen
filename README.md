@@ -182,7 +182,10 @@ from any tool: notebooks, dashboards, Genie spaces, agents, or your own applicat
      `uv` for the wheel build (corporate-proxy environments).
 
    Flags: `-t/--target`, `-p/--profile`, `--no-app` (jobs/code only, skip app
-   start), `--no-frontend`, `--no-vs`. If no `catalog_name` is found in any source,
+   start), `--yes-frontend` (rebuild the React frontend — **off by default**, since the
+   built `dist/` is committed and shipped as-is; pass this only when the app source
+   changed), `--no-frontend` (explicit skip; now the default), `--no-vs`. If no
+   `catalog_name` is found in any source,
    it prints a clear warning and still deploys (the app then shows a "CATALOG_NAME
    not set" banner until you configure it).
 
