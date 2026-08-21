@@ -397,7 +397,7 @@ class TestMaterialization:
         monkeypatch.setattr(api_server, "execute_sql", fake_execute_sql)
         d = self._defn()
         d["materialization"] = api_server._build_materialization(d)
-        err = api_server._yaml_dry_run(d, "cat", "sch", include_materialization=True)
+        err = api_server._yaml_dry_run(d, include_materialization=True)
         assert err is None
         assert any("materialization" in c for c in calls)
 

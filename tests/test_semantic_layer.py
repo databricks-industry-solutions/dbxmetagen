@@ -1159,10 +1159,12 @@ class TestGenieExamplesContext:
 
 
 class TestResolveMvDeployLocation:
-    def test_uses_source_catalog_when_not_federated(self):
+    def test_always_uses_local_catalog_not_source(self):
+        # Results never land in the source table's own catalog/schema -- always the
+        # local (writable) config output schema, even for a fully-qualified native source.
         assert _resolve_mv_deploy_location(
             "sfcat.sales.orders", "localcat", "localsch", False
-        ) == ("sfcat", "sales")
+        ) == ("localcat", "localsch")
 
     def test_uses_local_catalog_when_federated(self):
         # A foreign source catalog is read-only, so the view must land in the local
@@ -1223,7 +1225,7 @@ class TestApplyMetricViewsFederation:
         assert "sfcat.sales.mv_orders" not in create      # never targets the foreign catalog
         assert "mv_orders_baseline" not in create          # materialization dropped
 
-    def test_non_federated_keeps_source_catalog_and_materialization(self):
+    def test_non_federated_deploys_to_local_catalog_keeps_materialization(self):
         defn = {
             "name": "mv_orders", "source": "prodcat.sales.orders", "dimensions": [],
             "measures": [{"name": "total", "expr": "SUM(o.amount)"}],
@@ -1234,5 +1236,6 @@ class TestApplyMetricViewsFederation:
         gen, executed = self._make_gen(False, defn)
         gen.apply_metric_views()
         create = self._mv_create_stmt(executed)
-        assert "prodcat.sales.mv_orders" in create          # source catalog preserved
-        assert "mv_orders_baseline" in create               # materialization kept
+        assert "localcat.localsch.mv_orders" in create      # local output schema, not source
+        assert "prodcat.sales.mv_orders" not in create      # never the source catalog
+        assert "mv_orders_baseline" in create               # materialization kept (non-federated)
