@@ -285,12 +285,37 @@ def _build_edges(fk_rows: list[dict]) -> list[ErdEdge]:
     """
     edges: list[ErdEdge] = []
     seen: set[tuple] = set()
+
+    def _pair_key(fk: dict) -> tuple:
+        return (
+            (fk.get("src_table") or "").lower(), (fk.get("dst_table") or "").lower(),
+            (fk.get("src_column") or "").split(".")[-1].lower(),
+            (fk.get("dst_column") or "").split(".")[-1].lower(),
+        )
+
+    # Never-joins veto: when the data probe PROVED a pair does not join (join_matched=0
+    # AND ri_score=0 -- the OB-7 signal), drop ALL edges for that pair, even a stale
+    # is_fk=true or ERD-confirmed row. Otherwise a false FK (e.g. sku_id=order_id) stays
+    # visible in the ERD designer, gets re-confirmed on Save, and drives wrong joins.
+    never_joins: set[tuple] = set()
+    for fk in fk_rows or []:
+        jm = fk.get("join_matched")
+        if jm is None:
+            continue
+        try:
+            if float(jm) == 0 and float(fk.get("ri_score") or 0.0) == 0.0:
+                never_joins.add(_pair_key(fk))
+        except (TypeError, ValueError):
+            continue
+
     for fk in fk_rows or []:
         src_t = fk.get("src_table")
         dst_t = fk.get("dst_table")
         src_c = fk.get("src_column")
         dst_c = fk.get("dst_column")
         if not (src_t and dst_t and src_c and dst_c):
+            continue
+        if _pair_key(fk) in never_joins:
             continue
         conf = float(fk.get("final_confidence") or 0.0)
         is_fk = _as_bool(fk.get("is_fk"))

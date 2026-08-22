@@ -530,6 +530,31 @@ class TestStringTypedFlagsFromExecuteSql:
         assert set(ol.measurable_columns) >= {"quantity", "unit_price", "line_total"}
 
 
+class TestNeverJoinsVeto:
+    """A pair the data probe PROVED does not join (join_matched=0 AND ri_score=0) must be
+    dropped from ERD edges even when a stale/ERD-confirmed is_fk=true row exists for it --
+    so a false FK (e.g. sku_id=order_id, pre-populated then saved from the ERD designer)
+    can't be shown or re-confirmed and then drive wrong metric-view joins."""
+
+    def test_probe_rejected_pair_excluded_even_when_is_fk_true(self):
+        fks = [
+            # ERD-confirmed row: is_fk true, no probe data -> would normally become an edge
+            {"src_table": "c.s.inv", "src_column": "sku_id", "dst_table": "c.s.ol",
+             "dst_column": "order_id", "final_confidence": "1.0", "is_fk": "true"},
+            # its structural twin: the probe PROVED no join
+            {"src_table": "c.s.inv", "src_column": "c.s.inv.sku_id", "dst_table": "c.s.ol",
+             "dst_column": "c.s.ol.order_id", "final_confidence": "0.13", "is_fk": "false",
+             "join_matched": "0", "ri_score": "0"},
+            # a real, joining FK for contrast
+            {"src_table": "c.s.ol", "src_column": "order_id", "dst_table": "c.s.o",
+             "dst_column": "order_id", "final_confidence": "0.97", "is_fk": "true",
+             "join_matched": "7500", "ri_score": "1.0"},
+        ]
+        pairs = {(e.src.split(".")[-1], e.dst.split(".")[-1]) for e in _build_edges(fks)}
+        assert ("inv", "ol") not in pairs   # vetoed: probe proved no join
+        assert ("ol", "o") in pairs          # real join kept
+
+
 class TestGrainKeyAndMeasures:
     """A high-cardinality continuous MEASURE (e.g. instrument_revenue) must never
     be picked as the grain key, and must still count as a measure. Real join keys
