@@ -562,6 +562,14 @@ export default function SemanticLayer({ onNavigate, pipelineStats, onRefreshPipe
   const [actionLoading, setActionLoading] = useState({})
   const [globalTargetOverride, setGlobalTargetOverride] = useState('')
   const [customTargetMode, setCustomTargetMode] = useState(false)
+  // The app's OUTPUT schema (metadata_results), read once from /api/config and kept stable.
+  // This is where ALL generated artifacts are written (metric-view definitions, knowledge
+  // base, graph, vector index) and where metric views + the analytics pipeline output. It is
+  // DISTINCT from selectedCatalog/selectedSchema, which is the SOURCE scope the user browses
+  // to pick tables. For a federated source those differ, and outputs must NEVER be written to
+  // the (read-only) source schema. See issue: build_knowledge_base into a foreign catalog.
+  const [outputCatalog, setOutputCatalog] = useState('')
+  const [outputSchema, setOutputSchema] = useState('')
 
   // MV health + analysis per definition
   const [mvHealth, setMvHealth] = useState({})
@@ -641,7 +649,7 @@ export default function SemanticLayer({ onNavigate, pipelineStats, onRefreshPipe
   // silently landed metric views in the source, and fails outright on a read-only
   // federated source). The user may change it, but a deploy always requires an
   // explicitly-chosen output catalog.schema.
-  const configOutputTarget = (selectedCatalog && selectedSchema) ? `${selectedCatalog}.${selectedSchema}` : ''
+  const configOutputTarget = (outputCatalog && outputSchema) ? `${outputCatalog}.${outputSchema}` : ''
   const isValidTarget = (t) => /^[^.]+\.[^.]+$/.test(t || '')
   const getDefaultTarget = (d) => {
     if (d.deployed_catalog && d.deployed_schema) return `${d.deployed_catalog}.${d.deployed_schema}`
@@ -696,6 +704,10 @@ export default function SemanticLayer({ onNavigate, pipelineStats, onRefreshPipe
       if (cfg) {
         setSelectedCatalog(cfg.catalog_name || '')
         setSelectedSchema(cfg.schema_name || '')
+        // OUTPUT schema is fixed to the app config -- kept separate from the source
+        // browse scope so browsing a (federated) source never redirects our writes.
+        setOutputCatalog(cfg.catalog_name || '')
+        setOutputSchema(cfg.schema_name || '')
       }
     })
     cachedFetchObj('/api/auth/check', {}, TTL.CONFIG).then(({ data }) => {
@@ -1219,7 +1231,8 @@ export default function SemanticLayer({ onNavigate, pipelineStats, onRefreshPipe
       const fqTables = selectedTables.map(t => t.includes('.') ? t : `${selectedCatalog}.${selectedSchema}.${t}`)
       const body = {
         tables: fqTables, questions: lines, mode,
-        catalog_name: selectedCatalog, schema_name: selectedSchema,
+        // OUTPUT goes to the config schema; source tables are carried in `tables` (FQ above).
+        catalog_name: outputCatalog, schema_name: outputSchema,
         business_context: businessContext || undefined,
         profile_id: activeProfileId || undefined,
         generation_style: generationStyle,
@@ -1816,9 +1829,9 @@ export default function SemanticLayer({ onNavigate, pipelineStats, onRefreshPipe
         step2Runner={
           <AdvancedPipelinePanel
             variant="gate"
-            catalogName={selectedCatalog}
-            schemaName={selectedSchema}
-            tableNames={selectedTables.join(', ')}
+            catalogName={outputCatalog}
+            schemaName={outputSchema}
+            tableNames={selectedTables.map(t => t.includes('.') ? t : `${selectedCatalog}.${selectedSchema}.${t}`).join(', ')}
             runJob={jobRunner.runJob}
             runningAction={jobRunner.runningAction}
             runError={jobRunner.runError}
