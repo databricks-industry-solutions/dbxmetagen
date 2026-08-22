@@ -515,7 +515,12 @@ def _recommend_view_count(
             f"(not a new view)"
         )
 
-    recommended = max(min(base + bonus, MAX_RECOMMENDED_VIEWS), current_views)
+    # The recommendation is the GRAIN target (anchors + diminishing orphan bump), NOT
+    # floored at current_views. Flooring at existing views made the number volatile
+    # (it changed as views were applied) so the displayed "recommended: N" diverged from
+    # the generation cap actually enforced. `current_views` still drives metric_views_gap
+    # in the caller, but no longer inflates the target itself.
+    recommended = min(base + bonus, MAX_RECOMMENDED_VIEWS)
     return recommended, reasons
 
 
@@ -636,11 +641,17 @@ def recommend_erd(
     # A metric view is built per fact/source GRAIN; dimensions attach as joins,
     # never as their own view. Anchors are fact/source/bridge nodes that actually
     # have something to aggregate (measurable columns).
+    # A fact IS a grain regardless of numeric measures -- COUNT(*) is always a valid
+    # measure at a fact's grain, so a measure-less fact (e.g. an event log whose columns
+    # are all keys/ids, like fact_clinical_event) still anchors its own metric view. Only
+    # source/bridge nodes need a detectable measure to earn their own view.
     anchor_nodes = [n for n in nodes
-                    if n.role in ("fact", "source", "bridge") and n.measurable_columns]
+                    if n.role == "fact"
+                    or (n.role in ("source", "bridge") and n.measurable_columns)]
     if not anchor_nodes:
-        # Relax: any fact/source/bridge, even without detected measures.
-        anchor_nodes = [n for n in nodes if n.role in ("fact", "source", "bridge")]
+        # No fact and no measurable source/bridge: relax to any source/bridge (never
+        # dimensions), so a fact-less but measurable schema still gets an anchor.
+        anchor_nodes = [n for n in nodes if n.role in ("source", "bridge")]
     no_clear_anchor = False
     if not anchor_nodes:
         # No structural fact/source/bridge signal at all. Do NOT invent anchors:

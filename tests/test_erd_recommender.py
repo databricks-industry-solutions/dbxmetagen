@@ -392,31 +392,35 @@ class TestInferRoleTiebreak:
         assert role == "fact"
 
 
-class TestRecommendViewCountFloor:
-    """_recommend_view_count must never recommend FEWER views than already exist,
-    even when the existing count exceeds MAX_RECOMMENDED_VIEWS (the old min(max(...))
-    could pull the recommendation below current_views and misreport the gap)."""
+class TestRecommendViewCountGrainTarget:
+    """The recommended count is the GRAIN target (anchors + diminishing orphan bump),
+    INDEPENDENT of how many views already exist. Flooring it at current_views made the
+    number drift as views were applied, so the displayed 'recommended: N' diverged from
+    the generation cap actually enforced (regression that produced 3 views for a shown
+    'recommended: 1')."""
 
-    def test_never_below_current_when_over_cap(self):
+    def test_not_floored_at_current_views(self):
+        # 1 grain anchor, many existing views -> recommend the grain target (1), NOT the
+        # existing count. current_views drives the gap in the caller, not the target.
         rec, _ = _recommend_view_count(
             anchors=["c.s.fct"], orphans=[], missing_kpis=[],
             current_views=MAX_RECOMMENDED_VIEWS + 5,
         )
-        assert rec >= MAX_RECOMMENDED_VIEWS + 5   # not clamped below what exists
+        assert rec == 1
 
     def test_normal_case_still_capped(self):
         rec, _ = _recommend_view_count(
             anchors=["c.s.f1", "c.s.f2"], orphans=[], missing_kpis=[],
             current_views=0,
         )
-        assert rec == 2   # 2 grain anchors -> 2 views, under the cap
+        assert rec == 2   # 2 grain anchors -> 2 views
 
-    def test_anchor_base_is_floor(self):
+    def test_anchor_base_drives_count(self):
         rec, _ = _recommend_view_count(
             anchors=["c.s.f1", "c.s.f2", "c.s.f3"], orphans=[], missing_kpis=[],
             current_views=1,
         )
-        assert rec >= 3   # never below the anchor base
+        assert rec == 3   # grain target, not inflated or deflated by current_views
 
 
 class TestGrainAnchorCount:
@@ -451,6 +455,42 @@ class TestGrainAnchorCount:
         )
         assert any("no clear fact/grain" in r for r in reasons)
         assert not any("fact table(s)" in r for r in reasons)
+
+
+class TestMeasurelessFactIsAnchor:
+    """A fact-role table with ZERO numeric measures (an event log of ids/keys) is still a
+    grain anchor -- COUNT(*) is its measure. Regression (epic_emr_demo): fact_clinical_event
+    (0 measures) was dropped from the anchor count because a sibling fact (fact_encounter)
+    had measures, so the relax-to-all branch never fired -> 1 grain anchor instead of 2."""
+
+    def _rec(self):
+        tables = ["c.s.fct_events", "c.s.fct_sales", "c.s.dim_customer", "c.s.dim_product"]
+        fks = [
+            _fk("c.s.fct_events", "customer_id", "c.s.dim_customer", "id", conf=0.9),
+            _fk("c.s.fct_events", "product_id", "c.s.dim_product", "id", conf=0.9),
+            _fk("c.s.fct_sales", "customer_id", "c.s.dim_customer", "id", conf=0.9),
+            _fk("c.s.fct_sales", "product_id", "c.s.dim_product", "id", conf=0.9),
+        ]
+        profiling = {
+            # fct_events: only key/id columns -> 0 measurable columns
+            "c.s.fct_events": [_key_col("event_id"), _int_id_col("customer_id"), _int_id_col("product_id")],
+            # fct_sales: has a continuous numeric measure
+            "c.s.fct_sales": [_num_col("amount"), _int_id_col("customer_id"), _int_id_col("product_id")],
+            "c.s.dim_customer": [_key_col("id")],
+            "c.s.dim_product": [_key_col("id")],
+        }
+        return recommend_erd(tables, fk_rows=fks, profiling_by_table=profiling)
+
+    def test_both_facts_counted_as_grain_anchors(self):
+        rec = self._rec()
+        facts = [n for n in rec.nodes if n.role == "fact"]
+        assert {n.table for n in facts} == {"c.s.fct_events", "c.s.fct_sales"}
+        # the event fact genuinely has no numeric measures ...
+        events = next(n for n in rec.nodes if n.table.endswith("fct_events"))
+        assert events.measurable_columns == []
+        # ... yet BOTH grains are recommended (2), not just the measure-bearing one.
+        assert rec.sufficiency.metric_views_recommended == 2
+        assert any("2 grain anchor" in r for r in rec.sufficiency.reasons)
 
 
 class TestGrainKeyAndMeasures:
