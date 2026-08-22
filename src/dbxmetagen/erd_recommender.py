@@ -217,6 +217,22 @@ def _name_hint(name: Optional[str]) -> Optional[str]:
     return "key" if key_hit else "measure"
 
 
+def _as_bool(v: Any) -> bool:
+    """Coerce a profiling/FK flag to a real bool. The app feeds these dicts from
+    ``execute_sql``, whose SQL-statement-API ``data_array`` returns EVERY value as a
+    STRING -- so a boolean column arrives as the string ``"true"``/``"false"``, and
+    ``bool("false")`` is True. Relying on truthiness therefore marks every column
+    ``is_unique_candidate`` (and every FK ``is_fk``), which made integer measure
+    columns look like unique keys -> dropped from measures -> integer-grain fact tables
+    (e.g. order_lines/inventory_snapshots with LONG quantities) were mislabeled
+    bridge/dimension. Parse the value instead of trusting truthiness."""
+    if isinstance(v, bool):
+        return v
+    if v is None:
+        return False
+    return str(v).strip().lower() in ("true", "1", "t", "yes", "y")
+
+
 def _is_key_like(col: dict, key_hints: Optional[set] = None) -> bool:
     """Data-driven: is this column an identifier / join key (not a measure)?
 
@@ -230,12 +246,12 @@ def _is_key_like(col: dict, key_hints: Optional[set] = None) -> bool:
     if key_hints and name in key_hints:
         return True
     is_unique = (
-        bool(col.get("is_unique_candidate"))
+        _as_bool(col.get("is_unique_candidate"))
         or float(col.get("cardinality_ratio") or 0.0) >= PK_UNIQUENESS_MIN
     )
     if not is_unique:
         return False
-    if col.get("has_numeric_stats"):
+    if _as_bool(col.get("has_numeric_stats")):
         dt = col.get("data_type")
         if _is_continuous_numeric(dt):
             return False            # continuous numeric = measure (type wins)
@@ -277,7 +293,7 @@ def _build_edges(fk_rows: list[dict]) -> list[ErdEdge]:
         if not (src_t and dst_t and src_c and dst_c):
             continue
         conf = float(fk.get("final_confidence") or 0.0)
-        is_fk = bool(fk.get("is_fk"))
+        is_fk = _as_bool(fk.get("is_fk"))
         if not is_fk and conf < FK_CONFIDENCE_MIN:
             continue
         key = (src_t.lower(), dst_t.lower(), src_c.lower(), dst_c.lower())
@@ -320,7 +336,7 @@ def _measurable_columns(profiling_rows: list[dict], key_hints: Optional[set] = N
     `_grain_column`, so the two never disagree, and it is name-independent."""
     out = []
     for c in profiling_rows or []:
-        if not c.get("has_numeric_stats"):
+        if not _as_bool(c.get("has_numeric_stats")):
             continue
         null_rate = float(c.get("null_rate") or 0.0)
         if null_rate > 0.5:
@@ -356,7 +372,7 @@ def _grain_column(profiling_rows: list[dict], key_hints: Optional[set] = None) -
             continue
         ratio = float(c.get("cardinality_ratio") or 0.0)
         low_null = float(c.get("null_rate") or 0.0) <= 0.05
-        is_unique = bool(c.get("is_unique_candidate")) or ratio >= PK_UNIQUENESS_MIN
+        is_unique = _as_bool(c.get("is_unique_candidate")) or ratio >= PK_UNIQUENESS_MIN
         if not (is_unique and low_null):
             continue
         # A continuous numeric is a measure, never the grain.
@@ -364,7 +380,7 @@ def _grain_column(profiling_rows: list[dict], key_hints: Optional[set] = None) -
             continue
         if key_hints and name.lower() in key_hints:
             rank = 2.0
-        elif not c.get("has_numeric_stats"):
+        elif not _as_bool(c.get("has_numeric_stats")):
             rank = 1.0
         else:
             rank = 0.0
@@ -565,7 +581,7 @@ def recommend_erd(
     src_set, dst_set = set(), set()
     for fk in fk_rows:
         conf = float(fk.get("final_confidence") or 0.0)
-        if not fk.get("is_fk") and conf < FK_CONFIDENCE_MIN:
+        if not _as_bool(fk.get("is_fk")) and conf < FK_CONFIDENCE_MIN:
             continue
         st = (fk.get("src_table") or "").lower()
         dt = (fk.get("dst_table") or "").lower()

@@ -493,6 +493,43 @@ class TestMeasurelessFactIsAnchor:
         assert any("2 grain anchor" in r for r in rec.sufficiency.reasons)
 
 
+class TestStringTypedFlagsFromExecuteSql:
+    """The app feeds recommend_erd from execute_sql, whose SQL-API data_array returns
+    EVERY value as a STRING -- so is_unique_candidate/has_numeric_stats/is_fk arrive as
+    'true'/'false'. bool('false') is True, which used to mark every integer column a
+    unique key -> dropped from measures -> integer-grain fact tables (supplychain_gold
+    order_lines/inventory_snapshots with LONG quantities) mislabeled bridge/dimension."""
+
+    def _scol(self, name, data_type="long", unique="false", numeric="true", card="0.02"):
+        # a profiling row exactly as execute_sql returns it: ALL values are strings
+        return {"column_name": name, "has_numeric_stats": numeric, "is_unique_candidate": unique,
+                "cardinality_ratio": card, "null_rate": "0.0", "data_type": data_type}
+
+    def test_string_false_flag_not_treated_as_unique_key(self):
+        # a LONG measure whose is_unique_candidate is the STRING "false" must be a measure
+        assert _is_key_like(self._scol("quantity")) is False
+
+    def test_integer_measure_fact_detected_with_string_flags(self):
+        tables = ["c.s.order_lines", "c.s.orders", "c.s.products"]
+        fks = [
+            {"src_table": "c.s.order_lines", "src_column": "order_id", "dst_table": "c.s.orders",
+             "dst_column": "order_id", "final_confidence": "1.0", "is_fk": "true"},
+            {"src_table": "c.s.order_lines", "src_column": "product_id", "dst_table": "c.s.products",
+             "dst_column": "sku_id", "final_confidence": "1.0", "is_fk": "true"},
+        ]
+        prof = {
+            "c.s.order_lines": [self._scol("order_id", unique="false", card="0.5"),
+                                self._scol("product_id", card="0.1"),
+                                self._scol("quantity"), self._scol("unit_price"), self._scol("line_total")],
+            "c.s.orders": [self._scol("order_id", unique="true", card="1.0")],
+            "c.s.products": [self._scol("sku_id", unique="true", card="1.0")],
+        }
+        rec = recommend_erd(tables, fk_rows=fks, profiling_by_table=prof)
+        ol = next(n for n in rec.nodes if n.table.endswith("order_lines"))
+        assert ol.role == "fact"
+        assert set(ol.measurable_columns) >= {"quantity", "unit_price", "line_total"}
+
+
 class TestGrainKeyAndMeasures:
     """A high-cardinality continuous MEASURE (e.g. instrument_revenue) must never
     be picked as the grain key, and must still count as a measure. Real join keys
