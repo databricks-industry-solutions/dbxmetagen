@@ -6,6 +6,13 @@ __pycache__/
 # uv.lock is local-only (developers); requirements.txt is the committed pin for notebooks
 uv.lock
 
+# package-lock.json is local-only for the same reason as uv.lock: regenerating it
+# on the internal network poisons it with npm-proxy.dev.databricks.com tarball URLs
+# that break `npm ci`/`npm install` for external users (issue #197). package.json is
+# the committed spec and the built src/dist/ is the shipped artifact; deploy.sh uses
+# `npm install` (never `npm ci`), so no committed lockfile is required.
+apps/dbxmetagen-app/app/src/package-lock.json
+
 # Distribution / packaging
 .Python
 build/

@@ -18,7 +18,7 @@
 #       --no-app           Skip app source deploy + start (jobs + code still deploy)
 #       --yes-frontend     Rebuild the React frontend (npm install && npm run build).
 #                          DEFAULT is NO rebuild -- the built dist/ is committed and shipped as-is.
-#       --no-frontend      Explicitly skip the frontend build (this is the default; kept for compat)
+#       --no-frontend      No-op (kept for backward compatibility): the frontend build is already skipped by default, so this just runs the default. Never errors.
 #       --no-vs            Skip Vector Search endpoint provisioning + grant
 #   -h, --help             Show this help
 set -e
@@ -44,7 +44,7 @@ while [[ $# -gt 0 ]]; do
         -p|--profile)  PROFILE="$2"; shift 2 ;;
         --no-app)      SKIP_APP=true; shift ;;
         --yes-frontend) SKIP_FRONTEND=false; shift ;;
-        --no-frontend) SKIP_FRONTEND=true; shift ;;
+        --no-frontend) SKIP_FRONTEND=true; shift ;;   # backward-compat no-op: SKIP_FRONTEND already defaults to true
         --no-vs)       SKIP_VS=true; shift ;;
         --permissions) echo "Note: --permissions is no longer needed; grants run automatically below."; shift ;;
         -h|--help)     sed -n '15,23p' "$0" | sed 's/^# \{0,1\}//'; exit 0 ;;
