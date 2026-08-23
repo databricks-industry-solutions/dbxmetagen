@@ -1236,7 +1236,9 @@ export default function SemanticLayer({ onNavigate, pipelineStats, onRefreshPipe
         business_context: businessContext || undefined,
         profile_id: activeProfileId || undefined,
         generation_style: generationStyle,
-        max_views: maxViews || undefined,
+        // Blank Max views => use the recommended grain count (what the UI shows as the
+        // placeholder), so the enforced cap always matches the displayed recommendation.
+        max_views: (maxViews ?? erdSufficiency?.metric_views_recommended) || undefined,
         materialize,
         materialization_schedule: materializationSchedule,
       }

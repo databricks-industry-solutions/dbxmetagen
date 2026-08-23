@@ -184,7 +184,9 @@ from any tool: notebooks, dashboards, Genie spaces, agents, or your own applicat
    Flags: `-t/--target`, `-p/--profile`, `--no-app` (jobs/code only, skip app
    start), `--yes-frontend` (rebuild the React frontend — **off by default**, since the
    built `dist/` is committed and shipped as-is; pass this only when the app source
-   changed), `--no-frontend` (explicit skip; now the default), `--no-vs`. If no
+   changed), `--no-frontend` (a **no-op** kept for backward compatibility — skipping the
+   frontend build is already the default, so existing scripts that pass it keep working
+   and simply run the default; it never errors), `--no-vs`. If no
    `catalog_name` is found in any source,
    it prints a clear warning and still deploys (the app then shows a "CATALOG_NAME
    not set" banner until you configure it).

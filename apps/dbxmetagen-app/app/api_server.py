@@ -3321,6 +3321,31 @@ def add_fk_prediction(body: FKAddBody):
     src_tbl = _esc_sql(body.src_table)
     dst_tbl = _esc_sql(body.dst_table)
     reasoning = _safe_sql_str(body.reasoning or "Manually added by user")
+    # Respect the data probe: if this exact pair was join-probed and PROVED not to join
+    # (join_matched=0 AND ri_score=0 -- the OB-7 "never-joins" signal), do NOT assert
+    # is_fk=TRUE. A confirmed join on a non-joining pair (e.g. sku_id=order_id, pre-populated
+    # by a false FK prediction and saved from the ERD designer) would otherwise flow into
+    # metric-view / Genie join generation and produce wrong results. We still store the row
+    # (as the chosen relationship_kind) but with is_fk=FALSE so it never drives a join.
+    is_fk_val = "TRUE"
+    try:
+        _pr = execute_sql(
+            f"SELECT COALESCE(MAX(CASE WHEN join_matched = 0 AND COALESCE(ri_score, 0) = 0 "
+            f"THEN 1 ELSE 0 END), 0) AS r FROM {preds_tbl} "
+            f"WHERE lower(src_table) = lower('{src_tbl}') AND lower(dst_table) = lower('{dst_tbl}') "
+            f"AND lower(element_at(split(src_column, '[.]'), -1)) = lower('{src_col}') "
+            f"AND lower(element_at(split(dst_column, '[.]'), -1)) = lower('{dst_col}') "
+            f"AND join_matched IS NOT NULL",
+            timeout=30,
+        )
+        if _pr and str((_pr[0] or {}).get("r")) in ("1", "true", "True"):
+            is_fk_val = "FALSE"
+            reasoning = _safe_sql_str(
+                (body.reasoning or "Manually added by user")
+                + " [is_fk=false: data probe found no join for this pair]"
+            )
+    except Exception as e:
+        logger.warning("fk-add probe check failed (%s); defaulting is_fk=TRUE", e)
     # MERGE (not INSERT) keyed on the full pair identity so re-saving the same
     # join UPDATES in place instead of appending a duplicate (the old INSERT grew
     # ~15 copies per pair across repeated ERD saves). created_at is preserved on
@@ -3333,7 +3358,7 @@ def add_fk_prediction(body: FKAddBody):
            AND t.src_table = s.src_table AND t.dst_table = s.dst_table
         WHEN MATCHED THEN UPDATE SET
             t.final_confidence = 1.0, t.ai_confidence = 1.0,
-            t.ai_reasoning = {reasoning}, t.is_fk = TRUE,
+            t.ai_reasoning = {reasoning}, t.is_fk = {is_fk_val},
             t.relationship_kind = '{kind}', t.is_composite = {str(is_composite).upper()},
             t.join_condition = {join_condition},
             t.review_updated_at = current_timestamp(), t.updated_at = current_timestamp()
@@ -3342,7 +3367,7 @@ def add_fk_prediction(body: FKAddBody):
              ai_confidence, ai_reasoning, is_fk, relationship_kind, is_composite,
              join_condition, review_updated_at, created_at, updated_at)
             VALUES ('{src_col}', '{dst_col}', '{src_tbl}', '{dst_tbl}', 1.0,
-                    1.0, {reasoning}, TRUE, '{kind}', {str(is_composite).upper()},
+                    1.0, {reasoning}, {is_fk_val}, '{kind}', {str(is_composite).upper()},
                     {join_condition}, current_timestamp(), current_timestamp(), current_timestamp())
     """
     try:
@@ -8211,7 +8236,7 @@ def _fetch_erd_inputs(tables: list[str]) -> tuple[list, list, dict, list]:
     try:
         fk_rows = execute_sql(
             f"SELECT src_table, src_column, dst_table, dst_column, final_confidence, "
-            f"is_fk, join_rate, pk_uniqueness FROM {fq('fk_predictions')} "
+            f"is_fk, join_rate, pk_uniqueness, join_matched, ri_score FROM {fq('fk_predictions')} "
             f"WHERE src_table != dst_table AND (src_table IN ({in_clause}) OR dst_table IN ({in_clause}))"
         ) or []
     except Exception as e:

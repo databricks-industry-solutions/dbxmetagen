@@ -217,6 +217,22 @@ def _name_hint(name: Optional[str]) -> Optional[str]:
     return "key" if key_hit else "measure"
 
 
+def _as_bool(v: Any) -> bool:
+    """Coerce a profiling/FK flag to a real bool. The app feeds these dicts from
+    ``execute_sql``, whose SQL-statement-API ``data_array`` returns EVERY value as a
+    STRING -- so a boolean column arrives as the string ``"true"``/``"false"``, and
+    ``bool("false")`` is True. Relying on truthiness therefore marks every column
+    ``is_unique_candidate`` (and every FK ``is_fk``), which made integer measure
+    columns look like unique keys -> dropped from measures -> integer-grain fact tables
+    (e.g. order_lines/inventory_snapshots with LONG quantities) were mislabeled
+    bridge/dimension. Parse the value instead of trusting truthiness."""
+    if isinstance(v, bool):
+        return v
+    if v is None:
+        return False
+    return str(v).strip().lower() in ("true", "1", "t", "yes", "y")
+
+
 def _is_key_like(col: dict, key_hints: Optional[set] = None) -> bool:
     """Data-driven: is this column an identifier / join key (not a measure)?
 
@@ -230,12 +246,12 @@ def _is_key_like(col: dict, key_hints: Optional[set] = None) -> bool:
     if key_hints and name in key_hints:
         return True
     is_unique = (
-        bool(col.get("is_unique_candidate"))
+        _as_bool(col.get("is_unique_candidate"))
         or float(col.get("cardinality_ratio") or 0.0) >= PK_UNIQUENESS_MIN
     )
     if not is_unique:
         return False
-    if col.get("has_numeric_stats"):
+    if _as_bool(col.get("has_numeric_stats")):
         dt = col.get("data_type")
         if _is_continuous_numeric(dt):
             return False            # continuous numeric = measure (type wins)
@@ -269,6 +285,29 @@ def _build_edges(fk_rows: list[dict]) -> list[ErdEdge]:
     """
     edges: list[ErdEdge] = []
     seen: set[tuple] = set()
+
+    def _pair_key(fk: dict) -> tuple:
+        return (
+            (fk.get("src_table") or "").lower(), (fk.get("dst_table") or "").lower(),
+            (fk.get("src_column") or "").split(".")[-1].lower(),
+            (fk.get("dst_column") or "").split(".")[-1].lower(),
+        )
+
+    # Never-joins veto: when the data probe PROVED a pair does not join (join_matched=0
+    # AND ri_score=0 -- the OB-7 signal), drop ALL edges for that pair, even a stale
+    # is_fk=true or ERD-confirmed row. Otherwise a false FK (e.g. sku_id=order_id) stays
+    # visible in the ERD designer, gets re-confirmed on Save, and drives wrong joins.
+    never_joins: set[tuple] = set()
+    for fk in fk_rows or []:
+        jm = fk.get("join_matched")
+        if jm is None:
+            continue
+        try:
+            if float(jm) == 0 and float(fk.get("ri_score") or 0.0) == 0.0:
+                never_joins.add(_pair_key(fk))
+        except (TypeError, ValueError):
+            continue
+
     for fk in fk_rows or []:
         src_t = fk.get("src_table")
         dst_t = fk.get("dst_table")
@@ -276,8 +315,10 @@ def _build_edges(fk_rows: list[dict]) -> list[ErdEdge]:
         dst_c = fk.get("dst_column")
         if not (src_t and dst_t and src_c and dst_c):
             continue
+        if _pair_key(fk) in never_joins:
+            continue
         conf = float(fk.get("final_confidence") or 0.0)
-        is_fk = bool(fk.get("is_fk"))
+        is_fk = _as_bool(fk.get("is_fk"))
         if not is_fk and conf < FK_CONFIDENCE_MIN:
             continue
         key = (src_t.lower(), dst_t.lower(), src_c.lower(), dst_c.lower())
@@ -320,7 +361,7 @@ def _measurable_columns(profiling_rows: list[dict], key_hints: Optional[set] = N
     `_grain_column`, so the two never disagree, and it is name-independent."""
     out = []
     for c in profiling_rows or []:
-        if not c.get("has_numeric_stats"):
+        if not _as_bool(c.get("has_numeric_stats")):
             continue
         null_rate = float(c.get("null_rate") or 0.0)
         if null_rate > 0.5:
@@ -356,7 +397,7 @@ def _grain_column(profiling_rows: list[dict], key_hints: Optional[set] = None) -
             continue
         ratio = float(c.get("cardinality_ratio") or 0.0)
         low_null = float(c.get("null_rate") or 0.0) <= 0.05
-        is_unique = bool(c.get("is_unique_candidate")) or ratio >= PK_UNIQUENESS_MIN
+        is_unique = _as_bool(c.get("is_unique_candidate")) or ratio >= PK_UNIQUENESS_MIN
         if not (is_unique and low_null):
             continue
         # A continuous numeric is a measure, never the grain.
@@ -364,7 +405,7 @@ def _grain_column(profiling_rows: list[dict], key_hints: Optional[set] = None) -
             continue
         if key_hints and name.lower() in key_hints:
             rank = 2.0
-        elif not c.get("has_numeric_stats"):
+        elif not _as_bool(c.get("has_numeric_stats")):
             rank = 1.0
         else:
             rank = 0.0
@@ -515,7 +556,12 @@ def _recommend_view_count(
             f"(not a new view)"
         )
 
-    recommended = max(min(base + bonus, MAX_RECOMMENDED_VIEWS), current_views)
+    # The recommendation is the GRAIN target (anchors + diminishing orphan bump), NOT
+    # floored at current_views. Flooring at existing views made the number volatile
+    # (it changed as views were applied) so the displayed "recommended: N" diverged from
+    # the generation cap actually enforced. `current_views` still drives metric_views_gap
+    # in the caller, but no longer inflates the target itself.
+    recommended = min(base + bonus, MAX_RECOMMENDED_VIEWS)
     return recommended, reasons
 
 
@@ -560,7 +606,7 @@ def recommend_erd(
     src_set, dst_set = set(), set()
     for fk in fk_rows:
         conf = float(fk.get("final_confidence") or 0.0)
-        if not fk.get("is_fk") and conf < FK_CONFIDENCE_MIN:
+        if not _as_bool(fk.get("is_fk")) and conf < FK_CONFIDENCE_MIN:
             continue
         st = (fk.get("src_table") or "").lower()
         dt = (fk.get("dst_table") or "").lower()
@@ -636,11 +682,17 @@ def recommend_erd(
     # A metric view is built per fact/source GRAIN; dimensions attach as joins,
     # never as their own view. Anchors are fact/source/bridge nodes that actually
     # have something to aggregate (measurable columns).
+    # A fact IS a grain regardless of numeric measures -- COUNT(*) is always a valid
+    # measure at a fact's grain, so a measure-less fact (e.g. an event log whose columns
+    # are all keys/ids, like fact_clinical_event) still anchors its own metric view. Only
+    # source/bridge nodes need a detectable measure to earn their own view.
     anchor_nodes = [n for n in nodes
-                    if n.role in ("fact", "source", "bridge") and n.measurable_columns]
+                    if n.role == "fact"
+                    or (n.role in ("source", "bridge") and n.measurable_columns)]
     if not anchor_nodes:
-        # Relax: any fact/source/bridge, even without detected measures.
-        anchor_nodes = [n for n in nodes if n.role in ("fact", "source", "bridge")]
+        # No fact and no measurable source/bridge: relax to any source/bridge (never
+        # dimensions), so a fact-less but measurable schema still gets an anchor.
+        anchor_nodes = [n for n in nodes if n.role in ("source", "bridge")]
     no_clear_anchor = False
     if not anchor_nodes:
         # No structural fact/source/bridge signal at all. Do NOT invent anchors:
