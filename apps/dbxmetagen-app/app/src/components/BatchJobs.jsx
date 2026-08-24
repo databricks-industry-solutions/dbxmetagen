@@ -162,7 +162,7 @@ export default function BatchJobs({ onNavigate, pipelineStats }) {
   const [settings, setSettings] = useState({
     model: 'databricks-claude-sonnet-4-6',
     sample_size: 5,
-    columns_per_call: 20,
+    columns_per_call: 10,
     comment_style: 'standard',
     use_kb_comments: false,
     use_customer_context: false,
@@ -643,7 +643,7 @@ export default function BatchJobs({ onNavigate, pipelineStats }) {
                 <div>
                   <label className="text-xs text-slate-500 dark:text-slate-400 mb-1 block" title="Number of columns sent to the LLM per prompt chunk. Tables with more columns than this value are split into multiple LLM calls. Lower values reduce prompt size; higher values reduce the number of calls.">Columns per LLM Call</label>
                   <input type="number" min="1" max="100" value={settings.columns_per_call}
-                    onChange={e => setSetting('columns_per_call', Math.max(1, parseInt(e.target.value) || 20))} className="input-base !text-xs" />
+                    onChange={e => setSetting('columns_per_call', Math.max(1, parseInt(e.target.value) || 10))} className="input-base !text-xs" />
                 </div>
                 <div>
                   <label className="text-xs text-slate-500 dark:text-slate-400 mb-1 block" title="Controls comment verbosity. Concise: 1-2 sentence columns. Standard: 3-5 sentences (default). Detailed: 4-8+ sentences with analyst-oriented depth.">Comment Style</label>
