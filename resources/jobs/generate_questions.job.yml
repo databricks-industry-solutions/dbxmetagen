@@ -1,0 +1,56 @@
+resources:
+  jobs:
+    generate_questions_job:
+      name: "${var.app_name}_generate_questions"
+
+
+      email_notifications:
+        on_failure:
+          - ${var.current_user}
+
+      parameters:
+        - name: catalog_name
+          default: ${var.catalog_name}
+        - name: schema_name
+          default: ${var.schema_name}
+        - name: model_endpoint
+          default: "databricks-gpt-oss-120b"
+        - name: table_names
+          default: ""
+        - name: questions_per_table
+          default: "3"
+        - name: use_ai
+          default: "false"
+
+      tasks:
+        - task_key: generate_questions
+          max_retries: 1
+          job_cluster_key: generate_questions_cluster
+          notebook_task:
+            notebook_path: ../../notebooks/generate_questions.py
+            base_parameters:
+              catalog_name: "{{job.parameters.catalog_name}}"
+              schema_name: "{{job.parameters.schema_name}}"
+              model_endpoint: "{{job.parameters.model_endpoint}}"
+              table_names: "{{job.parameters.table_names}}"
+              questions_per_table: "{{job.parameters.questions_per_table}}"
+              use_ai: "{{job.parameters.use_ai}}"
+          libraries:
+            - whl: ../../dist/*.whl
+
+      job_clusters:
+        - job_cluster_key: generate_questions_cluster
+          new_cluster:
+            policy_id: ${var.policy_id}
+            spark_version: 17.3.x-cpu-ml-scala2.13
+            node_type_id: ${var.node_type}
+            data_security_mode: SINGLE_USER
+            num_workers: 1
+            # --- Uncomment for AWS ---
+            # aws_attributes:
+            #   first_on_demand: 1
+            #   availability: SPOT_WITH_FALLBACK
+            # --- Uncomment for Azure ---
+            # azure_attributes:
+            #   first_on_demand: 1
+            #   availability: SPOT_WITH_FALLBACK_AZURE
