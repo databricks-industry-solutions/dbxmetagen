@@ -1,6 +1,10 @@
 bundle:
   name: dbxmetagen
-  databricks_cli_version: ">=0.283.0"
+  # >= 1.10.0 is required: that release drops an empty policy_id before deploy
+  # (PR #6088), so a policy-free deploy works on both engines. Older CLIs send
+  # policy_id: "" and the Jobs API rejects it. The CLI enforces this constraint
+  # and fails fast with a clear message rather than the cryptic Jobs API error.
+  databricks_cli_version: ">= 1.10.0"
 
 # Deployment is a plain `databricks bundle deploy` -- there is no deploy.sh.
 # Per-workspace values (catalog, schema, warehouse, host) come from your CLI
@@ -64,30 +68,22 @@ artifacts:
 # --- Optional: Cluster policy / serverless budget policy ---
 # By default, NO policies are applied and a bare deploy works out of the box.
 #
-# Classic job clusters: the cluster spec is a complex variable
-# (metadata_job_cluster for the ML-runtime metadata jobs, lakebase_job_cluster
-# for the graph->Lakebase sync). To apply a CLUSTER POLICY, override the whole
-# cluster variable in variable-overrides.json and add policy_id +
-# apply_policy_default_values -- copy the default from variables.yml and add
-# those two keys, e.g.:
-#   {
-#     "metadata_job_cluster": {
-#       "spark_version": "17.3.x-cpu-ml-scala2.13",
-#       "node_type_id": "i3.2xlarge",
-#       "data_security_mode": "SINGLE_USER",
-#       "policy_id": "001DD81A49229D7C",
-#       "apply_policy_default_values": true,
-#       "autoscale": {"min_workers": 2, "max_workers": 4},
-#       "custom_tags": {"project": "dbxmetagen"}
-#     }
-#   }
-# Why a whole-cluster variable and not a standalone policy_id: the v1.8.0+
-# direct deploy engine does not strip an empty policy_id ("") and the Jobs API
-# rejects '' as an invalid policy ID; DAB cannot conditionally omit a scalar
-# field, so substituting the entire cluster block is the only pattern that
-# supports both with-policy and without-policy deploys.
+# Classic job clusters: to apply a CLUSTER POLICY, set the plain string variable
+# policy_id -- it is wired into both cluster specs (metadata_job_cluster for the
+# ML-runtime metadata jobs, lakebase_job_cluster for the graph->Lakebase sync).
+# Set it via any of:
+#   - {target}.env:            policy_id=001DD81A49229D7C   (deploy.sh forwards it)
+#   - variable-overrides.json: "policy_id": "001DD81A49229D7C"
+#   - CLI:                     --var policy_id=001DD81A49229D7C
+#   - env:                     BUNDLE_VAR_policy_id=001DD81A49229D7C
+# Empty (the default) = policy-free: CLI >= 1.10.0 drops the empty policy_id
+# before deploy so nothing is sent. On CLIs < 1.10.0 an empty policy_id is sent
+# as "" and the Jobs API rejects it -- hence databricks_cli_version >= 1.10.0
+# above. (For advanced cluster tuning you can still override the WHOLE
+# metadata_job_cluster / lakebase_job_cluster complex variable in
+# variable-overrides.json -- copy the default from variables.yml.)
 #
-# Serverless budget policy: budget_policy_id IS still a plain string variable
+# Serverless budget policy: budget_policy_id is a plain string variable too
 # (empty is accepted by the Jobs API at job level, unlike cluster policy_id).
 # Set it via variable-overrides.json, --var, or BUNDLE_VAR_budget_policy_id:
 #   budget_policy_id=001DD81A49229D7C

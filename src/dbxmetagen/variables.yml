@@ -193,23 +193,33 @@ variables:
   node_type:
     description: "Node type for job clusters. Must match your cloud provider. AWS: i3.2xlarge (default), Azure: Standard_D8s_v3, GCP: n2-highmem-8."
     default: i3.2xlarge
+  policy_id:
+    description: >-
+      Cluster policy ID for the classic job clusters. Empty (default) = no
+      policy; a bare deploy works out of the box. Set it via {target}.env
+      (policy_id=...), --var, BUNDLE_VAR_policy_id, or variable-overrides.json.
+      REQUIRES Databricks CLI >= 1.10.0: that release (PR #6088) drops an empty
+      policy_id before deploy, so a policy-free deploy works on BOTH the
+      terraform and direct engines. On CLIs < 1.10.0 an empty policy_id is sent
+      as "" and the Jobs API rejects it with "'' is not a valid cluster policy
+      ID" -- upgrade the CLI (see databricks_cli_version in databricks.yml).
+      Get the ID from Settings > Compute > Cluster policies > (policy) > Policy ID.
+    default: ""
   metadata_job_cluster:
     description: >-
       Full new_cluster spec shared by the classic (ML-runtime) metadata jobs.
-      Policy-FREE by default so a bare deploy works with no cluster policy.
-      To deploy WITH a cluster policy, override this ONE variable in
-      variable-overrides.json (or --var / BUNDLE_VAR) and add policy_id +
-      apply_policy_default_values -- copy the default below and add those two
-      keys. This is a complex variable because the v1.8.0+ direct deploy engine
-      does not strip an empty policy_id set to "" (the Jobs API rejects '' as an
-      invalid policy ID), and DAB has no way to conditionally omit a scalar
-      policy_id field wired to a variable. Substituting the whole cluster block
-      is the one pattern that supports both with-policy and without-policy deploys.
+      policy_id is wired to ${var.policy_id} (empty by default; the CLI drops
+      the field when unset, so this is policy-free out of the box). It remains a
+      complex variable so the spec is shared across the metadata jobs and can
+      still be overridden wholesale in variable-overrides.json for advanced
+      cluster tuning.
     type: complex
     default:
       spark_version: 17.3.x-cpu-ml-scala2.13
       node_type_id: ${var.node_type}
       data_security_mode: SINGLE_USER
+      apply_policy_default_values: true
+      policy_id: ${var.policy_id}
       autoscale:
         min_workers: 2
         max_workers: 4
@@ -219,14 +229,16 @@ variables:
     description: >-
       Full new_cluster spec for the graph->Lakebase sync job (non-ML runtime,
       single worker -- deliberately smaller than metadata_job_cluster). Same
-      policy-free-by-default / override-to-add-policy pattern as
-      metadata_job_cluster.
+      policy_id: ${var.policy_id} wiring as metadata_job_cluster (empty by
+      default; overridable wholesale in variable-overrides.json).
     type: complex
     default:
       spark_version: 16.3.x-scala2.12
       node_type_id: ${var.node_type}
       data_security_mode: SINGLE_USER
       num_workers: 1
+      apply_policy_default_values: true
+      policy_id: ${var.policy_id}
       custom_tags:
         project: dbxmetagen
   budget_policy_id:

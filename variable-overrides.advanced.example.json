@@ -12,19 +12,11 @@
   "_comment_model": "LLM endpoint used by BOTH jobs and the app. Default databricks-claude-sonnet-4-6.",
   "model": "databricks-claude-sonnet-4-6",
 
-  "_comment_cluster_policy": "To apply a CLUSTER POLICY you must override the WHOLE metadata_job_cluster complex variable (a bare policy_id string is not supported -- the v1.8.0+ direct deploy engine rejects an empty policy_id). Copy the default block from variables.yml and add policy_id + apply_policy_default_values. lakebase_job_cluster is the same pattern for the non-ML graph->Lakebase sync job.",
-  "metadata_job_cluster": {
-    "spark_version": "17.3.x-cpu-ml-scala2.13",
-    "node_type_id": "i3.2xlarge",
-    "data_security_mode": "SINGLE_USER",
-    "policy_id": "001DD81A49229D7C",
-    "apply_policy_default_values": true,
-    "autoscale": { "min_workers": 2, "max_workers": 4 },
-    "custom_tags": { "project": "dbxmetagen" }
-  },
+  "_comment_cluster_policy": "CLUSTER POLICY: a plain string ID, wired into both classic job clusters (metadata_job_cluster + lakebase_job_cluster). Left EMPTY here so copying this file verbatim gives a safe policy-free deploy; to apply a policy set policy_id to your cluster policy ID (e.g. \"001DD81A49229D7C\", from Settings > Compute > Cluster policies). Requires Databricks CLI >= 1.10.0, which drops an empty policy_id before deploy (older CLIs send \"\" and the Jobs API rejects it). ADVANCED: for full cluster tuning you can instead override the WHOLE metadata_job_cluster complex variable -- copy its default block from variables.yml, keep node_type_id/spark_version, and add policy_id + apply_policy_default_values.",
+  "policy_id": "",
 
-  "_comment_budget_policy": "Serverless budget policy ID for cost attribution on serverless jobs. Plain string variable -- empty is accepted at job level (unlike cluster policy_id).",
-  "budget_policy_id": "001DD81A49229D7C",
+  "_comment_budget_policy": "Serverless budget policy ID for cost attribution on serverless jobs. Plain string variable -- empty is accepted at job level. Left EMPTY here so verbatim copy is safe; set it to your budget policy UUID to attribute serverless cost.",
+  "budget_policy_id": "",
 
   "_comment_run_as": "Identity jobs run as. Default is the deploying user. Set an SP to own all jobs (the old spn_id). The SP needs USE CATALOG/USE SCHEMA/CREATE TABLE/SELECT/MODIFY on the target schema plus CAN_ATTACH_TO on clusters.",
   "run_as": { "service_principal_name": "00000000-0000-0000-0000-000000000000" },
