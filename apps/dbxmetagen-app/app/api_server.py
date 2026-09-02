@@ -16090,26 +16090,13 @@ def upsert_customer_context(req: CustomerContextRequest):
         ctx_id, req.scope, req.scope_type, req.context_text,
         req.context_label, req.priority, now,
     )
+    # Bound parameters store the value verbatim (stored == sent by construction), so no
+    # per-write round-trip readback guard is needed -- it would just double the warehouse
+    # round-trips (2N on the bulk YAML-upload path) for a tripwire that cannot fire. The
+    # escaping-regression tripwire lives in the tests instead: test_29 executes THIS builder
+    # against a real warehouse, and test_28 is a negative control that fails if anyone reverts
+    # to '' escaping.
     execute_sql(sql, timeout=30, parameters=params)
-
-    # Round-trip guard (issue #212): a silent quote-drop shortens the stored text. Growth is
-    # acceptable (escaping); a shorter/changed stored value is data loss, so warn loudly.
-    try:
-        rb = execute_sql(
-            f"SELECT context_text FROM {fq(_CC_TABLE)} WHERE context_id = :ctx_id",
-            timeout=15,
-            parameters=[StatementParameterListItem(name="ctx_id", value=ctx_id)],
-        )
-        stored = (rb[0].get("context_text") if rb else None) or ""
-        if stored != req.context_text:
-            logger.warning(
-                "customer_context round-trip mismatch for %s: sent %d chars, stored %d chars "
-                "(possible SQL-escaping data loss)",
-                ctx_id, len(req.context_text), len(stored),
-            )
-    except Exception as exc:
-        logger.debug("customer_context round-trip check skipped for %s: %s", ctx_id, exc)
-
     return {"context_id": ctx_id, "scope": req.scope, "word_count": len(words)}
 
 

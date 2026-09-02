@@ -123,10 +123,16 @@ try:
 
     # ------------------------------------------------------------------
     # NEGATIVE CONTROL: the OLD bug -- '' doubling inlined into SQL text.
-    # This MUST drop the apostrophes. If it ever stops dropping them, the
-    # environment changed and this test should be revisited.
+    # Uses a backslash-FREE string on purpose: a SQL string literal also
+    # processes backslash escapes, so mixing in backslashes would conflate
+    # two mechanisms and make the length delta unattributable. With only
+    # apostrophes present, the delta is EXACTLY the number of quotes dropped,
+    # which isolates and proves the '' quote-drop mechanism. If it ever stops
+    # dropping them, the environment changed and this test should be revisited.
     # ------------------------------------------------------------------
-    escaped = SENT_TEXT.replace("'", "''")  # what the buggy handler did
+    NEG_TEXT = "'tw' = this week, 'nw' = next week; the segment's benchmark"  # no backslashes
+    n_quotes = NEG_TEXT.count("'")  # each surviving-in-intent quote is dropped by '' lexing
+    escaped = NEG_TEXT.replace("'", "''")  # exactly what the buggy handler did
     run_sql(
         f"INSERT INTO {TABLE} (context_id, context_text, priority, active, created_by) "
         f"VALUES ('neg1', '{escaped}', 0, TRUE, 'app')"
@@ -136,16 +142,20 @@ try:
         parameters=[StatementParameterListItem(name="cid", value="neg1")],
     )
     neg_stored = rows[0][0]
-    assert neg_stored != SENT_TEXT, (
+    assert neg_stored != NEG_TEXT, (
         "NEGATIVE CONTROL FAILED: '' doubling round-tripped byte-exact. Databricks '' handling "
         "may have changed -- revisit whether parameter binding is still required."
     )
-    assert len(neg_stored) < len(SENT_TEXT), (
-        f"expected '' escaping to DROP quotes (shorter), got len {len(neg_stored)} "
-        f">= sent {len(SENT_TEXT)}: {neg_stored!r}"
+    # Delta must be EXACTLY the quote count -- pure quote-dropping, nothing else in play.
+    expected_dropped = n_quotes
+    actual_dropped = len(NEG_TEXT) - len(neg_stored)
+    assert actual_dropped == expected_dropped, (
+        f"expected '' escaping to drop EXACTLY {expected_dropped} quote char(s), "
+        f"but stored delta was {actual_dropped}: {neg_stored!r}"
     )
-    dropped = len(SENT_TEXT) - len(neg_stored)
-    print(f"PASS negative control: '' doubling dropped {dropped} char(s) -> {neg_stored!r}")
+    assert "'" not in neg_stored, f"expected all quotes gone, got: {neg_stored!r}"
+    print(f"PASS negative control: '' doubling dropped exactly {actual_dropped} quote char(s) "
+          f"(all apostrophes gone) -> {neg_stored!r}")
 
 finally:
     run_sql(f"DROP TABLE IF EXISTS {TABLE}")
