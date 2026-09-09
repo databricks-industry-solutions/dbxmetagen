@@ -72,7 +72,7 @@ if [ -f "$ENV_FILE" ]; then
     set -a; source "$ENV_FILE"; set +a
     # Scalar vars that map 1:1 to a declared bundle variable -> forward as --var.
     for _v in catalog_name schema_name warehouse_id vs_endpoint_name node_type \
-              budget_policy_id enable_obo app_name app_name_suffix app_display_name model; do
+              policy_id budget_policy_id enable_obo app_name app_name_suffix app_display_name model; do
         if [ -n "${!_v:-}" ]; then
             DEPLOY_VARS+=(--var "${_v}=${!_v}")
         fi
@@ -80,11 +80,12 @@ if [ -f "$ENV_FILE" ]; then
     [ ${#DEPLOY_VARS[@]} -gt 0 ] && echo "  Forwarded ${#DEPLOY_VARS[@]} override(s) from ${ENV_FILE}."
     # Knobs whose SHAPE changed -- can't be a simple --var; must move to
     # variable-overrides.json (see variable-overrides.advanced.example.json).
-    for _old in policy_id spn_id permission_groups permission_users; do
+    # (policy_id is a plain scalar again and IS forwarded above -- see the
+    # Databricks CLI >= 1.10.0 note below.)
+    for _old in spn_id permission_groups permission_users; do
         if [ -n "${!_old:-}" ]; then
             echo "  NOTE: '${_old}' changed shape and was NOT forwarded -- migrate it to variable-overrides.json:"
             case "$_old" in
-                policy_id)  echo "        override the whole metadata_job_cluster block (+ policy_id, apply_policy_default_values)." ;;
                 spn_id)     echo "        run_as: {\"service_principal_name\": \"...\"}." ;;
                 permission_groups|permission_users) echo "        app_permissions: [{group_name|user_name, level: CAN_USE}]." ;;
             esac
@@ -98,6 +99,36 @@ fi
 if ! command -v databricks &> /dev/null; then
     echo "Error: Databricks CLI not found. Install: https://docs.databricks.com/dev-tools/cli/install.html" >&2
     exit 1
+fi
+
+# --- Databricks CLI version pre-flight (>= 1.10.0) ---
+# The bundle wires policy_id into the job clusters as a plain variable (empty by
+# default). CLI >= 1.10.0 DROPS an empty policy_id before deploy; older CLIs send
+# it as "" and the Jobs API rejects it with "'' is not a valid cluster policy ID"
+# -- so EVERY deploy (policy or not) needs >= 1.10.0. databricks.yml also declares
+# this via databricks_cli_version, which hard-stops the deploy; this note just
+# fails earlier with a clearer message and an upgrade pointer.
+# Anchor on the CLI's own "v<major>.<minor>.<patch>" token (e.g. "Databricks CLI
+# v1.12.1") so a stray go-toolchain version in the output can't be grabbed instead.
+# Fall back to a bare X.Y.Z match if a future build drops the "v" prefix.
+_cli_ver=$(databricks version 2>/dev/null | grep -oE 'v[0-9]+\.[0-9]+\.[0-9]+' | head -1 | tr -d 'v')
+[ -z "$_cli_ver" ] && _cli_ver=$(databricks version 2>/dev/null | grep -oE '[0-9]+\.[0-9]+\.[0-9]+' | head -1)
+if [ -n "$_cli_ver" ]; then
+    _cli_major=${_cli_ver%%.*}; _cli_minor=${_cli_ver#*.}; _cli_minor=${_cli_minor%%.*}
+    if [ "$_cli_major" -lt 1 ] || { [ "$_cli_major" -eq 1 ] && [ "$_cli_minor" -lt 10 ]; }; then
+        echo "" >&2
+        echo "Error: Databricks CLI ${_cli_ver} is too old -- this bundle requires >= 1.10.0." >&2
+        echo "       CLI < 1.10.0 sends an empty policy_id as \"\" and the Jobs API rejects it." >&2
+        echo "       Upgrade: https://docs.databricks.com/dev-tools/cli/install.html" >&2
+        echo "" >&2
+        exit 1
+    fi
+else
+    # Couldn't parse `databricks version` -- don't hard-fail (parsing is best-effort),
+    # but warn so a subsequent version-related deploy error is not a mystery. The
+    # databricks_cli_version constraint in databricks.yml still enforces >= 1.10.0.
+    echo "Note: could not determine the Databricks CLI version to pre-check it." >&2
+    echo "      This bundle requires CLI >= 1.10.0 (see databricks.yml)." >&2
 fi
 
 REPO_ROOT="$(cd "$(dirname "$0")" && pwd)"
@@ -149,7 +180,20 @@ fi
 # started:true is opt-in via variable-overrides.json on the direct engine only.)
 echo ""
 echo "=== bundle deploy (target=${TARGET}, profile=${PROFILE}) ==="
-databricks bundle deploy -t "$TARGET" -p "$PROFILE" "${DEPLOY_VARS[@]}"
+# Capture the exit code without set -e aborting first, so we can attach a CLI-version
+# hint if the deploy failed for a version/policy_id reason (the two most common causes).
+_deploy_rc=0
+databricks bundle deploy -t "$TARGET" -p "$PROFILE" "${DEPLOY_VARS[@]}" || _deploy_rc=$?
+if [ "$_deploy_rc" -ne 0 ]; then
+    echo "" >&2
+    echo "Error: 'databricks bundle deploy' failed (exit ${_deploy_rc})." >&2
+    echo "  If the error above mentions the CLI version, an empty/invalid policy_id, or" >&2
+    echo "  \"'' is not a valid cluster policy ID\": this bundle requires Databricks CLI >= 1.10.0" >&2
+    echo "  (it drops an empty policy_id before deploy; older CLIs send \"\" and the Jobs API" >&2
+    echo "  rejects it). Your CLI: ${_cli_ver:-unknown}. Upgrade: https://docs.databricks.com/dev-tools/cli/install.html" >&2
+    echo "" >&2
+    exit "$_deploy_rc"
+fi
 
 # --- Deploy app source + start ---
 if [ "$SKIP_APP" = false ]; then
