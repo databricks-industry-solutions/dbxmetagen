@@ -41,6 +41,8 @@ The core value is **metadata generation and a governed knowledge graph**. The da
 full lifecycle, but every output is a standard Delta table or Vector Search index you can consume
 from any tool: notebooks, dashboards, Genie spaces, agents, or your own applications.
 
+*Just want to get it running? Jump to the [**Quickstart**](#quickstart) — deploy is Step 0 through Step 3, and [your first run](#your-first-run) is right after.*
+
 > [!NOTE]
 > **dbxmetagen is a Solutions Accelerator.** Every output — comments, PII/PHI/PCI tags, domain
 > classifications, ontology mappings, FK predictions, metric views, Genie spaces — is AI-generated
@@ -50,203 +52,137 @@ from any tool: notebooks, dashboards, Genie spaces, agents, or your own applicat
 
 ## Quickstart
 
-**Prerequisites:** a Databricks workspace with Unity Catalog enabled and a Foundation Model endpoint (e.g. `databricks-claude-sonnet-4-6`). For the **CLI / `./deploy.sh`** paths you also need the Databricks CLI (>=0.283.0; recent versions use the direct deploy engine), Python 3.10+, and [uv](https://docs.astral.sh/uv/) (which builds the wheel locally during deploy). The **workspace UI** path needs none of those — it builds the wheel for you. **Node.js/`npm` is not required to deploy** — the React frontend ships prebuilt and committed; only contributors who change the frontend rebuild it.
+> [!TIP]
+> **Just want to deploy?** Set three variables ([Step 1](#step-1--set-your-per-workspace-variables)), then run two commands ([Step 3, Path A](#path-a--cli-recommended)). Everything after that is optional or for other environments.
 
-1. Clone the repo and set your per-workspace bundle variables. `databricks.yml`
-   is static and committed — supply `catalog_name`, `schema_name`, and
-   `warehouse_id` (and optionally `vs_endpoint_name`) in a gitignored
-   `variable-overrides.json`. **DAB auto-loads it from
-   `.databricks/bundle/<target>/variable-overrides.json`** (a repo-root file is
-   NOT picked up). Copy the committed example into place for your target:
-   ```bash
-   git clone https://github.com/databricks-industry-solutions/dbxmetagen
-   cd dbxmetagen
-   mkdir -p .databricks/bundle/dev          # match your deploy target (-t)
-   cp variable-overrides.example.json .databricks/bundle/dev/variable-overrides.json
-   # then edit that file with your catalog / schema / warehouse ID
-   ```
-   (Alternatively pass them with `--var "catalog_name=...,schema_name=...,warehouse_id=..."`
-   or `BUNDLE_VAR_*` env vars. The workspace host comes from your CLI profile.
-   The full list of overridable variables is **declared** in `variables.yml` /
-   `variables.advanced.yml` / `resources/app_variables.yml`; `variable-overrides.example.json`
-   (basic) and `variable-overrides.advanced.example.json` are copy-ready starting points; and
-   `example.env` is an annotated human reference — no tool reads it, so you never edit it in place.)
+### Prerequisites
 
-   > **First deploy:** `.databricks/` is git-ignored and does **not** exist in a fresh clone,
-   > so the `mkdir -p` above is required before the file will be picked up (a repo-root file is
-   > ignored). If you deploy before setting `catalog_name`, the deploy still succeeds and the app
-   > shows a clear "CATALOG_NAME not set" banner telling you what to fix — it won't fail cryptically.
+You always need a **Databricks workspace with Unity Catalog enabled** and a **Foundation Model endpoint** (e.g. `databricks-claude-sonnet-4-6`). Beyond that, requirements depend on how you deploy:
 
-   > **Prefer the workspace UI?** The Databricks bundle editor's **Deploy**
-   > button is a first-class, fully-supported way to deploy — same DAB engine,
-   > same `artifacts.build` hook (the wheel is built for you in the workspace).
-   > See the step-by-step **Option 3** below and
-   > [`docs/MANUAL_DEPLOYMENT.md`](docs/MANUAL_DEPLOYMENT.md). In the UI you set
-   > variables through the **⋮** (three-dots) menu next to **Deploy** →
-   > **Configure variable overrides** (the UI equivalent of `--var`). That editor
-   > writes the **same file the CLI uses** —
-   > `.databricks/bundle/<target>/variable-overrides.json` inside your workspace
-   > Git Folder (it's gitignored, so it is not committed; each checkout — your
-   > local clone vs. the workspace Git Folder — keeps its own copy). You don't
-   > create that file by hand in the UI; the ⋮ editor manages it for you.
+| Deploy path | Also needs |
+|-------------|-----------|
+| **CLI** ([Path A](#path-a--cli-recommended)) or **`deploy.sh`** ([Path B](#path-b--deploysh-legacy-one-command)) | Databricks CLI **≥ 1.10.0**, Python 3.10+, and [uv](https://docs.astral.sh/uv/) — uv builds the wheel locally during deploy |
+| **Workspace UI** ([Path C](#path-c--workspace-ui-no-local-machine)) | Nothing extra — the wheel is built for you in the workspace |
+| **Notebook fallback** | Nothing extra — deploys from Databricks notebooks via the Python SDK |
 
-2. **Azure / GCP users:** The default job cluster node type is `i3.2xlarge` (AWS). Update `node_type` in `variables.yml` (or set it in `variable-overrides.json`) before deploying:
-   - **Azure:** `Standard_D8s_v3`
-   - **GCP:** `n2-highmem-8`
+**Node.js / `npm` is never required to deploy** — the React frontend ships prebuilt and committed. Only contributors who change the frontend rebuild it.
 
-3. Deploy.
+### Step 0 — Install & authenticate the CLI (Paths A / B only)
 
-   **Fastest path** (CLI — the most common case, once step 1's variables are set):
-   ```bash
-   databricks bundle deploy -t dev -p <your-profile>          # build wheel + register jobs & app
-   databricks bundle run   -t dev -p <your-profile> dbxmetagen_app   # deploy app source + start it
-   ```
-   Then open **Workspace > Apps > dbxmetagen-app**. (Add `scripts/grant_app_permissions.sh`
-   only if you use OBO or the app service principal needs catalog access.) That's the
-   whole happy path — the options below cover other environments and the details.
+**Skip this if you're deploying from the workspace UI** ([Path C](#path-c--workspace-ui-no-local-machine)) — the workspace is already authenticated. For the CLI paths, install the two tools from Prerequisites and log in once:
 
-   **Or pick the path that matches your environment:**
+```bash
+# 1. Databricks CLI (Homebrew shown; see the install docs for other OSes) — must be >= 1.10.0
+brew tap databricks/tap && brew install databricks     # https://docs.databricks.com/dev-tools/cli/install.html
+databricks version                                     # confirm >= 1.10.0
 
-   | Option | Use when | Creates | Notes |
-   |--------|----------|---------|-------|
-   | **1. CLI — explicit commands** | You can run the Databricks CLI locally / in CI | **All 24 jobs** + app | Each step is visible; best for CI. |
-   | **2. `./deploy.sh` — one command** | You can run the CLI and want a single command, or you have a `{target}.env` | **All 24 jobs** + app | Fully supported. Chains Option 1's commands; also reads `{target}.env` and bridges a pip proxy to `uv`. |
-   | **3. Workspace UI** | No local machine — you have the bundle editor | **All 24 jobs** + app | First-class peer to the CLI (same bundle + build hook). Grants are manual. |
-   | *Fallback:* Notebook **deployment** pipeline | You can run **neither** the CLI nor the UI | app + **8 of 24 jobs** (core only) | Deploys the app and core jobs from notebooks via the Python SDK — see [`notebook_deployment_pipeline/README.md`](notebook_deployment_pipeline/README.md). Some dashboard features unavailable. **Different** from the library-only [Partial Install](#partial-install-notebook-only) below. |
+# 2. Log in — this creates the profile you pass as -p <your-profile>
+databricks auth login --host https://<your-workspace-host> --profile <your-profile>
+databricks auth profiles                               # verify <your-profile> is listed and VALID
 
-   Options **1**, **2**, and **3** are equivalent, fully-supported peers: they run
-   the same bundle, build the wheel via the `artifacts.build` hook, and register the
-   jobs + app. By default (`app_lifecycle` = `{}`) `bundle deploy` registers the app
-   and syncs its files but does **not** start it — you start it with a `bundle run`
-   (Options 1/2 do this for you; in the UI, click the app's run icon). This default is
-   safe on **both** deploy engines. For a true **one-step** deploy on the **direct**
-   engine (workspace UI + fresh CLI) — where a single `bundle deploy` also pushes the
-   app source and starts it — set `app_lifecycle` to `{"started": true}` (see the UI
-   step below / `variable-overrides.example.json`). On a **cold first deploy** with
-   `started:true` — a brand-new app, or right after `bundle destroy` — the direct
-   engine may start compute but skip the code push; if the app shows "not deployed
-   yet," just deploy once more.
+# 3. uv (builds the wheel during deploy)
+curl -LsSf https://astral.sh/uv/install.sh | sh        # https://docs.astral.sh/uv/
+```
 
-   > **Why not `started:true` by default?** The `started` field is **direct-engine-only**.
-   > A bundle whose state was created by an older `deploy.sh`/CLI run stays on the
-   > **terraform** engine (the CLI does not auto-migrate), and terraform **rejects**
-   > `started` at build time (`Error: lifecycle.started is only supported in direct
-   > deployment mode`). The `{}` default keeps every existing customer deploying
-   > unchanged; direct-engine users opt into one-step with one override line.
+`<your-workspace-host>` is your workspace URL without a trailing slash (e.g. `dbc-1234abcd-5678.cloud.databricks.com`, `adb-123456789.11.azuredatabricks.net`, or `1234567890.gcp.databricks.com`). If you omit `--profile`, the credentials are written to the `DEFAULT` profile and you can drop `-p` from every command below.
 
-   **Notes (apply to all three options):**
-   - **Grants are separate & optional.** `scripts/grant_app_permissions.sh` grants the
-     app service principal UC access and provisions a Vector Search endpoint — things
-     DAB cannot do natively. Skip it if you're not using OBO and the app SP already has
-     catalog access.
-   - **Jobs-only deploy:** run just `bundle deploy` (CLI) or the bundle **Deploy** (UI)
-     and skip the app start + grants.
-   - **One workspace, one instance:** the app is a singleton by name. To run more than
-     one target/instance in the same workspace, set `app_name_suffix` (e.g. `-dev`) in
-     your overrides so they don't overwrite each other's app.
-   - **No `npm` needed to deploy** — the React frontend ships prebuilt and committed;
-     only contributors who change it rebuild
-     (`cd apps/dbxmetagen-app/app/src && npm install && npm run build`).
-   - **Advanced overrides** (cluster policy, serverless budget, `run_as` SP, app
-     permissions, OBO scopes, lakebase): copy `variable-overrides.advanced.example.json`
-     into `.databricks/bundle/<target>/variable-overrides.json` (CLI) or paste the same
-     keys into the UI's ⋮ **Configure variable overrides** editor.
+### Step 1 — Set your per-workspace variables
 
-   **Option 1 — CLI** (each step visible; best for CI):
-   ```bash
-   databricks bundle deploy -t dev -p <your-profile>                  # builds wheel + registers jobs & app (does not start it by default)
-   databricks bundle run   -t dev -p <your-profile> dbxmetagen_app    # deploy app source + start the app
-   scripts/grant_app_permissions.sh -t dev -p <your-profile>          # UC grants + Vector Search endpoint (only needed for OBO / app-SP catalog access)
-   ```
-   On a cold first deploy that shows "not deployed yet," run `bundle deploy` again
-   (or the `bundle run` line above).
+`databricks.yml` is static and committed; you supply the per-workspace values as **bundle variable overrides**. The three required ones are `catalog_name`, `schema_name`, and `warehouse_id` (`vs_endpoint_name` is optional). DAB auto-loads them from `.databricks/bundle/<target>/variable-overrides.json` — **that exact path** (a repo-root copy is *not* picked up). `.databricks/` is gitignored and doesn't exist in a fresh clone, so create it:
 
-   **Option 2 — `./deploy.sh`** (the same steps, one invocation):
-   ```bash
-   ./deploy.sh -t dev -p <your-profile>
-   ```
-   `deploy.sh` is a **fully-supported** wrapper that chains the Option 1 commands.
-   It does **not** generate any YAML (`databricks.yml`, `app.yaml`, and the app
-   resource are static committed files). It adds two conveniences:
-   - **`{target}.env` support.** If a `dev.env` / `demo.env` / `prod.env` exists,
-     it is sourced and its scalar values (`catalog_name`, `schema_name`,
-     `warehouse_id`, `vs_endpoint_name`, `node_type`, `budget_policy_id`,
-     `enable_obo`, `app_name`, `app_name_suffix`, `app_display_name`, `model`) are
-     forwarded as `--var` overrides — so a legacy `.env`-based deploy keeps working
-     with no migration. (Knobs whose *shape* changed — `policy_id`, `spn_id`,
-     `permission_groups/users` — are **not** forwarded; the script prints how to
-     move them to `variable-overrides.json`.) If you use `.databricks/bundle/<target>/variable-overrides.json`
-     instead, `deploy.sh` works too — the values resolve through the bundle.
-   - **pip → uv proxy bridge.** If `pip` is configured with a private index
-     (`global.index-url`) and `UV_INDEX_URL` is unset, it forwards that index to
-     `uv` for the wheel build (corporate-proxy environments).
+```bash
+git clone https://github.com/databricks-industry-solutions/dbxmetagen
+cd dbxmetagen
+mkdir -p .databricks/bundle/dev          # match your deploy target (-t)
+cp variable-overrides.example.json .databricks/bundle/dev/variable-overrides.json
+# then edit that file: set catalog_name, schema_name, warehouse_id
+```
 
-   Flags: `-t/--target`, `-p/--profile`, `--no-app` (jobs/code only, skip app
-   start), `--yes-frontend` (rebuild the React frontend — **off by default**, since the
-   built `dist/` is committed and shipped as-is; pass this only when the app source
-   changed), `--no-frontend` (a **no-op** kept for backward compatibility — skipping the
-   frontend build is already the default, so existing scripts that pass it keep working
-   and simply run the default; it never errors), `--no-vs`. If no
-   `catalog_name` is found in any source,
-   it prints a clear warning and still deploys (the app then shows a "CATALOG_NAME
-   not set" banner until you configure it).
+The workspace host comes from your CLI profile, not this file.
 
-   **Option 3 — Workspace UI** (no local machine required). Exact steps:
-   1. In your workspace, clone the repo as a **Git Folder**
-      (**Workspace → your folder → Create → Git folder**, repo URL
-      `https://github.com/databricks-industry-solutions/dbxmetagen`) and check out
-      the branch you want to deploy.
-   2. Open **`databricks.yml`** in the editor. In the **Bundle** panel on the right,
-      select your **target** (e.g. `dev`).
-   3. Set your variables: click the **⋮** (three-dots) menu next to **Deploy** →
-      **Configure variable overrides**, and fill in at least `catalog_name`,
-      `schema_name`, and `warehouse_id` (as JSON), then **Save**. This writes
-      `.databricks/bundle/<target>/variable-overrides.json` **inside your Git
-      Folder** — the same file the CLI reads (gitignored, so not committed). The ⋮
-      editor manages it; you don't create it by hand.
-      **For a one-step deploy (recommended in the UI), also add**
-      `"app_lifecycle": {"started": true}` **here** — the UI always uses the direct
-      engine, so this makes step 4 deploy the app source and start it in one click.
-      (Omit it and you'll start the app manually in step 6.)
-   4. Click **Deploy** (the button at the top of the bundle editor). This builds the
-      wheel via the `artifacts.build` hook and registers all jobs + the app. If you
-      set `app_lifecycle` in step 3, it also **deploys the app source and starts it in
-      the same step** (wait a few minutes; it installs the wheel). Otherwise it only
-      registers/syncs the app — start it in step 6.
-   5. **Do NOT use the app's own "Deploy" button on the Apps page** to deploy the
-      source — that path reads `app.yaml` (which intentionally carries no env) and
-      brings the app up **without** its configuration (you'd get the "CATALOG_NAME
-      not set" banner). The **bundle-editor Deploy** in step 4 is what applies the
-      app's environment.
-   6. **Start the app** (needed if you did NOT set `app_lifecycle` in step 3, or if
-      the app shows **"App has not been deployed yet"** — which can also happen on a
-      cold first deploy even with `started:true`): click the **run icon (▶)** on the
-      `dbxmetagen_app` resource in the bundle editor's **Bundle resources** pane (the
-      UI equivalent of `bundle run dbxmetagen_app`), **or** click **Deploy** again.
-   7. For OBO / app-SP catalog access, run `scripts/grant_app_permissions.sh` from a
-      workspace **web terminal**, or grant the app service principal UC access
-      manually — see [`docs/MANUAL_DEPLOYMENT.md`](docs/MANUAL_DEPLOYMENT.md).
+- **Where to find these values:** `catalog_name` / `schema_name` — the Unity Catalog catalog you want to document and the (new or existing) schema for the output tables; the schema is created if it doesn't exist. `warehouse_id` — **SQL Warehouses → your warehouse → Connection details** (or the last path segment of the warehouse's URL). Your **model endpoint** (the `databricks-claude-sonnet-4-6` default, or an override) must exist under **Serving** as a Foundation Model or provisioned-throughput endpoint — availability is region-dependent, so confirm it before deploying.
+- **Deploying from the workspace UI ([Path C](#path-c--workspace-ui-no-local-machine))?** You don't create this file by hand — the **⋮ → Configure variable overrides** editor writes the same file for you inside your Git Folder. Follow Path C instead.
+- **Prefer flags?** Pass `--var "catalog_name=...,schema_name=...,warehouse_id=..."` or `BUNDLE_VAR_*` env vars instead of the file.
+- **Reference files:** `variable-overrides.example.json` (basic, copied above) and `variable-overrides.advanced.example.json` (adds `run_as` SP, OBO scopes, app permissions, cluster policy, Lakebase) are copy-ready. `variables.yml` / `variables.advanced.yml` / `resources/app_variables.yml` **declare** every overridable variable; `example.env` is an annotated human reference (no tool reads it, so you never edit it in place).
 
-   > **If the app shows the "CATALOG_NAME not set" banner:** it was almost always
-   > deployed via the **Apps-page "Deploy" button** (which reads `app.yaml`, no env)
-   > rather than through the **bundle** (which applies the bundle's `config.env` when
-   > the app source is deployed — step 4 with `app_lifecycle` set, or the step-6 run
-   > icon). Deploy the app source through the bundle to apply the environment. The CLI
-   > paths (Options 1 / 2) always apply it via `bundle run`.
+> If you skip this step the deploy still **succeeds** — the app just shows a clear **"CATALOG_NAME not set"** banner telling you what to fix. It never fails cryptically.
 
-   > **Only using On-Behalf-Of (OBO) user auth?** (Default is off — skip this if
-   > you deploy with `enable_obo=false`.) Two OBO-specific gotchas:
-   > - **After enabling or re-scoping OBO, re-consent in the browser.** The app
-   >   requests the user's authorization on first visit; a stale cached consent
-   >   shows up as auth/scope errors. Open the app in an **incognito window** (or
-   >   sign out/in) to force a fresh consent after any OBO change.
-   > - **Scopes are declared by default — no need to set them.** `user_api_scopes`
-   >   defaults to `files.files`, `serving.serving-endpoints`, `sql.statement-execution`,
-   >   `dashboards.genie` on every deploy, so enabling OBO needs no scope wrangling.
-   >   Declaring scopes requires the workspace's user-token-passthrough feature; if a
-   >   target workspace lacks it, override `user_api_scopes` to `[]` to opt out.
+### Step 2 — Azure / GCP only: set the cluster node type
 
-4. Access the app at **Workspace > Apps > dbxmetagen-app** and follow the instructions there.
+The default job-cluster `node_type` is `i3.2xlarge` (an **AWS** type). On another cloud, set `node_type` in your `variable-overrides.json` before deploying:
+
+- **Azure:** `Standard_D8s_v3`
+- **GCP:** `n2-highmem-8`
+
+### Step 3 — Deploy (pick one path)
+
+All three paths are **equivalent, fully-supported peers**: the same bundle, the same `artifacts.build` wheel hook, the same **24 jobs + app**. Pick the one that matches your environment. Anything that applies *after* the deploy — starting the app, grants, OBO — is in [After deploy](#after-deploy) and is the same for all paths.
+
+#### Path A — CLI (recommended)
+
+```bash
+databricks bundle deploy -t dev -p <your-profile>                # build wheel + register all 24 jobs & the app
+databricks bundle run    -t dev -p <your-profile> dbxmetagen_app # deploy app source + start the app
+```
+
+That's the whole happy path. `bundle deploy` registers the app and syncs its files but does **not** start it — the `bundle run` line does. Best for CI, since each step is visible.
+
+> **Cold first deploy:** if the app shows "not deployed yet," run `bundle deploy` again (or re-run the `bundle run` line). This can happen on a brand-new app or right after `bundle destroy`.
+
+#### Path B — `deploy.sh` (legacy, one command)
+
+A **legacy but fully-supported** wrapper that chains Path A's two commands into one:
+
+```bash
+./deploy.sh -t dev -p <your-profile>
+```
+
+It generates no YAML (`databricks.yml`, `app.yaml`, and the app resource are static committed files). It adds two conveniences for older setups:
+
+- **`{target}.env` support** — if a `dev.env` / `demo.env` / `prod.env` exists, its scalar values (`catalog_name`, `schema_name`, `warehouse_id`, `vs_endpoint_name`, `node_type`, `budget_policy_id`, `enable_obo`, `app_name`, `app_name_suffix`, `app_display_name`, `model`) are forwarded as `--var` overrides, so a legacy `.env`-based deploy keeps working with no migration. (Knobs whose *shape* changed — `policy_id`, `spn_id`, `permission_groups/users` — are **not** forwarded; the script prints how to move them to `variable-overrides.json`.) A `variable-overrides.json` works here too.
+- **pip → uv proxy bridge** — if `pip` has a private index (`global.index-url`) and `UV_INDEX_URL` is unset, it forwards that index to `uv` for the wheel build (corporate-proxy environments).
+
+Flags: `-t/--target`, `-p/--profile`, `--no-app` (jobs/code only, skip the app start), `--yes-frontend` (rebuild the React frontend — **off by default**, since the committed `dist/` ships as-is; pass only when the app source changed), `--no-frontend` (a **no-op** kept for backward compatibility — the build is already skipped by default, so it never errors), `--no-vs` (skip the Vector Search endpoint + grant).
+
+#### Path C — Workspace UI (no local machine)
+
+The bundle editor's **Deploy** button is a first-class peer to the CLI — same engine, same wheel hook (the wheel is built for you in the workspace). See also [`docs/MANUAL_DEPLOYMENT.md`](docs/MANUAL_DEPLOYMENT.md).
+
+1. Clone the repo as a **Git Folder** (**Workspace → your folder → Create → Git folder**, URL `https://github.com/databricks-industry-solutions/dbxmetagen`) and check out the branch you want.
+2. Open **`databricks.yml`** in the editor. In the **Bundle** panel on the right, select your **target** (e.g. `dev`).
+3. Click the **⋮** (three-dots) menu next to **Deploy** → **Configure variable overrides**, fill in `catalog_name`, `schema_name`, and `warehouse_id` (as JSON), then **Save**. This writes the same `.databricks/bundle/<target>/variable-overrides.json` the CLI reads, inside your Git Folder (gitignored, not committed). **For a one-step deploy, also add** `"app_lifecycle": {"started": true}` here — the UI always uses the direct engine, so this makes step 4 deploy the app source and start it in one click (see [After deploy](#after-deploy)).
+4. Click **Deploy** (top of the bundle editor). This builds the wheel and registers all jobs + the app. If you set `app_lifecycle` in step 3, it also **deploys the app source and starts it in the same step** (wait a few minutes while it installs the wheel). Otherwise it only registers/syncs the app — start it in step 5.
+5. **Start the app** (only if you did *not* set `app_lifecycle`, or the app shows **"App has not been deployed yet"** — which can also happen on a cold first deploy even with `started:true`): click the **run icon (▶)** on the `dbxmetagen_app` resource in the **Bundle resources** pane (the UI equivalent of `bundle run dbxmetagen_app`), **or** click **Deploy** again.
+
+> **Do NOT use the app's own "Deploy" button on the Apps page.** That path reads `app.yaml` (which intentionally carries no env) and brings the app up **without** its configuration — this is the usual cause of the "CATALOG_NAME not set" banner. Only the **bundle-editor Deploy** (step 4) or the CLI `bundle run` applies the app's environment.
+
+#### Fallback — Notebook deployment pipeline
+
+If you can run **neither** the CLI nor the UI, deploy the app + **core jobs (8 of 24)** from Databricks notebooks via the Python SDK. Some dashboard features are unavailable. See [`notebook_deployment_pipeline/README.md`](notebook_deployment_pipeline/README.md). (This is different from the library-only [Partial Install](#partial-install-notebook-only) below.)
+
+### Your first run
+
+Open the app at **Workspace > Apps > dbxmetagen-app**. **Success looks like** the app loading its home page (not the "CATALOG_NAME not set" banner) with your catalog visible. Then generate and review metadata for one schema:
+
+1. **Generate Metadata** → pick a schema in your catalog, leave the mode on **comment**, and click run. A small schema (tens of tables) finishes in a few minutes. This sends table/column names and sample rows to your model endpoint — set `allow_data=false` first if that data must not leave your environment (see [Data Privacy](#data-privacy)).
+2. Watch the job to completion (the app links to the run).
+3. **Review & Apply** → read the generated descriptions, edit anything off, and **apply** the ones you approve. Nothing reaches Unity Catalog until you apply it (`apply_ddl=false` by default).
+4. **Coverage** → confirm the schema now shows metadata coverage.
+
+That's the core loop. From here, run **PI** and **domain** modes and the analytics pipeline (knowledge graph, ontology, metric views, Genie) — see the [Jobs](#jobs) and [Human Review](#human-review) sections, and [`docs/metadata_governance_workflow.md`](docs/metadata_governance_workflow.md) for the full review-and-publish model.
+
+### After deploy
+
+The items below apply to **all paths** and are each **optional**:
+
+- **One-step deploy (`app_lifecycle`).** By default (`{}`) `bundle deploy` registers the app but doesn't start it — safe on **both** deploy engines. To make a single `bundle deploy` also push the app source and start it, set `app_lifecycle` to `{"started": true}` in your overrides. **This works only on the direct engine** (workspace UI and fresh CLI). A bundle whose state came from an older `deploy.sh`/CLI run stays on the **terraform** engine (the CLI does not auto-migrate), which rejects `started` at build time — leave it `{}` there. That's why `{}` is the default: it keeps every existing deploy working unchanged.
+- **Grants (only if needed).** `scripts/grant_app_permissions.sh -t dev -p <your-profile>` grants the app service principal UC access and provisions a Vector Search endpoint — things DAB can't do natively. **Skip it** if you're not using OBO and the app SP already has catalog access. In the UI, run it from a workspace **web terminal**, or grant manually — see [`docs/MANUAL_DEPLOYMENT.md`](docs/MANUAL_DEPLOYMENT.md).
+- **Jobs only:** run just `bundle deploy` (CLI) or the bundle **Deploy** (UI) and skip the app start + grants.
+- **Multiple instances in one workspace.** The app is a **singleton by name**. To run more than one target/instance in the same workspace, set `app_name_suffix` (e.g. `-dev`) in your overrides — it's appended to both the app name and the job-name prefix, so instances don't overwrite each other.
+- **On-Behalf-Of (OBO) user auth** — off by default; skip if `enable_obo=false`:
+  - After enabling or re-scoping OBO, **re-consent in the browser** — a stale cached consent shows up as auth/scope errors. Open the app in an **incognito window** (or sign out/in) to force a fresh consent.
+  - Scopes are declared for you (`files.files`, `serving.serving-endpoints`, `sql.statement-execution`, `dashboards.genie`), so no scope wrangling is needed. Declaring scopes requires the workspace's user-token-passthrough feature; if a target lacks it, override `user_api_scopes` to `[]` to opt out.
+- **Advanced overrides** (cluster policy, serverless budget, `run_as` SP, app permissions, OBO scopes, Lakebase): copy `variable-overrides.advanced.example.json` into `.databricks/bundle/<target>/variable-overrides.json` (CLI) or paste the same keys into the UI's ⋮ **Configure variable overrides** editor.
 
 ## Partial Install (Notebook Only)
 
@@ -675,7 +611,6 @@ dbxmetagen exposes its knowledge base, knowledge graph, and vector index as [Dat
 | [Domain & Ontology Architecture](docs/DOMAIN_ONTOLOGY_ARCHITECTURE.md) | Formal vs custom ontology bundles, domain YAML, and how they interact |
 | [MCP Servers](docs/MCP_SERVERS.md) | Managed MCP server setup, tool reference, and agent integration |
 | [QA Checklist](docs/QA_CHECKLIST.md) | Pre-release validation checklist |
-| [Roadmap](docs/CONSOLIDATED_ROADMAP.md) | Open work items by theme and priority |
 | [Dependencies](docs/DEPENDENCIES.md) | Third-party dependency inventory |
 
 ## Testing
@@ -816,9 +751,7 @@ in-workspace build requirements.
 - **Very large catalogs need tuning.** Defaults are tuned for tens-to-thousands of tables. For
   10,000+ tables, raise multi-task parallelism and `columns_per_call` (see [Scaling](#scaling)).
   Further throughput/cost work — batching column/table classification LLM calls and batching
-  `DESCRIBE EXTENDED` via `information_schema` — is tracked in
-  [docs/CONSOLIDATED_ROADMAP.md](docs/CONSOLIDATED_ROADMAP.md) (items AQ-1/2, R3) and is not required
-  for typical runs.
+  `DESCRIBE EXTENDED` via `information_schema` — is planned and is not required for typical runs.
 - **Federated sources.** In `federation_mode`, `DESCRIBE EXTENDED`, `ALTER TABLE`, and `SET TAGS` are
   disabled and all output is Delta-native; start with a small table set to gauge source-query load
   before scaling up.
