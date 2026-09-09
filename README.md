@@ -1,38 +1,37 @@
-<p align="center">
-  <img src="images/dbxmetagen_logo.png" alt="dbxmetagen logo" width="120" />
-</p>
+<img src="images/dbxmetagen_logo.png" alt="dbxmetagen logo" width="120" />
 
-# dbxmetagen: AI-Native Metadata Platform for Databricks
+# dbxmetagen: AI-Native Metadata and Semantic Layer for Databricks
 
-<img src="images/DBXMetagen_arch_hl.png" alt="High-level DBXMetagen Architecture" width="800" top-margin="50">
+<img src="images/DBXMetagen_arch_hl.png" alt="High-level DBXMetagen Architecture" width="800" />
 
-**dbxmetagen** turns raw Unity Catalog tables into governed, AI-queryable knowledge. It
-generates AI-reviewed metadata (descriptions, PII/PHI/PCI tags, business-domain
-classification), builds a knowledge graph and formal-ontology layer on top of it, and uses
-that model to auto-generate a semantic layer (UC metric views) and Genie spaces — with
-human review at every step. The pipeline runs in four stages:
+**dbxmetagen** turns raw Unity Catalog tables into governed, AI-queryable knowledge. It generates AI-reviewed metadata (descriptions, PII/PHI/PCI tags, business-domain classification), maps formalized ontologies to your schema, predicts join keys, builds a knowledge graph and retrieval layer on top, and uses  
+that model to auto-generate a semantic layer (UC metric views) and Genie spaces, with human review at every step. The pipeline runs in four stages:
 
-**1. Metadata generation** — the foundation
+**1. Metadata generation**: the foundation
+
 - **Comment generation**: AI-generated descriptions for tables and columns
 - **PI classification**: Identify and tag PII, PHI, and PCI (LLM + rule-based spaCy/Presidio)
 - **Domain classification**: Categorize tables into business domains and subdomains
 - **Customer context**: Inject domain-specific knowledge into prompts, scoped by catalog/schema/table/pattern
-- **Metadata review**: Human-in-the-loop review, edit, and apply workflow — the governance centerpiece
+- **Metadata review**: Human-in-the-loop review, edit, and apply workflow; the governance centerpiece
 
-**2. Knowledge platform** — metadata → a queryable graph
+**2. Knowledge platform**: ontology, profiling, join keys, vector indexes, and knowledge graph
+
 - **Knowledge base**: Aggregated table/column/schema metadata with extended system properties
-- **Formal ontologies + entity discovery**: Map tables/columns to standard ontologies — FHIR R4, OMOP CDM, Schema.org, Dublin Core, FIBO Foundations (financial services) — with multiple bundles coexisting in one schema
+- **Formal ontologies + entity discovery**: Map tables/columns to standard ontologies: FHIR R4, OMOP CDM, Schema.org, Dublin Core, FIBO Foundations (financial services), with multiple bundles coexisting in one schema
 - **Knowledge graph**: Entity-relationship model with embeddings, similarity, clustering, and quality scores
 - **FK prediction**: AI + heuristic foreign-key discovery (distinct from join-key suggestion), with column-similarity ranking and ontology hints
 - **Data profiling & quality scoring**: Automated profiling with gradient-boosted quality grades
 - **Vector Search indexes**: Hybrid semantic + lexical retrieval over metadata and ontology entities
 
-**3. Semantic layer & Genie** — a business model from your data
-- **Metric view generation**: Auto-generated UC metric views (measures, dimensions, joins, filtered measures, windows) with SQL validation + autofix
-- **Genie space builder**: Generate Genie spaces with instructions and example SQL — and **pull curated SQL from existing Genie spaces to seed new metric views** (cover a data-mart layer without touching the room)
+**3. Semantic layer & Genie**: a business model from your data
+
+- **Metric view generation**: Generate UC metric views (measures, dimensions, joins, filtered measures, windows) with SQL validation, deduplication, and autofix
+- **Genie space builder**: Generate Genie spaces with instructions and example SQL, and **pull curated SQL from existing Genie spaces to seed new metric views** (cover a data-mart layer without touching the room)
 - **ERD recommender**: Hybrid LLM + heuristic engine that proposes metric-view structure from your table relationships
 
-**4. Agents & serving** — explore it in natural language
+**4. Agents & serving**: explore it in natural language
+
 - **Deep analysis & analyst agents**: GraphRAG-style natural-language exploration of the catalog and its relationships
 - **Metric-view agent**: chat-driven metric discovery over deployed views
 - **Web dashboard**: FastAPI + React app covering the full lifecycle (Generate · Review · Explore)
@@ -41,14 +40,13 @@ The core value is **metadata generation and a governed knowledge graph**. The da
 full lifecycle, but every output is a standard Delta table or Vector Search index you can consume
 from any tool: notebooks, dashboards, Genie spaces, agents, or your own applications.
 
-*Just want to get it running? Jump to the [**Quickstart**](#quickstart) — deploy is Step 0 through Step 3, and [your first run](#your-first-run) is right after.*
+*Just want to get it running? Jump to the [**Quickstart**](#quickstart): deploy is Step 0 through Step 3, and [your first run](#your-first-run) is right after.*
 
 > [!NOTE]
 > **dbxmetagen is a Solutions Accelerator.** Every output — comments, PII/PHI/PCI tags, domain
 > classifications, ontology mappings, FK predictions, metric views, Genie spaces — is AI-generated
 > and meant to be reviewed by a human before it's applied or trusted. Nothing touches your catalog
 > until you review and apply it (`apply_ddl=false` by default). See [Human Review](#human-review).
-
 
 ## Quickstart
 
@@ -59,13 +57,17 @@ from any tool: notebooks, dashboards, Genie spaces, agents, or your own applicat
 
 You always need a **Databricks workspace with Unity Catalog enabled** and a **Foundation Model endpoint** (e.g. `databricks-claude-sonnet-4-6`). Beyond that, requirements depend on how you deploy:
 
-| Deploy path | Also needs |
-|-------------|-----------|
+
+| Deploy path                                                                                                      | Also needs                                                                                                                  |
+| ---------------------------------------------------------------------------------------------------------------- | --------------------------------------------------------------------------------------------------------------------------- |
 | **CLI** ([Path A](#path-a--cli-recommended)) or **`deploy.sh`** ([Path B](#path-b--deploysh-legacy-one-command)) | Databricks CLI **≥ 1.10.0**, Python 3.10+, and [uv](https://docs.astral.sh/uv/) — uv builds the wheel locally during deploy |
-| **Workspace UI** ([Path C](#path-c--workspace-ui-no-local-machine)) | Nothing extra — the wheel is built for you in the workspace |
-| **Notebook fallback** | Nothing extra — deploys from Databricks notebooks via the Python SDK |
+| **Workspace UI** ([Path C](#path-c--workspace-ui-no-local-machine))                                              | Nothing extra — the wheel is built for you in the workspace                                                                 |
+| **Notebook fallback**                                                                                            | Nothing extra — deploys from Databricks notebooks via the Python SDK                                                        |
+
 
 **Node.js / `npm` is never required to deploy** — the React frontend ships prebuilt and committed. Only contributors who change the frontend rebuild it.
+
+**How the steps map to paths:** Paths **A** and **B** (CLI) follow Steps 0–3 in order. Path **C** (workspace UI) sets its variables and deploys entirely in the bundle editor — skip Steps 0–1 and go straight to [Path C](#path-c--workspace-ui-no-local-machine). Step 2 (cloud node type) applies to every path.
 
 ### Step 0 — Install & authenticate the CLI (Paths A / B only)
 
@@ -80,13 +82,12 @@ databricks version                                     # confirm >= 1.10.0
 databricks auth login --host https://<your-workspace-host> --profile <your-profile>
 databricks auth profiles                               # verify <your-profile> is listed and VALID
 
-# 3. uv (builds the wheel during deploy)
-curl -LsSf https://astral.sh/uv/install.sh | sh        # https://docs.astral.sh/uv/
+# 3. Install uv
 ```
 
 `<your-workspace-host>` is your workspace URL without a trailing slash (e.g. `dbc-1234abcd-5678.cloud.databricks.com`, `adb-123456789.11.azuredatabricks.net`, or `1234567890.gcp.databricks.com`). If you omit `--profile`, the credentials are written to the `DEFAULT` profile and you can drop `-p` from every command below.
 
-### Step 1 — Set your per-workspace variables
+### Step 1 — Set your per-workspace variables (Paths A / B)
 
 `databricks.yml` is static and committed; you supply the per-workspace values as **bundle variable overrides**. The three required ones are `catalog_name`, `schema_name`, and `warehouse_id` (`vs_endpoint_name` is optional). DAB auto-loads them from `.databricks/bundle/<target>/variable-overrides.json` — **that exact path** (a repo-root copy is *not* picked up). `.databricks/` is gitignored and doesn't exist in a fresh clone, so create it:
 
@@ -142,7 +143,7 @@ It generates no YAML (`databricks.yml`, `app.yaml`, and the app resource are sta
 - **`{target}.env` support** — if a `dev.env` / `demo.env` / `prod.env` exists, its scalar values (`catalog_name`, `schema_name`, `warehouse_id`, `vs_endpoint_name`, `node_type`, `budget_policy_id`, `enable_obo`, `app_name`, `app_name_suffix`, `app_display_name`, `model`) are forwarded as `--var` overrides, so a legacy `.env`-based deploy keeps working with no migration. (Knobs whose *shape* changed — `policy_id`, `spn_id`, `permission_groups/users` — are **not** forwarded; the script prints how to move them to `variable-overrides.json`.) A `variable-overrides.json` works here too.
 - **pip → uv proxy bridge** — if `pip` has a private index (`global.index-url`) and `UV_INDEX_URL` is unset, it forwards that index to `uv` for the wheel build (corporate-proxy environments).
 
-Flags: `-t/--target`, `-p/--profile`, `--no-app` (jobs/code only, skip the app start), `--yes-frontend` (rebuild the React frontend — **off by default**, since the committed `dist/` ships as-is; pass only when the app source changed), `--no-frontend` (a **no-op** kept for backward compatibility — the build is already skipped by default, so it never errors), `--no-vs` (skip the Vector Search endpoint + grant).
+Flags: `-t/--target`, `-p/--profile`, `--yes-frontend` (rebuild the React frontend — **off by default**, since the committed `dist/` ships as-is; pass only when the app source changed), `--no-frontend` (a **no-op** kept for backward compatibility — the build is already skipped by default, so it never errors), `--no-vs` (skip the Vector Search endpoint + grant).
 
 #### Path C — Workspace UI (no local machine)
 
@@ -164,7 +165,7 @@ If you can run **neither** the CLI nor the UI, deploy the app + **core jobs (8 o
 
 Open the app at **Workspace > Apps > dbxmetagen-app**. **Success looks like** the app loading its home page (not the "CATALOG_NAME not set" banner) with your catalog visible. Then generate and review metadata for one schema:
 
-1. **Generate Metadata** → pick a schema in your catalog, leave the mode on **comment**, and click run. A small schema (tens of tables) finishes in a few minutes. This sends table/column names and sample rows to your model endpoint — set `allow_data=false` first if that data must not leave your environment (see [Data Privacy](#data-privacy)).
+1. **Generate Metadata** → pick a schema in your catalog, leave the mode on **comment**, and click run. A small schema (~10 small tables) finishes in a few minutes. This sends table/column names and sample rows to your model endpoint.
 2. Watch the job to completion (the app links to the run).
 3. **Review & Apply** → read the generated descriptions, edit anything off, and **apply** the ones you approve. Nothing reaches Unity Catalog until you apply it (`apply_ddl=false` by default).
 4. **Coverage** → confirm the schema now shows metadata coverage.
@@ -188,7 +189,7 @@ The items below apply to **all paths** and are each **optional**:
 
 If you only need core metadata generation (comments, PI, domain) without the web dashboard, managed jobs, semantic layer, or Genie Builder, install the library directly on any Databricks cluster. No CLI, Asset Bundles, or repo clone needed.
 
-> **Not the same as the [notebook _deployment_ pipeline](notebook_deployment_pipeline/README.md).** That pipeline *deploys* the app plus core jobs from notebooks (for environments that can run neither the CLI nor the UI). This section instead just **installs the library** so you can call `main()` directly — no app, no jobs, no bundle.
+> **Not the same as the [notebook *deployment* pipeline](notebook_deployment_pipeline/README.md).** That pipeline *deploys* the app plus core jobs from notebooks (for environments that can run neither the CLI nor the UI). This section instead just **installs the library** so you can call `main()` directly — no app, no jobs, no bundle.
 
 ### 1. Install
 
@@ -276,13 +277,15 @@ build_ontology(spark, "my_catalog", "metadata_results")
 
 The `examples/` notebooks show how to use dbxmetagen as a **standalone pip-installable library** -- useful for embedding into your own projects or quick ad-hoc runs. They install directly from GitHub and do not require cloning the repo or running `deploy.sh`. See the [examples README](examples/README.md) for details.
 
-| Notebook | What it does |
-|----------|-------------|
-| `examples/01_generate_metadata.py` | Run all three modes (comment, PI, domain) for richest Genie context |
-| `examples/02_build_knowledge_bases.py` | Structured KB tables from raw metadata |
-| `examples/03_build_analytics.py` | Graph, ontology, embeddings, profiling, FK prediction, quality |
-| `examples/04_generate_semantic_layer.py` | Metric view definitions from business questions |
-| `examples/05_create_genie_spaces.py` | Genie spaces with auto-splitting for large schemas |
+
+| Notebook                                 | What it does                                                        |
+| ---------------------------------------- | ------------------------------------------------------------------- |
+| `examples/01_generate_metadata.py`       | Run all three modes (comment, PI, domain) for richest Genie context |
+| `examples/02_build_knowledge_bases.py`   | Structured KB tables from raw metadata                              |
+| `examples/03_build_analytics.py`         | Graph, ontology, embeddings, profiling, FK prediction, quality      |
+| `examples/04_generate_semantic_layer.py` | Metric view definitions from business questions                     |
+| `examples/05_create_genie_spaces.py`     | Genie spaces with auto-splitting for large schemas                  |
+
 
 ## Disclaimer
 
@@ -294,11 +297,11 @@ The `examples/` notebooks show how to use dbxmetagen as a **standalone pip-insta
 > obligation that applies to your data and jurisdiction.
 
 - AI-generated metadata must be human-reviewed for compliance — PII/PHI/PCI detection can produce
-  false negatives, and you must review all sensitivity classifications before relying on them.
+false negatives, and you must review all sensitivity classifications before relying on them.
 - Generated comments may include data samples depending on settings (`sample_size`, `allow_data`);
-  set `sample_size=0` to send no row data to the model.
+set `sample_size=0` to send no row data to the model.
 - Unless configured otherwise, dbxmetagen sends data to the specified model endpoint. You control
-  the endpoint and what data leaves your environment.
+the endpoint and what data leaves your environment.
 - Compliance (e.g., HIPAA, GDPR, PCI-DSS) is the user's responsibility, as stated above.
 
 ## Architecture
@@ -390,6 +393,7 @@ flowchart TB
 dbxmetagen has two phases:
 
 **Phase 1 -- Core metadata generation** (`generate_metadata.py` / `main()`):
+
 - Runs one mode at a time: `comment`, `pi`, or `domain`
 - Run comment mode first (or in parallel with PI + domain via `metadata_parallel_modes_job`) -- the analytics pipeline depends on all three modes having completed
 - Writes results to `metadata_generation_log`
@@ -397,6 +401,7 @@ dbxmetagen has two phases:
 - Each run re-processes all tables in scope (no incremental mode for generation)
 
 **Phase 2 -- Analytics pipeline** (run after Phase 1):
+
 - Aggregates log data into knowledge bases (table, column, schema)
 - Builds a knowledge graph with nodes and edges
 - Generates embeddings, discovers ontology entities, computes similarity
@@ -405,13 +410,15 @@ dbxmetagen has two phases:
 
 ### Layers
 
-| Layer | Tables | Purpose |
-|-------|--------|---------|
-| **Knowledge Base** | `table_knowledge_base`, `column_knowledge_base`, `schema_knowledge_base`, `extended_metadata` | Aggregated metadata from LLM outputs and system tables |
-| **Profiling** | `profiling_snapshots`, `column_profiling_stats`, `data_quality_scores` | Statistical profiling and quality scoring |
-| **Graph** | `graph_nodes`, `graph_edges`, `node_cluster_assignments`, `clustering_metrics`, `community_summaries` | Graph analytics with embeddings, similarity edges, K-means clustering, and AI-generated community summaries |
-| **Ontology** | `ontology_entities`, `ontology_column_properties`, `ontology_relationships`, `ontology_chunks`, `ontology_metrics` | Business entity discovery, column classification, relationship detection, and vector retrieval |
-| **Vector Index** | `metadata_vs_index`, `ontology_vs_index` | Hybrid semantic search over metadata documents and ontology entities. See [docs/CONFIGURATION.md](docs/CONFIGURATION.md#vector-search) |
+
+| Layer              | Tables                                                                                                             | Purpose                                                                                                                                |
+| ------------------ | ------------------------------------------------------------------------------------------------------------------ | -------------------------------------------------------------------------------------------------------------------------------------- |
+| **Knowledge Base** | `table_knowledge_base`, `column_knowledge_base`, `schema_knowledge_base`, `extended_metadata`                      | Aggregated metadata from LLM outputs and system tables                                                                                 |
+| **Profiling**      | `profiling_snapshots`, `column_profiling_stats`, `data_quality_scores`                                             | Statistical profiling and quality scoring                                                                                              |
+| **Graph**          | `graph_nodes`, `graph_edges`, `node_cluster_assignments`, `clustering_metrics`, `community_summaries`              | Graph analytics with embeddings, similarity edges, K-means clustering, and AI-generated community summaries                            |
+| **Ontology**       | `ontology_entities`, `ontology_column_properties`, `ontology_relationships`, `ontology_chunks`, `ontology_metrics` | Business entity discovery, column classification, relationship detection, and vector retrieval                                         |
+| **Vector Index**   | `metadata_vs_index`, `ontology_vs_index`                                                                           | Hybrid semantic search over metadata documents and ontology entities. See [docs/CONFIGURATION.md](docs/CONFIGURATION.md#vector-search) |
+
 
 All output tables are standard Delta tables in your output schema (`{catalog}.{schema_name}`), queryable via SQL, notebooks, or any tool that reads from Unity Catalog.
 
@@ -458,7 +465,7 @@ dbxmetagen sends the following to the configured LLM endpoint during metadata ge
 - Table and column names, data types, and schema structure (always)
 - Sample row data (when `allow_data=true`, the default)
 
-Set `allow_data=false` to prevent sample data from being sent; schema metadata is still sent. PII/PHI data values are never logged by the pipeline -- only metadata about detections (classification, type, confidence).
+Set `sample_size=0` to send no sample rows to the model; schema and column metadata are still sent. PII/PHI data values are never logged by the pipeline -- only metadata about detections (classification, type, confidence).
 
 ## Ontology Bundles and Deployment
 
@@ -485,6 +492,7 @@ Common cleanup scenarios:
   ```sql
   DELETE FROM {catalog}.{schema}.graph_edges WHERE source_system = 'embedding_similarity';
   ```
+
   Or re-run the analytics pipeline with `sweep_stale_edges=true`.
 - **Orphaned ontology data after bundle switch**: enable "Sweep stale docs" in the Advanced Metadata tab (passes `sweep_stale_docs=true`) and run with `sweep_stale_edges=true`.
 - **Full reset**: drop the output schema and re-deploy. The pipeline will recreate all tables.
@@ -493,11 +501,13 @@ Common cleanup scenarios:
 
 Processing time depends on table count, column width, cluster size, and parallelism. Order-of-magnitude estimates for comment mode:
 
-| Tables | Estimate | Recommended parallelism |
-|--------|----------|------------------------|
-| 10-100 | Minutes | 1 task (default) |
-| 1,000-5,000 | Hours | 5-10 parallel tasks |
-| 10,000-50,000 | Many hours to a day | 50+ parallel tasks |
+
+| Tables        | Estimate            | Recommended parallelism |
+| ------------- | ------------------- | ----------------------- |
+| 10-100        | Minutes             | 1 task (default)        |
+| 1,000-5,000   | Hours               | 5-10 parallel tasks     |
+| 10,000-50,000 | Many hours to a day | 50+ parallel tasks      |
+
 
 Key tuning knobs: `columns_per_call` (default 20 -- higher reduces LLM calls for wide tables), `sample_size` (rows per prompt), and multi-task parallelism via the control table. Similarity edges use ANN by default (`use_ann=True`) to avoid quadratic scaling. See [docs/CONFIGURATION.md](docs/CONFIGURATION.md) for all parameters.
 
@@ -505,25 +515,27 @@ Key tuning knobs: `columns_per_call` (default 20 -- higher reduces LLM calls for
 
 Core functions exported by the `dbxmetagen` package:
 
-| Function | Description |
-|----------|-------------|
-| `main(kwargs)` | Entry point for metadata generation (comment/PI/domain) |
-| `build_knowledge_base(spark, catalog, schema)` | Build table-level knowledge base from generation log |
-| `build_column_knowledge_base(spark, catalog, schema)` | Build column-level knowledge base |
-| `build_schema_knowledge_base(spark, catalog, schema)` | Build schema-level knowledge base |
-| `extract_extended_metadata(spark, catalog, schema)` | Extract system metadata via DESCRIBE EXTENDED |
-| `build_knowledge_graph(spark, catalog, schema)` | Build graph nodes and edges from KB tables |
-| `generate_embeddings(spark, catalog, schema)` | Generate vector embeddings for graph nodes |
-| `build_similarity_edges(spark, catalog, schema)` | Create similarity edges from embeddings |
-| `build_ontology(spark, catalog, schema)` | Discover and store business entities |
-| `validate_ontology(spark, catalog, schema)` | Validate discovered entities |
-| `run_profiling(spark, catalog, schema)` | Profile tables and columns |
-| `compute_data_quality(spark, catalog, schema)` | Compute data quality scores |
-| `predict_foreign_keys(spark, catalog, schema)` | Predict FK relationships using AI + heuristics |
-| `build_vector_index(spark, catalog, schema)` | Build or refresh Vector Search index over metadata |
-| `build_genie_space(spark, catalog, schema)` | Create Genie space from knowledge base |
-| `generate_semantic_layer(spark, catalog, schema)` | Generate metric view definitions |
-| `classify_columns_geo(spark, catalog, schema)` | Geographic column classification |
+
+| Function                                              | Description                                             |
+| ----------------------------------------------------- | ------------------------------------------------------- |
+| `main(kwargs)`                                        | Entry point for metadata generation (comment/PI/domain) |
+| `build_knowledge_base(spark, catalog, schema)`        | Build table-level knowledge base from generation log    |
+| `build_column_knowledge_base(spark, catalog, schema)` | Build column-level knowledge base                       |
+| `build_schema_knowledge_base(spark, catalog, schema)` | Build schema-level knowledge base                       |
+| `extract_extended_metadata(spark, catalog, schema)`   | Extract system metadata via DESCRIBE EXTENDED           |
+| `build_knowledge_graph(spark, catalog, schema)`       | Build graph nodes and edges from KB tables              |
+| `generate_embeddings(spark, catalog, schema)`         | Generate vector embeddings for graph nodes              |
+| `build_similarity_edges(spark, catalog, schema)`      | Create similarity edges from embeddings                 |
+| `build_ontology(spark, catalog, schema)`              | Discover and store business entities                    |
+| `validate_ontology(spark, catalog, schema)`           | Validate discovered entities                            |
+| `run_profiling(spark, catalog, schema)`               | Profile tables and columns                              |
+| `compute_data_quality(spark, catalog, schema)`        | Compute data quality scores                             |
+| `predict_foreign_keys(spark, catalog, schema)`        | Predict FK relationships using AI + heuristics          |
+| `build_vector_index(spark, catalog, schema)`          | Build or refresh Vector Search index over metadata      |
+| `build_genie_space(spark, catalog, schema)`           | Create Genie space from knowledge base                  |
+| `generate_semantic_layer(spark, catalog, schema)`     | Generate metric view definitions                        |
+| `classify_columns_geo(spark, catalog, schema)`        | Geographic column classification                        |
+
 
 ## Notebooks
 
@@ -539,17 +551,19 @@ When installed via pip, default configurations for domain classification and ont
 
 Settings are in `variables.yml`. Key options:
 
-| Setting | Default | Description |
-|---------|---------|-------------|
-| `catalog_name` | (required) | Unity Catalog name |
-| `schema_name` | `metadata_results` | Output schema |
-| `model` | `databricks-claude-sonnet-4-6` | LLM endpoint for generation |
-| `mode` | `comment` | Generation mode: `comment`, `pi`, or `domain` |
-| `apply_ddl` | `false` | Apply generated metadata directly to Unity Catalog |
-| `allow_data` | `true` | Set `false` to prevent data from being sent to LLMs |
-| `node_type` | `i3.2xlarge` | Job cluster node type. Change for Azure (`Standard_D8s_v3`) or GCP (`n2-highmem-8`) |
-| `include_deterministic_pi` | `true` | Enable SpaCy/Presidio for rule-based PI detection (default model: `en_core_web_md`; set `spacy_model_names=en_core_web_lg` for higher accuracy -- see [Configuration docs](docs/CONFIGURATION.md)) |
-| `federation_mode` | `false` | Enable for federated catalog sources (Redshift, Snowflake) |
+
+| Setting                    | Default                        | Description                                                                                                                                                                                        |
+| -------------------------- | ------------------------------ | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `catalog_name`             | (required)                     | Unity Catalog name                                                                                                                                                                                 |
+| `schema_name`              | `metadata_results`             | Output schema                                                                                                                                                                                      |
+| `model`                    | `databricks-claude-sonnet-4-6` | LLM endpoint for generation                                                                                                                                                                        |
+| `mode`                     | `comment`                      | Generation mode: `comment`, `pi`, or `domain`                                                                                                                                                      |
+| `apply_ddl`                | `false`                        | Apply generated metadata directly to Unity Catalog                                                                                                                                                 |
+| `allow_data`               | `true`                         | Set `false` to prevent data from being sent to LLMs                                                                                                                                                |
+| `node_type`                | `i3.2xlarge`                   | Job cluster node type. Change for Azure (`Standard_D8s_v3`) or GCP (`n2-highmem-8`)                                                                                                                |
+| `include_deterministic_pi` | `true`                         | Enable SpaCy/Presidio for rule-based PI detection (default model: `en_core_web_md`; set `spacy_model_names=en_core_web_lg` for higher accuracy -- see [Configuration docs](docs/CONFIGURATION.md)) |
+| `federation_mode`          | `false`                        | Enable for federated catalog sources (Redshift, Snowflake)                                                                                                                                         |
+
 
 For full reference, see [docs/CONFIGURATION.md](docs/CONFIGURATION.md).
 
@@ -560,15 +574,18 @@ For full reference, see [docs/CONFIGURATION.md](docs/CONFIGURATION.md).
 The app is in `apps/dbxmetagen-app/` and provides a FastAPI backend with a React frontend. Deployed via DAB. Navigation is organized into three categories:
 
 **Design:**
+
 - **Generate Metadata** -- Trigger core (descriptions, sensitivity, domain) and advanced (ontology, FK, knowledge graph) jobs with model selection, Customer Context management
 - **Define Metrics** -- Auto-generated metric views with SQL expression autofix, KPI Library grouped by Question Profile
 - **Build Genie Space** -- Create and configure Genie spaces with auto-generated instructions and example SQL queries
 
 **Review:**
+
 - **Review & Apply** -- Browse, edit, approve, and apply generated metadata back to Unity Catalog
 - **Coverage** -- Schema-wide metadata coverage summary and completeness metrics
 
 **Explore:**
+
 - **Agent** -- Deep analysis chat with GraphRAG, graph explorer, semantic search, and MLflow trace links
 - **Entity Browser** -- Entity-first navigation with conformance view
 
@@ -578,21 +595,23 @@ The app is in `apps/dbxmetagen-app/` and provides a FastAPI backend with a React
 
 ## Jobs
 
-| Job Resource | Description |
-|-------------|-------------|
-| `metadata_generator_job` | Single-mode metadata generation (comment, PI, or domain) |
-| `metadata_parallel_modes_job` | All 3 modes in parallel (comment first, then PI + domain) |
-| `metadata_with_knowledge_base_job` | Metadata generation followed by KB + knowledge graph build |
-| `full_analytics_pipeline_job` | Full pipeline: KB, graph, embeddings, profiling, ontology, similarity, clustering, FK prediction |
-| `knowledge_base_builder_job` | Knowledge base and knowledge graph only |
-| `ontology_prediction_job` | Ontology discovery and validation |
-| `profiling_job` | Table profiling, quality scoring, and graph quality update |
-| `fk_prediction_job` | Foreign key prediction with column similarity and AI judgment |
-| `semantic_layer_job` | Generate metric views and apply to Genie spaces |
-| `sync_graph_lakebase_job` | Sync graph data to Lakebase for the dashboard |
-| `build_vector_index_job` | Rebuild the metadata vector search index (serverless). Deployed with a weekly schedule (Sun 02:00 UTC) but **paused by default** -- unpause in the Workflows UI to keep the index fresh automatically. Without it the index only updates on full pipeline runs or manual "Sync Vector Index" clicks in the app |
-| `build_knowledge_graph_job` | Rebuild knowledge graph nodes and edges (serverless). Use after reviewing foreign keys to propagate approve/reject decisions without re-running the full pipeline |
-| `sync_ddl_job` | Sync reviewed/edited DDL back to Unity Catalog |
+
+| Job Resource                       | Description                                                                                                                                                                                                                                                                                                    |
+| ---------------------------------- | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `metadata_generator_job`           | Single-mode metadata generation (comment, PI, or domain)                                                                                                                                                                                                                                                       |
+| `metadata_parallel_modes_job`      | All 3 modes in parallel (comment first, then PI + domain)                                                                                                                                                                                                                                                      |
+| `metadata_with_knowledge_base_job` | Metadata generation followed by KB + knowledge graph build                                                                                                                                                                                                                                                     |
+| `full_analytics_pipeline_job`      | Full pipeline: KB, graph, embeddings, profiling, ontology, similarity, clustering, FK prediction                                                                                                                                                                                                               |
+| `knowledge_base_builder_job`       | Knowledge base and knowledge graph only                                                                                                                                                                                                                                                                        |
+| `ontology_prediction_job`          | Ontology discovery and validation                                                                                                                                                                                                                                                                              |
+| `profiling_job`                    | Table profiling, quality scoring, and graph quality update                                                                                                                                                                                                                                                     |
+| `fk_prediction_job`                | Foreign key prediction with column similarity and AI judgment                                                                                                                                                                                                                                                  |
+| `semantic_layer_job`               | Generate metric views and apply to Genie spaces                                                                                                                                                                                                                                                                |
+| `sync_graph_lakebase_job`          | Sync graph data to Lakebase for the dashboard                                                                                                                                                                                                                                                                  |
+| `build_vector_index_job`           | Rebuild the metadata vector search index (serverless). Deployed with a weekly schedule (Sun 02:00 UTC) but **paused by default** -- unpause in the Workflows UI to keep the index fresh automatically. Without it the index only updates on full pipeline runs or manual "Sync Vector Index" clicks in the app |
+| `build_knowledge_graph_job`        | Rebuild knowledge graph nodes and edges (serverless). Use after reviewing foreign keys to propagate approve/reject decisions without re-running the full pipeline                                                                                                                                              |
+| `sync_ddl_job`                     | Sync reviewed/edited DDL back to Unity Catalog                                                                                                                                                                                                                                                                 |
+
 
 ## MCP Servers (Coming Soon)
 
@@ -602,16 +621,18 @@ dbxmetagen exposes its knowledge base, knowledge graph, and vector index as [Dat
 
 ## Documentation
 
-| Guide | Description |
-|-------|-------------|
-| [Configuration](docs/CONFIGURATION.md) | All runtime parameters, ontology bundles, Vector Search, Lakebase, OBO, and community summaries |
-| [Permissions](docs/PERMISSIONS.md) | Two-identity model (app SPN vs job owner), UC grants, OBO mode, and end-user access |
-| [Workspace UI Deployment](docs/MANUAL_DEPLOYMENT.md) | First-class Databricks Asset Bundles deploy from the workspace UI (peer to the CLI path; the wheel is built in-workspace) |
-| [Migration Guide](docs/MIGRATION.md) | Upgrading a workspace deployed with the old `deploy.sh` -- one-time cleanup of stale synced files, and what's safe (your generated data is untouched) |
-| [Domain & Ontology Architecture](docs/DOMAIN_ONTOLOGY_ARCHITECTURE.md) | Formal vs custom ontology bundles, domain YAML, and how they interact |
-| [MCP Servers](docs/MCP_SERVERS.md) | Managed MCP server setup, tool reference, and agent integration |
-| [QA Checklist](docs/QA_CHECKLIST.md) | Pre-release validation checklist |
-| [Dependencies](docs/DEPENDENCIES.md) | Third-party dependency inventory |
+
+| Guide                                                                  | Description                                                                                                                                           |
+| ---------------------------------------------------------------------- | ----------------------------------------------------------------------------------------------------------------------------------------------------- |
+| [Configuration](docs/CONFIGURATION.md)                                 | All runtime parameters, ontology bundles, Vector Search, Lakebase, OBO, and community summaries                                                       |
+| [Permissions](docs/PERMISSIONS.md)                                     | Two-identity model (app SPN vs job owner), UC grants, OBO mode, and end-user access                                                                   |
+| [Workspace UI Deployment](docs/MANUAL_DEPLOYMENT.md)                   | First-class Databricks Asset Bundles deploy from the workspace UI (peer to the CLI path; the wheel is built in-workspace)                             |
+| [Migration Guide](docs/MIGRATION.md)                                   | Upgrading a workspace deployed with the old `deploy.sh` -- one-time cleanup of stale synced files, and what's safe (your generated data is untouched) |
+| [Domain & Ontology Architecture](docs/DOMAIN_ONTOLOGY_ARCHITECTURE.md) | Formal vs custom ontology bundles, domain YAML, and how they interact                                                                                 |
+| [MCP Servers](docs/MCP_SERVERS.md)                                     | Managed MCP server setup, tool reference, and agent integration                                                                                       |
+| [QA Checklist](docs/QA_CHECKLIST.md)                                   | Pre-release validation checklist                                                                                                                      |
+| [Dependencies](docs/DEPENDENCIES.md)                                   | Third-party dependency inventory                                                                                                                      |
+
 
 ## Testing
 
@@ -696,10 +717,10 @@ Add this to your shell profile (`~/.zshrc`, `~/.bashrc`, etc.) to make it perman
 
 Building the React frontend runs `npm install` and `npm run build`. Common issues:
 
-- **npm not installed:** Install Node.js (which includes npm) from https://nodejs.org/ or via `brew install node`.
+- **npm not installed:** Install Node.js (which includes npm) from [https://nodejs.org/](https://nodejs.org/) or via `brew install node`.
 - **npm registry unreachable:** Corporate firewalls or VPNs may block `registry.npmjs.org`. Check your network/proxy settings.
 - **npm crashes ("Exit handler never called"):** This is a [known npm 11.x bug](https://github.com/npm/cli/issues). Fix by clearing the cache and retrying.
-  If that doesn't help, downgrade npm: `npm install -g npm@10`
+If that doesn't help, downgrade npm: `npm install -g npm@10`
 
 **Workaround:** The pre-built frontend (`apps/dbxmetagen-app/app/src/dist/`) is committed to the repo, so if you haven't changed any frontend code you can skip the `npm run build` step entirely and deploy the committed `dist/` directly:
 
@@ -713,11 +734,13 @@ The default `node_type` in `variables.yml` is `i3.2xlarge`, which is an AWS inst
 
 **Fix:** Update `node_type` in `variables.yml` to match your cloud:
 
+
 | Cloud | Recommended `node_type` |
-|-------|------------------------|
-| AWS   | `i3.2xlarge` (default) |
-| Azure | `Standard_D8s_v3`      |
-| GCP   | `n2-highmem-8`         |
+| ----- | ----------------------- |
+| AWS   | `i3.2xlarge` (default)  |
+| Azure | `Standard_D8s_v3`       |
+| GCP   | `n2-highmem-8`          |
+
 
 You may need to try a couple different node types if your organization doesn't have capacity for these in your cloud.
 
@@ -745,16 +768,16 @@ in-workspace build requirements.
 ### Known Limitations
 
 - **`sample_size=0` degrades PI and domain quality.** With no row sampling, PI detection and domain
-  classification rely on column names, types, and existing comments rather than data values. Keep a
-  non-zero `sample_size` (or set `allow_data=false` only when you specifically must not send data to
-  the LLM) for best results.
+classification rely on column names, types, and existing comments rather than data values. Keep a
+non-zero `sample_size` (or set `allow_data=false` only when you specifically must not send data to
+the LLM) for best results.
 - **Very large catalogs need tuning.** Defaults are tuned for tens-to-thousands of tables. For
-  10,000+ tables, raise multi-task parallelism and `columns_per_call` (see [Scaling](#scaling)).
-  Further throughput/cost work — batching column/table classification LLM calls and batching
-  `DESCRIBE EXTENDED` via `information_schema` — is planned and is not required for typical runs.
+10,000+ tables, raise multi-task parallelism and `columns_per_call` (see [Scaling](#scaling)).
+Further throughput/cost work — batching column/table classification LLM calls and batching
+`DESCRIBE EXTENDED` via `information_schema` — is planned and is not required for typical runs.
 - **Federated sources.** In `federation_mode`, `DESCRIBE EXTENDED`, `ALTER TABLE`, and `SET TAGS` are
-  disabled and all output is Delta-native; start with a small table set to gauge source-query load
-  before scaling up.
+disabled and all output is Delta-native; start with a small table set to gauge source-query load
+before scaling up.
 
 ## Dependencies
 
