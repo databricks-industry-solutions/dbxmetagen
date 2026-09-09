@@ -30,6 +30,13 @@ dependencies = [
     "pyyaml>=6.0.1,<7",
     "requests>=2.32,<3",
     "nest-asyncio>=1.6.0,<2",
+    # Transitive hub cap (NOT otherwise declared): httpx/starlette/fastapi/openai/
+    # langchain all sit on anyio. Left open, pip starts at the index's newest (4.15.x)
+    # and walks the entire 4.x line fetching metadata before dropping to the <4 that the
+    # tree actually requires (resolved 3.7.1). That backtracking walk is a top driver of
+    # the stochastic first-run serverless cold-build install failures. Ceiling (not ==)
+    # keeps a compatible band across customer runtimes.
+    "anyio>=3.7,<4",
     "databricks-vectorsearch==0.66",
 ]
 
