@@ -4,8 +4,7 @@
 
 <img src="images/DBXMetagen_arch_hl.png" alt="High-level DBXMetagen Architecture" width="800" />
 
-**dbxmetagen** turns raw Unity Catalog tables into governed, AI-queryable knowledge. It generates AI-reviewed metadata (descriptions, PII/PHI/PCI tags, business-domain classification), maps formalized ontologies to your schema, predicts join keys, builds a knowledge graph and retrieval layer on top, and uses  
-that model to auto-generate a semantic layer (UC metric views) and Genie spaces, with human review at every step. The pipeline runs in four stages:
+**dbxmetagen** turns raw Unity Catalog tables into governed, AI-queryable knowledge. It generates AI-reviewed metadata (descriptions, PII/PHI/PCI tags, business-domain classification), maps formalized ontologies to your schema, predicts join keys, builds a knowledge graph and retrieval layer on top, and uses that model to auto-generate a semantic layer (UC metric views) and Genie spaces, with human review at every step. The pipeline runs in four stages:
 
 **1. Metadata generation**: the foundation
 
@@ -51,7 +50,7 @@ from any tool: notebooks, dashboards, Genie spaces, agents, or your own applicat
 ## Quickstart
 
 > [!TIP]
-> **Just want to deploy?** Set three variables ([Step 1](#step-1--set-your-per-workspace-variables)), then run two commands ([Step 3, Path A](#path-a--cli-recommended)). Everything after that is optional or for other environments.
+> **Just want to deploy?** Set three variables ([Step 1](#step-1--set-your-per-workspace-variables-paths-a--b)), then run two commands ([Step 3, Path A](#path-a--cli-recommended)). Everything after that is optional or for other environments.
 
 ### Prerequisites
 
@@ -82,7 +81,8 @@ databricks version                                     # confirm >= 1.10.0
 databricks auth login --host https://<your-workspace-host> --profile <your-profile>
 databricks auth profiles                               # verify <your-profile> is listed and VALID
 
-# 3. Install uv
+# 3. Install uv (builds the wheel during deploy)
+curl -LsSf https://astral.sh/uv/install.sh | sh        # or `brew install uv` -- https://docs.astral.sh/uv/
 ```
 
 `<your-workspace-host>` is your workspace URL without a trailing slash (e.g. `dbc-1234abcd-5678.cloud.databricks.com`, `adb-123456789.11.azuredatabricks.net`, or `1234567890.gcp.databricks.com`). If you omit `--profile`, the credentials are written to the `DEFAULT` profile and you can drop `-p` from every command below.
@@ -110,7 +110,7 @@ The workspace host comes from your CLI profile, not this file.
 
 ### Step 2 — Azure / GCP only: set the cluster node type
 
-The default job-cluster `node_type` is `i3.2xlarge` (an **AWS** type). On another cloud, set `node_type` in your `variable-overrides.json` before deploying:
+The default job-cluster `node_type` is `i3.2xlarge` (an **AWS** type). On another cloud, set `node_type` alongside your other variables before deploying — in `variable-overrides.json` for Paths A/B, or in the ⋮ **Configure variable overrides** editor for Path C:
 
 - **Azure:** `Standard_D8s_v3`
 - **GCP:** `n2-highmem-8`
@@ -509,7 +509,7 @@ Processing time depends on table count, column width, cluster size, and parallel
 | 10,000-50,000 | Many hours to a day | 50+ parallel tasks      |
 
 
-Key tuning knobs: `columns_per_call` (default 20 -- higher reduces LLM calls for wide tables), `sample_size` (rows per prompt), and multi-task parallelism via the control table. Similarity edges use ANN by default (`use_ann=True`) to avoid quadratic scaling. See [docs/CONFIGURATION.md](docs/CONFIGURATION.md) for all parameters.
+Key tuning knobs: `columns_per_call` (default 10 -- higher reduces LLM calls for wide tables), `sample_size` (rows per prompt), and multi-task parallelism via the control table. Similarity edges use ANN by default (`use_ann=True`) to avoid quadratic scaling. See [docs/CONFIGURATION.md](docs/CONFIGURATION.md) for all parameters.
 
 ## API Reference
 
