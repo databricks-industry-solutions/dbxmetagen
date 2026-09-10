@@ -1,6 +1,6 @@
 [project]
 name = "dbxmetagen"
-version = "0.10.69"
+version = "0.10.70"
 description = "Generates comments and identifies and classifies other metadata for Delta tables in Databricks."
 readme = "README.md"
 authors = [{ name = "Eli Swanson", email = "eli.swanson@databricks.com" }]
@@ -16,10 +16,11 @@ dependencies = [
     "openai>=1.56.1,<2",
     "cloudpickle>=3.1.0,<4",
     "pydantic==2.10.3",
-    # Cap below 4.18: ydata-profiling 4.18 requires PyYAML>=6.0.3 which conflicts with
-    # our pyyaml pin, forcing pip to backtrack (the slow step that made serverless cold
-    # env builds fail on first run). 4.17.0 is what pip already resolved to.
-    "ydata-profiling>=4.12.1,<4.18",
+    # NOTE: ydata-profiling is intentionally NOT a dependency. profiling.py is fully
+    # Spark-native (APPROX_COUNT_DISTINCT / PERCENTILE_APPROX / DESCRIBE DETAIL); ydata
+    # was declared historically but never imported. It dragged the numba/llvmlite/
+    # statsmodels stack into cold serverless env builds and conflicted with classic ML
+    # runtimes. Do not re-add it unless code actually imports it.
     "databricks-langchain==0.4.0",
     "databricks-sdk==0.68.0",
     "openpyxl==3.1.5",
@@ -30,14 +31,19 @@ dependencies = [
     "pyyaml>=6.0.1,<7",
     "requests>=2.32,<3",
     "nest-asyncio>=1.6.0,<2",
-    # Transitive hub cap (NOT otherwise declared): httpx/starlette/fastapi/openai/
-    # langchain all sit on anyio. Left open, pip starts at the index's newest (4.15.x)
-    # and walks the entire 4.x line fetching metadata before dropping to the <4 that the
-    # tree actually requires (resolved 3.7.1). That backtracking walk is a top driver of
-    # the stochastic first-run serverless cold-build install failures. Ceiling (not ==)
-    # keeps a compatible band across customer runtimes.
-    "anyio>=3.7,<4",
+    # anyio is intentionally NOT pinned -- it is a transitive hub (httpx/starlette/
+    # fastapi/openai/langchain all depend on it) and the Databricks serverless and
+    # ML-runtime bases already ship a compatible anyio (4.x), so leaving it unpinned
+    # lets pip keep the base version instead of forcing a churny reinstall. An earlier
+    # anyio>=3.7,<4 pin (issue #218) was a misdiagnosis: the cold serverless build
+    # failure it targeted was actually caused by the (now-removed) ydata-profiling
+    # dependency's heavy install, not by anyio version walking.
     "databricks-vectorsearch==0.66",
+    # networkx: used (guarded) by notebooks/final_analysis.py for the similarity-graph
+    # plot. It was previously satisfied ONLY transitively via ydata-profiling; declared
+    # directly here so removing ydata doesn't silently drop the analytics-pipeline graph
+    # viz. Pure-Python and light -- does not reintroduce the numba/statsmodels weight.
+    "networkx>=2.8,<4",
 ]
 
 [project.optional-dependencies]
