@@ -12,13 +12,24 @@ import logging
 from datetime import datetime, timezone
 from fnmatch import fnmatch
 from pathlib import Path
-from typing import Any, Dict, List
+from typing import Any, Dict, List, Tuple
 
 import yaml
 
 logger = logging.getLogger(__name__)
 
-MAX_WORDS = 500
+# Per-entry cap: the max words a SINGLE context entry may hold. Enforced at seed time
+# (validate_context_text) and on upload (the app mirrors this). MAX_WORDS kept as a
+# backward-compatible alias for external importers.
+MAX_WORDS_PER_ENTRY = 500
+MAX_WORDS = MAX_WORDS_PER_ENTRY
+# Resolve backstop: max words across ALL matching entries combined, ~= per-entry cap x
+# the four scope levels. A table that layers catalog+schema+pattern+table context (each
+# within the per-entry cap) is therefore NOT silently truncated -- honoring the app's
+# advertised "each entry is limited to N words" contract. When the combined context DOES
+# exceed this, the LEAST-specific entries are dropped first (retention by specificity;
+# see _truncate_preserving_specificity) and a warning is logged at resolve time.
+MAX_TOTAL_WORDS = 2000
 _SCOPE_ORDER = {"catalog": 0, "schema": 1, "pattern": 2, "table": 3}
 
 
@@ -72,39 +83,117 @@ def prefetch_customer_context(spark: Any, catalog: str, schema: str) -> List[Dic
         return []
 
 
-def resolve_customer_context(
-    cache: List[Dict[str, Any]],
-    full_table_name: str,
-    max_words: int = MAX_WORDS,
-) -> str:
-    """Resolve matching context entries from prefetched cache. Pure Python, no SQL."""
-    if not cache:
-        return ""
-
+def _match_rows(cache: List[Dict[str, Any]], full_table_name: str) -> List[Dict[str, Any]]:
+    """Return cache rows whose scope matches ``full_table_name`` (any granularity)."""
     parts = full_table_name.split(".")
     catalog = parts[0] if len(parts) >= 1 else ""
     schema_scope = f"{parts[0]}.{parts[1]}" if len(parts) >= 2 else ""
-
     matches = []
     for row in cache:
         st = row.get("scope_type", "")
         scope = row.get("scope", "")
-        hit = (
+        if (
             (st == "catalog" and scope == catalog)
             or (st == "schema" and scope == schema_scope)
             or (st == "table" and scope == full_table_name)
             or (st == "pattern" and fnmatch(full_table_name, scope))
-        )
-        if hit:
+        ):
             matches.append(row)
+    return matches
 
+
+def _truncate_preserving_specificity(
+    matches: List[Dict[str, Any]], max_total_words: int
+) -> Tuple[str, List[Dict[str, Any]]]:
+    """Order matches most-specific-first, then concatenate up to ``max_total_words``.
+
+    Retention is by VALUE: table > pattern > schema > catalog, highest-priority first
+    within a scope. Under budget pressure the table-scoped entry survives and the
+    least-specific boilerplate is dropped -- the reverse of the original code, which
+    sorted broadest-first and kept the head, silently dropping the table entry.
+
+    Returns ``(text, dropped)`` where ``dropped`` lists the rows fully or partially cut
+    to fit the budget. Pure -- no SQL, no logging -- unit-testable in isolation.
+    """
+    ordered = sorted(
+        matches,
+        key=lambda r: (
+            -_SCOPE_ORDER.get(r.get("scope_type", ""), -1),
+            -int(r.get("priority") or 0),
+        ),
+    )
+    kept: List[str] = []
+    dropped: List[Dict[str, Any]] = []
+    remaining = max_total_words
+    stop = False  # once a whole entry can't fit, drop it and everything less specific
+    for r in ordered:
+        entry_words = str(r.get("context_text") or "").split()
+        if not entry_words:
+            continue
+        if stop:
+            dropped.append(r)
+        elif len(entry_words) <= remaining:
+            kept.append(" ".join(entry_words))          # entry kept whole (atomic caveat)
+            remaining -= len(entry_words)
+        elif not kept:
+            # Most-specific entry alone exceeds the whole budget: keep its head so the
+            # result isn't empty, then stop. (Per-entry cap normally prevents this.)
+            kept.append(" ".join(entry_words[:remaining]))
+            remaining = 0
+            dropped.append(r)
+            stop = True
+        else:
+            # Doesn't fit whole, and it is less specific than what we've kept: drop it
+            # (and all remaining) rather than emit a dangling half-caveat.
+            dropped.append(r)
+            stop = True
+    return "\n".join(kept), dropped
+
+
+def resolve_customer_context_with_report(
+    cache: List[Dict[str, Any]],
+    full_table_name: str,
+    max_words: int = MAX_TOTAL_WORDS,
+) -> Tuple[str, List[Dict[str, Any]]]:
+    """Like ``resolve_customer_context`` but also returns the dropped rows.
+
+    ``dropped`` is empty unless the combined matching context exceeded ``max_words``
+    (in which case the least-specific entries were cut). Pure Python, no SQL -- used by
+    the app's resolve-preview endpoint to show what would be truncated.
+    """
+    if not cache:
+        return "", []
+    matches = _match_rows(cache, full_table_name)
     if not matches:
-        return ""
+        return "", []
+    return _truncate_preserving_specificity(matches, max_words)
 
-    matches.sort(key=lambda r: (_SCOPE_ORDER.get(r.get("scope_type", ""), 9), int(r.get("priority") or 0)))
-    combined = "\n".join(str(r.get("context_text") or "") for r in matches)
-    words = combined.split()
-    return " ".join(words[:max_words]) if words else ""
+
+def resolve_customer_context(
+    cache: List[Dict[str, Any]],
+    full_table_name: str,
+    max_words: int = MAX_TOTAL_WORDS,
+) -> str:
+    """Resolve matching context entries from the prefetched cache. Pure Python, no SQL.
+
+    Entries are ordered most-specific-first and concatenated up to ``max_words`` (the
+    combined budget across all matching granularities). If the budget forces content to
+    be dropped, a warning is logged naming the dropped scopes -- resolve-time truncation
+    is no longer silent.
+    """
+    text, dropped = resolve_customer_context_with_report(cache, full_table_name, max_words)
+    if dropped:
+        logger.warning(
+            "customer_context truncated for %s: kept %d word(s) (budget %d); dropped %d "
+            "less-specific entr%s [%s]. Generated metadata may omit that context.",
+            full_table_name,
+            len(text.split()),
+            max_words,
+            len(dropped),
+            "y" if len(dropped) == 1 else "ies",
+            ", ".join(f"{r.get('scope_type', '?')}:{r.get('scope', '?')}" for r in dropped),
+        )
+    return text
 
 
 def seed_customer_context_table(

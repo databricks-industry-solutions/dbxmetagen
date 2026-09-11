@@ -15979,7 +15979,12 @@ class CustomerContextRequest(BaseModel):
 
 _CC_TABLE = "customer_context"
 _CC_VALID_TYPES = {"catalog", "schema", "table", "pattern"}
-_CC_MAX_WORDS = 500
+# Per-entry word cap. Single-sourced from the library so the upload check, the seed-time
+# validation, and this API stay in lockstep (fallback mirrors the library default).
+try:
+    from dbxmetagen.customer_context import MAX_WORDS_PER_ENTRY as _CC_MAX_WORDS
+except Exception:
+    _CC_MAX_WORDS = 500
 
 
 def _ensure_customer_context_table():
@@ -16148,12 +16153,19 @@ def resolve_customer_context_preview(full_table_name: str):
         f"SELECT scope, scope_type, context_text, context_label, priority "
         f"FROM {fq(_CC_TABLE)} WHERE active = TRUE"
     )
-    from dbxmetagen.customer_context import resolve_customer_context
-    resolved = resolve_customer_context(rows, full_table_name)
+    from dbxmetagen.customer_context import resolve_customer_context_with_report, MAX_TOTAL_WORDS
+    resolved, dropped = resolve_customer_context_with_report(rows, full_table_name)
     return {
         "full_table_name": full_table_name,
         "resolved_context": resolved,
         "word_count": len(resolved.split()) if resolved else 0,
+        "budget_words": MAX_TOTAL_WORDS,
+        # Truncation is no longer silent: when the combined context exceeds the budget,
+        # the least-specific entries are dropped and reported here so the UI can warn.
+        "truncated": bool(dropped),
+        "dropped_scopes": [
+            {"scope": r.get("scope"), "scope_type": r.get("scope_type")} for r in dropped
+        ],
         "matching_scopes": [
             r["scope"] for r in rows
             if _matches_scope(r, full_table_name)
