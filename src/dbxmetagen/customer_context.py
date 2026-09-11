@@ -110,10 +110,10 @@ def _truncate_preserving_specificity(
     Two DELIBERATELY DECOUPLED concerns:
 
     * RETENTION (which entries survive a tight budget) is by VALUE -- most-specific
-      first: table > pattern > schema > catalog, highest-priority first within a scope.
-      Under budget pressure the table-scoped entry survives and the least-specific
-      boilerplate is dropped. (The original code kept the HEAD of a broadest-first
-      concatenation, so it silently dropped the table entry -- the bug this fixes.)
+      first: table > pattern > schema > catalog. Under budget pressure the table-scoped
+      entry survives and the least-specific boilerplate is dropped. (The original code
+      kept the HEAD of a broadest-first concatenation, so it silently dropped the table
+      entry -- the bug this fixes.)
 
     * EMISSION ORDER (the order entries appear in the prompt) is broadest-first:
       catalog -> schema -> pattern -> table, lowest-priority first within a scope. This
@@ -122,8 +122,18 @@ def _truncate_preserving_specificity(
       3 active directives): catalog-LAST -> 0/3 obeyed; catalog-FIRST -> 2/3 obeyed. An
       earlier version emitted most-specific-first and regressed obedience to 0/3.
 
+    KNOWN TRADEOFF (retention vs. obedience): because retention is most-specific-first,
+    a tight budget drops the CATALOG/global directive FIRST -- i.e. the very entry the
+    broadest-first emission exists to make the model obey. This only bites above the
+    MAX_TOTAL_WORDS backstop (many near-cap entries on one table), which real customer
+    context does not approach; specificity-retention (table caveat must survive) was the
+    deliberate choice. Revisit only if that budget is realistically hit.
+
     Entries are kept WHOLE (an atomic caveat is never half-emitted). When an entry does
     not fit, it is dropped but scanning CONTINUES -- a later, smaller entry may still fit.
+    NOTE: continue-scanning is by remaining budget, so within one scope a smaller lower-
+    priority entry can be kept while a larger higher-priority one is dropped (priority
+    orders emission, and is a retention tiebreaker only among same-size entries).
 
     Returns ``(text, dropped, partial)``:
       - ``dropped``  -- rows fully excluded (NOT injected at all).
@@ -203,10 +213,12 @@ def resolve_customer_context(
 ) -> str:
     """Resolve matching context entries from the prefetched cache. Pure Python, no SQL.
 
-    Entries are ordered most-specific-first and concatenated up to ``max_words`` (the
-    combined budget across all matching granularities). If the budget forces content to
-    be dropped or truncated, a warning is logged naming the affected scopes -- resolve-time
-    truncation is no longer silent.
+    Entries are emitted broadest-first (catalog -> schema -> pattern -> table) so a
+    global directive leads the block, and concatenated up to ``max_words`` (the combined
+    budget across all matching granularities); retention under budget pressure is
+    most-specific-first (see ``_truncate_preserving_specificity``). If the budget forces
+    content to be dropped or truncated, a warning is logged naming the affected scopes --
+    resolve-time truncation is no longer silent.
     """
     text, dropped, partial = resolve_customer_context_with_report(cache, full_table_name, max_words)
     if dropped or partial is not None:
