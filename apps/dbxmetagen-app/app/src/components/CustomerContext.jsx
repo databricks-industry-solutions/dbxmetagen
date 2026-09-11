@@ -2,6 +2,10 @@ import React, { useState, useEffect, useCallback } from 'react'
 import { safeFetch } from '../App'
 
 const SCOPE_TYPES = ['catalog', 'schema', 'table', 'pattern']
+// Per-entry word cap (mirrors customer_context.MAX_WORDS_PER_ENTRY on the backend).
+// The combined per-table budget across all matching scopes is larger and reported by
+// the resolve endpoint (budget_words); if it's exceeded the least-specific entries are
+// dropped and surfaced in the preview below.
 const MAX_WORDS = 500
 
 function wordCount(text) { return text ? text.trim().split(/\s+/).filter(Boolean).length : 0 }
@@ -85,7 +89,8 @@ export default function CustomerContext() {
           <h2 className="text-lg font-bold text-slate-800 dark:text-slate-100">Customer Context</h2>
           <p className="text-sm text-slate-500 dark:text-slate-400 mt-1">
             Add domain knowledge that enriches LLM prompts during metadata generation. Scoped hierarchically: catalog &gt; schema &gt; pattern &gt; table.
-            Each entry is limited to {MAX_WORDS} words.
+            Each entry is limited to {MAX_WORDS} words. When a table matches several scopes, the more-specific context (table &gt; pattern &gt; schema &gt; catalog) is kept first if the combined budget is exceeded &mdash; use &ldquo;Preview Resolution&rdquo; below to see exactly what gets injected and whether anything is dropped.
+            Keep entries concise: this text is injected into every prompt. For large or table-specific knowledge, prefer vector search / the knowledge base over long free-text here.
           </p>
         </div>
         <div className="flex gap-2">
@@ -174,8 +179,20 @@ export default function CustomerContext() {
           <div className="mt-3 p-3 bg-slate-50 dark:bg-dbx-navy-600 rounded-lg text-sm space-y-2">
             <div className="flex gap-4 text-xs text-slate-500">
               <span>Matching scopes: {preview.result.matching_scopes?.join(', ') || 'none'}</span>
-              <span>Words: {preview.result.word_count}</span>
+              <span>Words: {preview.result.word_count}{preview.result.budget_words ? ` / ${preview.result.budget_words}` : ''}</span>
             </div>
+            {preview.result.truncated && (
+              <div className="text-xs px-2.5 py-2 rounded-md bg-amber-500/10 text-amber-700 dark:text-amber-300 border border-amber-400/30">
+                ⚠ Combined context exceeds the {preview.result.budget_words}-word budget. Kept the most-specific context that fits.
+                {preview.result.dropped_scopes?.length > 0 && (
+                  <> Dropped (NOT injected): {preview.result.dropped_scopes.map(d => `${d.scope_type}:${d.scope}`).join(', ')}.</>
+                )}
+                {preview.result.truncated_scope && (
+                  <> Partially injected (head kept): {preview.result.truncated_scope.scope_type}:{preview.result.truncated_scope.scope}.</>
+                )}
+                {' '}Trim entries or move detail to vector search / the knowledge base.
+              </div>
+            )}
             {preview.result.resolved_context ? (
               <p className="text-slate-700 dark:text-slate-300 whitespace-pre-wrap">{preview.result.resolved_context}</p>
             ) : (

@@ -15979,7 +15979,12 @@ class CustomerContextRequest(BaseModel):
 
 _CC_TABLE = "customer_context"
 _CC_VALID_TYPES = {"catalog", "schema", "table", "pattern"}
-_CC_MAX_WORDS = 500
+# Per-entry word cap. Single-sourced from the library so the upload check, the seed-time
+# validation, and this API stay in lockstep (fallback mirrors the library default).
+try:
+    from dbxmetagen.customer_context import MAX_WORDS_PER_ENTRY as _CC_MAX_WORDS
+except Exception:
+    _CC_MAX_WORDS = 500
 
 
 def _ensure_customer_context_table():
@@ -16148,33 +16153,31 @@ def resolve_customer_context_preview(full_table_name: str):
         f"SELECT scope, scope_type, context_text, context_label, priority "
         f"FROM {fq(_CC_TABLE)} WHERE active = TRUE"
     )
-    from dbxmetagen.customer_context import resolve_customer_context
-    resolved = resolve_customer_context(rows, full_table_name)
+    # Reuse the library's matcher + truncation so the preview can never diverge from what
+    # resolution actually injects, and scope matching runs once (not a second hand-rolled scan).
+    from dbxmetagen.customer_context import (
+        _match_rows, _truncate_preserving_specificity, MAX_TOTAL_WORDS,
+    )
+    matches = _match_rows(rows, full_table_name)
+    resolved, dropped, partial = _truncate_preserving_specificity(matches, MAX_TOTAL_WORDS)
     return {
         "full_table_name": full_table_name,
         "resolved_context": resolved,
         "word_count": len(resolved.split()) if resolved else 0,
-        "matching_scopes": [
-            r["scope"] for r in rows
-            if _matches_scope(r, full_table_name)
+        "budget_words": MAX_TOTAL_WORDS,
+        # Truncation is no longer silent. `dropped_scopes` are NOT injected at all;
+        # `truncated_scope` (if any) is the most-specific entry whose head was kept
+        # because it alone exceeded the budget -- partially injected, not dropped.
+        "truncated": bool(dropped) or partial is not None,
+        "dropped_scopes": [
+            {"scope": r.get("scope"), "scope_type": r.get("scope_type")} for r in dropped
         ],
+        "truncated_scope": (
+            {"scope": partial.get("scope"), "scope_type": partial.get("scope_type")}
+            if partial is not None else None
+        ),
+        "matching_scopes": [r.get("scope") for r in matches],
     }
-
-
-def _matches_scope(row: dict, full_table_name: str) -> bool:
-    """Check if a context row matches a table name (for preview display)."""
-    from fnmatch import fnmatch
-    st = row.get("scope_type", "")
-    scope = row.get("scope", "")
-    parts = full_table_name.split(".")
-    catalog = parts[0] if parts else ""
-    schema_scope = f"{parts[0]}.{parts[1]}" if len(parts) >= 2 else ""
-    return (
-        (st == "catalog" and scope == catalog)
-        or (st == "schema" and scope == schema_scope)
-        or (st == "table" and scope == full_table_name)
-        or (st == "pattern" and fnmatch(full_table_name, scope))
-    )
 
 
 # ---------------------------------------------------------------------------

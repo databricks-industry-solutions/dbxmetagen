@@ -12,13 +12,24 @@ import logging
 from datetime import datetime, timezone
 from fnmatch import fnmatch
 from pathlib import Path
-from typing import Any, Dict, List
+from typing import Any, Dict, List, Optional, Tuple
 
 import yaml
 
 logger = logging.getLogger(__name__)
 
-MAX_WORDS = 500
+# Per-entry cap: the max words a SINGLE context entry may hold. Enforced at seed time
+# (validate_context_text) and on upload (the app mirrors this). MAX_WORDS kept as a
+# backward-compatible alias for external importers.
+MAX_WORDS_PER_ENTRY = 500
+MAX_WORDS = MAX_WORDS_PER_ENTRY
+# Resolve backstop: max words across ALL matching entries combined, ~= per-entry cap x
+# the four scope levels. A table that layers catalog+schema+pattern+table context (each
+# within the per-entry cap) is therefore NOT silently truncated -- honoring the app's
+# advertised "each entry is limited to N words" contract. When the combined context DOES
+# exceed this, the LEAST-specific entries are dropped first (retention by specificity;
+# see _truncate_preserving_specificity) and a warning is logged at resolve time.
+MAX_TOTAL_WORDS = 2000
 _SCOPE_ORDER = {"catalog": 0, "schema": 1, "pattern": 2, "table": 3}
 
 
@@ -72,39 +83,160 @@ def prefetch_customer_context(spark: Any, catalog: str, schema: str) -> List[Dic
         return []
 
 
-def resolve_customer_context(
-    cache: List[Dict[str, Any]],
-    full_table_name: str,
-    max_words: int = MAX_WORDS,
-) -> str:
-    """Resolve matching context entries from prefetched cache. Pure Python, no SQL."""
-    if not cache:
-        return ""
-
+def _match_rows(cache: List[Dict[str, Any]], full_table_name: str) -> List[Dict[str, Any]]:
+    """Return cache rows whose scope matches ``full_table_name`` (any granularity)."""
     parts = full_table_name.split(".")
     catalog = parts[0] if len(parts) >= 1 else ""
     schema_scope = f"{parts[0]}.{parts[1]}" if len(parts) >= 2 else ""
-
     matches = []
     for row in cache:
         st = row.get("scope_type", "")
         scope = row.get("scope", "")
-        hit = (
+        if (
             (st == "catalog" and scope == catalog)
             or (st == "schema" and scope == schema_scope)
             or (st == "table" and scope == full_table_name)
             or (st == "pattern" and fnmatch(full_table_name, scope))
-        )
-        if hit:
+        ):
             matches.append(row)
+    return matches
 
+
+def _truncate_preserving_specificity(
+    matches: List[Dict[str, Any]], max_total_words: int
+) -> Tuple[str, List[Dict[str, Any]], Optional[Dict[str, Any]]]:
+    """Select which matches to keep by specificity, but EMIT them broadest-first.
+
+    Two DELIBERATELY DECOUPLED concerns:
+
+    * RETENTION (which entries survive a tight budget) is by VALUE -- most-specific
+      first: table > pattern > schema > catalog. Under budget pressure the table-scoped
+      entry survives and the least-specific boilerplate is dropped. (The original code
+      kept the HEAD of a broadest-first concatenation, so it silently dropped the table
+      entry -- the bug this fixes.)
+
+    * EMISSION ORDER (the order entries appear in the prompt) is broadest-first:
+      catalog -> schema -> pattern -> table, lowest-priority first within a scope. This
+      matters for OBEDIENCE: a catalog/global directive must LEAD the block or the model
+      ignores it in the full generation prompt. Verified on DMVM (epic_emr_demo.allergy,
+      3 active directives): catalog-LAST -> 0/3 obeyed; catalog-FIRST -> 2/3 obeyed. An
+      earlier version emitted most-specific-first and regressed obedience to 0/3.
+
+    KNOWN TRADEOFF (retention vs. obedience): because retention is most-specific-first,
+    a tight budget drops the CATALOG/global directive FIRST -- i.e. the very entry the
+    broadest-first emission exists to make the model obey. This only bites above the
+    MAX_TOTAL_WORDS backstop (many near-cap entries on one table), which real customer
+    context does not approach; specificity-retention (table caveat must survive) was the
+    deliberate choice. Revisit only if that budget is realistically hit.
+
+    Entries are kept WHOLE (an atomic caveat is never half-emitted). When an entry does
+    not fit, it is dropped but scanning CONTINUES -- a later, smaller entry may still fit.
+    NOTE: continue-scanning is by remaining budget, so within one scope a smaller lower-
+    priority entry can be kept while a larger higher-priority one is dropped (priority
+    orders emission, and is a retention tiebreaker only among same-size entries).
+
+    Returns ``(text, dropped, partial)``:
+      - ``dropped``  -- rows fully excluded (NOT injected at all).
+      - ``partial``  -- the single most-specific row whose head was kept because it alone
+        exceeded the whole budget (so the result isn't empty); reported separately from
+        ``dropped`` since it IS partially injected. Normally None (per-entry cap < budget).
+    Pure -- no SQL, no logging -- unit-testable in isolation.
+    """
+    # RETENTION pass: most-specific-first, so the table entry survives a tight budget.
+    by_specificity = sorted(
+        matches,
+        key=lambda r: (
+            -_SCOPE_ORDER.get(r.get("scope_type", ""), -1),
+            -int(r.get("priority") or 0),
+        ),
+    )
+    kept_rows: List[Dict[str, Any]] = []
+    dropped: List[Dict[str, Any]] = []
+    partial: Optional[Dict[str, Any]] = None
+    partial_text: str = ""
+    remaining = max_total_words
+    for r in by_specificity:
+        entry_words = str(r.get("context_text") or "").split()
+        if not entry_words:
+            continue
+        if len(entry_words) <= remaining:
+            kept_rows.append(r)                          # entry kept whole (atomic caveat)
+            remaining -= len(entry_words)
+        elif not kept_rows and partial is None:
+            # Most-specific entry alone exceeds the whole budget: keep its head so the
+            # result isn't empty. Partially injected -> tracked as `partial`, not dropped.
+            partial = r
+            partial_text = " ".join(entry_words[:remaining])
+            remaining = 0
+        else:
+            # Doesn't fit whole. Drop it but keep scanning: a later, smaller entry may
+            # still fit the remaining budget.
+            dropped.append(r)
+
+    # EMISSION pass: broadest-first (general context leads, specific refinements follow).
+    emit = sorted(
+        kept_rows,
+        key=lambda r: (
+            _SCOPE_ORDER.get(r.get("scope_type", ""), 99),
+            int(r.get("priority") or 0),
+        ),
+    )
+    texts = [" ".join(str(r.get("context_text") or "").split()) for r in emit]
+    if partial is not None:
+        texts.append(partial_text)                        # most-specific -> emitted last
+    return "\n".join(texts), dropped, partial
+
+
+def resolve_customer_context_with_report(
+    cache: List[Dict[str, Any]],
+    full_table_name: str,
+    max_words: int = MAX_TOTAL_WORDS,
+) -> Tuple[str, List[Dict[str, Any]], Optional[Dict[str, Any]]]:
+    """Like ``resolve_customer_context`` but also returns what the budget cut.
+
+    Returns ``(text, dropped, partial)`` -- see ``_truncate_preserving_specificity``.
+    Both are empty/None unless the combined matching context exceeded ``max_words``.
+    Pure Python, no SQL -- used by the app's resolve-preview endpoint to show truncation.
+    """
+    if not cache:
+        return "", [], None
+    matches = _match_rows(cache, full_table_name)
     if not matches:
-        return ""
+        return "", [], None
+    return _truncate_preserving_specificity(matches, max_words)
 
-    matches.sort(key=lambda r: (_SCOPE_ORDER.get(r.get("scope_type", ""), 9), int(r.get("priority") or 0)))
-    combined = "\n".join(str(r.get("context_text") or "") for r in matches)
-    words = combined.split()
-    return " ".join(words[:max_words]) if words else ""
+
+def resolve_customer_context(
+    cache: List[Dict[str, Any]],
+    full_table_name: str,
+    max_words: int = MAX_TOTAL_WORDS,
+) -> str:
+    """Resolve matching context entries from the prefetched cache. Pure Python, no SQL.
+
+    Entries are emitted broadest-first (catalog -> schema -> pattern -> table) so a
+    global directive leads the block, and concatenated up to ``max_words`` (the combined
+    budget across all matching granularities); retention under budget pressure is
+    most-specific-first (see ``_truncate_preserving_specificity``). If the budget forces
+    content to be dropped or truncated, a warning is logged naming the affected scopes --
+    resolve-time truncation is no longer silent.
+    """
+    text, dropped, partial = resolve_customer_context_with_report(cache, full_table_name, max_words)
+    if dropped or partial is not None:
+        affected = list(dropped)
+        if partial is not None:
+            affected.append(partial)
+        logger.warning(
+            "customer_context truncated for %s: kept %d word(s) (budget %d); %d entr%s "
+            "cut [%s]%s. Generated metadata may omit that context.",
+            full_table_name,
+            len(text.split()),
+            max_words,
+            len(affected),
+            "y" if len(affected) == 1 else "ies",
+            ", ".join(f"{r.get('scope_type', '?')}:{r.get('scope', '?')}" for r in affected),
+            " (most-specific entry partially kept)" if partial is not None else "",
+        )
+    return text
 
 
 def seed_customer_context_table(
