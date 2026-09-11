@@ -1,7 +1,22 @@
 #!/bin/bash
 
 # Databricks Asset Bundle Cleanup Script
-# This script removes your deployed DABs project
+# This script removes your deployed DABs project.
+#
+# SCOPE / LIMITATION: this ONLY runs `databricks bundle destroy`, which removes
+# bundle-managed resources (jobs, the app, notebooks). It does NOT drop the data
+# artifacts that PIPELINE RUNS create — the results schema and its output tables,
+# the customer_context table, the ontology vector-search index, lakebase instances,
+# temp tables, etc. To clean those up, use the dedicated scripts:
+#   - scripts/cleanup_infrastructure_pollution.py
+#   - notebooks/cleanup_pipeline_tables.py
+#   - notebooks/utilities/cleanup_temp_tables.py
+#
+# KNOWN TRAP: prepare_variables() appends permission_groups / permission_users to
+# variables.yml if they are set in the environment, but both are ALREADY declared
+# in variables.yml. They are safe only because they are commented out in dev.env;
+# uncommenting them creates duplicate keys in the `variables:` mapping and can break
+# the bundle YAML load on destroy.
 
 set -e  # Exit on any error
 
@@ -112,6 +127,14 @@ print_warning "WARNING: This will permanently delete all deployed resources!"
 print_warning "   - Jobs will be deleted"
 print_warning "   - Notebooks will be removed from workspace"
 print_warning "   - All bundle artifacts will be cleaned up"
+echo ""
+print_warning "SCOPE: this only destroys the BUNDLE (jobs, app, notebooks)."
+print_warning "It does NOT drop data created by runs — the results schema + output"
+print_warning "tables, customer_context, the ontology vector-search index, lakebase,"
+print_warning "or temp tables. Clean those up separately:"
+print_warning "   - scripts/cleanup_infrastructure_pollution.py"
+print_warning "   - notebooks/cleanup_pipeline_tables.py"
+print_warning "   - notebooks/utilities/cleanup_temp_tables.py"
 echo ""
 
 read -p "Are you sure you want to destroy the bundle? (y/N): " -n 1 -r

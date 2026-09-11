@@ -99,19 +99,21 @@ distinct and don't overwrite each other.
 
 ## Variable override changes
 
-If your old `variable-overrides.json` (or `.env`) set a cluster or budget policy,
-the keys changed:
+Cluster and budget policies are both plain string variables -- nothing to migrate:
 
-| Old | New |
-|-----|-----|
-| `policy_id: "<id>"` (standalone) | Override the whole `metadata_job_cluster` (and/or `lakebase_job_cluster`) complex variable and add `policy_id` + `apply_policy_default_values` inside it. See the example in `databricks.yml`. |
-| `budget_policy_id: "<id>"` | **Unchanged** -- still a plain string variable. |
+| Variable | How to set it |
+|----------|---------------|
+| `policy_id` (cluster policy) | Plain string. Set it in `variable-overrides.json`, `{target}.env` (`policy_id=...`), `--var`, or `BUNDLE_VAR_policy_id`. Empty (default) = policy-free. |
+| `budget_policy_id` (serverless) | Plain string, same as before. |
 
-Why: the newer DAB "direct" deploy engine (used by the workspace UI Deploy button
-and recent CLIs) does not strip an empty `policy_id: ""`, and the Jobs API rejects
-`''` as an invalid cluster policy ID. Substituting the whole cluster block is the
-only pattern that supports both with-policy and without-policy deploys. If you set
-no policy, you don't need to do anything -- a bare deploy applies none.
+**Requires Databricks CLI >= 1.10.0** (enforced by `databricks_cli_version` in
+`databricks.yml`). CLI 1.10.0 (PR #6088) drops an empty `policy_id` before deploy on
+BOTH the terraform and direct engines, so a policy-free deploy works out of the box.
+On CLIs < 1.10.0 an empty `policy_id` is sent as `""` and the Jobs API rejects `''`
+as an invalid cluster policy ID -- upgrade the CLI. (Earlier versions of this bundle
+used a whole-`metadata_job_cluster` complex-variable workaround for that pre-1.10.0
+direct-engine bug; it is no longer needed. If your overrides still set the whole
+cluster block, it keeps working -- but a plain `policy_id` is simpler.)
 
 ---
 

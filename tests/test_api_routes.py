@@ -1785,3 +1785,54 @@ class TestReclassifyMetricViews:
         assert h["dimensions"]["snippets"]["score"] is None    # N/A for MV space
         assert h["dimensions"]["filter_quality"]["score"] is None
         assert h["max"] == 16
+
+
+# ---------------------------------------------------------------------------
+# Customer-context quote safety (issue #212)
+# ---------------------------------------------------------------------------
+class TestCustomerContextQuoteSafety:
+    """#212: operator-supplied context must round-trip byte-exact. Databricks SQL
+    silently drops '' escaping ('a''b' -> ab), so the builder MUST bind every
+    free-text value as a parameter, never interpolate it (escaped or not)."""
+
+    class _Param:  # stand-in for StatementParameterListItem (SDK is MagicMock-stubbed here)
+        def __init__(self, name=None, value=None):
+            self.name = name
+            self.value = value
+
+    def _build(self, monkeypatch, **over):
+        monkeypatch.setattr(api_server, "StatementParameterListItem", self._Param)
+        vals = dict(
+            ctx_id="abc123", scope="cat.sch.*", scope_type="pattern",
+            context_text="'tw' = this week; the segment's benchmark",
+            context_label="it's a label", priority=0, now="2026-09-01T00:00:00",
+        )
+        vals.update(over)
+        return api_server._build_customer_context_upsert(**vals), vals
+
+    def test_free_text_is_parameter_bound_not_interpolated(self, monkeypatch):
+        (sql, params), vals = self._build(monkeypatch)
+        for marker in (":ctx_id", ":scope", ":scope_type", ":context_text", ":context_label"):
+            assert marker in sql, f"{marker} missing from MERGE"
+        # The quote-laden text is never interpolated, and no '' doubling appears anywhere.
+        assert vals["context_text"] not in sql
+        assert "the segment's benchmark" not in sql
+        assert "''" not in sql
+        # Parameters carry the RAW (unescaped) values -- apostrophes intact.
+        bound = {p.name: p.value for p in params}
+        assert bound["context_text"] == vals["context_text"]
+        assert bound["scope"] == vals["scope"]
+        assert bound["context_label"] == vals["context_label"]
+
+    def test_scope_is_parameterized_not_injectable(self, monkeypatch):
+        # scope was previously interpolated completely unescaped.
+        (sql, params), _ = self._build(monkeypatch, scope="x'); DROP TABLE y; --")
+        assert "DROP TABLE" not in sql
+        bound = {p.name: p.value for p in params}
+        assert bound["scope"] == "x'); DROP TABLE y; --"
+
+    def test_priority_bound_as_string_and_cast(self, monkeypatch):
+        (sql, params), _ = self._build(monkeypatch, priority=7)
+        assert "CAST(:priority AS INT)" in sql
+        bound = {p.name: p.value for p in params}
+        assert bound["priority"] == "7"  # bound as string, CAST in SQL

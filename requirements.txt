@@ -31,7 +31,6 @@ async-timeout==4.0.3 ; python_full_version < '3.11'
 attrs==26.1.0
     # via
     #   aiohttp
-    #   visions
 blinker==1.9.0
     # via flask
 cachetools==7.1.4
@@ -71,8 +70,6 @@ cryptography==46.0.7
     #   mlflow
 cycler==0.12.1
     # via matplotlib
-dacite==1.9.2
-    # via ydata-profiling
 databricks-ai-bridge==0.21.0
     # via databricks-langchain
 databricks-ai-search==0.76
@@ -111,8 +108,6 @@ exceptiongroup==1.3.1 ; python_full_version < '3.11'
     # via anyio
 fastapi==0.139.0
     # via mlflow-skinny
-filetype==1.2.0
-    # via ydata-profiling
 flask==3.1.3
     # via
     #   flask-cors
@@ -175,10 +170,6 @@ idna==3.18
     #   httpx
     #   requests
     #   yarl
-imagehash==4.3.1
-    # via
-    #   visions
-    #   ydata-profiling
 importlib-metadata==8.9.0
     # via mlflow-skinny
 itsdangerous==2.2.0
@@ -186,12 +177,10 @@ itsdangerous==2.2.0
 jinja2==3.1.6
     # via
     #   flask
-    #   ydata-profiling
 jiter==0.16.0
     # via openai
 joblib==1.5.3
     # via
-    #   phik
     #   scikit-learn
 jsonpatch==1.33
     # via langchain-core
@@ -235,8 +224,6 @@ langsmith==0.10.2
     #   langchain-classic
     #   langchain-community
     #   langchain-core
-llvmlite==0.44.0
-    # via numba
 mako==1.3.12
     # via alembic
 markupsafe==3.0.3
@@ -250,12 +237,6 @@ marshmallow==3.26.2
 matplotlib==3.10.0
     # via
     #   mlflow
-    #   phik
-    #   seaborn
-    #   wordcloud
-    #   ydata-profiling
-minify-html==0.18.1
-    # via ydata-profiling
 mlflow==3.11.1
     # via
     #   databricks-langchain
@@ -272,10 +253,6 @@ multidict==6.7.1
     # via
     #   aiohttp
     #   yarl
-multimethod==1.12
-    # via
-    #   visions
-    #   ydata-profiling
 mypy-extensions==1.1.0
     # via typing-inspect
 narwhals==2.24.0 ; python_full_version >= '3.11'
@@ -284,54 +261,28 @@ nest-asyncio==1.6.0
     # via
     #   dbxmetagen
     #   unitycatalog-ai
-networkx==3.4.2 ; python_full_version < '3.11'
-    # via visions
-networkx==3.6.1 ; python_full_version >= '3.11'
-    # via visions
-numba==0.61.0
-    # via ydata-profiling
 numpy==1.26.4 ; python_full_version < '3.12'
     # via
     #   contourpy
     #   databricks-connect
-    #   imagehash
     #   langchain-community
     #   matplotlib
     #   mlflow
-    #   numba
     #   pandas
-    #   patsy
-    #   phik
-    #   pywavelets
     #   scikit-learn
     #   scipy
-    #   seaborn
     #   skops
-    #   statsmodels
-    #   visions
-    #   wordcloud
-    #   ydata-profiling
 numpy==2.1.3 ; python_full_version >= '3.12'
     # via
     #   contourpy
     #   databricks-connect
-    #   imagehash
     #   langchain-community
     #   matplotlib
     #   mlflow
-    #   numba
     #   pandas
-    #   patsy
-    #   phik
-    #   pywavelets
     #   scikit-learn
     #   scipy
-    #   seaborn
     #   skops
-    #   statsmodels
-    #   visions
-    #   wordcloud
-    #   ydata-profiling
 openai==1.56.1
     # via dbxmetagen
 openpyxl==3.1.5
@@ -370,28 +321,15 @@ packaging==26.2
     #   mlflow-skinny
     #   mlflow-tracing
     #   skops
-    #   statsmodels
 pandas==2.3.3
     # via
     #   databricks-ai-bridge
     #   databricks-connect
     #   mlflow
-    #   phik
-    #   seaborn
-    #   statsmodels
     #   unitycatalog-ai
-    #   visions
-    #   ydata-profiling
-patsy==1.0.2
-    # via statsmodels
-phik==0.12.5
-    # via ydata-profiling
 pillow==12.3.0
     # via
-    #   imagehash
     #   matplotlib
-    #   visions
-    #   wordcloud
 prettytable==3.18.0
     # via skops
 propcache==0.5.2
@@ -408,10 +346,6 @@ protobuf==5.29.6
     #   mlflow-skinny
     #   mlflow-tracing
     #   opentelemetry-proto
-puremagic==1.30 ; python_full_version < '3.12'
-    # via visions
-puremagic==2.2.0 ; python_full_version >= '3.12'
-    # via visions
 pyarrow==23.0.1
     # via
     #   databricks-connect
@@ -439,7 +373,6 @@ pydantic==2.10.3
     #   pydantic-settings
     #   unitycatalog-ai
     #   unitycatalog-client
-    #   ydata-profiling
 pydantic-core==2.27.1
     # via pydantic
 pydantic-settings==2.14.2
@@ -458,10 +391,6 @@ python-dotenv==1.2.2
     #   pydantic-settings
 pytz==2026.2
     # via pandas
-pywavelets==1.8.0 ; python_full_version < '3.11'
-    # via imagehash
-pywavelets==1.9.0 ; python_full_version >= '3.11'
-    # via imagehash
 pywin32==312 ; sys_platform == 'win32'
     # via docker
 pyyaml==6.0.1
@@ -471,7 +400,6 @@ pyyaml==6.0.1
     #   langchain-community
     #   langchain-core
     #   mlflow-skinny
-    #   ydata-profiling
 regex==2026.7.10
     # via tiktoken
 requests==2.32.5
@@ -487,7 +415,6 @@ requests==2.32.5
     #   mlflow-skinny
     #   requests-toolbelt
     #   tiktoken
-    #   ydata-profiling
 requests-toolbelt==1.0.0
     # via langsmith
 scikit-learn==1.7.2 ; python_full_version < '3.11'
@@ -500,15 +427,9 @@ scikit-learn==1.9.0 ; python_full_version >= '3.11'
     #   skops
 scipy==1.15.3
     # via
-    #   imagehash
     #   mlflow
-    #   phik
     #   scikit-learn
     #   skops
-    #   statsmodels
-    #   ydata-profiling
-seaborn==0.13.2
-    # via ydata-profiling
 six==1.17.0
     # via
     #   databricks-connect
@@ -531,8 +452,6 @@ sqlparse==0.5.5
     # via mlflow-skinny
 starlette==1.3.1
     # via fastapi
-statsmodels==0.14.6
-    # via ydata-profiling
 tabulate==0.10.0
     # via databricks-ai-bridge
 tenacity==9.1.4
@@ -548,9 +467,6 @@ tomli==2.4.1 ; python_full_version < '3.11'
 tqdm==4.68.4
     # via
     #   openai
-    #   ydata-profiling
-typeguard==4.5.2
-    # via ydata-profiling
 typing-extensions==4.15.0
     # via
     #   aiohttp
@@ -577,7 +493,6 @@ typing-extensions==4.15.0
     #   pydantic-core
     #   sqlalchemy
     #   starlette
-    #   typeguard
     #   typing-inspect
     #   typing-inspection
     #   unitycatalog-ai
@@ -608,8 +523,6 @@ uuid-utils==0.17.0
     #   langsmith
 uvicorn==0.51.0
     # via mlflow-skinny
-visions==0.8.1
-    # via ydata-profiling
 waitress==3.0.2 ; sys_platform == 'win32'
     # via mlflow
 wcwidth==0.8.2
@@ -620,8 +533,6 @@ werkzeug==3.1.8
     # via
     #   flask
     #   flask-cors
-wordcloud==1.9.6
-    # via ydata-profiling
 wrapt==1.17.3
     # via deprecated
 xxhash==3.8.1
@@ -630,12 +541,14 @@ xxhash==3.8.1
     #   langsmith
 yarl==1.24.2
     # via aiohttp
-ydata-profiling==4.17.0
-    # via dbxmetagen
 zipp==4.1.0
     # via importlib-metadata
 zstandard==0.25.0
     # via langsmith
+networkx==3.4.2 ; python_full_version < '3.11'
+    # via dbxmetagen (graph viz in notebooks/final_analysis.py)
+networkx==3.6.1 ; python_full_version >= '3.11'
+    # via dbxmetagen (graph viz in notebooks/final_analysis.py)
 # --- PI mode: spaCy model (only needed for deterministic PI detection) ---
 # The spaCy model is installed conditionally by the generate_metadata notebook
 # based on the spacy_model_names widget (default: en_core_web_md).

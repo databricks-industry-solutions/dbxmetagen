@@ -15979,7 +15979,12 @@ class CustomerContextRequest(BaseModel):
 
 _CC_TABLE = "customer_context"
 _CC_VALID_TYPES = {"catalog", "schema", "table", "pattern"}
-_CC_MAX_WORDS = 500
+# Per-entry word cap. Single-sourced from the library so the upload check, the seed-time
+# validation, and this API stay in lockstep (fallback mirrors the library default).
+try:
+    from dbxmetagen.customer_context import MAX_WORDS_PER_ENTRY as _CC_MAX_WORDS
+except Exception:
+    _CC_MAX_WORDS = 500
 
 
 def _ensure_customer_context_table():
@@ -16028,6 +16033,46 @@ def get_customer_context(context_id: str):
     return rows[0]
 
 
+def _build_customer_context_upsert(ctx_id, scope, scope_type, context_text,
+                                   context_label, priority, now):
+    """Build the (sql, parameters) for a customer_context MERGE upsert (issue #212).
+
+    Every user-supplied value is bound as a server-side parameter rather than
+    interpolated into the SQL text. Databricks SQL does NOT treat '' as an escaped
+    quote in the default parser -- 'a''b' is lexed as two literals and concatenated to
+    "ab", silently dropping the apostrophe. Parameter binding is both quote-safe and
+    injection-safe (scope was previously interpolated completely unescaped). Extracted
+    as a pure builder so the binding contract is unit-testable without the route/SQL.
+    """
+    params = [
+        StatementParameterListItem(name="ctx_id", value=ctx_id),
+        StatementParameterListItem(name="scope", value=scope),
+        StatementParameterListItem(name="scope_type", value=scope_type),
+        StatementParameterListItem(name="context_text", value=context_text),
+        StatementParameterListItem(name="context_label", value=context_label or ""),
+        StatementParameterListItem(name="priority", value=str(priority)),
+        StatementParameterListItem(name="now", value=now),
+    ]
+    sql = f"""
+        MERGE INTO {fq(_CC_TABLE)} AS tgt
+        USING (SELECT :ctx_id AS context_id) AS src
+        ON tgt.context_id = src.context_id
+        WHEN MATCHED THEN UPDATE SET
+            scope = :scope, scope_type = :scope_type,
+            context_text = :context_text, context_label = :context_label,
+            priority = CAST(:priority AS INT), active = TRUE, updated_at = CAST(:now AS TIMESTAMP)
+        WHEN NOT MATCHED THEN INSERT (
+            context_id, scope, scope_type, context_text, context_label,
+            priority, active, created_by, created_at, updated_at
+        ) VALUES (
+            :ctx_id, :scope, :scope_type,
+            :context_text, :context_label,
+            CAST(:priority AS INT), TRUE, 'app', CAST(:now AS TIMESTAMP), CAST(:now AS TIMESTAMP)
+        )
+    """
+    return sql, params
+
+
 @app.post("/api/customer-context")
 def upsert_customer_context(req: CustomerContextRequest):
     """Create or update a customer context entry."""
@@ -16046,26 +16091,17 @@ def upsert_customer_context(req: CustomerContextRequest):
     from datetime import datetime as _dt
     ctx_id = hashlib.sha256(req.scope.encode()).hexdigest()[:16]
     now = _dt.utcnow().isoformat()
-    escaped_text = req.context_text.replace("'", "''")
-    escaped_label = req.context_label.replace("'", "''")
-
-    execute_sql(f"""
-        MERGE INTO {fq(_CC_TABLE)} AS tgt
-        USING (SELECT '{ctx_id}' AS context_id) AS src
-        ON tgt.context_id = src.context_id
-        WHEN MATCHED THEN UPDATE SET
-            scope = '{req.scope}', scope_type = '{req.scope_type}',
-            context_text = '{escaped_text}', context_label = '{escaped_label}',
-            priority = {req.priority}, active = TRUE, updated_at = '{now}'
-        WHEN NOT MATCHED THEN INSERT (
-            context_id, scope, scope_type, context_text, context_label,
-            priority, active, created_by, created_at, updated_at
-        ) VALUES (
-            '{ctx_id}', '{req.scope}', '{req.scope_type}',
-            '{escaped_text}', '{escaped_label}',
-            {req.priority}, TRUE, 'app', '{now}', '{now}'
-        )
-    """, timeout=30)
+    sql, params = _build_customer_context_upsert(
+        ctx_id, req.scope, req.scope_type, req.context_text,
+        req.context_label, req.priority, now,
+    )
+    # Bound parameters store the value verbatim (stored == sent by construction), so no
+    # per-write round-trip readback guard is needed -- it would just double the warehouse
+    # round-trips (2N on the bulk YAML-upload path) for a tripwire that cannot fire. The
+    # escaping-regression tripwire lives in the tests instead: test_29 executes THIS builder
+    # against a real warehouse, and test_28 is a negative control that fails if anyone reverts
+    # to '' escaping.
+    execute_sql(sql, timeout=30, parameters=params)
     return {"context_id": ctx_id, "scope": req.scope, "word_count": len(words)}
 
 
@@ -16117,33 +16153,31 @@ def resolve_customer_context_preview(full_table_name: str):
         f"SELECT scope, scope_type, context_text, context_label, priority "
         f"FROM {fq(_CC_TABLE)} WHERE active = TRUE"
     )
-    from dbxmetagen.customer_context import resolve_customer_context
-    resolved = resolve_customer_context(rows, full_table_name)
+    # Reuse the library's matcher + truncation so the preview can never diverge from what
+    # resolution actually injects, and scope matching runs once (not a second hand-rolled scan).
+    from dbxmetagen.customer_context import (
+        _match_rows, _truncate_preserving_specificity, MAX_TOTAL_WORDS,
+    )
+    matches = _match_rows(rows, full_table_name)
+    resolved, dropped, partial = _truncate_preserving_specificity(matches, MAX_TOTAL_WORDS)
     return {
         "full_table_name": full_table_name,
         "resolved_context": resolved,
         "word_count": len(resolved.split()) if resolved else 0,
-        "matching_scopes": [
-            r["scope"] for r in rows
-            if _matches_scope(r, full_table_name)
+        "budget_words": MAX_TOTAL_WORDS,
+        # Truncation is no longer silent. `dropped_scopes` are NOT injected at all;
+        # `truncated_scope` (if any) is the most-specific entry whose head was kept
+        # because it alone exceeded the budget -- partially injected, not dropped.
+        "truncated": bool(dropped) or partial is not None,
+        "dropped_scopes": [
+            {"scope": r.get("scope"), "scope_type": r.get("scope_type")} for r in dropped
         ],
+        "truncated_scope": (
+            {"scope": partial.get("scope"), "scope_type": partial.get("scope_type")}
+            if partial is not None else None
+        ),
+        "matching_scopes": [r.get("scope") for r in matches],
     }
-
-
-def _matches_scope(row: dict, full_table_name: str) -> bool:
-    """Check if a context row matches a table name (for preview display)."""
-    from fnmatch import fnmatch
-    st = row.get("scope_type", "")
-    scope = row.get("scope", "")
-    parts = full_table_name.split(".")
-    catalog = parts[0] if parts else ""
-    schema_scope = f"{parts[0]}.{parts[1]}" if len(parts) >= 2 else ""
-    return (
-        (st == "catalog" and scope == catalog)
-        or (st == "schema" and scope == schema_scope)
-        or (st == "table" and scope == full_table_name)
-        or (st == "pattern" and fnmatch(full_table_name, scope))
-    )
 
 
 # ---------------------------------------------------------------------------
