@@ -12,7 +12,7 @@ import logging
 from datetime import datetime, timezone
 from fnmatch import fnmatch
 from pathlib import Path
-from typing import Any, Dict, List, Tuple
+from typing import Any, Dict, List, Optional, Tuple
 
 import yaml
 
@@ -104,68 +104,95 @@ def _match_rows(cache: List[Dict[str, Any]], full_table_name: str) -> List[Dict[
 
 def _truncate_preserving_specificity(
     matches: List[Dict[str, Any]], max_total_words: int
-) -> Tuple[str, List[Dict[str, Any]]]:
-    """Order matches most-specific-first, then concatenate up to ``max_total_words``.
+) -> Tuple[str, List[Dict[str, Any]], Optional[Dict[str, Any]]]:
+    """Select which matches to keep by specificity, but EMIT them broadest-first.
 
-    Retention is by VALUE: table > pattern > schema > catalog, highest-priority first
-    within a scope. Under budget pressure the table-scoped entry survives and the
-    least-specific boilerplate is dropped -- the reverse of the original code, which
-    sorted broadest-first and kept the head, silently dropping the table entry.
+    Two DELIBERATELY DECOUPLED concerns:
 
-    Returns ``(text, dropped)`` where ``dropped`` lists the rows fully or partially cut
-    to fit the budget. Pure -- no SQL, no logging -- unit-testable in isolation.
+    * RETENTION (which entries survive a tight budget) is by VALUE -- most-specific
+      first: table > pattern > schema > catalog, highest-priority first within a scope.
+      Under budget pressure the table-scoped entry survives and the least-specific
+      boilerplate is dropped. (The original code kept the HEAD of a broadest-first
+      concatenation, so it silently dropped the table entry -- the bug this fixes.)
+
+    * EMISSION ORDER (the order entries appear in the prompt) is broadest-first:
+      catalog -> schema -> pattern -> table, lowest-priority first within a scope. This
+      matters for OBEDIENCE: a catalog/global directive must LEAD the block or the model
+      ignores it in the full generation prompt. Verified on DMVM (epic_emr_demo.allergy,
+      3 active directives): catalog-LAST -> 0/3 obeyed; catalog-FIRST -> 2/3 obeyed. An
+      earlier version emitted most-specific-first and regressed obedience to 0/3.
+
+    Entries are kept WHOLE (an atomic caveat is never half-emitted). When an entry does
+    not fit, it is dropped but scanning CONTINUES -- a later, smaller entry may still fit.
+
+    Returns ``(text, dropped, partial)``:
+      - ``dropped``  -- rows fully excluded (NOT injected at all).
+      - ``partial``  -- the single most-specific row whose head was kept because it alone
+        exceeded the whole budget (so the result isn't empty); reported separately from
+        ``dropped`` since it IS partially injected. Normally None (per-entry cap < budget).
+    Pure -- no SQL, no logging -- unit-testable in isolation.
     """
-    ordered = sorted(
+    # RETENTION pass: most-specific-first, so the table entry survives a tight budget.
+    by_specificity = sorted(
         matches,
         key=lambda r: (
             -_SCOPE_ORDER.get(r.get("scope_type", ""), -1),
             -int(r.get("priority") or 0),
         ),
     )
-    kept: List[str] = []
+    kept_rows: List[Dict[str, Any]] = []
     dropped: List[Dict[str, Any]] = []
+    partial: Optional[Dict[str, Any]] = None
+    partial_text: str = ""
     remaining = max_total_words
-    stop = False  # once a whole entry can't fit, drop it and everything less specific
-    for r in ordered:
+    for r in by_specificity:
         entry_words = str(r.get("context_text") or "").split()
         if not entry_words:
             continue
-        if stop:
-            dropped.append(r)
-        elif len(entry_words) <= remaining:
-            kept.append(" ".join(entry_words))          # entry kept whole (atomic caveat)
+        if len(entry_words) <= remaining:
+            kept_rows.append(r)                          # entry kept whole (atomic caveat)
             remaining -= len(entry_words)
-        elif not kept:
+        elif not kept_rows and partial is None:
             # Most-specific entry alone exceeds the whole budget: keep its head so the
-            # result isn't empty, then stop. (Per-entry cap normally prevents this.)
-            kept.append(" ".join(entry_words[:remaining]))
+            # result isn't empty. Partially injected -> tracked as `partial`, not dropped.
+            partial = r
+            partial_text = " ".join(entry_words[:remaining])
             remaining = 0
-            dropped.append(r)
-            stop = True
         else:
-            # Doesn't fit whole, and it is less specific than what we've kept: drop it
-            # (and all remaining) rather than emit a dangling half-caveat.
+            # Doesn't fit whole. Drop it but keep scanning: a later, smaller entry may
+            # still fit the remaining budget.
             dropped.append(r)
-            stop = True
-    return "\n".join(kept), dropped
+
+    # EMISSION pass: broadest-first (general context leads, specific refinements follow).
+    emit = sorted(
+        kept_rows,
+        key=lambda r: (
+            _SCOPE_ORDER.get(r.get("scope_type", ""), 99),
+            int(r.get("priority") or 0),
+        ),
+    )
+    texts = [" ".join(str(r.get("context_text") or "").split()) for r in emit]
+    if partial is not None:
+        texts.append(partial_text)                        # most-specific -> emitted last
+    return "\n".join(texts), dropped, partial
 
 
 def resolve_customer_context_with_report(
     cache: List[Dict[str, Any]],
     full_table_name: str,
     max_words: int = MAX_TOTAL_WORDS,
-) -> Tuple[str, List[Dict[str, Any]]]:
-    """Like ``resolve_customer_context`` but also returns the dropped rows.
+) -> Tuple[str, List[Dict[str, Any]], Optional[Dict[str, Any]]]:
+    """Like ``resolve_customer_context`` but also returns what the budget cut.
 
-    ``dropped`` is empty unless the combined matching context exceeded ``max_words``
-    (in which case the least-specific entries were cut). Pure Python, no SQL -- used by
-    the app's resolve-preview endpoint to show what would be truncated.
+    Returns ``(text, dropped, partial)`` -- see ``_truncate_preserving_specificity``.
+    Both are empty/None unless the combined matching context exceeded ``max_words``.
+    Pure Python, no SQL -- used by the app's resolve-preview endpoint to show truncation.
     """
     if not cache:
-        return "", []
+        return "", [], None
     matches = _match_rows(cache, full_table_name)
     if not matches:
-        return "", []
+        return "", [], None
     return _truncate_preserving_specificity(matches, max_words)
 
 
@@ -178,20 +205,24 @@ def resolve_customer_context(
 
     Entries are ordered most-specific-first and concatenated up to ``max_words`` (the
     combined budget across all matching granularities). If the budget forces content to
-    be dropped, a warning is logged naming the dropped scopes -- resolve-time truncation
-    is no longer silent.
+    be dropped or truncated, a warning is logged naming the affected scopes -- resolve-time
+    truncation is no longer silent.
     """
-    text, dropped = resolve_customer_context_with_report(cache, full_table_name, max_words)
-    if dropped:
+    text, dropped, partial = resolve_customer_context_with_report(cache, full_table_name, max_words)
+    if dropped or partial is not None:
+        affected = list(dropped)
+        if partial is not None:
+            affected.append(partial)
         logger.warning(
-            "customer_context truncated for %s: kept %d word(s) (budget %d); dropped %d "
-            "less-specific entr%s [%s]. Generated metadata may omit that context.",
+            "customer_context truncated for %s: kept %d word(s) (budget %d); %d entr%s "
+            "cut [%s]%s. Generated metadata may omit that context.",
             full_table_name,
             len(text.split()),
             max_words,
-            len(dropped),
-            "y" if len(dropped) == 1 else "ies",
-            ", ".join(f"{r.get('scope_type', '?')}:{r.get('scope', '?')}" for r in dropped),
+            len(affected),
+            "y" if len(affected) == 1 else "ies",
+            ", ".join(f"{r.get('scope_type', '?')}:{r.get('scope', '?')}" for r in affected),
+            " (most-specific entry partially kept)" if partial is not None else "",
         )
     return text
 

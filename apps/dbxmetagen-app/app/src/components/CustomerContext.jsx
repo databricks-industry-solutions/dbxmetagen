@@ -183,9 +183,14 @@ export default function CustomerContext() {
             </div>
             {preview.result.truncated && (
               <div className="text-xs px-2.5 py-2 rounded-md bg-amber-500/10 text-amber-700 dark:text-amber-300 border border-amber-400/30">
-                ⚠ Combined context exceeds the {preview.result.budget_words}-word budget. Kept the most-specific entries;
-                dropped: {preview.result.dropped_scopes?.map(d => `${d.scope_type}:${d.scope}`).join(', ')}.
-                These will NOT be injected — trim entries or move detail to vector search / the knowledge base.
+                ⚠ Combined context exceeds the {preview.result.budget_words}-word budget. Kept the most-specific entries.
+                {preview.result.dropped_scopes?.length > 0 && (
+                  <> Dropped (NOT injected): {preview.result.dropped_scopes.map(d => `${d.scope_type}:${d.scope}`).join(', ')}.</>
+                )}
+                {preview.result.truncated_scope && (
+                  <> Partially injected (head kept): {preview.result.truncated_scope.scope_type}:{preview.result.truncated_scope.scope}.</>
+                )}
+                {' '}Trim entries or move detail to vector search / the knowledge base.
               </div>
             )}
             {preview.result.resolved_context ? (

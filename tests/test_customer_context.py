@@ -98,20 +98,22 @@ class TestResolveCustomerContext(unittest.TestCase):
         self.assertEqual(resolve_customer_context([], "prod.claims.patients"), "")
 
     def test_priority_ordering(self):
-        """Higher-priority entries appear FIRST within a scope, so they survive budget
-        pressure (retention by value). Both schema entries here match `encounters`."""
+        """EMISSION is broadest-first, lowest-priority first within a scope, so a
+        higher-priority entry appears LATER (closer to the specific refinements). Both
+        schema entries here match `encounters`."""
         result = resolve_customer_context(self.cache, "prod.claims.encounters")
         cerner_pos = result.index("Claims from Cerner")   # priority 0
         mrn_pos = result.index("MRN is primary key")       # priority 1
-        self.assertLess(mrn_pos, cerner_pos)
+        self.assertLess(cerner_pos, mrn_pos)
 
     def test_specificity_ordering(self):
-        """Most-specific (table) appears FIRST so it survives truncation; the broad
-        boilerplate is what gets dropped under budget pressure."""
+        """EMISSION is broadest-first: general (schema) context LEADS, specific (table)
+        follows -- so a catalog/global directive is read first and actually obeyed.
+        (Retention is separately specificity-based; see the budget-pressure tests.)"""
         result = resolve_customer_context(self.cache, "prod.claims.patients")
         schema_pos = result.index("Claims from Cerner")
         table_pos = result.index("Patient demographics")
-        self.assertLess(table_pos, schema_pos)
+        self.assertLess(schema_pos, table_pos)
 
     def test_word_limit_enforced(self):
         big_cache = [
@@ -144,35 +146,70 @@ class TestTruncationPreservesSpecificity(unittest.TestCase):
     """Budget retention must keep the MOST-specific context (table), not the broadest
     boilerplate, and must not truncate silently."""
 
-    def test_helper_orders_most_specific_first(self):
+    def test_helper_emits_broadest_first(self):
+        # EMISSION order is broadest-first (catalog -> schema -> pattern -> table) so a
+        # global directive leads the block and is obeyed (verified on DMVM).
         matches = [
             _ctx_row("prod", "catalog", "CATALOG"),
             _ctx_row("prod.claims", "schema", "SCHEMA"),
             _ctx_row("prod.claims.*", "pattern", "PATTERN"),
             _ctx_row("prod.claims.patients", "table", "TABLE"),
         ]
-        text, dropped = _truncate_preserving_specificity(matches, 1000)
+        text, dropped, partial = _truncate_preserving_specificity(matches, 1000)
         self.assertEqual(dropped, [])
-        positions = [text.index(t) for t in ("TABLE", "PATTERN", "SCHEMA", "CATALOG")]
-        self.assertEqual(positions, sorted(positions))  # table first ... catalog last
+        self.assertIsNone(partial)
+        positions = [text.index(t) for t in ("CATALOG", "SCHEMA", "PATTERN", "TABLE")]
+        self.assertEqual(positions, sorted(positions))  # catalog first ... table last
 
-    def test_helper_priority_first_within_scope(self):
+    def test_helper_priority_lowest_first_within_scope(self):
+        # Within a scope, emission is lowest-priority-first (higher priority read later).
         matches = [
             _ctx_row("prod.claims.a_*", "pattern", "LOWPRIO", priority=0),
             _ctx_row("prod.claims.*", "pattern", "HIGHPRIO", priority=5),
         ]
-        text, _ = _truncate_preserving_specificity(matches, 1000)
-        self.assertLess(text.index("HIGHPRIO"), text.index("LOWPRIO"))
+        text, _, _ = _truncate_preserving_specificity(matches, 1000)
+        self.assertLess(text.index("LOWPRIO"), text.index("HIGHPRIO"))
 
     def test_table_survives_budget_pressure(self):
         matches = [
             _ctx_row("prod", "catalog", " ".join(["boiler"] * 10)),
             _ctx_row("prod.claims.patients", "table", "MRN is PHI"),
         ]
-        text, dropped = _truncate_preserving_specificity(matches, 4)
+        text, dropped, partial = _truncate_preserving_specificity(matches, 4)
         self.assertIn("MRN is PHI", text)                              # specific survives
         self.assertNotIn("boiler", text)                              # broad dropped
+        self.assertIsNone(partial)                                     # table fit whole
         self.assertEqual([r["scope_type"] for r in dropped], ["catalog"])
+
+    def test_continue_scanning_keeps_smaller_later_entry(self):
+        # A large entry that doesn't fit must NOT block a later, smaller entry that does
+        # (regression guard: the earlier `stop` flag discarded fitting context).
+        matches = [
+            _ctx_row("prod.claims.patients", "table", " ".join(["t"] * 100)),   # fits, r1900
+            _ctx_row("prod.claims.*", "pattern", " ".join(["big"] * 1990), priority=5),  # 1990 > 1900 -> dropped
+            _ctx_row("prod.claims.a_*", "pattern", "small tail note", priority=0),       # 3 words -> still fits
+        ]
+        text, dropped, partial = _truncate_preserving_specificity(matches, 2000)
+        self.assertIn(" ".join(["t"] * 100), text)                     # table kept
+        self.assertIn("small tail note", text)                         # small later entry kept
+        self.assertNotIn("big", text.split())                          # oversized entry dropped
+        self.assertEqual([r["scope"] for r in dropped], ["prod.claims.*"])
+        self.assertIsNone(partial)
+
+    def test_oversized_first_entry_is_partial_not_dropped(self):
+        # The most-specific entry alone exceeds the whole budget: its head is kept and it
+        # is reported as `partial` (partially injected), NEVER as dropped (regression guard:
+        # it used to appear in `dropped` while its head was injected -> misleading UI).
+        matches = [
+            _ctx_row("prod.claims.patients", "table", " ".join(["t"] * 50)),
+            _ctx_row("prod", "catalog", " ".join(["c"] * 10)),
+        ]
+        text, dropped, partial = _truncate_preserving_specificity(matches, 20)
+        self.assertEqual(len(text.split()), 20)                        # head kept, budget filled
+        self.assertIsNotNone(partial)
+        self.assertEqual(partial["scope_type"], "table")               # the partial one
+        self.assertNotIn(partial, dropped)                             # NOT double-counted
+        self.assertEqual([r["scope_type"] for r in dropped], ["catalog"])  # rest fully dropped
 
     def test_over_backstop_keeps_specific_drops_broad(self):
         # 3 x 800 = 2400 > MAX_TOTAL_WORDS(2000): table+schema (1600) fit whole; the
@@ -182,11 +219,12 @@ class TestTruncationPreservesSpecificity(unittest.TestCase):
             _ctx_row("prod.claims", "schema", " ".join(["s"] * 800)),
             _ctx_row("prod.claims.patients", "table", " ".join(["t"] * 800)),
         ]
-        text, dropped = _truncate_preserving_specificity(matches, MAX_TOTAL_WORDS)
+        text, dropped, partial = _truncate_preserving_specificity(matches, MAX_TOTAL_WORDS)
         self.assertLessEqual(len(text.split()), MAX_TOTAL_WORDS)
         self.assertEqual(len(text.split()), 1600)                      # two whole entries kept
         self.assertIn(" ".join(["t"] * 800), text)                     # table fully retained
         self.assertNotIn("c", text.split())                            # catalog fully dropped
+        self.assertIsNone(partial)
         self.assertEqual([r["scope_type"] for r in dropped], ["catalog"])
 
     def test_per_granularity_layers_coexist_within_backstop(self):
@@ -196,8 +234,9 @@ class TestTruncationPreservesSpecificity(unittest.TestCase):
             _ctx_row("prod.claims", "schema", " ".join(["s"] * 400)),
             _ctx_row("prod.claims.patients", "table", " ".join(["t"] * 400)),
         ]
-        text, dropped = resolve_customer_context_with_report(cache, "prod.claims.patients")
+        text, dropped, partial = resolve_customer_context_with_report(cache, "prod.claims.patients")
         self.assertEqual(dropped, [])
+        self.assertIsNone(partial)
         self.assertEqual(len(text.split()), 1200)
 
     def test_report_lists_dropped_scopes(self):
@@ -205,8 +244,9 @@ class TestTruncationPreservesSpecificity(unittest.TestCase):
             _ctx_row("prod", "catalog", " ".join(["c"] * 60)),
             _ctx_row("prod.claims.patients", "table", " ".join(["t"] * 60)),
         ]
-        _, dropped = resolve_customer_context_with_report(cache, "prod.claims.patients", max_words=80)
+        _, dropped, partial = resolve_customer_context_with_report(cache, "prod.claims.patients", max_words=80)
         self.assertEqual([r["scope_type"] for r in dropped], ["catalog"])
+        self.assertIsNone(partial)
 
     def test_resolve_warns_on_truncation(self):
         cache = [
