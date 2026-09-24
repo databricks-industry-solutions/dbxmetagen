@@ -108,7 +108,16 @@ targets:
     mode: production
     workspace:
       root_path: ${var.current_working_directory}
-    run_as: ${var.run_as}
+    # Prod jobs run as the app's OWN service principal (the same SP that
+    # grant_app_permissions.sh / Notebook 02 grant MODIFY on the output schema),
+    # NOT the deploying user -- so operational writes (e.g. build_knowledge_base
+    # -> column_knowledge_base) never depend on a named human holding MODIFY.
+    # This is the same SP already referenced in every job's permissions block.
+    # dev/demo keep ${var.run_as} because DAB development mode requires run_as to
+    # be the deploying user and rejects an SP here. The deploying identity must be
+    # able to act as this SP (it is, as the app's creator/manager).
+    run_as:
+      service_principal_name: ${resources.apps.dbxmetagen_app.service_principal_client_id}
     permissions:
       - user_name: ${var.current_user}
         level: CAN_MANAGE

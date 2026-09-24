@@ -593,6 +593,16 @@ else:
             settings.budget_policy_id = budget_policy_id
         if name in existing_jobs:
             jid = existing_jobs[name].job_id
+            # Preserve the run_as identity that Notebook 02 sets post-deploy (the app
+            # SPN). w.jobs.reset() does a FULL settings replace, and these builders do
+            # not set run_as (the app SPN does not exist yet on the first deploy), so
+            # without this carry-forward a standalone Notebook 01 re-run would silently
+            # revert every job to running as its creator -- reintroducing PERMISSION_DENIED
+            # on tasks like build_knowledge_base. Notebook 02 stays the authoritative
+            # setter; this just keeps run_as sticky across 01-only re-runs.
+            existing_run_as = getattr(existing_jobs[name].settings, "run_as", None)
+            if existing_run_as:
+                settings.run_as = existing_run_as
             w.jobs.reset(job_id=jid, new_settings=settings)
             created_jobs[res_name] = jid
             print(f"  Updated: {name} (id={jid})")

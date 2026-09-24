@@ -434,6 +434,36 @@ elif not app_spn_uuid:
 # COMMAND ----------
 
 # MAGIC %md
+# MAGIC ### Set jobs to run as the app service principal
+# MAGIC
+# MAGIC Notebook 01 creates the jobs without a `run_as` (the app SPN does not exist
+# MAGIC yet), so they default to running as the deploying user. Now that the SPN exists
+# MAGIC and holds the UC grants below, repoint each job's `run_as` at it -- otherwise the
+# MAGIC jobs keep executing as the deployer (who should not hold MODIFY on the output
+# MAGIC tables) and serverless tasks like `build_knowledge_base` fail with
+# MAGIC `PERMISSION_DENIED ... does not have MODIFY on Table ... column_knowledge_base`.
+# MAGIC
+# MAGIC Idempotent (safe to re-run). Requires the deployer to be able to act as the SPN
+# MAGIC (Service Principal "User" role) or be a workspace admin; a failure here is
+# MAGIC warned, not fatal -- fall back to setting "Run as" in the Jobs UI.
+
+# COMMAND ----------
+
+if app_spn_uuid and bound_job_ids:
+    run_as_settings = jobs_svc.JobSettings(
+        run_as=jobs_svc.JobRunAs(service_principal_name=app_spn_uuid))
+    for res_name, jid in bound_job_ids.items():
+        try:
+            w.jobs.update(job_id=jid, new_settings=run_as_settings)
+            print(f"  Set run_as=app SPN on {res_name} (id={jid})")
+        except Exception as e:
+            print(f"  WARNING: could not set run_as on {res_name} (id={jid}): {e}")
+elif not app_spn_uuid:
+    print("WARNING: Could not resolve app SPN -- jobs will run as the deploying user")
+
+# COMMAND ----------
+
+# MAGIC %md
 # MAGIC ### Grant UC permissions
 
 # COMMAND ----------
