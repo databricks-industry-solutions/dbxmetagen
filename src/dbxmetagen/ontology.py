@@ -5533,7 +5533,32 @@ class OntologyBuilder:
         if not props:
             return 0
 
-        df = self.spark.createDataFrame(props)
+        # Explicit schema (matches create_column_properties_table DDL) so Spark
+        # never has to infer types from the dicts. Without it, a run where a
+        # nullable field is None on every row (most often linked_entity_type,
+        # when no in-scope column links to an entity type) infers NullType and
+        # fails with CANNOT_DETERMINE_TYPE.
+        _col_props_schema = StructType([
+            StructField("property_id", StringType(), nullable=False),
+            StructField("table_name", StringType()),
+            StructField("column_name", StringType()),
+            StructField("property_name", StringType()),
+            StructField("property_role", StringType()),
+            StructField("owning_entity_id", StringType()),
+            StructField("owning_entity_type", StringType()),
+            StructField("linked_entity_type", StringType(), nullable=True),
+            StructField("confidence", DoubleType()),
+            StructField("auto_discovered", BooleanType()),
+            StructField("discovery_method", StringType()),
+            StructField("is_sensitive", BooleanType()),
+            StructField("is_surrogate_key", BooleanType()),
+            StructField("is_semi_structured", BooleanType()),
+            StructField("bundle_version", StringType()),
+            StructField("discovery_timestamp", TimestampType()),
+            StructField("created_at", TimestampType()),
+            StructField("updated_at", TimestampType()),
+        ])
+        df = self.spark.createDataFrame(props, schema=_col_props_schema)
         df.createOrReplaceTempView("_staged_col_props")
         # Scoped MERGE (replaces overwrite): upsert in-scope columns; preserve manual/non-auto rows via WHEN MATCHED predicate.
         self.spark.sql(f"""

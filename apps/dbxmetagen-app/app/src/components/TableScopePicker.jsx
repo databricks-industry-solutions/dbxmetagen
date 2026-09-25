@@ -26,6 +26,7 @@ const BADGE_CAP = 200
  *   seedTables - string[] to seed the selection with on first mount when the
  *                caller starts in 'selected' mode with no tables yet
  *   allLabel / selectedLabel - optional segment labels
+ *   allWarning - optional caution note rendered under the "All tables" segment
  */
 export default function TableScopePicker({
   value,
@@ -35,6 +36,7 @@ export default function TableScopePicker({
   allowAll = true,
   allLabel = 'All tables',
   selectedLabel = 'Selected tables',
+  allWarning = '',
 }) {
   const mode = allowAll ? (value?.mode || 'all') : 'selected'
   const tables = value?.tables || []
@@ -98,9 +100,17 @@ export default function TableScopePicker({
       )}
 
       {mode === 'all' ? (
-        <p className="text-xs text-slate-500 dark:text-slate-400">
-          Runs against <strong>all {kbOnly ? 'knowledge-base ' : ''}tables in scope</strong>.
-        </p>
+        <div className="space-y-1.5">
+          <p className="text-xs text-slate-500 dark:text-slate-400">
+            Runs against <strong>all {kbOnly ? 'knowledge-base ' : ''}tables in scope</strong>.
+          </p>
+          {allWarning && (
+            <p className="text-xs text-amber-700 dark:text-amber-400 bg-amber-50/70 dark:bg-amber-900/15 border border-amber-200 dark:border-amber-800/40 rounded-md px-2 py-1.5 flex items-start gap-1.5">
+              <span aria-hidden="true">&#9888;</span>
+              <span>{allWarning}</span>
+            </p>
+          )}
+        </div>
       ) : (
         <div className="space-y-2">
           {error && (
