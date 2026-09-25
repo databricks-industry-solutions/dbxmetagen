@@ -582,6 +582,9 @@ export default function BatchJobs({ onNavigate, pipelineStats }) {
               Generate <strong className="text-slate-700 dark:text-slate-200">descriptions, sensitivity, and domain</strong> for the chosen tables.
               <InfoTip text="Core metadata = table/column descriptions (comments), PII/PHI/PCI classification, and business-domain classification. Results land in Review & Apply before anything is written. Use the dropdown beside Generate to run just one type for targeted re-runs." />
             </p>
+            <p className="text-xs text-slate-500 dark:text-slate-400">
+              Tip: start with a handful of tables to evaluate cost, performance, and quality, then scale up iteratively.
+            </p>
 
             <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
               <div>
