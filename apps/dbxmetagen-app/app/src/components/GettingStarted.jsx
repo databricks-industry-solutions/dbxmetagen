@@ -86,7 +86,7 @@ export default function GettingStarted({ onNavigate, onStartTour }) {
             title="Core Metadata"
             what="Uses AI to write descriptions for every table and column. Classifies sensitive data (PII, PHI, PCI). Tags each table with its business domain."
             why="This is the minimum useful output. After this step, anyone browsing your catalog can understand what a table contains and whether it has sensitive data — without reading the schema."
-            tip="Start with 5–10 tables to see results in minutes, then expand."
+            tip="Start with 5–10 tables to evaluate cost, performance, and quality — then scale up iteratively."
             onClick={() => onNavigate('jobs')}
             linkLabel="Generate Core Metadata"
           />

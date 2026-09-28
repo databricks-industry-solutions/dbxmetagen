@@ -1545,6 +1545,22 @@ def get_metadata_log(limit: int = 100, table_name: Optional[str] = None):
     return execute_sql(q)
 
 
+@app.get("/api/metadata/has-run")
+def get_metadata_has_run():
+    """Whether this instance has ever generated metadata (the generation log has
+    any rows). The UI uses this to nudge first-time users away from large initial
+    runs. Cheap (LIMIT 1). Distinguishes "never run" (log table absent -> False)
+    from a transient error (propagated as non-200 so the UI treats it as unknown
+    and does NOT nag)."""
+    try:
+        rows = execute_sql(f"SELECT 1 FROM {fq('metadata_generation_log')} LIMIT 1")
+    except HTTPException as e:
+        if e.status_code == 404:
+            return {"has_run": False}
+        raise
+    return {"has_run": len(rows) > 0}
+
+
 @app.get("/api/metadata/knowledge-base")
 def get_knowledge_base(table_name: Optional[str] = None, schema_name: Optional[str] = None, limit: int = 100):
     _validate_filter(table_name, "table_name")
