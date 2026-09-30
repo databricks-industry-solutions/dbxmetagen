@@ -170,6 +170,8 @@ Open the app at **Workspace > Apps > dbxmetagen-app**. **Success looks like** th
 3. **Review & Apply** → read the generated descriptions, edit anything off, and **apply** the ones you approve. Nothing reaches Unity Catalog until you apply it (`apply_ddl=false` by default).
 4. **Coverage** → confirm the schema now shows metadata coverage.
 
+> **Start small, then scale up.** Begin with a very small set of tables (5–10), evaluate the cost, performance, and quality of the results, and scale up iteratively. This matters most for the analytics pipeline and semantic layer on a large knowledge base, where running against every table can be slow and costly.
+
 That's the core loop. From here, run **PI** and **domain** modes and the analytics pipeline (knowledge graph, ontology, metric views, Genie) — see the [Jobs](#jobs) and [Human Review](#human-review) sections, and [`docs/metadata_governance_workflow.md`](docs/metadata_governance_workflow.md) for the full review-and-publish model.
 
 ### After deploy
@@ -184,6 +186,7 @@ The items below apply to **all paths** and are each **optional**:
   - After enabling or re-scoping OBO, **re-consent in the browser** — a stale cached consent shows up as auth/scope errors. Open the app in an **incognito window** (or sign out/in) to force a fresh consent.
   - Scopes are declared for you (`files.files`, `serving.serving-endpoints`, `sql.statement-execution`, `dashboards.genie`), so no scope wrangling is needed. Declaring scopes requires the workspace's user-token-passthrough feature; if a target lacks it, override `user_api_scopes` to `[]` to opt out.
 - **Advanced overrides** (cluster policy, serverless budget, `run_as` SP, app permissions, OBO scopes, Lakebase): copy `variable-overrides.advanced.example.json` into `.databricks/bundle/<target>/variable-overrides.json` (CLI) or paste the same keys into the UI's ⋮ **Configure variable overrides** editor.
+- **Recommended: attach a budget policy.** dbxmetagen's jobs run LLM calls and analytics at whatever scale you point them at, so cost can grow quickly on a large catalog. Set `budget_policy_id` (serverless) and/or `policy_id` (classic job clusters) via the overrides above so every run carries cost-attribution tags and stays within your governance/cost guardrails. Pair this with the "start small, then scale up" guidance so you can measure cost before scaling.
 
 ## Partial Install (Notebook Only)
 

@@ -134,6 +134,9 @@ function HealthWarnings({ health }) {
 export default function BatchJobs({ onNavigate, pipelineStats }) {
   const { jobs, runHistory, runningAction, runError, runJob, jobsError } = useSharedJobRunner()
   const [tableNames, setTableNames] = useState('')
+  // null = unknown (not yet loaded / transient error); false = never generated
+  // metadata here; true = has. Drives the large-first-run nudge in runGenerate.
+  const [hasRun, setHasRun] = useState(null)
   const [applyDdl, setApplyDdl] = useState(false)
   const [federationMode, setFederationMode] = useState(false)
   const [catalogName, setCatalogName] = useState('')
@@ -194,6 +197,24 @@ export default function BatchJobs({ onNavigate, pipelineStats }) {
   // the unified settings.use_serverless.
   const runGenerate = (scope) => {
     setGenMenuOpen(false)
+
+    // --- Pre-run guardrails (cheap click-through confirms; cost/perf safety) ---
+    const raw = tableNames.trim()
+    // Wildcards can silently fan out to a whole schema — confirm intent.
+    if (raw.includes('*') && !window.confirm(
+      'Wildcard patterns (e.g. catalog.schema.*) can match a large number of tables, '
+      + 'which can be slow and costly. Continue?'
+    )) return
+    // First run + a large explicit selection: nudge toward a small pilot. Count
+    // only explicit (non-wildcard) entries; wildcards are covered by the check
+    // above. Fires only when we KNOW nothing has been generated here (hasRun===false).
+    const explicitCount = raw.split(',').map(s => s.trim()).filter(t => t && !t.includes('*')).length
+    if (hasRun === false && explicitCount >= 100 && !window.confirm(
+      `You're about to run on ${explicitCount} tables, and dbxmetagen hasn't generated `
+      + 'metadata here yet. Consider starting with ~10 tables to check cost, performance, '
+      + `and quality, then scaling up. Continue with ${explicitCount}?`
+    )) return
+
     const common = {
       table_names: tableNames,
       apply_ddl: applyDdl,
@@ -292,6 +313,10 @@ export default function BatchJobs({ onNavigate, pipelineStats }) {
     fetch('/api/domain-configs').then(r => r.ok ? r.json() : []).then(setDomainConfigs)
       .catch(() => setError(prev => prev ? `${prev} | Domain configs could not be loaded` : 'Domain configs could not be loaded'))
     fetch('/api/jobs/health').then(r => r.ok ? r.json() : null).then(setHealth).catch(() => {})
+    // Has metadata ever been generated here? Non-ok / network error leaves hasRun
+    // null (unknown) so the first-run nudge stays silent unless we KNOW it's empty.
+    fetch('/api/metadata/has-run').then(r => r.ok ? r.json() : null)
+      .then(d => { if (d) setHasRun(!!d.has_run) }).catch(() => {})
   }, [loadBundles])
 
   const hasDomainSource = !!(ontologyBundle || domainConfig)
@@ -581,6 +606,9 @@ export default function BatchJobs({ onNavigate, pipelineStats }) {
             <p className="text-sm text-slate-500 dark:text-slate-400 flex items-center gap-1.5">
               Generate <strong className="text-slate-700 dark:text-slate-200">descriptions, sensitivity, and domain</strong> for the chosen tables.
               <InfoTip text="Core metadata = table/column descriptions (comments), PII/PHI/PCI classification, and business-domain classification. Results land in Review & Apply before anything is written. Use the dropdown beside Generate to run just one type for targeted re-runs." />
+            </p>
+            <p className="text-xs text-slate-500 dark:text-slate-400">
+              Tip: start with a handful of tables to evaluate cost, performance, and quality, then scale up iteratively.
             </p>
 
             <div className="grid grid-cols-1 md:grid-cols-2 gap-4">

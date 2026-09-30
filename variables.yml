@@ -155,14 +155,29 @@ variables:
   current_user:
     description: User deploying the bundle. Can apply to service principals as well.
     default: ${workspace.current_user.userName}
+  alert_email:
+    description: >-
+      Email address that job on_failure notifications are sent to. Defaults to the
+      deploying user for backward compatibility; override to a team distribution
+      list (a real email address, NOT a Unity Catalog group name -- Databricks job
+      email notifications do not accept group names) in variable-overrides.json so
+      operational failure alerts are not tied to a named individual.
+    default: ${var.current_user}
   run_as:
     description: >-
-      Identity that jobs run as. Defaults to the deploying user. To run jobs as a
-      service principal instead, override this complex variable, e.g. in a gitignored
-      variable-overrides.json:
-        {"run_as": {"service_principal_name": "00000000-0000-0000-0000-000000000000"}}
+      Identity that jobs run as, in ALL targets (dev, demo, prod). Defaults to the
+      deploying user -- the identity that has always been the job runner -- so
+      upgrading to this version changes nothing by default.
+
+      OPT-IN (prod): to run prod jobs as the app's own service principal so
+      operational writes never depend on a named human, override this complex
+      variable in a gitignored variable-overrides.json AFTER the app + SPN exist
+      and the SPN has been granted MODIFY on the output schema:
+        {"run_as": {"service_principal_name": "<app-spn-client-id>"}}
+      The deploying identity must be able to act as that SP.
+
       Note: in development-mode targets (dev, demo), DAB requires run_as to be the
-      deploying user; SP run_as is intended for the prod target.
+      deploying user and rejects an SP, so the SP override applies to prod only.
     type: complex
     default:
       user_name: ${workspace.current_user.userName}

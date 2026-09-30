@@ -54,14 +54,14 @@ export default function AdvancedPipelinePanel({
   // targeted (e.g. incremental) re-run without touching the metric-view set.
   const seedTables = (tableNames || '').split(',').map(t => t.trim()).filter(Boolean)
   const [scope, setScope] = useState(() =>
-    seedTables.length ? { mode: 'selected', tables: seedTables } : { mode: 'all', tables: [] })
+    seedTables.length ? { mode: 'selected', tables: seedTables } : { mode: 'selected', tables: [] })
   // Track the incoming Semantic Layer selection until the user edits scope here.
   // Once they touch it (scopeDirty), stop syncing so their choice is preserved.
   const [scopeDirty, setScopeDirty] = useState(false)
   const seedKey = seedTables.join(',')
   useEffect(() => {
     if (scopeDirty) return
-    setScope(seedTables.length ? { mode: 'selected', tables: seedTables } : { mode: 'all', tables: [] })
+    setScope(seedTables.length ? { mode: 'selected', tables: seedTables } : { mode: 'selected', tables: [] })
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [seedKey, scopeDirty])
   const changeScope = (next) => { setScopeDirty(true); setScope(next) }
@@ -230,7 +230,8 @@ export default function AdvancedPipelinePanel({
       <div>
         <label className="text-xs text-slate-500 dark:text-slate-400 mb-1 block">Tables to process</label>
         {/* Panel owns seeding (effect above); picker seed disabled to avoid double-seed. */}
-        <TableScopePicker value={scope} onChange={changeScope} kbOnly seedTables={[]} />
+        <TableScopePicker value={scope} onChange={changeScope} kbOnly seedTables={[]}
+          allWarning="On a large knowledge base, running the full pipeline on all tables can be slow and costly. Start with a small selection to evaluate cost, performance, and quality, then scale up." />
       </div>
 
       {/* Incremental — the headline reason to re-run, kept visible */}

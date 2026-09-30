@@ -222,3 +222,5 @@ configurations/ontology_bundles/*/source_*.ttl
 configurations/ontology_bundles/*/source_*.owl
 configurations/ontology_bundles/*/source.ttl
 configurations/ontology_bundles/*/source.owl
+
+.isaac
