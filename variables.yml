@@ -165,15 +165,19 @@ variables:
     default: ${var.current_user}
   run_as:
     description: >-
-      Identity that jobs run as in the dev/demo targets. Defaults to the deploying
-      user. To run dev/demo jobs as a service principal instead, override this complex
-      variable, e.g. in a gitignored variable-overrides.json:
-        {"run_as": {"service_principal_name": "00000000-0000-0000-0000-000000000000"}}
+      Identity that jobs run as, in ALL targets (dev, demo, prod). Defaults to the
+      deploying user -- the identity that has always been the job runner -- so
+      upgrading to this version changes nothing by default.
+
+      OPT-IN (prod): to run prod jobs as the app's own service principal so
+      operational writes never depend on a named human, override this complex
+      variable in a gitignored variable-overrides.json AFTER the app + SPN exist
+      and the SPN has been granted MODIFY on the output schema:
+        {"run_as": {"service_principal_name": "<app-spn-client-id>"}}
+      The deploying identity must be able to act as that SP.
+
       Note: in development-mode targets (dev, demo), DAB requires run_as to be the
-      deploying user and rejects an SP here. The PROD target does NOT use this
-      variable -- it hardwires run_as to the app's own service principal
-      (${resources.apps.dbxmetagen_app.service_principal_client_id}; see
-      databricks.yml) so prod operational writes never depend on a named user.
+      deploying user and rejects an SP, so the SP override applies to prod only.
     type: complex
     default:
       user_name: ${workspace.current_user.userName}

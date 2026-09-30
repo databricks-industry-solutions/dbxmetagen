@@ -108,16 +108,20 @@ targets:
     mode: production
     workspace:
       root_path: ${var.current_working_directory}
-    # Prod jobs run as the app's OWN service principal (the same SP that
-    # grant_app_permissions.sh / Notebook 02 grant MODIFY on the output schema),
-    # NOT the deploying user -- so operational writes (e.g. build_knowledge_base
-    # -> column_knowledge_base) never depend on a named human holding MODIFY.
-    # This is the same SP already referenced in every job's permissions block.
-    # dev/demo keep ${var.run_as} because DAB development mode requires run_as to
-    # be the deploying user and rejects an SP here. The deploying identity must be
-    # able to act as this SP (it is, as the app's creator/manager).
-    run_as:
-      service_principal_name: ${resources.apps.dbxmetagen_app.service_principal_client_id}
+    # Prod jobs run as ${var.run_as}, which defaults to the deploying user -- the
+    # same identity that has always been the job runner. This keeps existing prod
+    # deployments unchanged (no sudden PERMISSION_DENIED, no behavior change on
+    # upgrade) and avoids a first-deploy chicken-and-egg where the app SPN does not
+    # exist yet.
+    #
+    # OPT-IN: to run prod jobs as the app's OWN service principal (so operational
+    # writes like build_knowledge_base -> column_knowledge_base never depend on a
+    # named human holding MODIFY), override run_as in a gitignored
+    # variable-overrides.json AFTER the app + SPN exist and the SPN has been granted
+    # MODIFY on the output schema:
+    #   {"run_as": {"service_principal_name": "<app-spn-client-id>"}}
+    # The deploying identity must be able to act as that SP. See variables.yml.
+    run_as: ${var.run_as}
     permissions:
       - user_name: ${var.current_user}
         level: CAN_MANAGE
