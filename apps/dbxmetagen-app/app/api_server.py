@@ -1431,6 +1431,19 @@ def get_run_status(run_id: int):
     }
 
 
+@app.post("/api/jobs/{run_id}/cancel")
+def cancel_run(run_id: int):
+    """Cancel an in-progress job run (#229.2). Best-effort: a run that is already
+    terminal returns ok with cancelled=False rather than erroring."""
+    ws = get_workspace_client()
+    try:
+        ws.jobs.cancel_run(run_id=run_id)
+    except Exception as e:
+        logger.warning("cancel_run(run_id=%s) failed: %s", run_id, e)
+        raise HTTPException(502, detail=f"Failed to cancel run {run_id}: {e}")
+    return {"ok": True, "run_id": run_id, "cancelled": True}
+
+
 @app.get("/api/jobs/runs")
 def list_recent_runs(limit: int = 50):
     """Return recent runs across all dbxmetagen jobs."""
