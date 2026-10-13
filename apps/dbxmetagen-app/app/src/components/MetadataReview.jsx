@@ -4,6 +4,7 @@ import { FKApplyPanel } from './ForeignKeyGeneration'
 import { CoveragePanel } from './Coverage'
 import { PageHeader, EmptyState, SkeletonTable } from './ui'
 import { useCatalogSchemaTables } from '../hooks/useCatalogSchemaTables'
+import { useViewMode } from '../hooks/useViewMode'
 
 function DataTable({ data, maxRows = 100 }) {
   if (!data || data.length === 0) return <p className="text-sm text-slate-400 py-4">No data available.</p>
@@ -134,6 +135,13 @@ function ReviewEditor() {
   const [scopeMode, setScopeMode] = useState('schema')
   const [selectedTables, setSelectedTables] = useState([])
   const [activeType, setActiveType] = useState('comments')
+  const { simplified } = useViewMode()
+  // Simplified view trims the review to the two types a steward works with and
+  // hides the advanced DDL-bundle export (ontology/FK tags live in advanced view).
+  const visibleMetaTypes = simplified ? META_TYPES.filter(t => t.key === 'comments' || t.key === 'pii') : META_TYPES
+  useEffect(() => {
+    if (simplified && !['comments', 'pii'].includes(activeType)) setActiveType('comments')
+  }, [simplified, activeType])
   const [reviewData, setReviewData] = useState([])
   const [original, setOriginal] = useState([])
   const [loading, setLoading] = useState(false)
@@ -854,7 +862,7 @@ function ReviewEditor() {
           </div>
           <div className="flex flex-wrap items-center gap-2">
             <span className="text-xs font-medium text-slate-500">Show:</span>
-            {META_TYPES.map(({ key, label }) => (
+            {visibleMetaTypes.map(({ key, label }) => (
               <span key={key} onClick={() => setActiveType(key)} className={`${chip} ${activeType === key ? chipOn : chipOff}`}>{label}</span>
             ))}
             <span className="border-l border-slate-300 h-5 mx-1" />
@@ -1907,8 +1915,8 @@ function ReviewEditor() {
         </div>
       )}
 
-      {/* DDL Bundle -- unified advanced metadata export */}
-      <div className="card p-5 space-y-3">
+      {/* DDL Bundle -- unified advanced metadata export (advanced view only) */}
+      {!simplified && <div className="card p-5 space-y-3">
         <h3 className="text-sm font-semibold text-slate-700 dark:text-slate-200">
           DDL Bundle <Tip text="Generate a unified SQL script covering comments, domain tags, sensitivity tags, ontology tags, and FK metadata. Export for use in other environments or apply directly." />
         </h3>
@@ -1979,7 +1987,7 @@ function ReviewEditor() {
             <pre className="text-xs text-slate-800 dark:text-slate-200 bg-dbx-oat dark:bg-dbx-navy-600 border border-slate-200 dark:border-dbx-navy-400/30 rounded-lg p-3 overflow-auto max-h-80 whitespace-pre-wrap">{bundleSql}</pre>
           </div>
         )}
-      </div>
+      </div>}
 
       {/* Standalone import section (always visible) */}
       {reviewData.length === 0 && (

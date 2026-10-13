@@ -871,6 +871,11 @@ def get_config():
         "obo_enabled": _OBO_ENABLED,
         "mlflow_experiment_id": _get_mlflow_experiment_id(),
         "app_display_name": os.environ.get("APP_DISPLAY_NAME", ""),
+        "default_view_mode": (
+            "simplified"
+            if os.environ.get("DEFAULT_VIEW_MODE", "advanced").strip().lower() == "simplified"
+            else "advanced"
+        ),
         "config_valid": len(_CONFIG_ERRORS) == 0,
         "config_errors": _CONFIG_ERRORS,
         "version": pkg_version,

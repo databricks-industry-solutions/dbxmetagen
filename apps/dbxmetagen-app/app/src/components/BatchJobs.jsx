@@ -3,6 +3,7 @@ import { ErrorBanner } from '../App'
 import { cachedFetchObj, TTL } from '../apiCache'
 import { PageHeader, EmptyState, Skeleton, InfoTip } from './ui'
 import { useSharedJobRunner, TERMINAL_STATES, classifyRun } from '../hooks/useJobRunner'
+import { useViewMode } from '../hooks/useViewMode'
 import RunEntry from './RunEntry'
 import TableScopePicker, { scopeToTableNames } from './TableScopePicker'
 
@@ -38,6 +39,7 @@ function HealthWarnings({ health }) {
 
 export default function BatchJobs({ onNavigate, pipelineStats }) {
   const { jobs, runHistory, runningAction, runError, runJob, jobsError, cancelRun } = useSharedJobRunner()
+  const { simplified } = useViewMode()
   const [tableNames, setTableNames] = useState('')
   // null = unknown (not yet loaded / transient error); false = never generated
   // metadata here; true = has. Drives the large-first-run nudge in runGenerate.
@@ -254,7 +256,7 @@ export default function BatchJobs({ onNavigate, pipelineStats }) {
           <p className="text-xs text-gray-400 col-span-2">Set before deployment in the project settings.</p>
         </div>
 
-        <details className="mt-4 group">
+        {!simplified && <details className="mt-4 group">
           <summary className="section-title cursor-pointer select-none flex items-center gap-1.5 py-2 border-t border-dbx-oat-dark/30 dark:border-dbx-navy-400/20 mt-3 pt-3">
             <svg className="w-3 h-3 transition-transform group-open:rotate-90" fill="none" viewBox="0 0 24 24" stroke="currentColor">
               <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M9 5l7 7-7 7" />
@@ -495,7 +497,7 @@ export default function BatchJobs({ onNavigate, pipelineStats }) {
               )}
             </div>
           </div>
-        </details>
+        </details>}
       </div>
 
       {/* Step 1: Generate Core Metadata — always visible, the primary action */}
@@ -556,7 +558,7 @@ export default function BatchJobs({ onNavigate, pipelineStats }) {
               </div>
             </div>
 
-            <details className="group mt-3">
+            {!simplified && <details className="group mt-3">
               <summary className="text-xs font-medium text-slate-500 dark:text-slate-400 cursor-pointer select-none flex items-center gap-1.5 py-2 border-t border-dbx-oat-dark/30 dark:border-dbx-navy-400/20 pt-3">
                 <svg className="w-3 h-3 transition-transform group-open:rotate-90" fill="none" viewBox="0 0 24 24" stroke="currentColor">
                   <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M9 5l7 7-7 7" />
@@ -617,12 +619,12 @@ export default function BatchJobs({ onNavigate, pipelineStats }) {
                   </label>
                 </div>
               </div>
-            </details>
+            </details>}
 
-            <p className="text-xs text-slate-500 dark:text-slate-400 mt-2 font-medium">
+            {!simplified && <p className="text-xs text-slate-500 dark:text-slate-400 mt-2 font-medium">
               Ontology: {ontologyBundle ? bundles.find(b => b.key === ontologyBundle)?.name || ontologyBundle : <em>None</em>}
               {' | '}Domains: {domainConfig ? domainConfigs.find(d => d.key === domainConfig)?.name || domainConfig : (ontologyBundle ? 'from selected ontology' : <em>none</em>)}
-            </p>
+            </p>}
             {/* Primary generate: main click runs all 3 modes (KB-enriched by
                 default); the caret dropdown picks all-3 or a single mode. */}
             <div className="flex flex-wrap items-center gap-3 mt-2">
@@ -630,18 +632,18 @@ export default function BatchJobs({ onNavigate, pipelineStats }) {
                 <button onClick={() => runGenerate('all3')}
                   disabled={!!runningAction || !tableNames.trim()}
                   title="Generate all three metadata types (descriptions, sensitivity, and domain). By default, descriptions are generated first and used to enrich sensitivity and domain classification."
-                  className="btn-primary btn-md rounded-r-none">
+                  className={`btn-primary btn-md ${simplified ? '' : 'rounded-r-none'}`}>
                   {(runningAction === 'kb_enriched' || runningAction === 'all3') ? 'Starting...' : 'Generate Metadata'}
                 </button>
-                <button onClick={() => setGenMenuOpen(o => !o)}
+                {!simplified && <button onClick={() => setGenMenuOpen(o => !o)}
                   disabled={!!runningAction || !tableNames.trim()}
                   aria-label="Choose what to generate"
                   className="btn-primary btn-md rounded-l-none border-l border-white/25 px-2">
                   <svg className={`w-4 h-4 transition-transform ${genMenuOpen ? 'rotate-180' : ''}`} fill="none" viewBox="0 0 24 24" stroke="currentColor">
                     <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M19 9l-7 7-7-7" />
                   </svg>
-                </button>
-                {genMenuOpen && (
+                </button>}
+                {!simplified && genMenuOpen && (
                   <div className="absolute top-full left-0 mt-1 w-64 z-20 card p-1.5 shadow-elevated animate-slide-up">
                     <p className="text-[10px] font-semibold uppercase tracking-wider text-slate-400 px-2 py-1">Run</p>
                     <button onClick={() => runGenerate('all3')} disabled={!!runningAction || !tableNames.trim()}
@@ -671,7 +673,7 @@ export default function BatchJobs({ onNavigate, pipelineStats }) {
               </span>
             </div>
 
-            <details className="group mt-1">
+            {!simplified && <details className="group mt-1">
               <summary className="text-xs text-slate-500 dark:text-slate-400 cursor-pointer select-none inline-flex items-center gap-1.5">
                 <svg className="w-3 h-3 transition-transform group-open:rotate-90" fill="none" viewBox="0 0 24 24" stroke="currentColor">
                   <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M9 5l7 7-7 7" />
@@ -688,7 +690,7 @@ export default function BatchJobs({ onNavigate, pipelineStats }) {
                   <InfoTip text="Descriptions are generated first, then a knowledge-base build runs, then sensitivity + domain classification are enriched with those descriptions — so they benefit from the new comments even before DDL is applied." />
                 </p>
               </div>
-            </details>
+            </details>}
 
             <div className="border-t border-slate-200/80 dark:border-dbx-navy-400/20 pt-4 mt-2">
               <button onClick={() => onNavigate?.('context')} className="btn-ghost btn-sm text-slate-600 dark:text-slate-300">
