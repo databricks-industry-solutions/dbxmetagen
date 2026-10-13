@@ -12757,6 +12757,152 @@ def genie_table_columns(table_identifier: str):
 
 
 # ---------------------------------------------------------------------------
+# Current Unity Catalog state read (C1 — enables review comparison + apply
+# conflict handling). Reads the LIVE comment, tags, and certification status for
+# a batch of tables and their columns, straight from system.information_schema.
+# This is the "current value" the review grid compares against and the apply
+# path consults before overwriting. Deliberately read-only.
+# ---------------------------------------------------------------------------
+
+# The governed tag that marks an object certified/deprecated. In the tag views a
+# governed tag surfaces under its short name; match it loosely so a fully-qualified
+# form (e.g. `system.certification_status`) still resolves.
+_CERT_TAG_NAME = "certification_status"
+
+
+def _is_cert_tag(tag_name: Optional[str]) -> bool:
+    t = (tag_name or "").lower()
+    return t == _CERT_TAG_NAME or t.endswith("." + _CERT_TAG_NAME)
+
+
+def _cert_from_tags(tags: dict) -> bool:
+    """True only when a certification tag is positively 'certified'. Absent/unknown
+    -> False (so the apply gate degrades to allow, never a false block)."""
+    for k, v in (tags or {}).items():
+        if _is_cert_tag(k) and str(v or "").strip().lower() == "certified":
+            return True
+    return False
+
+
+def _read_uc_current(tables: list[str]) -> dict:
+    """Read live UC comment/tags/certification for a batch of fully-qualified tables.
+
+    Returns {table_fqn: {comment, tags, certified, exists, columns: {col: {data_type,
+    comment, tags, certified}}}}. Each information_schema read is isolated in its own
+    try/except: a missing view or absent privilege (e.g. a federated catalog with no
+    tag views) degrades to empty tags / uncertified rather than failing the batch.
+    """
+    # Group by (catalog, schema) so each read is one batched IN-list, not one per table.
+    groups: dict[tuple, list[str]] = {}
+    out: dict[str, dict] = {}
+    for ident in tables:
+        parts = (ident or "").split(".")
+        if len(parts) != 3:
+            raise HTTPException(400, detail=f"table identifier must be catalog.schema.table: {ident!r}")
+        for p in parts:
+            _validate_filter(p, "identifier_part")
+        cat, sch, tbl = parts
+        groups.setdefault((cat, sch), []).append(tbl)
+        out[ident] = {"comment": None, "tags": {}, "certified": False, "exists": False, "columns": {}}
+
+    for (cat, sch), tbls in groups.items():
+        in_list = ", ".join(_safe_sql_str(t) for t in tbls)
+        cat_lit = _safe_sql_str(cat)
+        sch_lit = _safe_sql_str(sch)
+
+        def key(tbl: str, col: Optional[str] = None) -> str:
+            return f"{cat}.{sch}.{tbl}" + (f".{col}" if col else "")
+
+        # Table comments + existence.
+        try:
+            for r in execute_sql(
+                f"SELECT table_name, comment FROM system.information_schema.tables "
+                f"WHERE table_catalog = {cat_lit} AND table_schema = {sch_lit} "
+                f"AND table_name IN ({in_list})"
+            ) or []:
+                ent = out.get(key(r.get("table_name")))
+                if ent is not None:
+                    ent["exists"] = True
+                    ent["comment"] = r.get("comment")
+        except Exception as e:
+            logger.debug("uc-current: table comment read skipped for %s.%s: %s", cat, sch, e)
+
+        # Column comments + types.
+        try:
+            for r in execute_sql(
+                f"SELECT table_name, column_name, data_type, comment "
+                f"FROM system.information_schema.columns "
+                f"WHERE table_catalog = {cat_lit} AND table_schema = {sch_lit} "
+                f"AND table_name IN ({in_list})"
+            ) or []:
+                ent = out.get(key(r.get("table_name")))
+                if ent is not None:
+                    ent["columns"][r.get("column_name")] = {
+                        "data_type": r.get("data_type"),
+                        "comment": r.get("comment"),
+                        "tags": {},
+                        "certified": False,
+                    }
+        except Exception as e:
+            logger.debug("uc-current: column read skipped for %s.%s: %s", cat, sch, e)
+
+        # Table tags (note: tag views use catalog_name/schema_name, not table_catalog).
+        try:
+            for r in execute_sql(
+                f"SELECT table_name, tag_name, tag_value "
+                f"FROM system.information_schema.table_tags "
+                f"WHERE catalog_name = {cat_lit} AND schema_name = {sch_lit} "
+                f"AND table_name IN ({in_list})"
+            ) or []:
+                ent = out.get(key(r.get("table_name")))
+                if ent is not None:
+                    ent["tags"][r.get("tag_name")] = r.get("tag_value")
+        except Exception as e:
+            logger.debug("uc-current: table tag read skipped for %s.%s: %s", cat, sch, e)
+
+        # Column tags.
+        try:
+            for r in execute_sql(
+                f"SELECT table_name, column_name, tag_name, tag_value "
+                f"FROM system.information_schema.column_tags "
+                f"WHERE catalog_name = {cat_lit} AND schema_name = {sch_lit} "
+                f"AND table_name IN ({in_list})"
+            ) or []:
+                ent = out.get(key(r.get("table_name")))
+                if ent is None:
+                    continue
+                col = ent["columns"].setdefault(
+                    r.get("column_name"), {"data_type": None, "comment": None, "tags": {}, "certified": False}
+                )
+                col["tags"][r.get("tag_name")] = r.get("tag_value")
+        except Exception as e:
+            logger.debug("uc-current: column tag read skipped for %s.%s: %s", cat, sch, e)
+
+    # Derive the certified flag from whatever tags we managed to read.
+    for ent in out.values():
+        ent["certified"] = _cert_from_tags(ent["tags"])
+        for col in ent["columns"].values():
+            col["certified"] = _cert_from_tags(col["tags"])
+
+    return out
+
+
+class UcCurrentBody(BaseModel):
+    tables: list[str] = []
+
+
+@app.post("/api/metadata/uc-current")
+def metadata_uc_current(body: UcCurrentBody):
+    """Live UC comment/tags/certification for a batch of tables + their columns.
+
+    Backs the review-step comparison toggle (#248) and the apply conflict/certified
+    gate (#247/#221). Read-only; degrades gracefully when tag views are unavailable."""
+    if not body.tables:
+        return {"objects": {}}
+    return {"objects": _read_uc_current(body.tables)}
+
+
+# ---------------------------------------------------------------------------
 # Genie Space editor: validation, health check, analysis, versions, live sync
 # ---------------------------------------------------------------------------
 
