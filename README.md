@@ -770,19 +770,22 @@ in-workspace build requirements.
 
 ### Applying DDL fails with `PARSE_SYNTAX_ERROR` on every comment
 
-Generated DDL wraps comment text in double quotes (`COMMENT ON TABLE ... IS "Order history"`). On a
-classic cluster with `spark.sql.ansi.doubleQuotedIdentifiers=true`, Spark reads `"..."` as an
-identifier instead of a string, so every comment statement fails:
+Generated DDL wraps comment text in double quotes (`COMMENT ON TABLE ... IS "Order history"`). When
+double-quoted identifiers are enabled, Databricks reads `"..."` as an identifier instead of a string,
+so every comment statement fails:
 
 ```
 [PARSE_SYNTAX_ERROR] Syntax error at or near '"Order history"'. SQLSTATE: 42601
 ```
 
-Serverless compute and SQL warehouses don't allow this setting, so only classic clusters are affected.
+On SQL warehouses this is a workspace- or warehouse-level setting that Databricks enables on request,
+so it usually shows up only in the app's **Review → Apply** step (which runs on the warehouse) while
+jobs on clusters succeed. On classic clusters it comes from
+`spark.sql.ansi.doubleQuotedIdentifiers=true` in the Spark config or cluster policy.
 
-**Fix:** remove `spark.sql.ansi.doubleQuotedIdentifiers` from the job cluster's Spark config or
-cluster policy. Alternatively, run the metadata jobs on serverless, or leave `apply_ddl=false` and
-apply from the app (**Review → Apply**), which uses a SQL warehouse.
+**Fix:** apply the comments from the metadata job with `apply_ddl=true` on a cluster that doesn't have
+the setting. Alternatively, ask your account team whether it can be turned off for the warehouse the
+app uses, or remove it from the cluster's Spark config.
 
 ### FMAPI calls fail with `429` / `REQUEST_LIMIT_EXCEEDED`
 
@@ -790,9 +793,10 @@ The model serving endpoint is rate-limiting you. dbxmetagen retries with backoff
 absorbs short bursts; under sustained throttling, tables are marked failed while the rest of the
 run continues. See [Foundation Model API limits](https://docs.databricks.com/aws/en/machine-learning/foundation-model-apis/limits).
 
-**Fix:** avoid running several jobs against the same endpoint at once, narrow the table scope, and
-lower `max_tokens` (default `8192`), since output-token capacity is reserved per request even when
-responses are short. Alternatively, point `model` at a provisioned throughput endpoint.
+**Fix:** ask your account team to raise the rate limits for the endpoint you're using. Until then,
+run fewer jobs against the same endpoint at once, narrow the table scope, or lower `max_tokens`
+(default `8192`), since each in-flight request reserves its full `max_tokens` until it finishes.
+Alternatively, point `model` at a provisioned throughput endpoint.
 
 ### Known Limitations
 
