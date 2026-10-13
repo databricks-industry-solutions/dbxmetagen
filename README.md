@@ -768,6 +768,82 @@ and Python 3.11+. If either is missing, the UI deploy can fail or ship a stale w
 prefer the CLI deploy, or see [docs/MANUAL_DEPLOYMENT.md](docs/MANUAL_DEPLOYMENT.md) for the
 in-workspace build requirements.
 
+### Applying DDL fails with `PARSE_SYNTAX_ERROR` on every comment (classic clusters)
+
+Generated comment DDL wraps the comment text in **double quotes**, e.g.
+`COMMENT ON TABLE main.sales.orders IS "Order history";` (any `"` inside the text is converted to
+`'` first, so apostrophes survive). Databricks normally parses `"..."` as a string literal, so this
+works. On a **classic cluster** with `spark.sql.ansi.doubleQuotedIdentifiers=true`, double quotes
+mean an *identifier* instead, and every `COMMENT ON TABLE`, `COMMENT ON COLUMN`, and
+`ALTER COLUMN ... COMMENT` statement fails:
+
+```
+[PARSE_SYNTAX_ERROR] Syntax error at or near '"Order history"'. SQLSTATE: 42601
+```
+
+Verified on DBR 17.3 LTS:
+
+| Compute | Generated DDL | Can enable the setting? |
+| --- | --- | --- |
+| Classic cluster, default settings | ✅ applies | — |
+| Classic cluster, `spark.sql.ansi.doubleQuotedIdentifiers=true` | ❌ `PARSE_SYNTAX_ERROR` | Yes |
+| Serverless jobs/notebooks | ✅ applies | No — `SET` returns `CONFIG_NOT_AVAILABLE` |
+| SQL warehouse (app **Review → Apply**) | ✅ applies | No — `SET` returns `CONFIG_NOT_AVAILABLE` |
+
+`ANSI_MODE = TRUE` on its own (the warehouse default) does not cause this. The spelling
+`spark.sql.doubleQuotedIdentifiers` (without `.ansi.`), which some Databricks KB articles use, is
+accepted on classic clusters but has no effect.
+
+**Where to look:** Spark config on the job cluster that runs metadata generation with
+`apply_ddl=true` (the DDL is applied via `spark.sql()`), cluster policies, init scripts, or a
+`spark.conf.set(...)` in a shared notebook.
+
+**Fix (any one of these):**
+
+- Remove `spark.sql.ansi.doubleQuotedIdentifiers` from that cluster or policy.
+- Run the metadata jobs on serverless.
+- Leave `apply_ddl=false` and apply from the app (**Review → Apply**), which runs on a SQL warehouse.
+- Apply the exported SQL yourself after changing the outer `"..."` around each comment to `'...'`,
+  escaping any apostrophes in the text as `\'`. Single-quoted comments work with the setting on or off.
+
+### FMAPI calls fail with `429` / `REQUEST_LIMIT_EXCEEDED`
+
+A `429` means the model serving endpoint is throttling you. Pay-per-token Foundation Model API
+endpoints enforce **input tokens per minute, output tokens per minute, and request rate**
+limits per workspace and model, and whichever you hit first wins — the error text says which. See
+[Foundation Model API limits](https://docs.databricks.com/aws/en/machine-learning/foundation-model-apis/limits).
+
+**Symptoms:** `429` or `REQUEST_LIMIT_EXCEEDED` in job driver logs, repeated `[RETRY] Error: ...`
+warnings, and tables recorded as failed in `table_processing_log` while others in the same run
+succeed.
+
+**What dbxmetagen already does:** comment and PI calls retry up to 3 times with exponential backoff
+plus jitter (roughly 1s, 2s, 4s). That absorbs short bursts, but sustained throttling outlasts it and
+the table is marked failed. The rest of the run continues — one throttled table doesn't stop the job.
+The analytics pipeline (FK prediction, ontology, embeddings, semantic layer) calls models through
+SQL `AI_QUERY`, which runs in parallel across the cluster and can push an endpoint harder than
+metadata generation does.
+
+**Reduce the load (cheapest first):**
+
+1. **Don't stack runs on one endpoint.** Everything shares the endpoint's limit: concurrent jobs, app
+   sessions, the parallel-modes job (which runs PI and domain at the same time after comments), and
+   other teams' traffic. Run the sequential `metagen` job, or stagger runs.
+2. **Shrink the scope.** Pilot on ~10 tables first, then scale up. Wildcards (`schema.*`) can expand
+   to far more tables than you expect.
+3. **Lower `max_tokens`** (default `8192`). Output-token capacity is reserved per request up front,
+   so a large `max_tokens` can trip the output-tokens-per-minute limit even when responses are short.
+   Lower it gradually; if it's too low, responses get truncated.
+4. **Raise `columns_per_call`** (default `10`). Fewer, larger calls on wide tables, at some cost to
+   per-column alignment. Lowering `sample_size` also cuts input tokens.
+
+**Add capacity:** point `model` at a **provisioned throughput** endpoint for sustained or large-catalog
+runs, or ask your account team about raising pay-per-token limits.
+
+**Recover:** re-run with `table_names` narrowed to just the failed tables. Metadata generation
+re-processes every table in scope, so re-running the original scope pays for the successful tables
+again.
+
 ### Known Limitations
 
 - **`sample_size=0` degrades PI and domain quality.** With no row sampling, PI detection and domain
