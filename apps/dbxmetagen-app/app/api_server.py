@@ -16391,30 +16391,170 @@ def delete_customer_context(context_id: str):
     return {"deleted": True, "context_id": context_id}
 
 
-@app.post("/api/customer-context/upload")
-def upload_customer_context_yaml(file: UploadFile):
-    """Upload a YAML file and insert/update all context entries."""
-    _ensure_customer_context_table()
-    import yaml as _yaml
-    content = file.file.read().decode("utf-8")
-    try:
-        data = _yaml.safe_load(content)
-    except Exception as exc:
-        raise HTTPException(400, detail=f"Invalid YAML: {exc}")
-    if not data or "contexts" not in data:
-        raise HTTPException(400, detail="YAML must contain a 'contexts' list")
+# ---- Customer-context upload: two-lane ingest (#249) ------------------------
+# Structured lane (.yaml/.yml/.json): a `contexts` list parsed deterministically into
+#   entries -- NO LLM (running already-structured data through an LLM only risks corrupting
+#   clean fields). The existing YAML upload IS this lane; JSON is the same shape.
+# Document lane (.txt/.md/.pdf/.docx): a free-text spec attached to a caller-supplied scope.
+#   Binary docs are parsed server-side via ai_parse_document (no pdf/docx Python dependency);
+#   text files are decoded directly (ai_parse_document is for binary containers, not text).
+#   Long text is distilled with ai_extract. BOTH AI calls degrade gracefully: text always
+#   works (falls back to raw text, caller truncates); binary without ai_parse_document returns
+#   a clear 422 telling the user to enable it or upload text -- never a silent failure.
+_CC_TEXT_EXTS = {"txt", "md", "markdown"}
+_CC_BINARY_EXTS = {"pdf", "docx", "pptx"}
+_CC_SAFE_FILE_RE = re.compile(r"[^A-Za-z0-9._-]+")
 
+
+def _cc_ingest_entries(entries):
+    """Upsert a list of structured context entries (shared by the YAML + JSON lanes)."""
+    if not isinstance(entries, list):
+        raise HTTPException(400, detail="Expected a 'contexts' list of entries")
     results = []
-    for entry in data["contexts"]:
+    for entry in entries:
         try:
             req = CustomerContextRequest(**entry)
-            result = upsert_customer_context(req)
-            results.append(result)
+            results.append(upsert_customer_context(req))
         except HTTPException as exc:
-            results.append({"error": exc.detail, "scope": entry.get("scope", "?")})
+            results.append({"error": exc.detail, "scope": (entry or {}).get("scope", "?") if isinstance(entry, dict) else "?"})
         except Exception as exc:
-            results.append({"error": str(exc), "scope": entry.get("scope", "?")})
-    return {"uploaded": len(results), "results": results}
+            results.append({"error": str(exc), "scope": (entry or {}).get("scope", "?") if isinstance(entry, dict) else "?"})
+    return results
+
+
+def _cc_truncate_words(text, limit):
+    words = (text or "").split()
+    if len(words) <= limit:
+        return text, False
+    return " ".join(words[:limit]), True
+
+
+def _cc_parse_binary_to_text(raw, ext, filename):
+    """Stage an uploaded binary doc to a Volume and parse it to text via ai_parse_document.
+    Raises HTTPException(422) when the function is unavailable so the caller can tell the
+    user to enable it (Pro/Serverless warehouse, supported region) or upload text instead."""
+    from datetime import datetime as _dt
+    ts = _dt.now().strftime("%Y%m%d_%H%M%S")
+    current_date = _dt.now().strftime("%Y%m%d")
+    volume_name = os.environ.get("VOLUME_NAME", "generated_metadata")
+    current_user = "app"
+    try:
+        current_user = ws.current_user.me().user_name.split("@")[0]
+    except Exception:
+        pass
+    safe_name = _CC_SAFE_FILE_RE.sub("_", filename or f"upload.{ext}")
+    vol_path = f"/Volumes/{CATALOG}/{SCHEMA}/{volume_name}/{current_user}/customer_context/{current_date}/{ts}_{safe_name}"
+    try:
+        ws.files.upload(vol_path, io.BytesIO(raw), overwrite=True)
+    except Exception as e:
+        raise HTTPException(500, detail=f"Failed to stage document to volume: {e}")
+    # read_files(binaryFile) exposes the staged file as a `content` BINARY column;
+    # ai_parse_document returns a VARIANT -- CAST to STRING (JSON) so ai_extract can read it
+    # without us depending on the exact parsed schema. vol_path is server-constructed from
+    # trusted env/user + a sanitized filename, so interpolation here is safe.
+    sql = (
+        f"SELECT CAST(ai_parse_document(content) AS STRING) AS parsed "
+        f"FROM read_files('{vol_path}', format => 'binaryFile')"
+    )
+    try:
+        rows = execute_sql(sql, timeout=180)
+    except Exception as e:
+        raise HTTPException(
+            422,
+            detail=(f"Could not parse this {ext.upper()} server-side -- ai_parse_document is "
+                    f"unavailable on this SQL warehouse (needs a Pro/Serverless warehouse in a "
+                    f"supported region). Upload .txt/.md/.yaml/.json or paste the text instead."),
+        )
+    return (rows[0].get("parsed") if rows else "") or ""
+
+
+def _cc_distill_text(text):
+    """Best-effort AI distillation of long document text into a concise business-context
+    summary (+ detected data objects) via ai_extract. Short text is kept verbatim (no LLM).
+    Falls back to the raw text (caller enforces the word cap) if ai_extract is unavailable.
+    Returns (context_text, key_objects, method)."""
+    text = (text or "").strip()
+    if not text:
+        return "", "", "empty"
+    if len(text.split()) <= _CC_MAX_WORDS:
+        return text, "", "verbatim"
+    # One ai_extract call via a CTE; fields come back as scalar columns (CAST for safety).
+    sql = (
+        "WITH e AS (SELECT ai_extract(:content, array('business_context','key_data_objects')) AS r) "
+        "SELECT CAST(r.business_context AS STRING) AS business_context, "
+        "CAST(r.key_data_objects AS STRING) AS key_data_objects FROM e"
+    )
+    try:
+        rows = execute_sql(
+            sql, timeout=180,
+            parameters=[StatementParameterListItem(name="content", value=text[:200000])],
+        )
+        if rows and (rows[0].get("business_context") or "").strip():
+            return (rows[0]["business_context"].strip(),
+                    (rows[0].get("key_data_objects") or "").strip(), "ai_extract")
+    except Exception:
+        pass
+    return text, "", "truncated"
+
+
+@app.post("/api/customer-context/upload")
+def upload_customer_context(file: UploadFile = File(...),
+                            scope: str = Form(None),
+                            scope_type: str = Form(None)):
+    """Ingest customer context from a file (#249). Structured .yaml/.yml/.json is parsed
+    into entries deterministically; a .txt/.md/.pdf/.docx document is attached to the
+    supplied scope (long docs distilled via ai_extract; binary via ai_parse_document)."""
+    _ensure_customer_context_table()
+    filename = file.filename or ""
+    ext = filename.rsplit(".", 1)[-1].lower() if "." in filename else ""
+    raw = file.file.read()
+
+    # ---- Structured lane (deterministic, no LLM) ----
+    if ext in ("yaml", "yml"):
+        import yaml as _yaml
+        try:
+            data = _yaml.safe_load(raw.decode("utf-8"))
+        except Exception as exc:
+            raise HTTPException(400, detail=f"Invalid YAML: {exc}")
+        if not data or "contexts" not in data:
+            raise HTTPException(400, detail="YAML must contain a 'contexts' list")
+        results = _cc_ingest_entries(data["contexts"])
+        return {"uploaded": len(results), "results": results, "lane": "structured"}
+    if ext == "json":
+        import json as _json
+        try:
+            data = _json.loads(raw.decode("utf-8"))
+        except Exception as exc:
+            raise HTTPException(400, detail=f"Invalid JSON: {exc}")
+        entries = data.get("contexts") if isinstance(data, dict) else data
+        if entries is None:
+            raise HTTPException(400, detail="JSON must be a list of entries or an object with a 'contexts' list")
+        results = _cc_ingest_entries(entries)
+        return {"uploaded": len(results), "results": results, "lane": "structured"}
+
+    # ---- Document lane (free text attached to a scope) ----
+    if ext in _CC_TEXT_EXTS or ext in _CC_BINARY_EXTS:
+        if not (scope and scope.strip()) or not scope_type:
+            raise HTTPException(400, detail="A document upload needs a target 'scope' and 'scope_type'")
+        if scope_type not in _CC_VALID_TYPES:
+            raise HTTPException(400, detail=f"scope_type must be one of {_CC_VALID_TYPES}")
+        if ext in _CC_BINARY_EXTS:
+            text = _cc_parse_binary_to_text(raw, ext, filename)
+        else:
+            text = raw.decode("utf-8", errors="replace")
+        context_text, key_objects, method = _cc_distill_text(text)
+        context_text, truncated = _cc_truncate_words(context_text, _CC_MAX_WORDS)
+        if not context_text.strip():
+            raise HTTPException(400, detail="No text could be extracted from the document")
+        req = CustomerContextRequest(scope=scope.strip(), scope_type=scope_type,
+                                     context_text=context_text, context_label=filename[:120])
+        result = upsert_customer_context(req)
+        result.update({"extract_method": method, "truncated": truncated})
+        if key_objects:
+            result["key_objects"] = key_objects
+        return {"uploaded": 1, "results": [result], "lane": "document"}
+
+    raise HTTPException(400, detail=f"Unsupported file type '.{ext}'. Use .yaml/.yml/.json/.txt/.md/.pdf/.docx")
 
 
 @app.get("/api/customer-context/resolve/{full_table_name:path}")

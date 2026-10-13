@@ -10,6 +10,13 @@ const MAX_WORDS = 500
 
 function wordCount(text) { return text ? text.trim().split(/\s+/).filter(Boolean).length : 0 }
 
+// Document lane (#249): these need a target scope; structured .yaml/.json carry their own.
+const DOC_EXTS = ['txt', 'md', 'markdown', 'pdf', 'docx', 'pptx']
+function isDocFile(name) {
+  const ext = (name || '').split('.').pop().toLowerCase()
+  return DOC_EXTS.includes(ext)
+}
+
 export default function CustomerContext() {
   const [entries, setEntries] = useState([])
   const [loading, setLoading] = useState(true)
@@ -20,6 +27,11 @@ export default function CustomerContext() {
   const [preview, setPreview] = useState({ table: '', result: null })
   const [showUpload, setShowUpload] = useState(false)
   const [filterType, setFilterType] = useState('')
+  const [uploadFile, setUploadFile] = useState(null)
+  const [uploadScope, setUploadScope] = useState('')
+  const [uploadScopeType, setUploadScopeType] = useState('schema')
+  const [uploading, setUploading] = useState(false)
+  const [uploadResult, setUploadResult] = useState(null)
 
   const load = useCallback(async () => {
     setLoading(true)
@@ -60,15 +72,25 @@ export default function CustomerContext() {
     setEditing(entry.context_id)
   }
 
-  const handleUpload = async (e) => {
-    const file = e.target.files[0]
-    if (!file) return
+  const docUpload = uploadFile && isDocFile(uploadFile.name)
+
+  const handleUpload = async () => {
+    if (!uploadFile || uploading) return
+    if (docUpload && !uploadScope.trim()) return
+    setUploading(true)
+    setError(null)
     const fd = new FormData()
-    fd.append('file', file)
+    fd.append('file', uploadFile)
+    if (docUpload) {
+      fd.append('scope', uploadScope.trim())
+      fd.append('scope_type', uploadScopeType)
+    }
     const { data, error: err } = await safeFetch('/api/customer-context/upload', { method: 'POST', body: fd })
-    if (err) setError(err)
-    else setError(null)
-    setShowUpload(false)
+    setUploading(false)
+    if (err) { setError(err); return }
+    setUploadResult(data)
+    setUploadFile(null)
+    setUploadScope('')
     load()
   }
 
@@ -94,7 +116,7 @@ export default function CustomerContext() {
           </p>
         </div>
         <div className="flex gap-2">
-          <button onClick={() => setShowUpload(!showUpload)} className="btn-ghost btn-sm">Upload YAML</button>
+          <button onClick={() => setShowUpload(!showUpload)} className="btn-ghost btn-sm">Upload File</button>
           <button onClick={() => { setEditing('new'); setForm({ scope: '', scope_type: 'schema', context_text: '', context_label: '', priority: 0 }) }}
             className="btn-primary btn-sm">Add Context</button>
         </div>
@@ -108,10 +130,53 @@ export default function CustomerContext() {
       )}
 
       {showUpload && (
-        <div className="card p-4">
-          <label className="text-sm font-medium text-slate-700 dark:text-slate-300">Upload YAML file</label>
-          <input type="file" accept=".yaml,.yml" onChange={handleUpload}
-            className="mt-2 block w-full text-sm text-slate-500 file:mr-4 file:py-2 file:px-4 file:rounded-lg file:border-0 file:text-sm file:font-medium file:bg-dbx-lava/10 file:text-dbx-lava hover:file:bg-dbx-lava/20" />
+        <div className="card p-4 space-y-3">
+          <div>
+            <label className="text-sm font-medium text-slate-700 dark:text-slate-300">Upload file</label>
+            <p className="text-xs text-slate-500 dark:text-slate-400 mt-0.5">
+              Structured <code>.yaml</code>/<code>.json</code> (a <code>contexts</code> list) is parsed directly into entries.
+              A document (<code>.txt</code>, <code>.md</code>, <code>.pdf</code>, <code>.docx</code>) is attached to the scope you choose below &mdash; long docs are summarized automatically, and <code>.pdf</code>/<code>.docx</code> need the AI document functions enabled on the SQL warehouse.
+            </p>
+            <input type="file" accept=".yaml,.yml,.json,.txt,.md,.pdf,.docx" onChange={e => { setUploadFile(e.target.files[0] || null); setUploadResult(null); setError(null) }}
+              className="mt-2 block w-full text-sm text-slate-500 file:mr-4 file:py-2 file:px-4 file:rounded-lg file:border-0 file:text-sm file:font-medium file:bg-dbx-lava/10 file:text-dbx-lava hover:file:bg-dbx-lava/20" />
+          </div>
+          {docUpload && (
+            <div className="grid grid-cols-2 gap-3">
+              <div>
+                <label className="block text-sm font-medium text-slate-600 dark:text-slate-300 mb-1">Scope <span className="text-red-500">*</span></label>
+                <input value={uploadScope} onChange={e => setUploadScope(e.target.value)}
+                  placeholder="e.g. my_catalog.my_schema"
+                  className="w-full px-3 py-2 rounded-lg border border-slate-300 dark:border-dbx-navy-400 bg-white dark:bg-dbx-navy-600 text-sm" />
+              </div>
+              <div>
+                <label className="block text-sm font-medium text-slate-600 dark:text-slate-300 mb-1">Scope Type</label>
+                <select value={uploadScopeType} onChange={e => setUploadScopeType(e.target.value)}
+                  className="w-full px-3 py-2 rounded-lg border border-slate-300 dark:border-dbx-navy-400 bg-white dark:bg-dbx-navy-600 text-sm">
+                  {SCOPE_TYPES.map(t => <option key={t} value={t}>{t}</option>)}
+                </select>
+              </div>
+            </div>
+          )}
+          <div className="flex items-center justify-between">
+            <span className="text-xs text-slate-400">{uploadFile ? uploadFile.name : 'No file selected'}</span>
+            <div className="flex gap-2">
+              <button onClick={() => { setShowUpload(false); setUploadFile(null); setUploadScope(''); setUploadResult(null) }} className="btn-ghost btn-sm">Cancel</button>
+              <button onClick={handleUpload} disabled={!uploadFile || uploading || (docUpload && !uploadScope.trim())}
+                className="btn-primary btn-sm disabled:opacity-50">{uploading ? 'Uploading…' : 'Upload'}</button>
+            </div>
+          </div>
+          {uploadResult && (
+            <div className="text-xs px-3 py-2 rounded-md bg-slate-50 dark:bg-dbx-navy-600 text-slate-600 dark:text-slate-300 space-y-1">
+              <div>
+                Uploaded {uploadResult.uploaded} {uploadResult.lane === 'document' ? 'document' : (uploadResult.uploaded === 1 ? 'entry' : 'entries')}.
+                {uploadResult.results?.some(r => r.extract_method === 'ai_extract') && ' Summarized with AI.'}
+                {uploadResult.results?.some(r => r.truncated) && ' Trimmed to the word limit.'}
+              </div>
+              {uploadResult.results?.filter(r => r.error).map((r, i) => (
+                <div key={i} className="text-red-500">· {r.scope}: {r.error}</div>
+              ))}
+            </div>
+          )}
         </div>
       )}
 
@@ -222,7 +287,7 @@ export default function CustomerContext() {
         <div className="text-center py-8 text-slate-400">Loading...</div>
       ) : entries.length === 0 ? (
         <div className="card p-8 text-center text-slate-400">
-          No customer context entries yet. Click "Add Context" or "Upload YAML" to get started.
+          No customer context entries yet. Click "Add Context" or "Upload File" to get started.
         </div>
       ) : (
         <div className="card overflow-hidden">
