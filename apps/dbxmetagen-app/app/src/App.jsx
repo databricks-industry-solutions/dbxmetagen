@@ -56,20 +56,22 @@ const TAB_ACCENT = {
   agent: 'border-t-dbx-teal',
 }
 
-// Primary nav mirrors the two-door landing: Home + the two outcomes.
+// Primary nav mirrors the core flow: Home + generate → review/apply, plus the
+// semantic-layer outcome. Review & Apply is primary (not buried in More) so the
+// generate → review → apply path is discoverable end-to-end.
 const PRIMARY_NAV = [
   { id: 'home',     label: 'Home' },
   { id: 'jobs',     label: 'Generate Metadata' },
+  { id: 'metadata', label: 'Review & Apply' },
   { id: 'semantic', label: 'Semantic Layer' },
 ]
 
-// Everything else — review, exploration, and the deeper build tools — lives
-// under one "More" menu so it doesn't compete with the two primary paths.
+// Everything else — exploration and the deeper build tools — lives under one
+// "More" menu so it doesn't compete with the primary paths.
 // Coverage is folded into Review & Apply (not a standalone destination).
 const MORE_NAV = {
   category: 'More',
   items: [
-    { id: 'metadata', label: 'Review & Apply', desc: 'Review, edit, and apply AI-generated metadata' },
     { id: 'agent', label: 'Explore / Agent', desc: 'Chat, graph explorer, and semantic search' },
     { id: 'genie', label: 'Build Genie Space', desc: 'Build natural-language SQL spaces' },
     { id: 'entities', label: 'Entity Browser', desc: 'Entity-first navigation with conformance view' },

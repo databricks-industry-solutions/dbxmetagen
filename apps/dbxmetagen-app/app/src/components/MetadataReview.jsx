@@ -26,6 +26,32 @@ function DataTable({ data, maxRows = 100 }) {
   )
 }
 
+// Read-only "current value in Unity Catalog" shown beneath a generated comment
+// when the comparison toggle is on (#248/#222). Surfaces whether applying would
+// change the live value, and flags a certified object the apply path will protect.
+function UcCompare({ current, proposed, certified }) {
+  const cur = (current ?? '').trim()
+  const prop = (proposed ?? '').trim()
+  if (!cur && !certified) {
+    return <p className="mt-1 text-[10px] text-slate-400 dark:text-slate-500">No current value in UC</p>
+  }
+  const same = cur === prop
+  return (
+    <div className="mt-1 text-[10px] leading-snug">
+      <div className="flex items-center gap-1.5 flex-wrap">
+        <span className="font-semibold text-slate-500 dark:text-slate-400 uppercase tracking-wide">Current (UC)</span>
+        {certified && <span className="px-1 py-0 rounded bg-emerald-100 text-emerald-700 dark:bg-emerald-900/40 dark:text-emerald-300 font-medium">certified</span>}
+        {cur && (same
+          ? <span className="px-1 py-0 rounded bg-slate-100 text-slate-500 dark:bg-dbx-navy-500 dark:text-slate-400">unchanged</span>
+          : <span className="px-1 py-0 rounded bg-amber-100 text-amber-700 dark:bg-amber-900/40 dark:text-amber-300">will change</span>)}
+      </div>
+      {cur
+        ? <p className="text-slate-500 dark:text-slate-400 whitespace-pre-wrap break-words">{cur}</p>
+        : <p className="text-slate-400 dark:text-slate-500 italic">(no comment set)</p>}
+    </div>
+  )
+}
+
 // Compact evidence cell for an FK prediction row: the data probes behind the
 // score (referential integrity · actual join hit rate · parent-key uniqueness),
 // each colored by strength so a reviewer can verify rather than trust the number.
@@ -140,6 +166,17 @@ function ReviewEditor() {
   const [ddlSql, setDdlSql] = useState('')
   const [ddlLoading, setDdlLoading] = useState(false)
   const [ddlApplyResult, setDdlApplyResult] = useState(null)
+  // Comparison toggle (#248): off by default to keep the grid uncluttered and add
+  // zero fetch cost; persisted per-browser. When on, we fetch live UC values and
+  // render them beneath each generated comment.
+  const [compareUc, setCompareUc] = useState(() => { try { return localStorage.getItem('mr_compareUc') === '1' } catch { return false } })
+  const [ucCurrent, setUcCurrent] = useState({})
+  const [ucLoading, setUcLoading] = useState(false)
+  // Apply-time conflict policy (#247/#221). These drive the apply-ddl query params;
+  // they do NOT gate the comparison fetch above — the apply path always protects
+  // certified/existing values regardless of the display toggle.
+  const [skipExisting, setSkipExisting] = useState(false)   // -> conflict_mode
+  const [allowCertified, setAllowCertified] = useState(false)  // -> certified_policy
   const [exportLoading, setExportLoading] = useState(false)
   const [exportResult, setExportResult] = useState(null)
   const [entityTypeOptions, setEntityTypeOptions] = useState([])
@@ -348,6 +385,29 @@ function ReviewEditor() {
     setLoading(false)
   }
 
+  // Fetch live UC comments/certification for the loaded tables (comparison toggle).
+  const loadUcCurrent = useCallback(async (names) => {
+    if (!names || names.length === 0) { setUcCurrent({}); return }
+    setUcLoading(true)
+    try {
+      const res = await fetch('/api/metadata/uc-current', {
+        method: 'POST', headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ tables: names }),
+      })
+      const j = await res.json().catch(() => ({}))
+      setUcCurrent(res.ok ? (j.objects || {}) : {})
+    } catch { setUcCurrent({}) }
+    finally { setUcLoading(false) }
+  }, [])
+
+  // Persist the toggle and (re)load current values when it's on or the data changes.
+  useEffect(() => {
+    try { localStorage.setItem('mr_compareUc', compareUc ? '1' : '0') } catch {}
+    if (compareUc) loadUcCurrent(reviewData.map(t => t.table_name))
+    else setUcCurrent({})
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [compareUc, reviewData])
+
   const onTableChange = (tblIdx, field, value) => {
     setReviewData(prev => prev.map((t, i) => i === tblIdx ? { ...t, [field]: value } : t))
   }
@@ -453,15 +513,28 @@ function ReviewEditor() {
     finally { setDdlLoading(false) }
   }
   const applyDdl = async () => {
-    if (!confirm('Apply DDL changes to your catalog? This modifies table/column metadata.')) return
+    const msg = allowCertified
+      ? 'Apply DDL — including OVERWRITING certified objects? This modifies table/column metadata and can replace human-certified values.'
+      : 'Apply DDL changes to your catalog? This modifies table/column metadata.'
+    if (!confirm(msg)) return
     setDdlLoading(true); setDdlApplyResult(null); setDdlError(null)
     try {
-      const res = await fetch('/api/metadata/apply-ddl', { method: 'POST', headers: { 'Content-Type': 'application/json' },
+      const qs = new URLSearchParams({
+        conflict_mode: skipExisting ? 'skip_existing' : 'overwrite',
+        certified_policy: allowCertified ? 'allow' : 'block',
+      }).toString()
+      const res = await fetch(`/api/metadata/apply-ddl?${qs}`, { method: 'POST', headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify(ddlPayload()) })
       const j = await res.json().catch(() => ({}))
       if (!res.ok) { setDdlApplyResult({ ok: false, detail: errMsg(j.detail || `Request failed (${res.status})`) }); return }
       const hasErrors = j.errors && j.errors.length > 0
-      setDdlApplyResult(hasErrors ? { ok: false, applied: j.applied || 0, errors: j.errors } : { ok: true, applied: j.applied })
+      setDdlApplyResult({
+        ok: !hasErrors, applied: j.applied || 0,
+        errors: hasErrors ? j.errors : null,
+        skipped: j.skipped || null, blocked: j.blocked || null,
+      })
+      // Keep the comparison view honest after a write.
+      if (compareUc) loadUcCurrent(reviewData.map(t => t.table_name))
     } catch (e) { setDdlApplyResult({ ok: false, detail: e.message || 'Network error' }) }
     finally { setDdlLoading(false) }
   }
@@ -944,6 +1017,13 @@ function ReviewEditor() {
           }} className="text-xs text-blue-600 dark:text-blue-400 hover:underline">
             {visibleReview.every(t => expanded[t.table_name]) ? 'Collapse All' : 'Expand All'}
           </button>
+          {show('comments') && (
+            <label className="flex items-center gap-1.5 text-xs text-slate-500 dark:text-slate-400 cursor-pointer select-none"
+              title="Show the current Unity Catalog comment beneath each generated one, with a diff and certified flag. Off by default; adds a read against UC.">
+              <input type="checkbox" checked={compareUc} onChange={e => setCompareUc(e.target.checked)} className="rounded" />
+              Compare to current UC{ucLoading ? ' …' : ''}
+            </label>
+          )}
           {(resultFilter || resultSchemaFilter) && (
             <button onClick={() => { setResultFilter(''); setResultSchemaFilter('') }}
               className="text-xs text-blue-600 dark:text-blue-400 hover:underline">Clear filters</button>
@@ -1033,6 +1113,8 @@ function ReviewEditor() {
                         <label className="block text-xs font-medium text-slate-500 mb-1">Table Comment</label>
                         <textarea value={tbl.comment ?? ''} onChange={e => onTableChange(tblIdx, 'comment', e.target.value)} rows={2}
                           className={inp + ' resize-y'} />
+                        {compareUc && <UcCompare current={ucCurrent[tbl.table_name]?.comment}
+                          proposed={tbl.comment} certified={ucCurrent[tbl.table_name]?.certified} />}
                       </div>
                     )}
                     {show('domain') && (
@@ -1092,7 +1174,9 @@ function ReviewEditor() {
                             <tr key={col.column_id || ci} className={`border-b border-slate-100 dark:border-dbx-navy-400/20 ${isColDirty(tblIdx, ci) ? 'bg-amber-50 dark:bg-amber-900/20' : ''} hover:bg-orange-50/30 dark:hover:bg-dbx-navy-500/30`}>
                               <td className="px-3 py-1.5 text-slate-600 dark:text-slate-300 font-mono text-xs truncate">{col.column_name}</td>
                               <td className="px-3 py-1.5 text-slate-400 dark:text-slate-500 text-xs truncate">{col.data_type}</td>
-                              {show('comments') && <td className="px-2 py-1"><textarea value={col.comment ?? ''} onChange={e => onColChange(tblIdx, ci, 'comment', e.target.value)} rows={2} className={inp + ' resize-y whitespace-pre-wrap break-words'} /></td>}
+                              {show('comments') && <td className="px-2 py-1"><textarea value={col.comment ?? ''} onChange={e => onColChange(tblIdx, ci, 'comment', e.target.value)} rows={2} className={inp + ' resize-y whitespace-pre-wrap break-words'} />
+                                {compareUc && <UcCompare current={ucCurrent[tbl.table_name]?.columns?.[col.column_name]?.comment}
+                                  proposed={col.comment} certified={ucCurrent[tbl.table_name]?.columns?.[col.column_name]?.certified} />}</td>}
                               {show('pii') && <td className="px-2 py-1">
                                 <div className="flex items-center gap-1.5">
                                   <input value={col.classification ?? ''} onChange={e => onColChange(tblIdx, ci, 'classification', e.target.value)} className={inp} placeholder="Unclassified" />
@@ -1759,6 +1843,16 @@ function ReviewEditor() {
             )}
             <button onClick={generateDdl} disabled={ddlLoading} className="px-4 py-1.5 bg-dbx-oat dark:bg-dbx-navy-500 text-slate-700 dark:text-slate-200 rounded-lg text-sm font-medium hover:bg-dbx-oat-dark dark:hover:bg-dbx-navy-400 disabled:opacity-50">Generate DDL</button>
             <button onClick={applyDdl} disabled={ddlLoading} className="px-4 py-1.5 bg-dbx-lava text-white rounded-lg text-sm font-medium hover:bg-red-700 disabled:opacity-50">Generate &amp; Apply DDL</button>
+            <label className="flex items-center gap-1.5 text-xs text-slate-500 dark:text-slate-400 cursor-pointer select-none"
+              title="Skip objects that already have a comment in Unity Catalog, preserving the existing one instead of overwriting it.">
+              <input type="checkbox" checked={skipExisting} onChange={e => setSkipExisting(e.target.checked)} className="rounded" />
+              Keep existing comments
+            </label>
+            <label className="flex items-center gap-1.5 text-xs text-slate-500 dark:text-slate-400 cursor-pointer select-none"
+              title="By default, objects certified in Unity Catalog are protected from overwrite. Check to allow overwriting certified objects.">
+              <input type="checkbox" checked={allowCertified} onChange={e => setAllowCertified(e.target.checked)} className="rounded" />
+              Allow overwriting certified
+            </label>
             <span className="text-[10px] text-slate-400 dark:text-slate-500" title="Apply DDL will execute ALTER TABLE / COMMENT ON statements against your Unity Catalog tables">Apply writes comments and tags to your tables</span>
             <span className="border-l border-slate-300 dark:border-dbx-navy-400/40 h-6" />
             <button onClick={() => exportVolume('tsv')} disabled={exportLoading} className="px-4 py-1.5 bg-dbx-oat dark:bg-dbx-navy-500 text-slate-700 dark:text-slate-200 rounded-lg text-sm font-medium hover:bg-dbx-oat-dark dark:hover:bg-dbx-navy-400 disabled:opacity-50">Export TSV</button>
@@ -1771,22 +1865,32 @@ function ReviewEditor() {
             </label>
           </div>
           {ddlError && <p className="text-sm text-red-600">{ddlError}</p>}
-          {ddlApplyResult && (ddlApplyResult.ok
-            ? <p className="text-sm text-green-600">Applied {ddlApplyResult.applied} statement(s).</p>
-            : ddlApplyResult.detail
-              ? <p className="text-sm text-red-600">{ddlApplyResult.detail}</p>
-              : <div className="space-y-2">
-                  <p className="text-sm text-amber-700">Applied {ddlApplyResult.applied} of {ddlApplyResult.applied + (ddlApplyResult.errors?.length || 0)} statement(s).</p>
-                  {ddlApplyResult.errors?.map((e, i) => (
-                    <div key={i} className="text-xs bg-red-50 border border-red-200 rounded p-2">
-                      <p className="text-red-700 font-mono truncate">{e.statement}</p>
-                      <p className="text-red-600 mt-1">{e.error}</p>
-                      {e.governed_tag && (
-                        <p className="text-amber-700 mt-1 font-medium">{e.hint}</p>
-                      )}
-                    </div>
-                  ))}
-                </div>
+          {ddlApplyResult && (ddlApplyResult.detail
+            ? <p className="text-sm text-red-600">{ddlApplyResult.detail}</p>
+            : <div className="space-y-2">
+                <p className={`text-sm ${ddlApplyResult.ok ? 'text-green-600' : 'text-amber-700'}`}>
+                  Applied {ddlApplyResult.applied} statement(s){ddlApplyResult.errors ? ` of ${ddlApplyResult.applied + ddlApplyResult.errors.length}` : ''}.
+                </p>
+                {ddlApplyResult.blocked?.length > 0 && (
+                  <p className="text-sm text-emerald-700 dark:text-emerald-300">
+                    Protected {ddlApplyResult.blocked.length} certified object(s) from overwrite. Check “Allow overwriting certified” to override.
+                  </p>
+                )}
+                {ddlApplyResult.skipped?.length > 0 && (
+                  <p className="text-sm text-slate-500 dark:text-slate-400">
+                    Kept {ddlApplyResult.skipped.length} existing comment(s) (nothing overwritten).
+                  </p>
+                )}
+                {ddlApplyResult.errors?.map((e, i) => (
+                  <div key={i} className="text-xs bg-red-50 border border-red-200 rounded p-2">
+                    <p className="text-red-700 font-mono truncate">{e.statement}</p>
+                    <p className="text-red-600 mt-1">{e.error}</p>
+                    {e.governed_tag && (
+                      <p className="text-amber-700 mt-1 font-medium">{e.hint}</p>
+                    )}
+                  </div>
+                ))}
+              </div>
           )}
           {exportResult && (exportResult.ok
             ? <p className="text-sm text-green-600">Exported {exportResult.rows} rows to <span className="font-mono text-xs">{exportResult.path}</span></p>
