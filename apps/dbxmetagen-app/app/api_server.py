@@ -2065,13 +2065,105 @@ def _execute_stmts_batched(
     return applied, errors
 
 
+def _parse_ddl_target(stmt: str) -> Optional[dict]:
+    """Map a generated DDL statement to its target object + kind, best-effort.
+
+    Returns {table, column, kind} where table is the plain dotted `cat.sch.tbl`
+    (no backticks) and kind is one of table_comment/column_comment/table_tag/
+    column_tag. Returns None when the statement can't be confidently parsed — the
+    caller then applies it unconditionally (legacy behavior), so the gate only ever
+    *adds* protection and never silently drops a statement it didn't understand.
+    """
+    s = stmt.strip().rstrip(";").strip()
+    up = s.upper()
+    segs = re.findall(r"`([^`]*)`", s)  # backticked identifier parts only
+    tbl = ".".join(segs[:3]) if len(segs) >= 3 else None
+    col = segs[3] if len(segs) >= 4 else None
+    if up.startswith("COMMENT ON TABLE"):
+        return {"table": tbl, "column": None, "kind": "table_comment"} if tbl else None
+    if up.startswith("COMMENT ON COLUMN"):
+        return {"table": tbl, "column": col, "kind": "column_comment"} if tbl and col else None
+    if up.startswith("ALTER TABLE") and "ALTER COLUMN" in up and "SET TAGS" in up:
+        return {"table": tbl, "column": col, "kind": "column_tag"} if tbl and col else None
+    if up.startswith("ALTER TABLE") and "SET TAGS" in up:
+        return {"table": tbl, "column": None, "kind": "table_tag"} if tbl else None
+    return None
+
+
+def _filter_stmts_by_policy(
+    stmts: list[str], conflict_mode: str, certified_policy: str,
+) -> tuple[list[str], list[dict], list[dict]]:
+    """Partition stmts into (to_apply, skipped, blocked) per the apply policies.
+
+    - certified_policy='block' (default): block any statement whose target object is
+      *positively* certified (per the live UC certification tag). Unknown/absent tag
+      -> not certified -> allowed, so workspaces without the tag are unaffected.
+    - conflict_mode='skip_existing': skip COMMENT statements whose target already has
+      a non-empty comment in UC (preserve the human/existing comment, #229.4/#247).
+
+    Fails OPEN: if nothing to gate, or the UC read errors, every statement is applied
+    (exactly the pre-C3 behavior) — a metadata hiccup never regresses a working apply.
+    """
+    skip_existing = (conflict_mode or "overwrite").lower() == "skip_existing"
+    block_certified = (certified_policy or "block").lower() == "block"
+    if not skip_existing and not block_certified:
+        return list(stmts), [], []  # pure back-compat fast path — no UC read
+
+    parsed = [(s, _parse_ddl_target(s)) for s in stmts]
+    tables = sorted({p["table"] for _, p in parsed if p and p.get("table")})
+    try:
+        current = _read_uc_current(tables) if tables else {}
+    except Exception as e:
+        logger.warning("apply policy pre-check skipped (UC read failed): %s", e)
+        return list(stmts), [], []  # fail open
+
+    to_apply: list[str] = []
+    skipped: list[dict] = []
+    blocked: list[dict] = []
+    for s, p in parsed:
+        if not p or not p.get("table"):
+            to_apply.append(s)
+            continue
+        ent = current.get(p["table"]) or {}
+        col = p.get("column")
+        if col:
+            cinfo = (ent.get("columns") or {}).get(col) or {}
+            cur_comment, is_certified = cinfo.get("comment"), bool(cinfo.get("certified"))
+        else:
+            cur_comment, is_certified = ent.get("comment"), bool(ent.get("certified"))
+        obj = p["table"] + (f".{col}" if col else "")
+        if block_certified and is_certified:
+            blocked.append({"object": obj, "kind": p["kind"], "reason": "certified"})
+            continue
+        if skip_existing and p["kind"] in ("table_comment", "column_comment") and (cur_comment or "").strip():
+            skipped.append({"object": obj, "kind": p["kind"], "reason": "existing_comment"})
+            continue
+        to_apply.append(s)
+    return to_apply, skipped, blocked
+
+
 @app.post("/api/metadata/apply-ddl")
-def apply_ddl(body: GenerateDDLBody, batch: bool = True):
+def apply_ddl(
+    body: GenerateDDLBody, batch: bool = True,
+    conflict_mode: str = "overwrite", certified_policy: str = "block",
+):
+    """Apply generated DDL, honoring conflict/certified policy.
+
+    `conflict_mode` ('overwrite' | 'skip_existing') and `certified_policy`
+    ('block' | 'allow') gate what actually runs (see _filter_stmts_by_policy).
+    Defaults preserve behavior except that a *positively certified* object is now
+    protected from overwrite by default (#221/#247); pass certified_policy=allow to
+    override. Response adds `skipped`/`blocked` lists when the gate acts."""
     out = generate_ddl(body)
     stmts = out.get("statements") or []
     warnings = out.get("warnings") or []
-    applied, errors = _execute_stmts_batched(stmts, batch=batch)
+    to_apply, skipped, blocked = _filter_stmts_by_policy(stmts, conflict_mode, certified_policy)
+    applied, errors = _execute_stmts_batched(to_apply, batch=batch)
     result: dict = {"applied": applied}
+    if skipped:
+        result["skipped"] = skipped
+    if blocked:
+        result["blocked"] = blocked
     if errors:
         result["message"] = "Some DDL statements failed"
         result["errors"] = errors
