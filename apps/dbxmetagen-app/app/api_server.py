@@ -871,6 +871,11 @@ def get_config():
         "obo_enabled": _OBO_ENABLED,
         "mlflow_experiment_id": _get_mlflow_experiment_id(),
         "app_display_name": os.environ.get("APP_DISPLAY_NAME", ""),
+        "default_view_mode": (
+            "simplified"
+            if os.environ.get("DEFAULT_VIEW_MODE", "advanced").strip().lower() == "simplified"
+            else "advanced"
+        ),
         "config_valid": len(_CONFIG_ERRORS) == 0,
         "config_errors": _CONFIG_ERRORS,
         "version": pkg_version,
@@ -1429,6 +1434,19 @@ def get_run_status(run_id: int):
         "end_time": getattr(run, "end_time", None),
         "tasks": tasks,
     }
+
+
+@app.post("/api/jobs/{run_id}/cancel")
+def cancel_run(run_id: int):
+    """Cancel an in-progress job run (#229.2). Best-effort: a run that is already
+    terminal returns ok with cancelled=False rather than erroring."""
+    ws = get_workspace_client()
+    try:
+        ws.jobs.cancel_run(run_id=run_id)
+    except Exception as e:
+        logger.warning("cancel_run(run_id=%s) failed: %s", run_id, e)
+        raise HTTPException(502, detail=f"Failed to cancel run {run_id}: {e}")
+    return {"ok": True, "run_id": run_id, "cancelled": True}
 
 
 @app.get("/api/jobs/runs")
@@ -2074,13 +2092,105 @@ def _execute_stmts_batched(
     return applied, errors
 
 
+def _parse_ddl_target(stmt: str) -> Optional[dict]:
+    """Map a generated DDL statement to its target object + kind, best-effort.
+
+    Returns {table, column, kind} where table is the plain dotted `cat.sch.tbl`
+    (no backticks) and kind is one of table_comment/column_comment/table_tag/
+    column_tag. Returns None when the statement can't be confidently parsed — the
+    caller then applies it unconditionally (legacy behavior), so the gate only ever
+    *adds* protection and never silently drops a statement it didn't understand.
+    """
+    s = stmt.strip().rstrip(";").strip()
+    up = s.upper()
+    segs = re.findall(r"`([^`]*)`", s)  # backticked identifier parts only
+    tbl = ".".join(segs[:3]) if len(segs) >= 3 else None
+    col = segs[3] if len(segs) >= 4 else None
+    if up.startswith("COMMENT ON TABLE"):
+        return {"table": tbl, "column": None, "kind": "table_comment"} if tbl else None
+    if up.startswith("COMMENT ON COLUMN"):
+        return {"table": tbl, "column": col, "kind": "column_comment"} if tbl and col else None
+    if up.startswith("ALTER TABLE") and "ALTER COLUMN" in up and "SET TAGS" in up:
+        return {"table": tbl, "column": col, "kind": "column_tag"} if tbl and col else None
+    if up.startswith("ALTER TABLE") and "SET TAGS" in up:
+        return {"table": tbl, "column": None, "kind": "table_tag"} if tbl else None
+    return None
+
+
+def _filter_stmts_by_policy(
+    stmts: list[str], conflict_mode: str, certified_policy: str,
+) -> tuple[list[str], list[dict], list[dict]]:
+    """Partition stmts into (to_apply, skipped, blocked) per the apply policies.
+
+    - certified_policy='block' (default): block any statement whose target object is
+      *positively* certified (per the live UC certification tag). Unknown/absent tag
+      -> not certified -> allowed, so workspaces without the tag are unaffected.
+    - conflict_mode='skip_existing': skip COMMENT statements whose target already has
+      a non-empty comment in UC (preserve the human/existing comment, #229.4/#247).
+
+    Fails OPEN: if nothing to gate, or the UC read errors, every statement is applied
+    (exactly the pre-C3 behavior) — a metadata hiccup never regresses a working apply.
+    """
+    skip_existing = (conflict_mode or "overwrite").lower() == "skip_existing"
+    block_certified = (certified_policy or "block").lower() == "block"
+    if not skip_existing and not block_certified:
+        return list(stmts), [], []  # pure back-compat fast path — no UC read
+
+    parsed = [(s, _parse_ddl_target(s)) for s in stmts]
+    tables = sorted({p["table"] for _, p in parsed if p and p.get("table")})
+    try:
+        current = _read_uc_current(tables) if tables else {}
+    except Exception as e:
+        logger.warning("apply policy pre-check skipped (UC read failed): %s", e)
+        return list(stmts), [], []  # fail open
+
+    to_apply: list[str] = []
+    skipped: list[dict] = []
+    blocked: list[dict] = []
+    for s, p in parsed:
+        if not p or not p.get("table"):
+            to_apply.append(s)
+            continue
+        ent = current.get(p["table"]) or {}
+        col = p.get("column")
+        if col:
+            cinfo = (ent.get("columns") or {}).get(col) or {}
+            cur_comment, is_certified = cinfo.get("comment"), bool(cinfo.get("certified"))
+        else:
+            cur_comment, is_certified = ent.get("comment"), bool(ent.get("certified"))
+        obj = p["table"] + (f".{col}" if col else "")
+        if block_certified and is_certified:
+            blocked.append({"object": obj, "kind": p["kind"], "reason": "certified"})
+            continue
+        if skip_existing and p["kind"] in ("table_comment", "column_comment") and (cur_comment or "").strip():
+            skipped.append({"object": obj, "kind": p["kind"], "reason": "existing_comment"})
+            continue
+        to_apply.append(s)
+    return to_apply, skipped, blocked
+
+
 @app.post("/api/metadata/apply-ddl")
-def apply_ddl(body: GenerateDDLBody, batch: bool = True):
+def apply_ddl(
+    body: GenerateDDLBody, batch: bool = True,
+    conflict_mode: str = "overwrite", certified_policy: str = "block",
+):
+    """Apply generated DDL, honoring conflict/certified policy.
+
+    `conflict_mode` ('overwrite' | 'skip_existing') and `certified_policy`
+    ('block' | 'allow') gate what actually runs (see _filter_stmts_by_policy).
+    Defaults preserve behavior except that a *positively certified* object is now
+    protected from overwrite by default (#221/#247); pass certified_policy=allow to
+    override. Response adds `skipped`/`blocked` lists when the gate acts."""
     out = generate_ddl(body)
     stmts = out.get("statements") or []
     warnings = out.get("warnings") or []
-    applied, errors = _execute_stmts_batched(stmts, batch=batch)
+    to_apply, skipped, blocked = _filter_stmts_by_policy(stmts, conflict_mode, certified_policy)
+    applied, errors = _execute_stmts_batched(to_apply, batch=batch)
     result: dict = {"applied": applied}
+    if skipped:
+        result["skipped"] = skipped
+    if blocked:
+        result["blocked"] = blocked
     if errors:
         result["message"] = "Some DDL statements failed"
         result["errors"] = errors
@@ -12766,6 +12876,152 @@ def genie_table_columns(table_identifier: str):
 
 
 # ---------------------------------------------------------------------------
+# Current Unity Catalog state read (C1 — enables review comparison + apply
+# conflict handling). Reads the LIVE comment, tags, and certification status for
+# a batch of tables and their columns, straight from system.information_schema.
+# This is the "current value" the review grid compares against and the apply
+# path consults before overwriting. Deliberately read-only.
+# ---------------------------------------------------------------------------
+
+# The governed tag that marks an object certified/deprecated. In the tag views a
+# governed tag surfaces under its short name; match it loosely so a fully-qualified
+# form (e.g. `system.certification_status`) still resolves.
+_CERT_TAG_NAME = "certification_status"
+
+
+def _is_cert_tag(tag_name: Optional[str]) -> bool:
+    t = (tag_name or "").lower()
+    return t == _CERT_TAG_NAME or t.endswith("." + _CERT_TAG_NAME)
+
+
+def _cert_from_tags(tags: dict) -> bool:
+    """True only when a certification tag is positively 'certified'. Absent/unknown
+    -> False (so the apply gate degrades to allow, never a false block)."""
+    for k, v in (tags or {}).items():
+        if _is_cert_tag(k) and str(v or "").strip().lower() == "certified":
+            return True
+    return False
+
+
+def _read_uc_current(tables: list[str]) -> dict:
+    """Read live UC comment/tags/certification for a batch of fully-qualified tables.
+
+    Returns {table_fqn: {comment, tags, certified, exists, columns: {col: {data_type,
+    comment, tags, certified}}}}. Each information_schema read is isolated in its own
+    try/except: a missing view or absent privilege (e.g. a federated catalog with no
+    tag views) degrades to empty tags / uncertified rather than failing the batch.
+    """
+    # Group by (catalog, schema) so each read is one batched IN-list, not one per table.
+    groups: dict[tuple, list[str]] = {}
+    out: dict[str, dict] = {}
+    for ident in tables:
+        parts = (ident or "").split(".")
+        if len(parts) != 3:
+            raise HTTPException(400, detail=f"table identifier must be catalog.schema.table: {ident!r}")
+        for p in parts:
+            _validate_filter(p, "identifier_part")
+        cat, sch, tbl = parts
+        groups.setdefault((cat, sch), []).append(tbl)
+        out[ident] = {"comment": None, "tags": {}, "certified": False, "exists": False, "columns": {}}
+
+    for (cat, sch), tbls in groups.items():
+        in_list = ", ".join(_safe_sql_str(t) for t in tbls)
+        cat_lit = _safe_sql_str(cat)
+        sch_lit = _safe_sql_str(sch)
+
+        def key(tbl: str, col: Optional[str] = None) -> str:
+            return f"{cat}.{sch}.{tbl}" + (f".{col}" if col else "")
+
+        # Table comments + existence.
+        try:
+            for r in execute_sql(
+                f"SELECT table_name, comment FROM system.information_schema.tables "
+                f"WHERE table_catalog = {cat_lit} AND table_schema = {sch_lit} "
+                f"AND table_name IN ({in_list})"
+            ) or []:
+                ent = out.get(key(r.get("table_name")))
+                if ent is not None:
+                    ent["exists"] = True
+                    ent["comment"] = r.get("comment")
+        except Exception as e:
+            logger.debug("uc-current: table comment read skipped for %s.%s: %s", cat, sch, e)
+
+        # Column comments + types.
+        try:
+            for r in execute_sql(
+                f"SELECT table_name, column_name, data_type, comment "
+                f"FROM system.information_schema.columns "
+                f"WHERE table_catalog = {cat_lit} AND table_schema = {sch_lit} "
+                f"AND table_name IN ({in_list})"
+            ) or []:
+                ent = out.get(key(r.get("table_name")))
+                if ent is not None:
+                    ent["columns"][r.get("column_name")] = {
+                        "data_type": r.get("data_type"),
+                        "comment": r.get("comment"),
+                        "tags": {},
+                        "certified": False,
+                    }
+        except Exception as e:
+            logger.debug("uc-current: column read skipped for %s.%s: %s", cat, sch, e)
+
+        # Table tags (note: tag views use catalog_name/schema_name, not table_catalog).
+        try:
+            for r in execute_sql(
+                f"SELECT table_name, tag_name, tag_value "
+                f"FROM system.information_schema.table_tags "
+                f"WHERE catalog_name = {cat_lit} AND schema_name = {sch_lit} "
+                f"AND table_name IN ({in_list})"
+            ) or []:
+                ent = out.get(key(r.get("table_name")))
+                if ent is not None:
+                    ent["tags"][r.get("tag_name")] = r.get("tag_value")
+        except Exception as e:
+            logger.debug("uc-current: table tag read skipped for %s.%s: %s", cat, sch, e)
+
+        # Column tags.
+        try:
+            for r in execute_sql(
+                f"SELECT table_name, column_name, tag_name, tag_value "
+                f"FROM system.information_schema.column_tags "
+                f"WHERE catalog_name = {cat_lit} AND schema_name = {sch_lit} "
+                f"AND table_name IN ({in_list})"
+            ) or []:
+                ent = out.get(key(r.get("table_name")))
+                if ent is None:
+                    continue
+                col = ent["columns"].setdefault(
+                    r.get("column_name"), {"data_type": None, "comment": None, "tags": {}, "certified": False}
+                )
+                col["tags"][r.get("tag_name")] = r.get("tag_value")
+        except Exception as e:
+            logger.debug("uc-current: column tag read skipped for %s.%s: %s", cat, sch, e)
+
+    # Derive the certified flag from whatever tags we managed to read.
+    for ent in out.values():
+        ent["certified"] = _cert_from_tags(ent["tags"])
+        for col in ent["columns"].values():
+            col["certified"] = _cert_from_tags(col["tags"])
+
+    return out
+
+
+class UcCurrentBody(BaseModel):
+    tables: list[str] = []
+
+
+@app.post("/api/metadata/uc-current")
+def metadata_uc_current(body: UcCurrentBody):
+    """Live UC comment/tags/certification for a batch of tables + their columns.
+
+    Backs the review-step comparison toggle (#248) and the apply conflict/certified
+    gate (#247/#221). Read-only; degrades gracefully when tag views are unavailable."""
+    if not body.tables:
+        return {"objects": {}}
+    return {"objects": _read_uc_current(body.tables)}
+
+
+# ---------------------------------------------------------------------------
 # Genie Space editor: validation, health check, analysis, versions, live sync
 # ---------------------------------------------------------------------------
 
@@ -16144,30 +16400,170 @@ def delete_customer_context(context_id: str):
     return {"deleted": True, "context_id": context_id}
 
 
-@app.post("/api/customer-context/upload")
-def upload_customer_context_yaml(file: UploadFile):
-    """Upload a YAML file and insert/update all context entries."""
-    _ensure_customer_context_table()
-    import yaml as _yaml
-    content = file.file.read().decode("utf-8")
-    try:
-        data = _yaml.safe_load(content)
-    except Exception as exc:
-        raise HTTPException(400, detail=f"Invalid YAML: {exc}")
-    if not data or "contexts" not in data:
-        raise HTTPException(400, detail="YAML must contain a 'contexts' list")
+# ---- Customer-context upload: two-lane ingest (#249) ------------------------
+# Structured lane (.yaml/.yml/.json): a `contexts` list parsed deterministically into
+#   entries -- NO LLM (running already-structured data through an LLM only risks corrupting
+#   clean fields). The existing YAML upload IS this lane; JSON is the same shape.
+# Document lane (.txt/.md/.pdf/.docx): a free-text spec attached to a caller-supplied scope.
+#   Binary docs are parsed server-side via ai_parse_document (no pdf/docx Python dependency);
+#   text files are decoded directly (ai_parse_document is for binary containers, not text).
+#   Long text is distilled with ai_extract. BOTH AI calls degrade gracefully: text always
+#   works (falls back to raw text, caller truncates); binary without ai_parse_document returns
+#   a clear 422 telling the user to enable it or upload text -- never a silent failure.
+_CC_TEXT_EXTS = {"txt", "md", "markdown"}
+_CC_BINARY_EXTS = {"pdf", "docx", "pptx"}
+_CC_SAFE_FILE_RE = re.compile(r"[^A-Za-z0-9._-]+")
 
+
+def _cc_ingest_entries(entries):
+    """Upsert a list of structured context entries (shared by the YAML + JSON lanes)."""
+    if not isinstance(entries, list):
+        raise HTTPException(400, detail="Expected a 'contexts' list of entries")
     results = []
-    for entry in data["contexts"]:
+    for entry in entries:
         try:
             req = CustomerContextRequest(**entry)
-            result = upsert_customer_context(req)
-            results.append(result)
+            results.append(upsert_customer_context(req))
         except HTTPException as exc:
-            results.append({"error": exc.detail, "scope": entry.get("scope", "?")})
+            results.append({"error": exc.detail, "scope": (entry or {}).get("scope", "?") if isinstance(entry, dict) else "?"})
         except Exception as exc:
-            results.append({"error": str(exc), "scope": entry.get("scope", "?")})
-    return {"uploaded": len(results), "results": results}
+            results.append({"error": str(exc), "scope": (entry or {}).get("scope", "?") if isinstance(entry, dict) else "?"})
+    return results
+
+
+def _cc_truncate_words(text, limit):
+    words = (text or "").split()
+    if len(words) <= limit:
+        return text, False
+    return " ".join(words[:limit]), True
+
+
+def _cc_parse_binary_to_text(raw, ext, filename):
+    """Stage an uploaded binary doc to a Volume and parse it to text via ai_parse_document.
+    Raises HTTPException(422) when the function is unavailable so the caller can tell the
+    user to enable it (Pro/Serverless warehouse, supported region) or upload text instead."""
+    from datetime import datetime as _dt
+    ts = _dt.now().strftime("%Y%m%d_%H%M%S")
+    current_date = _dt.now().strftime("%Y%m%d")
+    volume_name = os.environ.get("VOLUME_NAME", "generated_metadata")
+    current_user = "app"
+    try:
+        current_user = ws.current_user.me().user_name.split("@")[0]
+    except Exception:
+        pass
+    safe_name = _CC_SAFE_FILE_RE.sub("_", filename or f"upload.{ext}")
+    vol_path = f"/Volumes/{CATALOG}/{SCHEMA}/{volume_name}/{current_user}/customer_context/{current_date}/{ts}_{safe_name}"
+    try:
+        ws.files.upload(vol_path, io.BytesIO(raw), overwrite=True)
+    except Exception as e:
+        raise HTTPException(500, detail=f"Failed to stage document to volume: {e}")
+    # read_files(binaryFile) exposes the staged file as a `content` BINARY column;
+    # ai_parse_document returns a VARIANT -- CAST to STRING (JSON) so ai_extract can read it
+    # without us depending on the exact parsed schema. vol_path is server-constructed from
+    # trusted env/user + a sanitized filename, so interpolation here is safe.
+    sql = (
+        f"SELECT CAST(ai_parse_document(content) AS STRING) AS parsed "
+        f"FROM read_files('{vol_path}', format => 'binaryFile')"
+    )
+    try:
+        rows = execute_sql(sql, timeout=180)
+    except Exception as e:
+        raise HTTPException(
+            422,
+            detail=(f"Could not parse this {ext.upper()} server-side -- ai_parse_document is "
+                    f"unavailable on this SQL warehouse (needs a Pro/Serverless warehouse in a "
+                    f"supported region). Upload .txt/.md/.yaml/.json or paste the text instead."),
+        )
+    return (rows[0].get("parsed") if rows else "") or ""
+
+
+def _cc_distill_text(text):
+    """Best-effort AI distillation of long document text into a concise business-context
+    summary (+ detected data objects) via ai_extract. Short text is kept verbatim (no LLM).
+    Falls back to the raw text (caller enforces the word cap) if ai_extract is unavailable.
+    Returns (context_text, key_objects, method)."""
+    text = (text or "").strip()
+    if not text:
+        return "", "", "empty"
+    if len(text.split()) <= _CC_MAX_WORDS:
+        return text, "", "verbatim"
+    # One ai_extract call via a CTE; fields come back as scalar columns (CAST for safety).
+    sql = (
+        "WITH e AS (SELECT ai_extract(:content, array('business_context','key_data_objects')) AS r) "
+        "SELECT CAST(r.business_context AS STRING) AS business_context, "
+        "CAST(r.key_data_objects AS STRING) AS key_data_objects FROM e"
+    )
+    try:
+        rows = execute_sql(
+            sql, timeout=180,
+            parameters=[StatementParameterListItem(name="content", value=text[:200000])],
+        )
+        if rows and (rows[0].get("business_context") or "").strip():
+            return (rows[0]["business_context"].strip(),
+                    (rows[0].get("key_data_objects") or "").strip(), "ai_extract")
+    except Exception:
+        pass
+    return text, "", "truncated"
+
+
+@app.post("/api/customer-context/upload")
+def upload_customer_context(file: UploadFile = File(...),
+                            scope: str = Form(None),
+                            scope_type: str = Form(None)):
+    """Ingest customer context from a file (#249). Structured .yaml/.yml/.json is parsed
+    into entries deterministically; a .txt/.md/.pdf/.docx document is attached to the
+    supplied scope (long docs distilled via ai_extract; binary via ai_parse_document)."""
+    _ensure_customer_context_table()
+    filename = file.filename or ""
+    ext = filename.rsplit(".", 1)[-1].lower() if "." in filename else ""
+    raw = file.file.read()
+
+    # ---- Structured lane (deterministic, no LLM) ----
+    if ext in ("yaml", "yml"):
+        import yaml as _yaml
+        try:
+            data = _yaml.safe_load(raw.decode("utf-8"))
+        except Exception as exc:
+            raise HTTPException(400, detail=f"Invalid YAML: {exc}")
+        if not data or "contexts" not in data:
+            raise HTTPException(400, detail="YAML must contain a 'contexts' list")
+        results = _cc_ingest_entries(data["contexts"])
+        return {"uploaded": len(results), "results": results, "lane": "structured"}
+    if ext == "json":
+        import json as _json
+        try:
+            data = _json.loads(raw.decode("utf-8"))
+        except Exception as exc:
+            raise HTTPException(400, detail=f"Invalid JSON: {exc}")
+        entries = data.get("contexts") if isinstance(data, dict) else data
+        if entries is None:
+            raise HTTPException(400, detail="JSON must be a list of entries or an object with a 'contexts' list")
+        results = _cc_ingest_entries(entries)
+        return {"uploaded": len(results), "results": results, "lane": "structured"}
+
+    # ---- Document lane (free text attached to a scope) ----
+    if ext in _CC_TEXT_EXTS or ext in _CC_BINARY_EXTS:
+        if not (scope and scope.strip()) or not scope_type:
+            raise HTTPException(400, detail="A document upload needs a target 'scope' and 'scope_type'")
+        if scope_type not in _CC_VALID_TYPES:
+            raise HTTPException(400, detail=f"scope_type must be one of {_CC_VALID_TYPES}")
+        if ext in _CC_BINARY_EXTS:
+            text = _cc_parse_binary_to_text(raw, ext, filename)
+        else:
+            text = raw.decode("utf-8", errors="replace")
+        context_text, key_objects, method = _cc_distill_text(text)
+        context_text, truncated = _cc_truncate_words(context_text, _CC_MAX_WORDS)
+        if not context_text.strip():
+            raise HTTPException(400, detail="No text could be extracted from the document")
+        req = CustomerContextRequest(scope=scope.strip(), scope_type=scope_type,
+                                     context_text=context_text, context_label=filename[:120])
+        result = upsert_customer_context(req)
+        result.update({"extract_method": method, "truncated": truncated})
+        if key_objects:
+            result["key_objects"] = key_objects
+        return {"uploaded": 1, "results": [result], "lane": "document"}
+
+    raise HTTPException(400, detail=f"Unsupported file type '.{ext}'. Use .yaml/.yml/.json/.txt/.md/.pdf/.docx")
 
 
 @app.get("/api/customer-context/resolve/{full_table_name:path}")

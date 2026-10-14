@@ -4,6 +4,14 @@ import { useState, useEffect, useRef, useCallback, createContext, useContext, cr
 // (success or otherwise) and no longer polled.
 export const TERMINAL_STATES = new Set(['TERMINATED', 'SKIPPED', 'INTERNAL_ERROR'])
 
+// Which page a run belongs to, by job name. Core-metadata generation runs show on
+// the Generate Metadata page; the advanced analytics pipeline (and its downstream
+// ontology/FK/semantic/graph work) shows in the Semantic Layer's advanced section.
+const ADVANCED_JOB_RE = /(analytics_pipeline|ontology|fk_prediction|semantic|profiling|graph|lakebase|\bsync\b)/i
+export function classifyRun(run) {
+  return ADVANCED_JOB_RE.test(run?.job_name || '') ? 'advanced' : 'core'
+}
+
 /**
  * Shared job run + poll machinery for triggering dbxmetagen Databricks jobs and
  * tracking their live status. Extracted from BatchJobs so both the Generate
@@ -111,6 +119,26 @@ export function useJobRunner({ onJobsError } = {}) {
       .catch(() => {})
   }, [])
 
+  // Cancel an in-progress run (#229.2). Marks it _cancelling optimistically; the
+  // 5s poll then reflects the TERMINATED/CANCELLED state the backend reports.
+  const cancelRun = useCallback(async (runId) => {
+    setRunHistory(prev => prev.map(r => r.run_id === runId ? { ...r, _cancelling: true } : r))
+    try {
+      const res = await fetch(`/api/jobs/${runId}/cancel`, { method: 'POST' })
+      if (!res.ok) {
+        setRunHistory(prev => prev.map(r => r.run_id === runId ? { ...r, _cancelling: false } : r))
+        const j = await res.json().catch(() => ({}))
+        setRunError(j.detail || `Failed to cancel run ${runId}`)
+        return false
+      }
+      return true
+    } catch (e) {
+      setRunHistory(prev => prev.map(r => r.run_id === runId ? { ...r, _cancelling: false } : r))
+      setRunError(e.message)
+      return false
+    }
+  }, [])
+
   // Poll a single run to terminal state. Returns the final result_state string
   // ('SUCCESS' | 'FAILED' | ...) or 'UNKNOWN'. Used to sequence dependent jobs
   // (e.g. rebuild the knowledge graph BEFORE re-indexing docs from it). Gives up
@@ -137,7 +165,7 @@ export function useJobRunner({ onJobsError } = {}) {
   return {
     jobs, runHistory, activeRuns, completedRuns,
     runningAction, runError, setRunError, jobsError,
-    findJob, runJob, refreshRuns, setRunHistory, waitForRun,
+    findJob, runJob, refreshRuns, setRunHistory, waitForRun, cancelRun,
   }
 }
 

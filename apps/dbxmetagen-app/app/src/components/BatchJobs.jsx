@@ -2,7 +2,9 @@ import React, { useState, useEffect, useRef, useCallback, Component } from 'reac
 import { ErrorBanner } from '../App'
 import { cachedFetchObj, TTL } from '../apiCache'
 import { PageHeader, EmptyState, Skeleton, InfoTip } from './ui'
-import { useSharedJobRunner, TERMINAL_STATES } from '../hooks/useJobRunner'
+import { useSharedJobRunner, TERMINAL_STATES, classifyRun } from '../hooks/useJobRunner'
+import { useViewMode } from '../hooks/useViewMode'
+import RunEntry from './RunEntry'
 import TableScopePicker, { scopeToTableNames } from './TableScopePicker'
 
 class TabErrorBoundary extends Component {
@@ -23,102 +25,6 @@ class TabErrorBoundary extends Component {
   }
 }
 
-const STATUS_LABELS = {
-  'RUNNING': 'Running', 'PENDING': 'Queued', 'SKIPPED': 'Skipped', 'INTERNAL_ERROR': 'Internal Error',
-  'SUCCESS': 'Succeeded', 'FAILED': 'Failed', 'TIMEDOUT': 'Timed Out', 'CANCELLED': 'Cancelled',
-}
-
-function stateBadge(state, result) {
-  if (!state) return null
-  let color = 'bg-dbx-oat text-slate-600 dark:bg-dbx-navy-500 dark:text-slate-300'
-  if (state === 'RUNNING' || state === 'PENDING') color = 'bg-blue-50 text-blue-700 dark:bg-blue-900/40 dark:text-blue-300'
-  if (state === 'TERMINATED' && result === 'SUCCESS') color = 'bg-emerald-50 text-emerald-700 dark:bg-emerald-900/40 dark:text-emerald-300'
-  if (state === 'TERMINATED' && result === 'FAILED') color = 'bg-red-50 text-red-700 dark:bg-red-900/40 dark:text-red-300'
-  if (state === 'TERMINATED' && result === 'TIMEDOUT') color = 'bg-amber-50 text-amber-700 dark:bg-amber-900/40 dark:text-amber-300'
-  if (state === 'TERMINATED' && result === 'CANCELLED') color = 'bg-slate-100 text-slate-500 dark:bg-slate-800 dark:text-slate-400'
-  if (state === 'SKIPPED') color = 'bg-slate-100 text-slate-500 dark:bg-slate-800 dark:text-slate-400'
-  if (state === 'INTERNAL_ERROR') color = 'bg-red-100 text-red-800 dark:bg-red-900/40 dark:text-red-300'
-  const label = result ? (STATUS_LABELS[result] || result) : (STATUS_LABELS[state] || state)
-  return <span className={`badge ${color}`}>{label}</span>
-}
-
-function runAccentColor(run) {
-  if (!TERMINAL_STATES.has(run.state)) return 'border-l-blue-400'
-  if (run.result === 'SUCCESS') return 'border-l-emerald-400'
-  if (run.result === 'FAILED') return 'border-l-red-400'
-  return 'border-l-slate-300 dark:border-l-slate-600'
-}
-
-function TaskProgress({ tasks }) {
-  if (!tasks || tasks.length === 0) return null
-  const done = tasks.filter(t => TERMINAL_STATES.has(t.state)).length
-  const failed = tasks.filter(t => t.result === 'FAILED').length
-  return (
-    <div className="mt-2.5">
-      <div className="flex items-center gap-2 mb-1.5">
-        <span className="text-xs text-slate-500 dark:text-slate-400">Tasks: {done}/{tasks.length}</span>
-        {failed > 0 && <span className="text-xs text-red-600 dark:text-red-400 font-medium">{failed} failed</span>}
-      </div>
-      <div className="flex gap-1">
-        {tasks.map(t => {
-          let bg = 'bg-slate-200 dark:bg-dbx-navy-500'
-          if (t.state === 'RUNNING' || t.state === 'PENDING') bg = 'bg-blue-400 animate-pulse'
-          if (t.result === 'SUCCESS') bg = 'bg-emerald-500'
-          if (t.result === 'FAILED') bg = 'bg-red-500'
-          if (t.result === 'EXCLUDED') bg = 'bg-slate-300 dark:bg-dbx-navy-400'
-          return <div key={t.task_key} className={`h-2.5 flex-1 rounded-full ${bg}`} title={`${t.task_key}: ${t.state}${t.result ? ' / ' + t.result : ''}`} />
-        })}
-      </div>
-    </div>
-  )
-}
-
-function RunEntry({ run }) {
-  const [expanded, setExpanded] = useState(false)
-  const hasTasks = run.tasks && run.tasks.length > 0
-  return (
-    <div className={`py-3 px-4 border-l-4 ${runAccentColor(run)} border-b border-dbx-oat-dark/30 dark:border-dbx-navy-400/20 last:border-b-0`}>
-      <div className="flex items-center justify-between gap-2">
-        <div className="flex items-center gap-2.5 min-w-0">
-          <span className="text-sm font-medium truncate text-slate-800 dark:text-slate-200">{run.job_name || 'Unnamed Job'}</span>
-          {stateBadge(run.state, run.result)}
-          {!TERMINAL_STATES.has(run.state) && (
-            <span className="inline-block w-2 h-2 bg-blue-500 rounded-full animate-pulse" title="Checking status..." />
-          )}
-        </div>
-        <div className="flex items-center gap-3 shrink-0">
-          {run.run_page_url && (
-            <a href={run.run_page_url} target="_blank" rel="noopener noreferrer"
-              className="text-xs text-dbx-teal hover:text-dbx-teal/80 font-medium">View in Databricks</a>
-          )}
-          {hasTasks && (
-            <button onClick={() => setExpanded(prev => !prev)} className="text-xs text-slate-500 hover:text-slate-700 dark:hover:text-slate-300 font-medium" aria-label={expanded ? 'Hide tasks' : 'Show tasks'}>
-              {expanded ? 'Hide tasks' : `${run.tasks.length} tasks`}
-            </button>
-          )}
-          <span className="text-xs text-slate-400 font-mono">#{run.run_id}</span>
-        </div>
-      </div>
-      {run.state_message && run.result === 'FAILED' && (
-        <div className="mt-2 text-xs text-red-600 dark:text-red-400 bg-red-50 dark:bg-red-900/20 rounded-lg px-3 py-2 break-words">
-          {run.state_message}
-        </div>
-      )}
-      {hasTasks && !expanded && <TaskProgress tasks={run.tasks} />}
-      {hasTasks && expanded && (
-        <div className="mt-2.5 space-y-1 animate-slide-up">
-          {run.tasks.map(t => (
-            <div key={t.task_key} className="flex items-center justify-between text-xs px-3 py-1.5 bg-dbx-oat-light dark:bg-dbx-navy-500/50 rounded-lg">
-              <span className="font-mono text-slate-600 dark:text-slate-300">{t.task_key}</span>
-              {stateBadge(t.state, t.result)}
-            </div>
-          ))}
-        </div>
-      )}
-    </div>
-  )
-}
-
 function HealthWarnings({ health }) {
   if (!health || health.errors.length === 0) return null
   return (
@@ -132,7 +38,8 @@ function HealthWarnings({ health }) {
 }
 
 export default function BatchJobs({ onNavigate, pipelineStats }) {
-  const { jobs, runHistory, runningAction, runError, runJob, jobsError } = useSharedJobRunner()
+  const { jobs, runHistory, runningAction, runError, runJob, jobsError, cancelRun } = useSharedJobRunner()
+  const { simplified } = useViewMode()
   const [tableNames, setTableNames] = useState('')
   // null = unknown (not yet loaded / transient error); false = never generated
   // metadata here; true = has. Drives the large-first-run nudge in runGenerate.
@@ -321,8 +228,11 @@ export default function BatchJobs({ onNavigate, pipelineStats }) {
 
   const hasDomainSource = !!(ontologyBundle || domainConfig)
 
-  const activeRuns = runHistory.filter(r => !TERMINAL_STATES.has(r.state))
-  const completedRuns = runHistory.filter(r => TERMINAL_STATES.has(r.state))
+  // This page shows only core-metadata-generation runs; the advanced analytics
+  // pipeline's runs live in the Semantic Layer's advanced section.
+  const coreRuns = runHistory.filter(r => classifyRun(r) === 'core')
+  const activeRuns = coreRuns.filter(r => !TERMINAL_STATES.has(r.state))
+  const completedRuns = coreRuns.filter(r => TERMINAL_STATES.has(r.state))
 
   return (
     <div className="space-y-5">
@@ -346,7 +256,7 @@ export default function BatchJobs({ onNavigate, pipelineStats }) {
           <p className="text-xs text-gray-400 col-span-2">Set before deployment in the project settings.</p>
         </div>
 
-        <details className="mt-4 group">
+        {!simplified && <details className="mt-4 group">
           <summary className="section-title cursor-pointer select-none flex items-center gap-1.5 py-2 border-t border-dbx-oat-dark/30 dark:border-dbx-navy-400/20 mt-3 pt-3">
             <svg className="w-3 h-3 transition-transform group-open:rotate-90" fill="none" viewBox="0 0 24 24" stroke="currentColor">
               <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M9 5l7 7-7 7" />
@@ -587,7 +497,7 @@ export default function BatchJobs({ onNavigate, pipelineStats }) {
               )}
             </div>
           </div>
-        </details>
+        </details>}
       </div>
 
       {/* Step 1: Generate Core Metadata — always visible, the primary action */}
@@ -648,7 +558,7 @@ export default function BatchJobs({ onNavigate, pipelineStats }) {
               </div>
             </div>
 
-            <details className="group mt-3">
+            {!simplified && <details className="group mt-3">
               <summary className="text-xs font-medium text-slate-500 dark:text-slate-400 cursor-pointer select-none flex items-center gap-1.5 py-2 border-t border-dbx-oat-dark/30 dark:border-dbx-navy-400/20 pt-3">
                 <svg className="w-3 h-3 transition-transform group-open:rotate-90" fill="none" viewBox="0 0 24 24" stroke="currentColor">
                   <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M9 5l7 7-7 7" />
@@ -709,12 +619,12 @@ export default function BatchJobs({ onNavigate, pipelineStats }) {
                   </label>
                 </div>
               </div>
-            </details>
+            </details>}
 
-            <p className="text-xs text-slate-500 dark:text-slate-400 mt-2 font-medium">
+            {!simplified && <p className="text-xs text-slate-500 dark:text-slate-400 mt-2 font-medium">
               Ontology: {ontologyBundle ? bundles.find(b => b.key === ontologyBundle)?.name || ontologyBundle : <em>None</em>}
               {' | '}Domains: {domainConfig ? domainConfigs.find(d => d.key === domainConfig)?.name || domainConfig : (ontologyBundle ? 'from selected ontology' : <em>none</em>)}
-            </p>
+            </p>}
             {/* Primary generate: main click runs all 3 modes (KB-enriched by
                 default); the caret dropdown picks all-3 or a single mode. */}
             <div className="flex flex-wrap items-center gap-3 mt-2">
@@ -722,18 +632,18 @@ export default function BatchJobs({ onNavigate, pipelineStats }) {
                 <button onClick={() => runGenerate('all3')}
                   disabled={!!runningAction || !tableNames.trim()}
                   title="Generate all three metadata types (descriptions, sensitivity, and domain). By default, descriptions are generated first and used to enrich sensitivity and domain classification."
-                  className="btn-primary btn-md rounded-r-none">
+                  className={`btn-primary btn-md ${simplified ? '' : 'rounded-r-none'}`}>
                   {(runningAction === 'kb_enriched' || runningAction === 'all3') ? 'Starting...' : 'Generate Metadata'}
                 </button>
-                <button onClick={() => setGenMenuOpen(o => !o)}
+                {!simplified && <button onClick={() => setGenMenuOpen(o => !o)}
                   disabled={!!runningAction || !tableNames.trim()}
                   aria-label="Choose what to generate"
                   className="btn-primary btn-md rounded-l-none border-l border-white/25 px-2">
                   <svg className={`w-4 h-4 transition-transform ${genMenuOpen ? 'rotate-180' : ''}`} fill="none" viewBox="0 0 24 24" stroke="currentColor">
                     <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M19 9l-7 7-7-7" />
                   </svg>
-                </button>
-                {genMenuOpen && (
+                </button>}
+                {!simplified && genMenuOpen && (
                   <div className="absolute top-full left-0 mt-1 w-64 z-20 card p-1.5 shadow-elevated animate-slide-up">
                     <p className="text-[10px] font-semibold uppercase tracking-wider text-slate-400 px-2 py-1">Run</p>
                     <button onClick={() => runGenerate('all3')} disabled={!!runningAction || !tableNames.trim()}
@@ -763,7 +673,7 @@ export default function BatchJobs({ onNavigate, pipelineStats }) {
               </span>
             </div>
 
-            <details className="group mt-1">
+            {!simplified && <details className="group mt-1">
               <summary className="text-xs text-slate-500 dark:text-slate-400 cursor-pointer select-none inline-flex items-center gap-1.5">
                 <svg className="w-3 h-3 transition-transform group-open:rotate-90" fill="none" viewBox="0 0 24 24" stroke="currentColor">
                   <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M9 5l7 7-7 7" />
@@ -780,7 +690,7 @@ export default function BatchJobs({ onNavigate, pipelineStats }) {
                   <InfoTip text="Descriptions are generated first, then a knowledge-base build runs, then sensitivity + domain classification are enriched with those descriptions — so they benefit from the new comments even before DDL is applied." />
                 </p>
               </div>
-            </details>
+            </details>}
 
             <div className="border-t border-slate-200/80 dark:border-dbx-navy-400/20 pt-4 mt-2">
               <button onClick={() => onNavigate?.('context')} className="btn-ghost btn-sm text-slate-600 dark:text-slate-300">
@@ -819,7 +729,7 @@ export default function BatchJobs({ onNavigate, pipelineStats }) {
             <span className="inline-block w-2 h-2 bg-blue-500 rounded-full animate-pulse" />
             <span className="text-xs text-slate-400">Auto-refreshing every 5s</span>
           </div>
-          {activeRuns.map(r => <RunEntry key={r.run_id} run={r} />)}
+          {activeRuns.map(r => <RunEntry key={r.run_id} run={r} onCancel={cancelRun} />)}
         </section>
       )}
 

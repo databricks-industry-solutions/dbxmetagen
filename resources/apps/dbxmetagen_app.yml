@@ -93,6 +93,11 @@ resources:
           # os.environ.get("APP_DISPLAY_NAME", "").
           - name: APP_DISPLAY_NAME
             value: "${var.app_display_name}"
+          # DEFAULT_VIEW_MODE: 'advanced' (default) or 'simplified' -- the initial UI
+          # view mode for users who haven't chosen one. Users override per-browser via
+          # the Settings widget. Read as os.environ.get("DEFAULT_VIEW_MODE", "advanced").
+          - name: DEFAULT_VIEW_MODE
+            value: "${var.default_view_mode}"
           - name: MLFLOW_TRACE_TIMEOUT_SECONDS
             value: "120"
           # MLFLOW_EXPERIMENT: optional override for trace experiment path.
