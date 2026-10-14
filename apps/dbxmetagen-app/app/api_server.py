@@ -1542,7 +1542,16 @@ def get_metadata_log(limit: int = 100, table_name: Optional[str] = None):
     _validate_filter(table_name, "table_name")
     where = f"WHERE table_name LIKE {_safe_sql_str(f'%{table_name}%')}" if table_name else ""
     q = f"SELECT * FROM {fq('metadata_generation_log')} {where} ORDER BY _created_at DESC LIMIT {limit}"
-    return execute_sql(q)
+    # The log table is created on the first generation run. Before then (fresh
+    # install) it does not exist; return an empty list so the UI shows an empty
+    # state instead of a 404 "table not found" error -- same contract as
+    # /api/metadata/has-run below.
+    try:
+        return execute_sql(q)
+    except HTTPException as e:
+        if e.status_code == 404:
+            return []
+        raise
 
 
 @app.get("/api/metadata/has-run")
