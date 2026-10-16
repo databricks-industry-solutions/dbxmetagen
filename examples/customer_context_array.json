@@ -1,0 +1,19 @@
+[
+  {
+    "scope": "main.sales",
+    "scope_type": "schema",
+    "context_text": "Retail sales analytics schema. A \"basket\" is a single checkout transaction, not a product bundle. Revenue columns are net of returns and expressed in USD. store_id joins to dim_store; customer_id joins to dim_customer.",
+    "context_label": "retail sales glossary",
+    "priority": 20
+  },
+  {
+    "scope": "main.sales.fct_*",
+    "scope_type": "pattern",
+    "context_text": "Fact tables (fct_ prefix) are at line-item grain: one row per product per basket. Columns ending in _qty are unit counts; columns ending in _amt are monetary measures in USD. event_dt is the transaction date in UTC."
+  },
+  {
+    "scope": "main.sales.dim_customer",
+    "scope_type": "table",
+    "context_text": "One row per loyalty-program customer. loyalty_tier codes: B=bronze, S=silver, G=gold. email_hash is a salted hash used only for joins and must not be treated as a contactable email address."
+  }
+]
