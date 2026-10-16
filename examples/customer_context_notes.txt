@@ -1,0 +1,14 @@
+Investment operations data notes.
+
+In this schema a "position" is a portfolio holding -- a security a fund owns --
+not a job role or a physical location. A "book" is a trading book that groups
+related positions. Amounts are in USD unless a currency column indicates
+otherwise, and all dates are trade dates in UTC.
+
+Status codes that appear across tables: A = active, C = closed, S = suspended.
+Any column ending in _hash (for example ssn_hash) is a salted hash used only for
+joins and must never be treated as the real identifier.
+
+When generating descriptions, prefer business terminology over raw column
+mechanics -- for example, describe cusip as "the security identifier (CUSIP)"
+rather than "a nine-character code."

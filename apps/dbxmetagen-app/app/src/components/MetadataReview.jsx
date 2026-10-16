@@ -1,4 +1,4 @@
-import React, { useState, useEffect, useCallback, useMemo } from 'react'
+import React, { useState, useEffect, useCallback, useMemo, useRef, useLayoutEffect } from 'react'
 import { safeFetch, ErrorBanner, PrereqBanner } from '../App'
 import { FKApplyPanel } from './ForeignKeyGeneration'
 import { CoveragePanel } from './Coverage'
@@ -27,10 +27,36 @@ function DataTable({ data, maxRows = 100 }) {
   )
 }
 
+// Comment box that auto-grows to fit its content so the whole comment is visible
+// without manual expansion (requested: column comments were clipped at ~2 lines,
+// table comments at ~3-4). Height is recomputed on every value change (edits, or a
+// "Keep old" restore) and on window resize (width changes affect wrapping). min-h
+// keeps a ~2-line floor; resize-y still lets the user drag to a custom height,
+// which an edit then recomputes from.
+function AutoTextarea({ value, onChange, className }) {
+  const ref = useRef(null)
+  const fit = useCallback(() => {
+    const el = ref.current
+    if (!el) return
+    el.style.height = 'auto'          // shrink first so scrollHeight reflects content, not the old height
+    el.style.height = `${el.scrollHeight}px`
+  }, [])
+  useLayoutEffect(() => { fit() }, [value, fit])
+  useEffect(() => {
+    window.addEventListener('resize', fit)
+    return () => window.removeEventListener('resize', fit)
+  }, [fit])
+  return <textarea ref={ref} value={value} onChange={onChange} onInput={fit}
+    rows={2} className={className} />
+}
+
 // Read-only "current value in Unity Catalog" shown beneath a generated comment
 // when the comparison toggle is on (#248/#222). Surfaces whether applying would
 // change the live value, and flags a certified object the apply path will protect.
-function UcCompare({ current, proposed, certified }) {
+// When the live value differs and onKeep is given, offers a "Keep old comment"
+// button that restores the current UC text into the editable field (so applying
+// leaves the catalog comment unchanged).
+function UcCompare({ current, proposed, certified, onKeep }) {
   const cur = (current ?? '').trim()
   const prop = (proposed ?? '').trim()
   if (!cur && !certified) {
@@ -45,6 +71,13 @@ function UcCompare({ current, proposed, certified }) {
         {cur && (same
           ? <span className="px-1 py-0 rounded bg-slate-100 text-slate-500 dark:bg-dbx-navy-500 dark:text-slate-400">unchanged</span>
           : <span className="px-1 py-0 rounded bg-amber-100 text-amber-700 dark:bg-amber-900/40 dark:text-amber-300">will change</span>)}
+        {cur && !same && onKeep && (
+          <button type="button" onClick={() => onKeep(current ?? '')}
+            title="Restore the current Unity Catalog comment into the field, so applying leaves it unchanged."
+            className="px-1 py-0 rounded border border-slate-300 dark:border-dbx-navy-400 text-slate-500 dark:text-slate-300 hover:bg-slate-100 dark:hover:bg-dbx-navy-500 font-medium">
+            Keep old comment
+          </button>
+        )}
       </div>
       {cur
         ? <p className="text-slate-500 dark:text-slate-400 whitespace-pre-wrap break-words">{cur}</p>
@@ -1119,10 +1152,11 @@ function ReviewEditor() {
                     {show('comments') && (
                       <div className="col-span-4">
                         <label className="block text-xs font-medium text-slate-500 mb-1">Table Comment</label>
-                        <textarea value={tbl.comment ?? ''} onChange={e => onTableChange(tblIdx, 'comment', e.target.value)} rows={2}
-                          className={inp + ' resize-y'} />
+                        <AutoTextarea value={tbl.comment ?? ''} onChange={e => onTableChange(tblIdx, 'comment', e.target.value)}
+                          className={inp + ' resize-y min-h-[3rem] overflow-hidden'} />
                         {compareUc && <UcCompare current={ucCurrent[tbl.table_name]?.comment}
-                          proposed={tbl.comment} certified={ucCurrent[tbl.table_name]?.certified} />}
+                          proposed={tbl.comment} certified={ucCurrent[tbl.table_name]?.certified}
+                          onKeep={v => onTableChange(tblIdx, 'comment', v)} />}
                       </div>
                     )}
                     {show('domain') && (
@@ -1182,9 +1216,10 @@ function ReviewEditor() {
                             <tr key={col.column_id || ci} className={`border-b border-slate-100 dark:border-dbx-navy-400/20 ${isColDirty(tblIdx, ci) ? 'bg-amber-50 dark:bg-amber-900/20' : ''} hover:bg-orange-50/30 dark:hover:bg-dbx-navy-500/30`}>
                               <td className="px-3 py-1.5 text-slate-600 dark:text-slate-300 font-mono text-xs truncate">{col.column_name}</td>
                               <td className="px-3 py-1.5 text-slate-400 dark:text-slate-500 text-xs truncate">{col.data_type}</td>
-                              {show('comments') && <td className="px-2 py-1"><textarea value={col.comment ?? ''} onChange={e => onColChange(tblIdx, ci, 'comment', e.target.value)} rows={2} className={inp + ' resize-y whitespace-pre-wrap break-words'} />
+                              {show('comments') && <td className="px-2 py-1"><AutoTextarea value={col.comment ?? ''} onChange={e => onColChange(tblIdx, ci, 'comment', e.target.value)} className={inp + ' resize-y whitespace-pre-wrap break-words min-h-[3rem] overflow-hidden'} />
                                 {compareUc && <UcCompare current={ucCurrent[tbl.table_name]?.columns?.[col.column_name]?.comment}
-                                  proposed={col.comment} certified={ucCurrent[tbl.table_name]?.columns?.[col.column_name]?.certified} />}</td>}
+                                  proposed={col.comment} certified={ucCurrent[tbl.table_name]?.columns?.[col.column_name]?.certified}
+                                  onKeep={v => onColChange(tblIdx, ci, 'comment', v)} />}</td>}
                               {show('pii') && <td className="px-2 py-1">
                                 <div className="flex items-center gap-1.5">
                                   <input value={col.classification ?? ''} onChange={e => onColChange(tblIdx, ci, 'classification', e.target.value)} className={inp} placeholder="Unclassified" />
