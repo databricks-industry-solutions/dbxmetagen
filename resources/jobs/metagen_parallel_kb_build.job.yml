@@ -163,6 +163,9 @@ resources:
           max_retries: 1
           min_retry_interval_millis: 600000
           timeout_seconds: 14400
+          # run_if: ALL_DONE so a single pi/domain failure can't skip the KB
+          # rebuild and silently drop fresh metadata from the review UI.
+          run_if: ALL_DONE
           depends_on:
             - task_key: generate_pi
             - task_key: generate_domain
@@ -179,6 +182,7 @@ resources:
           max_retries: 1
           min_retry_interval_millis: 600000
           timeout_seconds: 14400
+          run_if: ALL_DONE
           depends_on:
             - task_key: generate_pi
             - task_key: generate_domain
