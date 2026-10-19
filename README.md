@@ -793,10 +793,8 @@ The model serving endpoint is rate-limiting you. dbxmetagen retries with backoff
 absorbs short bursts; under sustained throttling, tables are marked failed while the rest of the
 run continues. See [Foundation Model API limits](https://docs.databricks.com/aws/en/machine-learning/foundation-model-apis/limits).
 
-**Fix:** ask your account team to raise the rate limits for the endpoint you're using. Until then,
-run fewer jobs against the same endpoint at once, narrow the table scope, or lower `max_tokens`
-(default `8192`), since each in-flight request reserves its full `max_tokens` until it finishes.
-Alternatively, point `model` at a provisioned throughput endpoint.
+**Fix:** Ask your account team to raise the rate limits for the endpoint you're using. 
+Until then, run fewer jobs against the same endpoint at once and/or narrow the table scope.
 
 ### Known Limitations
 
