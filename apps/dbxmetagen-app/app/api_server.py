@@ -16601,6 +16601,217 @@ def resolve_customer_context_preview(full_table_name: str):
     }
 
 
+# ---- Customer-context DECOMPOSE: unstructured doc -> many scoped entries -----
+# The document lane above attaches a whole (summarized) document to ONE scope the
+# user picks. That is right for a single narrative directive, but wrong for a
+# glossary / data dictionary / spec that actually describes many different tables:
+# summarizing it melts the per-table facts together, and one scope injects the
+# whole blob into every table in that scope (overload + irrelevance).
+#
+# Decompose instead EXTRACTS the document into many small entries and assigns each
+# to a REAL object. The assignment is grounded: we fetch the actual table names in
+# the caller's chosen catalog/schema and the model may only target one of THOSE
+# (validated server-side -- a hallucinated name can never reach the resolver, which
+# matches on exact catalog.schema.table). Pieces that don't clearly belong to one
+# table fall back to the most-specific scope the caller supplied. Entries are
+# auto-committed (editable afterward in the Context table), one row per piece so
+# nothing is lost to a scope-keyed overwrite.
+_CC_DECOMPOSE_MAX_TABLES = 500     # grounding-list cap; past this, make the user narrow
+_CC_DECOMPOSE_MAX_ENTRIES = 200    # defensive cap on what one document can produce
+_CC_DECOMPOSE_WORDS = 150          # per-entry word cap for decomposed pieces (tighter than 500)
+
+
+def _cc_ground_tables(catalog: str, schema: Optional[str]) -> list[str]:
+    """Fetch real fully-qualified table names under catalog[.schema] -- the ONLY
+    scopes a decomposed entry may target at table level. Capped; an over-cap result
+    signals the caller to narrow to a schema (raised as 422 by the endpoint)."""
+    params = [StatementParameterListItem(name="cat", value=catalog)]
+    where = "table_catalog = :cat AND table_schema NOT IN ('information_schema')"
+    if schema:
+        where += " AND table_schema = :sch"
+        params.append(StatementParameterListItem(name="sch", value=schema))
+    rows = execute_sql(
+        f"SELECT table_catalog, table_schema, table_name "
+        f"FROM system.information_schema.tables WHERE {where} "
+        f"ORDER BY table_schema, table_name LIMIT {_CC_DECOMPOSE_MAX_TABLES + 1}",
+        timeout=60, parameters=params,
+    )
+    return [f"{r['table_catalog']}.{r['table_schema']}.{r['table_name']}" for r in rows]
+
+
+def _cc_build_decompose_prompt(text, scope_description, allowed_tables, catalog,
+                               schema, has_embedded_scope):
+    """Pure builder for the decomposition prompt. Grounds the model in the real
+    table list and the caller's scope description; forbids inventing names."""
+    allowed_block = "\n".join(f"  - {t}" for t in allowed_tables) or "  (none listed)"
+    schema_scope = f"{catalog}.{schema}" if schema else "(schema not fixed)"
+    embedded = ("The document itself references specific catalogs/schemas/tables/columns -- "
+                "use those references to place each piece."
+                if has_embedded_scope else
+                "The document does NOT clearly name its target objects -- rely on the "
+                "caller's scope description and the term/table names to place each piece.")
+    return (
+        "You are organizing a customer's business glossary / data documentation into "
+        "scoped metadata-generation context. Split the DOCUMENT into small, self-contained "
+        "context entries and assign each to the most specific REAL object it describes.\n\n"
+        f"Caller's scope description of this document:\n{scope_description}\n\n"
+        f"{embedded}\n\n"
+        "RULES:\n"
+        "1. target_scope for a table MUST be copied EXACTLY from the ALLOWED TABLES list "
+        "below. Never invent, abbreviate, or guess a table name.\n"
+        f"2. Cross-cutting context that applies to the whole schema -> scope_type 'schema', "
+        f"target_scope '{schema_scope}'. Whole-catalog -> scope_type 'catalog', target_scope "
+        f"'{catalog}'.\n"
+        "3. If a piece cannot be confidently tied to a listed table or to the schema/catalog, "
+        "OMIT it rather than guessing.\n"
+        "4. Keep each context_text concise (< 120 words), factual, and standalone.\n"
+        "5. Set confidence 0.0-1.0 for the scope assignment.\n\n"
+        f"ALLOWED TABLES (fully qualified):\n{allowed_block}\n\n"
+        "Return JSON of the form: "
+        '{"entries":[{"context_text":"...","target_scope":"cat.sch.tbl","scope_type":"table",'
+        '"confidence":0.0,"reason":"..."}]}\n\n'
+        f"DOCUMENT:\n{text}"
+    )
+
+
+def _cc_validate_decomposed(entries, allowed_tables, catalog, schema, table):
+    """Pure validation/normalization of model-proposed entries. Snaps every entry to a
+    real scope: a table target must be in allowed_tables (case-insensitive); schema/catalog
+    targets must match the caller's; anything else is coerced to the most-specific scope the
+    caller supplied (table > schema > catalog). Returns normalized dicts with a `coerced` flag.
+    """
+    allowed_lc = {t.lower(): t for t in allowed_tables}
+    fallback_scope, fallback_type = (
+        (f"{catalog}.{schema}.{table}", "table") if (schema and table)
+        else (f"{catalog}.{schema}", "schema") if schema
+        else (catalog, "catalog")
+    )
+    schema_scope = f"{catalog}.{schema}" if schema else None
+    out = []
+    for e in entries or []:
+        if not isinstance(e, dict):
+            continue
+        ctext = (e.get("context_text") or "").strip()
+        if not ctext:
+            continue
+        stype = (e.get("scope_type") or "").strip().lower()
+        tgt = (e.get("target_scope") or "").strip()
+        try:
+            conf = float(e.get("confidence")) if e.get("confidence") is not None else None
+        except (TypeError, ValueError):
+            conf = None
+        coerced = False
+        if stype == "table" and tgt.lower() in allowed_lc:
+            scope, scope_type = allowed_lc[tgt.lower()], "table"
+        elif stype == "catalog" and tgt == catalog:
+            scope, scope_type = catalog, "catalog"
+        elif stype == "schema" and schema_scope and tgt == schema_scope:
+            scope, scope_type = schema_scope, "schema"
+        else:
+            scope, scope_type, coerced = fallback_scope, fallback_type, True
+        words = ctext.split()
+        if len(words) > _CC_DECOMPOSE_WORDS:
+            ctext = " ".join(words[:_CC_DECOMPOSE_WORDS])
+        out.append({"context_text": ctext, "scope": scope, "scope_type": scope_type,
+                    "confidence": conf, "coerced": coerced,
+                    "reason": (e.get("reason") or "")[:200]})
+    return out[:_CC_DECOMPOSE_MAX_ENTRIES]
+
+
+@app.post("/api/customer-context/decompose")
+def decompose_customer_context(file: UploadFile = File(...),
+                               catalog: str = Form(...),
+                               schema: str = Form(None),
+                               table: str = Form(None),
+                               scope_description: str = Form(...),
+                               has_embedded_scope: bool = Form(False)):
+    """Extract an unstructured document into many scope-assigned context entries,
+    grounded against the real tables under catalog[.schema]. Auto-commits; entries
+    are editable afterward in the Context table."""
+    _ensure_customer_context_table()
+    # --- validate inputs (scope_description is FORCED -- the model needs a steer) ---
+    catalog = (catalog or "").strip()
+    schema = (schema or "").strip() or None
+    table = (table or "").strip() or None
+    scope_description = (scope_description or "").strip()
+    for label, val in (("catalog", catalog), ("schema", schema), ("table", table)):
+        if val and not _SAFE_IDENT_RE.match(val):
+            raise HTTPException(400, detail=f"Invalid {label}: {val!r}")
+    if not catalog:
+        raise HTTPException(400, detail="catalog is required")
+    if not scope_description or len(scope_description.split()) < 5:
+        raise HTTPException(400, detail=(
+            "A scope description is required (at least a sentence): say what this document "
+            "covers and which catalog/schema/tables it is about, so each piece can be placed."))
+    if table and not schema:
+        raise HTTPException(400, detail="Specifying a table also requires its schema")
+
+    filename = file.filename or ""
+    ext = filename.rsplit(".", 1)[-1].lower() if "." in filename else ""
+    if ext not in _CC_TEXT_EXTS and ext not in _CC_BINARY_EXTS:
+        raise HTTPException(400, detail=(
+            f"Decompose accepts documents (.txt/.md/.pdf/.docx). For already-structured "
+            f"data use the YAML/JSON upload. Got '.{ext}'."))
+    raw = file.file.read()
+    text = (_cc_parse_binary_to_text(raw, ext, filename) if ext in _CC_BINARY_EXTS
+            else raw.decode("utf-8", errors="replace"))
+    if not text.strip():
+        raise HTTPException(400, detail="No text could be extracted from the document")
+
+    # --- ground against real tables; force narrowing if the surface is too large ---
+    allowed = _cc_ground_tables(catalog, schema)
+    if len(allowed) > _CC_DECOMPOSE_MAX_TABLES:
+        raise HTTPException(422, detail=(
+            f"{catalog}{'.' + schema if schema else ''} has more than "
+            f"{_CC_DECOMPOSE_MAX_TABLES} tables. Narrow to a schema (or a table), or split "
+            f"the document, so each piece can be placed against a bounded object list."))
+
+    # --- one grounded ai_query decomposition; robust to per-call failure ---
+    prompt = _cc_build_decompose_prompt(text[:100000], scope_description, allowed,
+                                        catalog, schema, has_embedded_scope)
+    endpoint = _safe_model_endpoint(os.environ.get("LLM_MODEL"))
+    sql = (
+        f"SELECT from_json(AI_QUERY('{endpoint}', :prompt, "
+        f"responseFormat => '{{\"type\":\"json_object\"}}', failOnError => false).response, "
+        f"'STRUCT<entries: ARRAY<STRUCT<context_text:STRING, target_scope:STRING, "
+        f"scope_type:STRING, confidence:DOUBLE, reason:STRING>>>') AS parsed"
+    )
+    try:
+        rows = execute_sql(sql, timeout=300,
+                           parameters=[StatementParameterListItem(name="prompt", value=prompt)])
+    except Exception as exc:
+        raise HTTPException(502, detail=f"Decomposition model call failed: {exc}")
+    parsed = (rows[0].get("parsed") if rows else None) or {}
+    raw_entries = parsed.get("entries") if isinstance(parsed, dict) else None
+    entries = _cc_validate_decomposed(raw_entries, allowed, catalog, schema, table)
+    if not entries:
+        raise HTTPException(422, detail=(
+            "The model could not tie any part of this document to a listed table or to the "
+            "schema/catalog. Add more scope detail, use scope headers, or split the file."))
+
+    # --- auto-commit: one row per piece (content-inclusive id => no scope collision) ---
+    import hashlib
+    from datetime import datetime as _dt
+    now = _dt.utcnow().isoformat()
+    label = f"decomposed:{filename[:100]}"
+    committed = []
+    for e in entries:
+        ctx_id = hashlib.sha256(f"{e['scope']}::{e['context_text']}".encode()).hexdigest()[:16]
+        sql_up, params = _build_customer_context_upsert(
+            ctx_id, e["scope"], e["scope_type"], e["context_text"], label, 0, now)
+        try:
+            execute_sql(sql_up, timeout=30, parameters=params)
+            committed.append({"scope": e["scope"], "scope_type": e["scope_type"],
+                              "confidence": e["confidence"], "coerced": e["coerced"],
+                              "word_count": len(e["context_text"].split())})
+        except Exception as exc:
+            committed.append({"scope": e["scope"], "error": str(exc)})
+    coerced_n = sum(1 for c in committed if c.get("coerced"))
+    return {"uploaded": len([c for c in committed if "error" not in c]),
+            "lane": "decompose", "model": endpoint, "grounded_tables": len(allowed),
+            "coerced": coerced_n, "entries": committed}
+
+
 # ---------------------------------------------------------------------------
 # Customer acronyms + column-description overrides (app-managed inputs)
 #

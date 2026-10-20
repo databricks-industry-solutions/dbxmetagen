@@ -1,7 +1,7 @@
 {
   "name": "dbxmetagen-app",
   "private": true,
-  "version": "0.10.73",
+  "version": "0.10.74",
   "type": "module",
   "scripts": {
     "dev": "vite",

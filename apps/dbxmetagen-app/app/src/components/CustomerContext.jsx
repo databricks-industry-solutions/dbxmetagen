@@ -32,6 +32,11 @@ function ContextManager() {
   const [uploadScopeType, setUploadScopeType] = useState('schema')
   const [uploading, setUploading] = useState(false)
   const [uploadResult, setUploadResult] = useState(null)
+  // Decompose: unstructured doc -> many scope-assigned entries, grounded on real tables.
+  const [showDecompose, setShowDecompose] = useState(false)
+  const [dec, setDec] = useState({ file: null, catalog: '', schema: '', table: '', description: '', hasEmbedded: false })
+  const [decomposing, setDecomposing] = useState(false)
+  const [decResult, setDecResult] = useState(null)
 
   const load = useCallback(async () => {
     setLoading(true)
@@ -94,6 +99,31 @@ function ContextManager() {
     load()
   }
 
+  // A scope description is FORCED (>= 5 words), matching the server guard: the model
+  // needs a steer to place pieces, especially when the file has no embedded scope markers.
+  const decWordCount = wordCount(dec.description)
+  const decReady = dec.file && dec.catalog.trim() && decWordCount >= 5 && !decomposing
+
+  const handleDecompose = async () => {
+    if (!decReady) return
+    setDecomposing(true)
+    setError(null)
+    setDecResult(null)
+    const fd = new FormData()
+    fd.append('file', dec.file)
+    fd.append('catalog', dec.catalog.trim())
+    if (dec.schema.trim()) fd.append('schema', dec.schema.trim())
+    if (dec.table.trim()) fd.append('table', dec.table.trim())
+    fd.append('scope_description', dec.description.trim())
+    fd.append('has_embedded_scope', dec.hasEmbedded ? 'true' : 'false')
+    const { data, error: err } = await safeFetch('/api/customer-context/decompose', { method: 'POST', body: fd })
+    setDecomposing(false)
+    if (err) { setError(err); return }
+    setDecResult(data)
+    setDec(d => ({ ...d, file: null }))
+    load()
+  }
+
   const handleResolve = async () => {
     if (!preview.table) return
     const { data, error: err } = await safeFetch(`/api/customer-context/resolve/${preview.table}`)
@@ -116,6 +146,7 @@ function ContextManager() {
           </p>
         </div>
         <div className="flex gap-2">
+          <button onClick={() => setShowDecompose(!showDecompose)} className="btn-ghost btn-sm">Decompose Document</button>
           <button onClick={() => setShowUpload(!showUpload)} className="btn-ghost btn-sm">Upload File</button>
           <button onClick={() => { setEditing('new'); setForm({ scope: '', scope_type: 'schema', context_text: '', context_label: '', priority: 0 }) }}
             className="btn-primary btn-sm">Add Context</button>
@@ -126,6 +157,88 @@ function ContextManager() {
         <div className="card border-l-4 border-l-red-500 px-4 py-3 text-sm flex justify-between items-start">
           <span className="text-red-600 dark:text-red-400">{error}</span>
           <button onClick={() => setError(null)} className="text-slate-400 hover:text-slate-600 ml-2">&times;</button>
+        </div>
+      )}
+
+      {showDecompose && (
+        <div className="card p-4 space-y-3 border-l-4 border-l-dbx-sky">
+          <div>
+            <label className="text-sm font-medium text-slate-700 dark:text-slate-300">Decompose a document into scoped context</label>
+            <p className="text-xs text-slate-500 dark:text-slate-400 mt-0.5">
+              For a glossary, data dictionary, or spec that describes <strong>many</strong> tables. The document is
+              split into small entries and each is assigned to a <strong>real table</strong> under the catalog/schema you
+              pick (names are validated &mdash; invented tables are never used; unplaceable pieces fall back to your
+              scope). Entries are saved immediately and are editable in the table below.
+            </p>
+            <div className="mt-2 text-xs px-3 py-2 rounded-md bg-amber-500/10 text-amber-700 dark:text-amber-300 border border-amber-400/30">
+              Give each upload a clear, narrow scope. Don&rsquo;t dump many unrelated files or one giant file where the
+              scope can&rsquo;t be determined &mdash; instead upload a file with scope headers, a file whose scope you
+              describe below, or <strong>multiple files, each with its own scope &amp; purpose</strong>.
+            </div>
+            <input type="file" accept=".txt,.md,.pdf,.docx" onChange={e => { setDec(d => ({ ...d, file: e.target.files[0] || null })); setDecResult(null); setError(null) }}
+              className="mt-2 block w-full text-sm text-slate-500 file:mr-4 file:py-2 file:px-4 file:rounded-lg file:border-0 file:text-sm file:font-medium file:bg-dbx-sky/10 file:text-dbx-sky hover:file:bg-dbx-sky/20" />
+          </div>
+          <div className="grid grid-cols-3 gap-3">
+            <div>
+              <label className="block text-sm font-medium text-slate-600 dark:text-slate-300 mb-1">Catalog <span className="text-red-500">*</span></label>
+              <input value={dec.catalog} onChange={e => setDec(d => ({ ...d, catalog: e.target.value }))}
+                placeholder="my_catalog"
+                className="w-full px-3 py-2 rounded-lg border border-slate-300 dark:border-dbx-navy-400 bg-white dark:bg-dbx-navy-600 text-sm" />
+            </div>
+            <div>
+              <label className="block text-sm font-medium text-slate-600 dark:text-slate-300 mb-1">Schema</label>
+              <input value={dec.schema} onChange={e => setDec(d => ({ ...d, schema: e.target.value }))}
+                placeholder="(recommended)"
+                className="w-full px-3 py-2 rounded-lg border border-slate-300 dark:border-dbx-navy-400 bg-white dark:bg-dbx-navy-600 text-sm" />
+            </div>
+            <div>
+              <label className="block text-sm font-medium text-slate-600 dark:text-slate-300 mb-1">Table</label>
+              <input value={dec.table} onChange={e => setDec(d => ({ ...d, table: e.target.value }))}
+                placeholder="(optional)"
+                className="w-full px-3 py-2 rounded-lg border border-slate-300 dark:border-dbx-navy-400 bg-white dark:bg-dbx-navy-600 text-sm" />
+            </div>
+          </div>
+          <label className="flex items-center gap-2 text-xs text-slate-600 dark:text-slate-300 cursor-pointer">
+            <input type="checkbox" checked={dec.hasEmbedded} onChange={e => setDec(d => ({ ...d, hasEmbedded: e.target.checked }))} />
+            This file names specific catalogs / schemas / tables / columns inside it (use those to place content)
+          </label>
+          <div>
+            <div className="flex justify-between items-center mb-1">
+              <label className="text-sm font-medium text-slate-600 dark:text-slate-300">
+                Scope description <span className="text-red-500">*</span>
+                {!dec.hasEmbedded && <span className="text-xs text-slate-400 ml-1">(required &mdash; the file has no embedded scope, so describe it well)</span>}
+              </label>
+              <span className={`text-xs ${decWordCount < 5 ? 'text-red-500' : 'text-slate-400'}`}>{decWordCount} words (min 5)</span>
+            </div>
+            <textarea value={dec.description} onChange={e => setDec(d => ({ ...d, description: e.target.value }))}
+              rows={3} placeholder="What does this document cover, and which tables/areas is it about? e.g. 'Clinical trials glossary for the gold CDM schema: defines study, study_site, and quality-event tables and their status codes.'"
+              className="w-full px-3 py-2 rounded-lg border border-slate-300 dark:border-dbx-navy-400 bg-white dark:bg-dbx-navy-600 text-sm" />
+          </div>
+          <div className="flex items-center justify-between">
+            <span className="text-xs text-slate-400">{dec.file ? dec.file.name : 'No file selected'}</span>
+            <div className="flex gap-2">
+              <button onClick={() => { setShowDecompose(false); setDec({ file: null, catalog: '', schema: '', table: '', description: '', hasEmbedded: false }); setDecResult(null) }} className="btn-ghost btn-sm">Cancel</button>
+              <button onClick={handleDecompose} disabled={!decReady}
+                className="btn-primary btn-sm disabled:opacity-50">{decomposing ? 'Decomposing… (this can take a minute)' : 'Decompose & Save'}</button>
+            </div>
+          </div>
+          {decResult && (
+            <div className="text-xs px-3 py-2 rounded-md bg-slate-50 dark:bg-dbx-navy-600 text-slate-600 dark:text-slate-300 space-y-1">
+              <div>
+                Created <strong>{decResult.uploaded}</strong> scoped {decResult.uploaded === 1 ? 'entry' : 'entries'} from {decResult.grounded_tables} grounded table(s).
+                {decResult.coerced > 0 && <span className="text-amber-600 dark:text-amber-400"> {decResult.coerced} couldn&rsquo;t be tied to a specific table and fell back to your scope &mdash; review below.</span>}
+              </div>
+              {(decResult.entries || []).slice(0, 12).map((e, i) => (
+                <div key={i} className="flex gap-2">
+                  <span className={`inline-block px-1.5 rounded ${e.coerced ? 'bg-amber-500/15 text-amber-700 dark:text-amber-300' : 'bg-slate-200/60 dark:bg-dbx-navy-500'}`}>{e.scope_type}</span>
+                  <span className="font-mono">{e.scope}</span>
+                  {e.confidence != null && <span className="text-slate-400">· conf {Number(e.confidence).toFixed(2)}</span>}
+                  {e.error && <span className="text-red-500">· {e.error}</span>}
+                </div>
+              ))}
+              {(decResult.entries || []).length > 12 && <div className="text-slate-400">…and {decResult.entries.length - 12} more (see the table below)</div>}
+            </div>
+          )}
         </div>
       )}
 
