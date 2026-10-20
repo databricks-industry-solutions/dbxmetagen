@@ -17,7 +17,7 @@ function isDocFile(name) {
   return DOC_EXTS.includes(ext)
 }
 
-export default function CustomerContext() {
+function ContextManager() {
   const [entries, setEntries] = useState([])
   const [loading, setLoading] = useState(true)
   const [error, setError] = useState(null)
@@ -324,6 +324,380 @@ export default function CustomerContext() {
           </table>
         </div>
       )}
+    </div>
+  )
+}
+
+// ---------------------------------------------------------------------------
+// Acronyms: scope-aware abbreviations overlaid onto variables.yml acro_content at run time.
+// ---------------------------------------------------------------------------
+const ACRO_SCOPE_TYPES = ['schema', 'catalog']
+
+function AcronymsManager() {
+  const [items, setItems] = useState([])
+  const [loading, setLoading] = useState(true)
+  const [error, setError] = useState(null)
+  const [adding, setAdding] = useState(false)
+  const [saving, setSaving] = useState(false)
+  const [form, setForm] = useState({ scope: '', scope_type: 'schema', abbreviation: '', expansion: '', notes: '' })
+  const [file, setFile] = useState(null)
+  const [upScope, setUpScope] = useState('')
+  const [upScopeType, setUpScopeType] = useState('schema')
+  const [uploading, setUploading] = useState(false)
+  const [upResult, setUpResult] = useState(null)
+
+  const load = useCallback(async () => {
+    setLoading(true)
+    const { data, error: err } = await safeFetch('/api/customer-acronyms')
+    if (err) setError(err); else setItems(data || [])
+    setLoading(false)
+  }, [])
+  useEffect(() => { load() }, [load])
+
+  const save = async () => {
+    if (saving) return
+    setSaving(true); setError(null)
+    const { error: err } = await safeFetch('/api/customer-acronyms', {
+      method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(form),
+    })
+    setSaving(false)
+    if (err) { setError(err); return }
+    setForm({ scope: '', scope_type: 'schema', abbreviation: '', expansion: '', notes: '' })
+    setAdding(false); load()
+  }
+  const del = async (id) => {
+    const { error: err } = await safeFetch(`/api/customer-acronyms/${id}`, { method: 'DELETE' })
+    if (err) setError(err); else load()
+  }
+  const upload = async () => {
+    if (!file || uploading) return
+    setUploading(true); setError(null)
+    const fd = new FormData()
+    fd.append('file', file)
+    fd.append('scope_type', upScopeType)
+    if (upScope.trim()) fd.append('scope', upScope.trim())
+    const { data, error: err } = await safeFetch('/api/customer-acronyms/upload', { method: 'POST', body: fd })
+    setUploading(false)
+    if (err) { setError(err); return }
+    setUpResult(data); setFile(null); setUpScope(''); load()
+  }
+
+  return (
+    <div className="space-y-5">
+      <div className="flex items-start justify-between">
+        <p className="text-sm text-slate-500 dark:text-slate-400 max-w-2xl">
+          Abbreviations the model should expand in descriptions and classifications. Uploaded as a layer
+          on top of the built-in global list, scoped to a <strong>schema</strong> or <strong>catalog</strong>;
+          the more-specific scope wins. Upload an <code>.xlsx</code>/<code>.csv</code> with columns like
+          <em> Abbreviation</em> and <em>Stands For</em>, or add one below.
+        </p>
+        <button onClick={() => setAdding(a => !a)} className="btn-primary btn-sm shrink-0">Add Acronym</button>
+      </div>
+
+      {error && (
+        <div className="card border-l-4 border-l-red-500 px-4 py-3 text-sm flex justify-between">
+          <span className="text-red-600 dark:text-red-400">{error}</span>
+          <button onClick={() => setError(null)} className="text-slate-400 ml-2">&times;</button>
+        </div>
+      )}
+
+      <div className="card p-4 space-y-3">
+        <label className="text-sm font-medium text-slate-700 dark:text-slate-300">Upload acronyms (.xlsx / .csv)</label>
+        <input type="file" accept=".xlsx,.xls,.csv" onChange={e => { setFile(e.target.files[0] || null); setUpResult(null); setError(null) }}
+          className="block w-full text-sm text-slate-500 file:mr-4 file:py-2 file:px-4 file:rounded-lg file:border-0 file:text-sm file:font-medium file:bg-dbx-lava/10 file:text-dbx-lava hover:file:bg-dbx-lava/20" />
+        <div className="grid grid-cols-2 gap-3">
+          <div>
+            <label className="block text-xs font-medium text-slate-600 dark:text-slate-300 mb-1">Scope type</label>
+            <select value={upScopeType} onChange={e => setUpScopeType(e.target.value)}
+              className="w-full px-3 py-2 rounded-lg border border-slate-300 dark:border-dbx-navy-400 bg-white dark:bg-dbx-navy-600 text-sm">
+              {ACRO_SCOPE_TYPES.map(t => <option key={t} value={t}>{t}</option>)}
+            </select>
+          </div>
+          <div>
+            <label className="block text-xs font-medium text-slate-600 dark:text-slate-300 mb-1">Scope <span className="text-slate-400">(blank = this app's {upScopeType})</span></label>
+            <input value={upScope} onChange={e => setUpScope(e.target.value)} placeholder={upScopeType === 'schema' ? 'catalog.schema' : 'catalog'}
+              className="w-full px-3 py-2 rounded-lg border border-slate-300 dark:border-dbx-navy-400 bg-white dark:bg-dbx-navy-600 text-sm" />
+          </div>
+        </div>
+        <div className="flex items-center justify-between">
+          <span className="text-xs text-slate-400">{file ? file.name : 'No file selected'}</span>
+          <button onClick={upload} disabled={!file || uploading} className="btn-primary btn-sm disabled:opacity-50">{uploading ? 'Uploading…' : 'Upload'}</button>
+        </div>
+        {upResult && <div className="text-xs px-3 py-2 rounded-md bg-slate-50 dark:bg-dbx-navy-600 text-slate-600 dark:text-slate-300">
+          Uploaded {upResult.uploaded} acronym(s) to {upResult.scope_type}:{upResult.scope}.
+          {upResult.errors?.length > 0 && <span className="text-red-500"> {upResult.errors.length} error(s).</span>}
+        </div>}
+      </div>
+
+      {adding && (
+        <div className="card p-4 grid grid-cols-2 gap-3">
+          <div>
+            <label className="block text-xs font-medium text-slate-600 dark:text-slate-300 mb-1">Scope type</label>
+            <select value={form.scope_type} onChange={e => setForm(f => ({ ...f, scope_type: e.target.value }))}
+              className="w-full px-3 py-2 rounded-lg border border-slate-300 dark:border-dbx-navy-400 bg-white dark:bg-dbx-navy-600 text-sm">
+              {ACRO_SCOPE_TYPES.map(t => <option key={t} value={t}>{t}</option>)}
+            </select>
+          </div>
+          <div>
+            <label className="block text-xs font-medium text-slate-600 dark:text-slate-300 mb-1">Scope</label>
+            <input value={form.scope} onChange={e => setForm(f => ({ ...f, scope: e.target.value }))} placeholder={form.scope_type === 'schema' ? 'catalog.schema' : 'catalog'}
+              className="w-full px-3 py-2 rounded-lg border border-slate-300 dark:border-dbx-navy-400 bg-white dark:bg-dbx-navy-600 text-sm" />
+          </div>
+          <div>
+            <label className="block text-xs font-medium text-slate-600 dark:text-slate-300 mb-1">Abbreviation</label>
+            <input value={form.abbreviation} onChange={e => setForm(f => ({ ...f, abbreviation: e.target.value }))} placeholder="e.g. CD"
+              className="w-full px-3 py-2 rounded-lg border border-slate-300 dark:border-dbx-navy-400 bg-white dark:bg-dbx-navy-600 text-sm" />
+          </div>
+          <div>
+            <label className="block text-xs font-medium text-slate-600 dark:text-slate-300 mb-1">Expansion</label>
+            <input value={form.expansion} onChange={e => setForm(f => ({ ...f, expansion: e.target.value }))} placeholder="e.g. clinical data"
+              className="w-full px-3 py-2 rounded-lg border border-slate-300 dark:border-dbx-navy-400 bg-white dark:bg-dbx-navy-600 text-sm" />
+          </div>
+          <div className="col-span-2">
+            <label className="block text-xs font-medium text-slate-600 dark:text-slate-300 mb-1">Notes (optional)</label>
+            <input value={form.notes} onChange={e => setForm(f => ({ ...f, notes: e.target.value }))}
+              className="w-full px-3 py-2 rounded-lg border border-slate-300 dark:border-dbx-navy-400 bg-white dark:bg-dbx-navy-600 text-sm" />
+          </div>
+          <div className="col-span-2 flex gap-2 justify-end">
+            <button onClick={() => setAdding(false)} className="btn-ghost btn-sm">Cancel</button>
+            <button onClick={save} disabled={saving || !form.scope.trim() || !form.abbreviation.trim() || !form.expansion.trim()}
+              className="btn-primary btn-sm disabled:opacity-50">{saving ? 'Saving…' : 'Save'}</button>
+          </div>
+        </div>
+      )}
+
+      {loading ? <div className="text-center py-8 text-slate-400">Loading…</div>
+        : items.length === 0 ? <div className="card p-8 text-center text-slate-400">No acronyms yet. Upload a file or add one above.</div>
+        : (
+          <div className="card overflow-hidden">
+            <table className="w-full text-sm">
+              <thead className="bg-slate-50 dark:bg-dbx-navy-600"><tr>
+                <th className="px-4 py-2.5 text-left font-medium text-slate-500 dark:text-slate-400">Abbreviation</th>
+                <th className="px-4 py-2.5 text-left font-medium text-slate-500 dark:text-slate-400">Expands to</th>
+                <th className="px-4 py-2.5 text-left font-medium text-slate-500 dark:text-slate-400">Scope</th>
+                <th className="px-4 py-2.5 text-right font-medium text-slate-500 dark:text-slate-400">Actions</th>
+              </tr></thead>
+              <tbody className="divide-y divide-slate-100 dark:divide-dbx-navy-500">
+                {items.map(a => (
+                  <tr key={a.acronym_id} className="hover:bg-slate-50 dark:hover:bg-dbx-navy-600/50">
+                    <td className="px-4 py-3 font-mono text-xs text-slate-700 dark:text-slate-300">{a.abbreviation}</td>
+                    <td className="px-4 py-3 text-slate-600 dark:text-slate-400">{a.expansion}{a.notes ? ` (${a.notes})` : ''}</td>
+                    <td className="px-4 py-3 text-xs text-slate-500">{a.scope_type}:{a.scope}</td>
+                    <td className="px-4 py-3 text-right"><button onClick={() => del(a.acronym_id)} className="text-xs text-red-500 hover:underline">Delete</button></td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          </div>
+        )}
+    </div>
+  )
+}
+
+// ---------------------------------------------------------------------------
+// Descriptions: per-column verbatim comment overrides, layered UNDER metadata_overrides.csv.
+// ---------------------------------------------------------------------------
+function OverridesManager() {
+  const [items, setItems] = useState([])
+  const [loading, setLoading] = useState(true)
+  const [error, setError] = useState(null)
+  const [cfg, setCfg] = useState({ catalog_name: '', schema_name: '' })
+  const [adding, setAdding] = useState(false)
+  const [saving, setSaving] = useState(false)
+  const [form, setForm] = useState({ catalog_name: '', schema_name: '', table_name: '', column_name: '', comment: '' })
+  const [file, setFile] = useState(null)
+  const [upCatalog, setUpCatalog] = useState('')
+  const [upSchema, setUpSchema] = useState('')
+  const [upTable, setUpTable] = useState('')
+  const [uploading, setUploading] = useState(false)
+  const [upResult, setUpResult] = useState(null)
+
+  const load = useCallback(async () => {
+    setLoading(true)
+    const { data, error: err } = await safeFetch('/api/customer-overrides')
+    if (err) setError(err); else setItems(data || [])
+    setLoading(false)
+  }, [])
+  useEffect(() => { load() }, [load])
+  useEffect(() => {
+    safeFetch('/api/config').then(({ data }) => {
+      if (data) {
+        setCfg({ catalog_name: data.catalog_name || '', schema_name: data.schema_name || '' })
+        setForm(f => ({ ...f, catalog_name: data.catalog_name || '', schema_name: data.schema_name || '' }))
+      }
+    })
+  }, [])
+
+  const save = async () => {
+    if (saving) return
+    setSaving(true); setError(null)
+    const { error: err } = await safeFetch('/api/customer-overrides', {
+      method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(form),
+    })
+    setSaving(false)
+    if (err) { setError(err); return }
+    setForm(f => ({ ...f, table_name: '', column_name: '', comment: '' }))
+    setAdding(false); load()
+  }
+  const del = async (id) => {
+    const { error: err } = await safeFetch(`/api/customer-overrides/${id}`, { method: 'DELETE' })
+    if (err) setError(err); else load()
+  }
+  const upload = async () => {
+    if (!file || uploading) return
+    setUploading(true); setError(null)
+    const fd = new FormData()
+    fd.append('file', file)
+    if (upCatalog.trim()) fd.append('catalog_name', upCatalog.trim())
+    if (upSchema.trim()) fd.append('schema_name', upSchema.trim())
+    if (upTable.trim()) fd.append('table_name', upTable.trim())
+    const { data, error: err } = await safeFetch('/api/customer-overrides/upload', { method: 'POST', body: fd })
+    setUploading(false)
+    if (err) { setError(err); return }
+    setUpResult(data); setFile(null); load()
+  }
+
+  return (
+    <div className="space-y-5">
+      <div className="flex items-start justify-between">
+        <p className="text-sm text-slate-500 dark:text-slate-400 max-w-2xl">
+          Pre-written column descriptions applied <strong>verbatim</strong> — the model is skipped for these columns.
+          Layered under any <code>metadata_overrides.csv</code> (the file wins on conflict). Upload an
+          <code> .xlsx</code>/<code>.csv</code> with <em>Table_Name</em>, <em>Column_Name</em>, and
+          <em> Description</em> columns, or add one below. Applies to the next <em>descriptions</em> generation run.
+        </p>
+        <button onClick={() => setAdding(a => !a)} className="btn-primary btn-sm shrink-0">Add Description</button>
+      </div>
+
+      {error && (
+        <div className="card border-l-4 border-l-red-500 px-4 py-3 text-sm flex justify-between">
+          <span className="text-red-600 dark:text-red-400">{error}</span>
+          <button onClick={() => setError(null)} className="text-slate-400 ml-2">&times;</button>
+        </div>
+      )}
+
+      <div className="card p-4 space-y-3">
+        <label className="text-sm font-medium text-slate-700 dark:text-slate-300">Upload descriptions (.xlsx / .csv)</label>
+        <input type="file" accept=".xlsx,.xls,.csv" onChange={e => { setFile(e.target.files[0] || null); setUpResult(null); setError(null) }}
+          className="block w-full text-sm text-slate-500 file:mr-4 file:py-2 file:px-4 file:rounded-lg file:border-0 file:text-sm file:font-medium file:bg-dbx-lava/10 file:text-dbx-lava hover:file:bg-dbx-lava/20" />
+        <div className="grid grid-cols-3 gap-3">
+          <div>
+            <label className="block text-xs font-medium text-slate-600 dark:text-slate-300 mb-1">Catalog</label>
+            <input value={upCatalog} onChange={e => setUpCatalog(e.target.value)} placeholder={cfg.catalog_name || 'catalog'}
+              className="w-full px-3 py-2 rounded-lg border border-slate-300 dark:border-dbx-navy-400 bg-white dark:bg-dbx-navy-600 text-sm" />
+          </div>
+          <div>
+            <label className="block text-xs font-medium text-slate-600 dark:text-slate-300 mb-1">Schema</label>
+            <input value={upSchema} onChange={e => setUpSchema(e.target.value)} placeholder={cfg.schema_name || 'schema'}
+              className="w-full px-3 py-2 rounded-lg border border-slate-300 dark:border-dbx-navy-400 bg-white dark:bg-dbx-navy-600 text-sm" />
+          </div>
+          <div>
+            <label className="block text-xs font-medium text-slate-600 dark:text-slate-300 mb-1">Table <span className="text-slate-400">(if not in file)</span></label>
+            <input value={upTable} onChange={e => setUpTable(e.target.value)} placeholder="blank = per-row / all"
+              className="w-full px-3 py-2 rounded-lg border border-slate-300 dark:border-dbx-navy-400 bg-white dark:bg-dbx-navy-600 text-sm" />
+          </div>
+        </div>
+        <div className="flex items-center justify-between">
+          <span className="text-xs text-slate-400">{file ? file.name : 'No file selected'}</span>
+          <button onClick={upload} disabled={!file || uploading} className="btn-primary btn-sm disabled:opacity-50">{uploading ? 'Uploading…' : 'Upload'}</button>
+        </div>
+        {upResult && <div className="text-xs px-3 py-2 rounded-md bg-slate-50 dark:bg-dbx-navy-600 text-slate-600 dark:text-slate-300">
+          Uploaded {upResult.uploaded} description(s) to {upResult.catalog_name}.{upResult.schema_name}.
+          {upResult.errors?.length > 0 && <span className="text-red-500"> {upResult.errors.length} error(s).</span>}
+        </div>}
+      </div>
+
+      {adding && (
+        <div className="card p-4 grid grid-cols-2 gap-3">
+          <div>
+            <label className="block text-xs font-medium text-slate-600 dark:text-slate-300 mb-1">Catalog</label>
+            <input value={form.catalog_name} onChange={e => setForm(f => ({ ...f, catalog_name: e.target.value }))}
+              className="w-full px-3 py-2 rounded-lg border border-slate-300 dark:border-dbx-navy-400 bg-white dark:bg-dbx-navy-600 text-sm" />
+          </div>
+          <div>
+            <label className="block text-xs font-medium text-slate-600 dark:text-slate-300 mb-1">Schema</label>
+            <input value={form.schema_name} onChange={e => setForm(f => ({ ...f, schema_name: e.target.value }))}
+              className="w-full px-3 py-2 rounded-lg border border-slate-300 dark:border-dbx-navy-400 bg-white dark:bg-dbx-navy-600 text-sm" />
+          </div>
+          <div>
+            <label className="block text-xs font-medium text-slate-600 dark:text-slate-300 mb-1">Table <span className="text-slate-400">(blank = schema-wide)</span></label>
+            <input value={form.table_name} onChange={e => setForm(f => ({ ...f, table_name: e.target.value }))}
+              className="w-full px-3 py-2 rounded-lg border border-slate-300 dark:border-dbx-navy-400 bg-white dark:bg-dbx-navy-600 text-sm" />
+          </div>
+          <div>
+            <label className="block text-xs font-medium text-slate-600 dark:text-slate-300 mb-1">Column</label>
+            <input value={form.column_name} onChange={e => setForm(f => ({ ...f, column_name: e.target.value }))}
+              className="w-full px-3 py-2 rounded-lg border border-slate-300 dark:border-dbx-navy-400 bg-white dark:bg-dbx-navy-600 text-sm" />
+          </div>
+          <div className="col-span-2">
+            <label className="block text-xs font-medium text-slate-600 dark:text-slate-300 mb-1">Description (used verbatim)</label>
+            <textarea value={form.comment} onChange={e => setForm(f => ({ ...f, comment: e.target.value }))} rows={3}
+              className="w-full px-3 py-2 rounded-lg border border-slate-300 dark:border-dbx-navy-400 bg-white dark:bg-dbx-navy-600 text-sm" />
+          </div>
+          <div className="col-span-2 flex gap-2 justify-end">
+            <button onClick={() => setAdding(false)} className="btn-ghost btn-sm">Cancel</button>
+            <button onClick={save} disabled={saving || !form.catalog_name.trim() || !form.schema_name.trim() || !form.column_name.trim() || !form.comment.trim()}
+              className="btn-primary btn-sm disabled:opacity-50">{saving ? 'Saving…' : 'Save'}</button>
+          </div>
+        </div>
+      )}
+
+      {loading ? <div className="text-center py-8 text-slate-400">Loading…</div>
+        : items.length === 0 ? <div className="card p-8 text-center text-slate-400">No description overrides yet. Upload a file or add one above.</div>
+        : (
+          <div className="card overflow-hidden">
+            <table className="w-full text-sm">
+              <thead className="bg-slate-50 dark:bg-dbx-navy-600"><tr>
+                <th className="px-4 py-2.5 text-left font-medium text-slate-500 dark:text-slate-400">Table</th>
+                <th className="px-4 py-2.5 text-left font-medium text-slate-500 dark:text-slate-400">Column</th>
+                <th className="px-4 py-2.5 text-left font-medium text-slate-500 dark:text-slate-400">Description</th>
+                <th className="px-4 py-2.5 text-right font-medium text-slate-500 dark:text-slate-400">Actions</th>
+              </tr></thead>
+              <tbody className="divide-y divide-slate-100 dark:divide-dbx-navy-500">
+                {items.map(o => (
+                  <tr key={o.override_id} className="hover:bg-slate-50 dark:hover:bg-dbx-navy-600/50">
+                    <td className="px-4 py-3 font-mono text-xs text-slate-700 dark:text-slate-300">{o.catalog_name}.{o.schema_name}.{o.table_name || '*'}</td>
+                    <td className="px-4 py-3 font-mono text-xs text-slate-600 dark:text-slate-400">{o.column_name}</td>
+                    <td className="px-4 py-3 text-slate-600 dark:text-slate-400 max-w-md truncate" title={o.comment}>{o.comment}</td>
+                    <td className="px-4 py-3 text-right"><button onClick={() => del(o.override_id)} className="text-xs text-red-500 hover:underline">Delete</button></td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          </div>
+        )}
+    </div>
+  )
+}
+
+const CC_TABS = [
+  { id: 'context', label: 'Context' },
+  { id: 'acronyms', label: 'Acronyms' },
+  { id: 'descriptions', label: 'Descriptions' },
+]
+
+export default function CustomerContext() {
+  const [tab, setTab] = useState('context')
+  return (
+    <div className="space-y-5">
+      <div>
+        <h2 className="text-lg font-bold text-slate-800 dark:text-slate-100">Customer Context</h2>
+        <p className="text-sm text-slate-500 dark:text-slate-400 mt-1">
+          Domain knowledge that steers metadata generation: free-text context, acronym expansions, and
+          verbatim column descriptions.
+        </p>
+      </div>
+      <div className="flex gap-1 border-b border-slate-200 dark:border-dbx-navy-400/30">
+        {CC_TABS.map(t => (
+          <button key={t.id} onClick={() => setTab(t.id)}
+            className={`px-4 py-2 text-sm font-medium border-b-2 -mb-px transition-colors ${tab === t.id ? 'border-dbx-lava text-dbx-lava' : 'border-transparent text-slate-500 dark:text-slate-400 hover:text-slate-700 dark:hover:text-slate-200'}`}>
+            {t.label}
+          </button>
+        ))}
+      </div>
+      {tab === 'context' && <ContextManager />}
+      {tab === 'acronyms' && <AcronymsManager />}
+      {tab === 'descriptions' && <OverridesManager />}
     </div>
   )
 }

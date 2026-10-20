@@ -16602,6 +16602,319 @@ def resolve_customer_context_preview(full_table_name: str):
 
 
 # ---------------------------------------------------------------------------
+# Customer acronyms + column-description overrides (app-managed inputs)
+#
+# Two scope-aware Delta tables that feed metadata generation directly:
+#   customer_acronyms  -> overlaid onto variables.yml acro_content at run time (the global
+#                         baseline ships untouched; schema scope beats catalog scope).
+#   customer_overrides -> column descriptions layered UNDER metadata_overrides.csv by the
+#                         override loader (verbatim comment; the LLM is skipped for that
+#                         column, same as a file override). The file wins on conflict.
+# Both sit under the app's "Customer Context" section. Upserts bind every user value as a
+# server-side parameter (quote-safe, injection-safe) -- same contract as customer_context.
+# ---------------------------------------------------------------------------
+
+_ACRO_TABLE = "customer_acronyms"
+_OVR_TABLE = "customer_overrides"
+_ACRO_SCOPE_TYPES = {"catalog", "schema"}
+
+
+class AcronymRequest(BaseModel):
+    scope: str
+    scope_type: str
+    abbreviation: str
+    expansion: str
+    notes: str = ""
+
+
+class OverrideRequest(BaseModel):
+    catalog_name: str
+    schema_name: str
+    table_name: str = ""   # blank = schema-wide (applies to every table in the schema)
+    column_name: str
+    comment: str
+
+
+def _ensure_customer_acronyms_table():
+    execute_sql(f"""
+        CREATE TABLE IF NOT EXISTS {fq(_ACRO_TABLE)} (
+            acronym_id   STRING NOT NULL,
+            scope        STRING NOT NULL,
+            scope_type   STRING NOT NULL,
+            abbreviation STRING NOT NULL,
+            expansion    STRING NOT NULL,
+            notes        STRING,
+            active       BOOLEAN,
+            created_by   STRING,
+            created_at   TIMESTAMP,
+            updated_at   TIMESTAMP
+        ) USING DELTA
+    """, timeout=30)
+
+
+def _ensure_customer_overrides_table():
+    execute_sql(f"""
+        CREATE TABLE IF NOT EXISTS {fq(_OVR_TABLE)} (
+            override_id  STRING NOT NULL,
+            catalog_name STRING NOT NULL,
+            schema_name  STRING NOT NULL,
+            table_name   STRING,
+            column_name  STRING NOT NULL,
+            comment      STRING NOT NULL,
+            active       BOOLEAN,
+            created_by   STRING,
+            created_at   TIMESTAMP,
+            updated_at   TIMESTAMP
+        ) USING DELTA
+    """, timeout=30)
+
+
+def _parse_tabular_file(raw: bytes, ext: str):
+    """Parse an uploaded .xlsx/.csv into a list of dicts keyed by lowercased header.
+    Shared by the acronym and description uploads so the column-mapping lane is identical."""
+    ext = ext.lower()
+    if ext in ("xlsx", "xls"):
+        import openpyxl
+        wb = openpyxl.load_workbook(io.BytesIO(raw), read_only=True, data_only=True)
+        ws = wb.active
+        it = ws.iter_rows(values_only=True)
+        try:
+            header = next(it)
+        except StopIteration:
+            wb.close()
+            return []
+        headers = [str(h).strip().lower() if h is not None else "" for h in header]
+        rows = []
+        for r in it:
+            if r is None or all(c is None for c in r):
+                continue
+            d = {}
+            for i, h in enumerate(headers):
+                if not h:
+                    continue
+                v = r[i] if i < len(r) else None
+                d[h] = "" if v is None else str(v).strip()
+            rows.append(d)
+        wb.close()
+        return rows
+    if ext == "csv":
+        import csv as _csv
+        text = raw.decode("utf-8", errors="replace")
+        reader = _csv.DictReader(io.StringIO(text))
+        return [
+            {(k or "").strip().lower(): ("" if v is None else str(v).strip()) for k, v in r.items()}
+            for r in reader
+        ]
+    raise HTTPException(400, detail=f"Unsupported file type '.{ext}'. Use .xlsx or .csv")
+
+
+def _pick(row: dict, names) -> str:
+    """First non-blank value among candidate (lowercased) header names."""
+    for n in names:
+        v = row.get(n)
+        if v is not None and str(v).strip():
+            return str(v).strip()
+    return ""
+
+
+# ---- Acronyms --------------------------------------------------------------
+
+@app.get("/api/customer-acronyms")
+def list_customer_acronyms():
+    _ensure_customer_acronyms_table()
+    return execute_sql(
+        f"SELECT acronym_id, scope, scope_type, abbreviation, expansion, notes, "
+        f"active, created_by, created_at, updated_at FROM {fq(_ACRO_TABLE)} "
+        f"WHERE active = TRUE ORDER BY scope_type, scope, abbreviation"
+    )
+
+
+def _upsert_acronym(req: AcronymRequest):
+    if req.scope_type not in _ACRO_SCOPE_TYPES:
+        raise HTTPException(400, detail=f"scope_type must be one of {_ACRO_SCOPE_TYPES}")
+    if not req.scope.strip() or not req.abbreviation.strip() or not req.expansion.strip():
+        raise HTTPException(400, detail="scope, abbreviation and expansion are required")
+    import hashlib
+    from datetime import datetime as _dt
+    acr_id = hashlib.sha256(f"{req.scope}::{req.abbreviation}".encode()).hexdigest()[:16]
+    now = _dt.utcnow().isoformat()
+    params = [
+        StatementParameterListItem(name="id", value=acr_id),
+        StatementParameterListItem(name="scope", value=req.scope),
+        StatementParameterListItem(name="scope_type", value=req.scope_type),
+        StatementParameterListItem(name="abbreviation", value=req.abbreviation),
+        StatementParameterListItem(name="expansion", value=req.expansion),
+        StatementParameterListItem(name="notes", value=req.notes or ""),
+        StatementParameterListItem(name="now", value=now),
+    ]
+    execute_sql(f"""
+        MERGE INTO {fq(_ACRO_TABLE)} AS tgt
+        USING (SELECT :id AS acronym_id) AS src
+        ON tgt.acronym_id = src.acronym_id
+        WHEN MATCHED THEN UPDATE SET
+            scope = :scope, scope_type = :scope_type, abbreviation = :abbreviation,
+            expansion = :expansion, notes = :notes, active = TRUE, updated_at = CAST(:now AS TIMESTAMP)
+        WHEN NOT MATCHED THEN INSERT (
+            acronym_id, scope, scope_type, abbreviation, expansion, notes,
+            active, created_by, created_at, updated_at
+        ) VALUES (
+            :id, :scope, :scope_type, :abbreviation, :expansion, :notes,
+            TRUE, 'app', CAST(:now AS TIMESTAMP), CAST(:now AS TIMESTAMP)
+        )
+    """, timeout=30, parameters=params)
+    return {"acronym_id": acr_id, "abbreviation": req.abbreviation}
+
+
+@app.post("/api/customer-acronyms")
+def upsert_customer_acronym(req: AcronymRequest):
+    _ensure_customer_acronyms_table()
+    return _upsert_acronym(req)
+
+
+@app.delete("/api/customer-acronyms/{acronym_id}")
+def delete_customer_acronym(acronym_id: str):
+    if not _SAFE_IDENT_RE.match(acronym_id):
+        raise HTTPException(400, detail="Invalid acronym_id")
+    from datetime import datetime as _dt
+    execute_sql(
+        f"UPDATE {fq(_ACRO_TABLE)} SET active = FALSE, updated_at = '{_dt.utcnow().isoformat()}' "
+        f"WHERE acronym_id = '{acronym_id}'"
+    )
+    return {"deleted": True, "acronym_id": acronym_id}
+
+
+@app.post("/api/customer-acronyms/upload")
+def upload_customer_acronyms(file: UploadFile = File(...),
+                             scope: str = Form(None),
+                             scope_type: str = Form("schema")):
+    """Ingest acronyms from .xlsx/.csv. Tolerant column mapping (Abbreviation/Current
+    Abbreviation/Acronym; Expansion/Stands For/Meaning; Notes/What does it do?/Type of
+    Entity). scope defaults to this app's catalog or schema per scope_type."""
+    _ensure_customer_acronyms_table()
+    ext = (file.filename or "").rsplit(".", 1)[-1].lower() if "." in (file.filename or "") else ""
+    if scope_type not in _ACRO_SCOPE_TYPES:
+        raise HTTPException(400, detail=f"scope_type must be one of {_ACRO_SCOPE_TYPES}")
+    eff_scope = (scope or "").strip() or (CATALOG if scope_type == "catalog" else f"{CATALOG}.{SCHEMA}")
+    rows = _parse_tabular_file(file.file.read(), ext)
+    results, errors = [], []
+    for r in rows:
+        abbr = _pick(r, ["abbreviation", "current abbreviation", "acronym", "abbr"])
+        expansion = _pick(r, ["expansion", "stands for", "expands to", "meaning", "definition", "full form"])
+        notes = _pick(r, ["notes", "what does it do?", "description", "type of entity", "comment"])
+        if not abbr or not expansion:
+            continue
+        try:
+            results.append(_upsert_acronym(AcronymRequest(
+                scope=eff_scope, scope_type=scope_type,
+                abbreviation=abbr, expansion=expansion, notes=notes)))
+        except Exception as exc:
+            errors.append({"abbreviation": abbr, "error": str(exc)})
+    return {"uploaded": len(results), "scope": eff_scope, "scope_type": scope_type,
+            "results": results, "errors": errors}
+
+
+# ---- Column-description overrides ------------------------------------------
+
+@app.get("/api/customer-overrides")
+def list_customer_overrides():
+    _ensure_customer_overrides_table()
+    return execute_sql(
+        f"SELECT override_id, catalog_name, schema_name, table_name, column_name, comment, "
+        f"active, created_by, created_at, updated_at FROM {fq(_OVR_TABLE)} "
+        f"WHERE active = TRUE ORDER BY catalog_name, schema_name, table_name, column_name"
+    )
+
+
+def _upsert_override(req: OverrideRequest):
+    if not req.catalog_name.strip() or not req.schema_name.strip():
+        raise HTTPException(400, detail="catalog_name and schema_name are required")
+    if not req.column_name.strip() or not req.comment.strip():
+        raise HTTPException(400, detail="column_name and comment are required")
+    import hashlib
+    from datetime import datetime as _dt
+    key = f"{req.catalog_name}.{req.schema_name}.{req.table_name}::{req.column_name}"
+    ovr_id = hashlib.sha256(key.encode()).hexdigest()[:16]
+    now = _dt.utcnow().isoformat()
+    params = [
+        StatementParameterListItem(name="id", value=ovr_id),
+        StatementParameterListItem(name="catalog_name", value=req.catalog_name),
+        StatementParameterListItem(name="schema_name", value=req.schema_name),
+        StatementParameterListItem(name="table_name", value=req.table_name or ""),
+        StatementParameterListItem(name="column_name", value=req.column_name),
+        StatementParameterListItem(name="comment", value=req.comment),
+        StatementParameterListItem(name="now", value=now),
+    ]
+    execute_sql(f"""
+        MERGE INTO {fq(_OVR_TABLE)} AS tgt
+        USING (SELECT :id AS override_id) AS src
+        ON tgt.override_id = src.override_id
+        WHEN MATCHED THEN UPDATE SET
+            catalog_name = :catalog_name, schema_name = :schema_name, table_name = :table_name,
+            column_name = :column_name, comment = :comment, active = TRUE,
+            updated_at = CAST(:now AS TIMESTAMP)
+        WHEN NOT MATCHED THEN INSERT (
+            override_id, catalog_name, schema_name, table_name, column_name, comment,
+            active, created_by, created_at, updated_at
+        ) VALUES (
+            :id, :catalog_name, :schema_name, :table_name, :column_name, :comment,
+            TRUE, 'app', CAST(:now AS TIMESTAMP), CAST(:now AS TIMESTAMP)
+        )
+    """, timeout=30, parameters=params)
+    return {"override_id": ovr_id, "column_name": req.column_name}
+
+
+@app.post("/api/customer-overrides")
+def upsert_customer_override(req: OverrideRequest):
+    _ensure_customer_overrides_table()
+    return _upsert_override(req)
+
+
+@app.delete("/api/customer-overrides/{override_id}")
+def delete_customer_override(override_id: str):
+    if not _SAFE_IDENT_RE.match(override_id):
+        raise HTTPException(400, detail="Invalid override_id")
+    from datetime import datetime as _dt
+    execute_sql(
+        f"UPDATE {fq(_OVR_TABLE)} SET active = FALSE, updated_at = '{_dt.utcnow().isoformat()}' "
+        f"WHERE override_id = '{override_id}'"
+    )
+    return {"deleted": True, "override_id": override_id}
+
+
+@app.post("/api/customer-overrides/upload")
+def upload_customer_overrides(file: UploadFile = File(...),
+                              catalog_name: str = Form(None),
+                              schema_name: str = Form(None),
+                              table_name: str = Form("")):
+    """Ingest column descriptions from .xlsx/.csv as verbatim comment overrides. Tolerant
+    column mapping (Table/Table_Name; Column/Column_Name; Comment/Description). catalog/schema
+    default to this app's; per-row Table_Name wins over the form default (blank = schema-wide)."""
+    _ensure_customer_overrides_table()
+    ext = (file.filename or "").rsplit(".", 1)[-1].lower() if "." in (file.filename or "") else ""
+    cat = (catalog_name or "").strip() or CATALOG
+    sch = (schema_name or "").strip() or SCHEMA
+    rows = _parse_tabular_file(file.file.read(), ext)
+    results, errors = [], []
+    for r in rows:
+        col = _pick(r, ["column", "column_name", "column name"])
+        comment = _pick(r, ["comment", "description", "comment_without_abbr_sttm",
+                            "comment_with_abbr_sttm", "desc"])
+        tbl = _pick(r, ["table", "table_name", "table name"]) or (table_name or "").strip()
+        # A "Column" row of "NA"/"table"-level markers (e.g. the sample files' table rows) has
+        # no column to override -- skip anything without a real column + comment.
+        if not col or col.lower() in ("na", "n/a", "none") or not comment:
+            continue
+        try:
+            results.append(_upsert_override(OverrideRequest(
+                catalog_name=cat, schema_name=sch, table_name=tbl,
+                column_name=col, comment=comment)))
+        except Exception as exc:
+            errors.append({"column_name": col, "error": str(exc)})
+    return {"uploaded": len(results), "catalog_name": cat, "schema_name": sch,
+            "results": results, "errors": errors}
+
+
+# ---------------------------------------------------------------------------
 # Metric View Agent
 # ---------------------------------------------------------------------------
 

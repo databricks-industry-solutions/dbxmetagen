@@ -3577,6 +3577,26 @@ def generate_and_persist_metadata(config: Any) -> None:
     else:
         _customer_context_cache = []
 
+    # App-managed, scope-aware acronyms: overlay onto the baseline variables.yml acro_content
+    # (schema scope > catalog scope > baseline). Always attempted -- a missing table is a
+    # no-op -- because acronyms only enrich the abbreviations hint in the prompt and the
+    # baseline global set still ships untouched. One query per run.
+    try:
+        from dbxmetagen.customer_context import prefetch_acronyms, merge_acronyms_into_acro_content
+        _acro_rows = prefetch_acronyms(spark, config.catalog_name, config.schema_name)
+        config.acro_content = merge_acronyms_into_acro_content(
+            config.acro_content, _acro_rows, config.catalog_name, config.schema_name
+        )
+    except Exception as exc:
+        logger.info("Acronym merge skipped (%s)", type(exc).__name__)
+
+    # App-managed, scope-aware column descriptions: layered UNDER the file CSV by the override
+    # loader. Gated on the same allow_manual_override flag as the CSV overrides, in comment/pi
+    # runs only (the loader applies them in comment mode).
+    if getattr(config, "allow_manual_override", True) and config.mode in ("comment", "pi"):
+        from dbxmetagen.overrides import prefetch_customer_overrides
+        prefetch_customer_overrides(spark, config.catalog_name, config.schema_name)
+
     skipped_tables = []
 
     for table in config.table_names:

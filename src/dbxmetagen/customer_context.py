@@ -328,3 +328,96 @@ def seed_customer_context_table(
     spark.sql("DROP VIEW IF EXISTS _customer_context_seed")
     logger.info("Seeded %d customer context entries from %s", len(all_rows), yaml_dir)
     return len(all_rows)
+
+
+# ---------------------------------------------------------------------------
+# Customer acronyms -> acro_content (app-managed, scope-aware)
+#
+# The global baseline in variables.yml:acro_content is never touched -- these are an
+# additional, per-catalog/schema layer managed from the app UI and merged ON TOP of the
+# baseline at run time (schema scope beats catalog scope beats baseline). Stored in a Delta
+# table so the app and the job share one source of truth; resolved once per run.
+# ---------------------------------------------------------------------------
+
+ACRONYMS_TABLE = "customer_acronyms"
+
+
+def ensure_customer_acronyms_table(spark: Any, catalog: str, schema: str) -> None:
+    fq = f"{catalog}.{schema}.{ACRONYMS_TABLE}"
+    spark.sql(f"""
+        CREATE TABLE IF NOT EXISTS {fq} (
+            acronym_id   STRING NOT NULL,
+            scope        STRING NOT NULL,
+            scope_type   STRING NOT NULL,
+            abbreviation STRING NOT NULL,
+            expansion    STRING NOT NULL,
+            notes        STRING,
+            active       BOOLEAN,
+            created_by   STRING,
+            created_at   TIMESTAMP,
+            updated_at   TIMESTAMP
+        ) USING DELTA
+    """)
+
+
+def prefetch_acronyms(spark: Any, catalog: str, schema: str) -> List[Dict[str, Any]]:
+    """Load active acronym rows once per run. Tolerant of a missing table (returns [])."""
+    fq = f"{catalog}.{schema}.{ACRONYMS_TABLE}"
+    try:
+        rows = spark.sql(
+            f"SELECT scope, scope_type, abbreviation, expansion, notes "
+            f"FROM {fq} WHERE active = TRUE"
+        ).collect()
+        return [r.asDict() for r in rows]
+    except Exception as exc:
+        logger.info("customer_acronyms not readable (%s), skipping acronym merge", type(exc).__name__)
+        return []
+
+
+def _acro_scope_matches(row: Dict[str, Any], catalog: str, schema: str) -> bool:
+    st = (row.get("scope_type") or "").lower()
+    scope = row.get("scope") or ""
+    if st == "catalog":
+        return scope == catalog
+    if st == "schema":
+        return scope == f"{catalog}.{schema}"
+    return False
+
+
+def _coerce_acro_dict(base: Any) -> Dict[str, Any]:
+    """Return a mutable dict copy of acro_content. The baseline ships as a JSON string inside
+    variables.yml; parse it so scoped entries can be layered in. If it cannot be parsed, start
+    from an empty dict (so uploaded acronyms still apply) and warn rather than corrupt output."""
+    import json
+    if isinstance(base, dict):
+        return dict(base)
+    if isinstance(base, str) and base.strip():
+        try:
+            parsed = json.loads(base)
+            if isinstance(parsed, dict):
+                return parsed
+        except Exception:
+            logger.warning("acro_content is not JSON-parseable; scoped acronyms will replace it")
+    return {}
+
+
+def merge_acronyms_into_acro_content(
+    base: Any, rows: List[Dict[str, Any]], catalog: str, schema: str
+) -> Any:
+    """Overlay scoped acronym rows onto the baseline acro_content. Returns the baseline
+    unchanged (same object) when no scoped rows match, so a deployment with no uploaded
+    acronyms behaves exactly as before. Schema-scoped entries win over catalog-scoped."""
+    scoped = [r for r in rows if _acro_scope_matches(r, catalog, schema)]
+    if not scoped:
+        return base
+    merged = _coerce_acro_dict(base)
+    # catalog scope first, schema scope second so the more specific one wins on conflict
+    scoped.sort(key=lambda r: 0 if (r.get("scope_type") or "").lower() == "catalog" else 1)
+    for r in scoped:
+        abbr = (r.get("abbreviation") or "").strip()
+        if not abbr:
+            continue
+        expansion = (r.get("expansion") or "").strip()
+        notes = (r.get("notes") or "").strip()
+        merged[abbr] = f"{expansion} ({notes})" if notes else expansion
+    return merged
