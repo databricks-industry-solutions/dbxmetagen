@@ -425,6 +425,7 @@ function AcronymsManager() {
         </div>
         {upResult && <div className="text-xs px-3 py-2 rounded-md bg-slate-50 dark:bg-dbx-navy-600 text-slate-600 dark:text-slate-300">
           Uploaded {upResult.uploaded} acronym(s) to {upResult.scope_type}:{upResult.scope}.
+          {upResult.skipped > 0 && <span className="text-amber-600 dark:text-amber-400"> Skipped {upResult.skipped} row(s){upResult.skipped_reasons?.length ? ` (${upResult.skipped_reasons.join('; ')})` : ''}.</span>}
           {upResult.errors?.length > 0 && <span className="text-red-500"> {upResult.errors.length} error(s).</span>}
         </div>}
       </div>
@@ -603,6 +604,7 @@ function OverridesManager() {
         </div>
         {upResult && <div className="text-xs px-3 py-2 rounded-md bg-slate-50 dark:bg-dbx-navy-600 text-slate-600 dark:text-slate-300">
           Uploaded {upResult.uploaded} description(s) to {upResult.catalog_name}.{upResult.schema_name}.
+          {upResult.skipped > 0 && <span className="text-amber-600 dark:text-amber-400"> Skipped {upResult.skipped} row(s){upResult.skipped_reasons?.length ? ` (${upResult.skipped_reasons.join('; ')})` : ''}.</span>}
           {upResult.errors?.length > 0 && <span className="text-red-500"> {upResult.errors.length} error(s).</span>}
         </div>}
       </div>

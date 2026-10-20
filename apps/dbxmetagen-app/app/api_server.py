@@ -16717,6 +16717,63 @@ def _pick(row: dict, names) -> str:
     return ""
 
 
+# Tolerant header candidates (lowercased), single-sourced so header validation and row
+# mapping can never diverge.
+_ACRO_ABBR_COLS = ["abbreviation", "current abbreviation", "acronym", "abbr"]
+_ACRO_EXP_COLS = ["expansion", "stands for", "expands to", "meaning", "definition", "full form"]
+_ACRO_NOTES_COLS = ["notes", "what does it do?", "description", "type of entity", "comment"]
+_OVR_COL_COLS = ["column", "column_name", "column name"]
+_OVR_COMMENT_COLS = ["comment", "description", "comment_without_abbr_sttm", "comment_with_abbr_sttm", "desc"]
+_OVR_TABLE_COLS = ["table", "table_name", "table name"]
+
+# Guards. One MERGE round-trip per row, so cap the batch; comment becomes a UC column
+# comment, so bound its length. Both chosen generous -- they stop runaway/garbage input,
+# not legitimate use. Split larger files into multiple uploads.
+_CC_UPLOAD_MAX_ROWS = 1000
+_OVR_COMMENT_MAX_CHARS = 4000
+
+
+def _require_columns(rows: list, required_groups: list, kind: str):
+    """Fail fast with a clear 400 when an uploaded file has no recognizable columns, instead
+    of silently skipping every row and returning uploaded=0. Each group in required_groups is
+    a candidate list; at least one of its names must appear as a header. Also enforces the row
+    cap. Returns the set of found headers (for messaging)."""
+    if not rows:
+        raise HTTPException(400, detail=f"No data rows found in the uploaded {kind} file.")
+    if len(rows) > _CC_UPLOAD_MAX_ROWS:
+        raise HTTPException(400, detail=(
+            f"Uploaded {kind} file has {len(rows)} rows, over the {_CC_UPLOAD_MAX_ROWS}-row "
+            f"per-upload limit. Split it into smaller files and upload them separately."
+        ))
+    found = set()
+    for r in rows:
+        found.update(k for k in r.keys() if k)
+        break
+    for group in required_groups:
+        if not any(g in found for g in group):
+            raise HTTPException(400, detail=(
+                f"Uploaded {kind} file is missing a required column. Expected one named: "
+                f"{' / '.join(group)}. Found: {sorted(found) or '(none)'}."
+            ))
+    return found
+
+
+def _validate_acro_scope(scope: str, scope_type: str):
+    """A 'schema' scope must look like catalog.schema; a 'catalog' scope must be a bare name."""
+    s = (scope or "").strip()
+    if scope_type == "schema" and s.count(".") != 1:
+        raise HTTPException(400, detail=f"A 'schema' scope must be 'catalog.schema' (got '{s}').")
+    if scope_type == "catalog" and "." in s:
+        raise HTTPException(400, detail=f"A 'catalog' scope must be a bare catalog name (got '{s}').")
+
+
+def _validate_identifier(value: str, field: str):
+    """Catalog/schema must be single identifiers -- a dot usually means the user pasted a
+    qualified name into one box, which would never match at run time."""
+    if "." in (value or ""):
+        raise HTTPException(400, detail=f"{field} must be a single name without a dot (got '{value}').")
+
+
 # ---- Acronyms --------------------------------------------------------------
 
 @app.get("/api/customer-acronyms")
@@ -16734,6 +16791,7 @@ def _upsert_acronym(req: AcronymRequest):
         raise HTTPException(400, detail=f"scope_type must be one of {_ACRO_SCOPE_TYPES}")
     if not req.scope.strip() or not req.abbreviation.strip() or not req.expansion.strip():
         raise HTTPException(400, detail="scope, abbreviation and expansion are required")
+    _validate_acro_scope(req.scope, req.scope_type)
     import hashlib
     from datetime import datetime as _dt
     acr_id = hashlib.sha256(f"{req.scope}::{req.abbreviation}".encode()).hexdigest()[:16]
@@ -16795,13 +16853,16 @@ def upload_customer_acronyms(file: UploadFile = File(...),
     if scope_type not in _ACRO_SCOPE_TYPES:
         raise HTTPException(400, detail=f"scope_type must be one of {_ACRO_SCOPE_TYPES}")
     eff_scope = (scope or "").strip() or (CATALOG if scope_type == "catalog" else f"{CATALOG}.{SCHEMA}")
+    _validate_acro_scope(eff_scope, scope_type)
     rows = _parse_tabular_file(file.file.read(), ext)
-    results, errors = [], []
+    _require_columns(rows, [_ACRO_ABBR_COLS, _ACRO_EXP_COLS], "acronyms")
+    results, errors, skipped = [], [], []
     for r in rows:
-        abbr = _pick(r, ["abbreviation", "current abbreviation", "acronym", "abbr"])
-        expansion = _pick(r, ["expansion", "stands for", "expands to", "meaning", "definition", "full form"])
-        notes = _pick(r, ["notes", "what does it do?", "description", "type of entity", "comment"])
+        abbr = _pick(r, _ACRO_ABBR_COLS)
+        expansion = _pick(r, _ACRO_EXP_COLS)
+        notes = _pick(r, _ACRO_NOTES_COLS)
         if not abbr or not expansion:
+            skipped.append({"row": r, "reason": "missing abbreviation or expansion"})
             continue
         try:
             results.append(_upsert_acronym(AcronymRequest(
@@ -16810,7 +16871,8 @@ def upload_customer_acronyms(file: UploadFile = File(...),
         except Exception as exc:
             errors.append({"abbreviation": abbr, "error": str(exc)})
     return {"uploaded": len(results), "scope": eff_scope, "scope_type": scope_type,
-            "results": results, "errors": errors}
+            "results": results, "errors": errors,
+            "skipped": len(skipped), "skipped_reasons": [s["reason"] for s in skipped[:3]]}
 
 
 # ---- Column-description overrides ------------------------------------------
@@ -16830,6 +16892,11 @@ def _upsert_override(req: OverrideRequest):
         raise HTTPException(400, detail="catalog_name and schema_name are required")
     if not req.column_name.strip() or not req.comment.strip():
         raise HTTPException(400, detail="column_name and comment are required")
+    _validate_identifier(req.catalog_name, "catalog_name")
+    _validate_identifier(req.schema_name, "schema_name")
+    if len(req.comment) > _OVR_COMMENT_MAX_CHARS:
+        raise HTTPException(400, detail=(
+            f"comment is {len(req.comment)} chars, over the {_OVR_COMMENT_MAX_CHARS}-char limit."))
     import hashlib
     from datetime import datetime as _dt
     key = f"{req.catalog_name}.{req.schema_name}.{req.table_name}::{req.column_name}"
@@ -16893,16 +16960,22 @@ def upload_customer_overrides(file: UploadFile = File(...),
     ext = (file.filename or "").rsplit(".", 1)[-1].lower() if "." in (file.filename or "") else ""
     cat = (catalog_name or "").strip() or CATALOG
     sch = (schema_name or "").strip() or SCHEMA
+    _validate_identifier(cat, "catalog")
+    _validate_identifier(sch, "schema")
     rows = _parse_tabular_file(file.file.read(), ext)
-    results, errors = [], []
+    _require_columns(rows, [_OVR_COL_COLS, _OVR_COMMENT_COLS], "descriptions")
+    results, errors, skipped = [], [], []
     for r in rows:
-        col = _pick(r, ["column", "column_name", "column name"])
-        comment = _pick(r, ["comment", "description", "comment_without_abbr_sttm",
-                            "comment_with_abbr_sttm", "desc"])
-        tbl = _pick(r, ["table", "table_name", "table name"]) or (table_name or "").strip()
+        col = _pick(r, _OVR_COL_COLS)
+        comment = _pick(r, _OVR_COMMENT_COLS)
+        tbl = _pick(r, _OVR_TABLE_COLS) or (table_name or "").strip()
         # A "Column" row of "NA"/"table"-level markers (e.g. the sample files' table rows) has
         # no column to override -- skip anything without a real column + comment.
         if not col or col.lower() in ("na", "n/a", "none") or not comment:
+            skipped.append({"reason": "table-level or missing column/description row"})
+            continue
+        if len(comment) > _OVR_COMMENT_MAX_CHARS:
+            skipped.append({"reason": f"description over {_OVR_COMMENT_MAX_CHARS} chars"})
             continue
         try:
             results.append(_upsert_override(OverrideRequest(
@@ -16911,7 +16984,8 @@ def upload_customer_overrides(file: UploadFile = File(...),
         except Exception as exc:
             errors.append({"column_name": col, "error": str(exc)})
     return {"uploaded": len(results), "catalog_name": cat, "schema_name": sch,
-            "results": results, "errors": errors}
+            "results": results, "errors": errors,
+            "skipped": len(skipped), "skipped_reasons": [s["reason"] for s in skipped[:3]]}
 
 
 # ---------------------------------------------------------------------------
