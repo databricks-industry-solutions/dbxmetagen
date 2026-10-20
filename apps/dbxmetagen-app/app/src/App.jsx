@@ -238,7 +238,10 @@ const readHash = () => { const h = window.location.hash.replace('#', ''); return
 
 // Tabs available in simplified view: the core generate -> review/apply flow, plus
 // home and the guide (reachable via the header "?"). Advanced surfaces are hidden.
-const SIMPLIFIED_TABS = new Set(['home', 'jobs', 'metadata', 'guide'])
+// 'context' has no PRIMARY_NAV entry (it lives in the advanced-only "More" menu), so
+// including it here does not add a nav tab -- it only lets the Customer Context link in
+// the Generate form reach the tab instead of being bounced back to jobs by the guard below.
+const SIMPLIFIED_TABS = new Set(['home', 'jobs', 'metadata', 'guide', 'context'])
 
 // Gear icon settings menu (top-right). Currently hosts the view-mode toggle; the
 // natural home for future app-level settings.

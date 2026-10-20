@@ -708,8 +708,9 @@ export default function BatchJobs({ onNavigate, pipelineStats }) {
 
       {/* Next steps: the advanced pipeline lives in the Semantic Layer and the
           post-generation maintenance actions live in Sync & Ops. Simple links
-          to where each action actually runs, instead of full pointer cards. */}
-      {onNavigate && (
+          to where each action actually runs, instead of full pointer cards.
+          All route to advanced-only tabs, so the block is hidden in simplified view. */}
+      {onNavigate && !simplified && (
         <div className="pt-1">
           <p className="text-xs font-semibold uppercase tracking-wider text-slate-400 dark:text-slate-500 mb-2">Next steps</p>
           <div className="grid grid-cols-2 sm:grid-cols-4 gap-2">
