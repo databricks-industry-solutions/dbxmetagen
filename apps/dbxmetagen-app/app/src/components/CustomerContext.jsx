@@ -32,9 +32,11 @@ function ContextManager() {
   const [uploadScopeType, setUploadScopeType] = useState('schema')
   const [uploading, setUploading] = useState(false)
   const [uploadResult, setUploadResult] = useState(null)
-  // Decompose: unstructured doc -> many scope-assigned entries, grounded on real tables.
-  const [showDecompose, setShowDecompose] = useState(false)
-  const [dec, setDec] = useState({ file: null, catalog: '', schema: '', table: '', description: '', hasEmbedded: false })
+  // For a DOCUMENT upload, how to apply it: 'split' = decompose into many table-scoped
+  // entries grounded on real tables (best for a glossary / data dictionary); 'single' =
+  // attach the whole summarized doc to one scope. Structured .yaml/.json ignore this.
+  const [docMode, setDocMode] = useState('split')
+  const [dec, setDec] = useState({ catalog: '', schema: '', table: '', description: '', hasEmbedded: false })
   const [decomposing, setDecomposing] = useState(false)
   const [decResult, setDecResult] = useState(null)
 
@@ -99,18 +101,34 @@ function ContextManager() {
     load()
   }
 
-  // A scope description is FORCED (>= 5 words), matching the server guard: the model
-  // needs a steer to place pieces, especially when the file has no embedded scope markers.
+  // A document upload is applied one of two ways (docMode); a structured .yaml/.json is
+  // parsed directly and ignores the mode. Scope description is FORCED (>= 5 words) for the
+  // split path, matching the server guard -- the model needs a steer to place pieces.
+  const structuredUpload = uploadFile && !docUpload
   const decWordCount = wordCount(dec.description)
-  const decReady = dec.file && dec.catalog.trim() && decWordCount >= 5 && !decomposing
+  const canSubmitUpload = () => {
+    if (!uploadFile || uploading || decomposing) return false
+    if (structuredUpload) return true
+    if (docMode === 'single') return !!uploadScope.trim()
+    return !!dec.catalog.trim() && decWordCount >= 5   // split
+  }
+  const submitUpload = () => {
+    if (docUpload && docMode === 'split') return handleDecompose()
+    return handleUpload()
+  }
+  const resetUpload = () => {
+    setShowUpload(false); setUploadFile(null); setUploadScope('')
+    setDec({ catalog: '', schema: '', table: '', description: '', hasEmbedded: false })
+    setUploadResult(null); setDecResult(null)
+  }
 
   const handleDecompose = async () => {
-    if (!decReady) return
+    if (!uploadFile || decomposing) return
     setDecomposing(true)
     setError(null)
     setDecResult(null)
     const fd = new FormData()
-    fd.append('file', dec.file)
+    fd.append('file', uploadFile)
     fd.append('catalog', dec.catalog.trim())
     if (dec.schema.trim()) fd.append('schema', dec.schema.trim())
     if (dec.table.trim()) fd.append('table', dec.table.trim())
@@ -120,7 +138,7 @@ function ContextManager() {
     setDecomposing(false)
     if (err) { setError(err); return }
     setDecResult(data)
-    setDec(d => ({ ...d, file: null }))
+    setUploadFile(null)
     load()
   }
 
@@ -146,10 +164,9 @@ function ContextManager() {
           </p>
         </div>
         <div className="flex gap-2">
-          <button onClick={() => setShowDecompose(!showDecompose)} className="btn-ghost btn-sm">Decompose Document</button>
-          <button onClick={() => setShowUpload(!showUpload)} className="btn-ghost btn-sm">Upload File</button>
-          <button onClick={() => { setEditing('new'); setForm({ scope: '', scope_type: 'schema', context_text: '', context_label: '', priority: 0 }) }}
-            className="btn-primary btn-sm">Add Context</button>
+          <button onClick={() => { setShowUpload(!showUpload); setEditing(null) }} className="btn-ghost btn-sm">Add from a File</button>
+          <button onClick={() => { setEditing('new'); setShowUpload(false); setForm({ scope: '', scope_type: 'schema', context_text: '', context_label: '', priority: 0 }) }}
+            className="btn-primary btn-sm">Write an Entry</button>
         </div>
       </div>
 
@@ -160,68 +177,118 @@ function ContextManager() {
         </div>
       )}
 
-      {showDecompose && (
-        <div className="card p-4 space-y-3 border-l-4 border-l-dbx-sky">
+      {showUpload && (
+        <div className="card p-4 space-y-3">
           <div>
-            <label className="text-sm font-medium text-slate-700 dark:text-slate-300">Decompose a document into scoped context</label>
+            <label className="text-sm font-medium text-slate-700 dark:text-slate-300">Add context from a file</label>
             <p className="text-xs text-slate-500 dark:text-slate-400 mt-0.5">
-              For a glossary, data dictionary, or spec that describes <strong>many</strong> tables. The document is
-              split into small entries and each is assigned to a <strong>real table</strong> under the catalog/schema you
-              pick (names are validated &mdash; invented tables are never used; unplaceable pieces fall back to your
-              scope). Entries are saved immediately and are editable in the table below.
+              Pick a file. A structured <code>.yaml</code>/<code>.json</code> (a <code>contexts</code> list) is parsed
+              straight into entries. A document (<code>.txt</code>, <code>.md</code>, <code>.pdf</code>, <code>.docx</code>)
+              can be <strong>split across the tables it describes</strong> or <strong>attached whole to one scope</strong>
+              &mdash; you&rsquo;ll choose below. (<code>.pdf</code>/<code>.docx</code> need the AI document functions enabled on the SQL warehouse.)
             </p>
-            <div className="mt-2 text-xs px-3 py-2 rounded-md bg-amber-500/10 text-amber-700 dark:text-amber-300 border border-amber-400/30">
-              Give each upload a clear, narrow scope. Don&rsquo;t dump many unrelated files or one giant file where the
-              scope can&rsquo;t be determined &mdash; instead upload a file with scope headers, a file whose scope you
-              describe below, or <strong>multiple files, each with its own scope &amp; purpose</strong>.
-            </div>
-            <input type="file" accept=".txt,.md,.pdf,.docx" onChange={e => { setDec(d => ({ ...d, file: e.target.files[0] || null })); setDecResult(null); setError(null) }}
-              className="mt-2 block w-full text-sm text-slate-500 file:mr-4 file:py-2 file:px-4 file:rounded-lg file:border-0 file:text-sm file:font-medium file:bg-dbx-sky/10 file:text-dbx-sky hover:file:bg-dbx-sky/20" />
+            <input type="file" accept=".yaml,.yml,.json,.txt,.md,.pdf,.docx"
+              onChange={e => { setUploadFile(e.target.files[0] || null); setUploadResult(null); setDecResult(null); setError(null) }}
+              className="mt-2 block w-full text-sm text-slate-500 file:mr-4 file:py-2 file:px-4 file:rounded-lg file:border-0 file:text-sm file:font-medium file:bg-dbx-lava/10 file:text-dbx-lava hover:file:bg-dbx-lava/20" />
           </div>
-          <div className="grid grid-cols-3 gap-3">
-            <div>
-              <label className="block text-sm font-medium text-slate-600 dark:text-slate-300 mb-1">Catalog <span className="text-red-500">*</span></label>
-              <input value={dec.catalog} onChange={e => setDec(d => ({ ...d, catalog: e.target.value }))}
-                placeholder="my_catalog"
-                className="w-full px-3 py-2 rounded-lg border border-slate-300 dark:border-dbx-navy-400 bg-white dark:bg-dbx-navy-600 text-sm" />
+
+          {structuredUpload && (
+            <div className="text-xs px-3 py-2 rounded-md bg-slate-50 dark:bg-dbx-navy-600 text-slate-600 dark:text-slate-300">
+              Structured file detected &mdash; its <code>contexts</code> entries are imported directly (each carries its own scope). No further input needed.
             </div>
-            <div>
-              <label className="block text-sm font-medium text-slate-600 dark:text-slate-300 mb-1">Schema</label>
-              <input value={dec.schema} onChange={e => setDec(d => ({ ...d, schema: e.target.value }))}
-                placeholder="(recommended)"
-                className="w-full px-3 py-2 rounded-lg border border-slate-300 dark:border-dbx-navy-400 bg-white dark:bg-dbx-navy-600 text-sm" />
-            </div>
-            <div>
-              <label className="block text-sm font-medium text-slate-600 dark:text-slate-300 mb-1">Table</label>
-              <input value={dec.table} onChange={e => setDec(d => ({ ...d, table: e.target.value }))}
-                placeholder="(optional)"
-                className="w-full px-3 py-2 rounded-lg border border-slate-300 dark:border-dbx-navy-400 bg-white dark:bg-dbx-navy-600 text-sm" />
-            </div>
-          </div>
-          <label className="flex items-center gap-2 text-xs text-slate-600 dark:text-slate-300 cursor-pointer">
-            <input type="checkbox" checked={dec.hasEmbedded} onChange={e => setDec(d => ({ ...d, hasEmbedded: e.target.checked }))} />
-            This file names specific catalogs / schemas / tables / columns inside it (use those to place content)
-          </label>
-          <div>
-            <div className="flex justify-between items-center mb-1">
-              <label className="text-sm font-medium text-slate-600 dark:text-slate-300">
-                Scope description <span className="text-red-500">*</span>
-                {!dec.hasEmbedded && <span className="text-xs text-slate-400 ml-1">(required &mdash; the file has no embedded scope, so describe it well)</span>}
-              </label>
-              <span className={`text-xs ${decWordCount < 5 ? 'text-red-500' : 'text-slate-400'}`}>{decWordCount} words (min 5)</span>
-            </div>
-            <textarea value={dec.description} onChange={e => setDec(d => ({ ...d, description: e.target.value }))}
-              rows={3} placeholder="What does this document cover, and which tables/areas is it about? e.g. 'Clinical trials glossary for the gold CDM schema: defines study, study_site, and quality-event tables and their status codes.'"
-              className="w-full px-3 py-2 rounded-lg border border-slate-300 dark:border-dbx-navy-400 bg-white dark:bg-dbx-navy-600 text-sm" />
-          </div>
+          )}
+
+          {docUpload && (
+            <>
+              <div className="space-y-1.5">
+                <label className="text-sm font-medium text-slate-700 dark:text-slate-300">How should this document be applied?</label>
+                <label className="flex items-start gap-2 text-sm text-slate-600 dark:text-slate-300 cursor-pointer">
+                  <input type="radio" name="docmode" className="mt-1" checked={docMode === 'split'} onChange={() => setDocMode('split')} />
+                  <span><strong>Split across the tables it describes</strong> <span className="text-slate-400">(recommended for a glossary / data dictionary / spec)</span><br />
+                    <span className="text-xs text-slate-500 dark:text-slate-400">Each piece is auto-assigned to a <strong>real table</strong> under the catalog/schema you pick &mdash; names are validated (invented tables are never used), and unplaceable pieces fall back to your scope.</span></span>
+                </label>
+                <label className="flex items-start gap-2 text-sm text-slate-600 dark:text-slate-300 cursor-pointer">
+                  <input type="radio" name="docmode" className="mt-1" checked={docMode === 'single'} onChange={() => setDocMode('single')} />
+                  <span><strong>Attach the whole document to one scope</strong><br />
+                    <span className="text-xs text-slate-500 dark:text-slate-400">Summarized and stored as a single entry on the scope you choose. Use when the document is about one area &mdash; a single blob is injected into every table in that scope.</span></span>
+                </label>
+              </div>
+
+              {docMode === 'split' && (
+                <div className="space-y-3 border-l-2 border-l-dbx-sky/50 pl-3">
+                  <div className="text-xs px-3 py-2 rounded-md bg-amber-500/10 text-amber-700 dark:text-amber-300 border border-amber-400/30">
+                    Give each upload a clear, narrow scope. Don&rsquo;t dump many unrelated files or one giant file where the
+                    scope can&rsquo;t be determined &mdash; prefer a file with scope headers, a file whose scope you describe
+                    below, or <strong>multiple files, each with its own scope &amp; purpose</strong>.
+                  </div>
+                  <div className="grid grid-cols-3 gap-3">
+                    <div>
+                      <label className="block text-sm font-medium text-slate-600 dark:text-slate-300 mb-1">Catalog <span className="text-red-500">*</span></label>
+                      <input value={dec.catalog} onChange={e => setDec(d => ({ ...d, catalog: e.target.value }))} placeholder="my_catalog"
+                        className="w-full px-3 py-2 rounded-lg border border-slate-300 dark:border-dbx-navy-400 bg-white dark:bg-dbx-navy-600 text-sm" />
+                    </div>
+                    <div>
+                      <label className="block text-sm font-medium text-slate-600 dark:text-slate-300 mb-1">Schema</label>
+                      <input value={dec.schema} onChange={e => setDec(d => ({ ...d, schema: e.target.value }))} placeholder="(recommended)"
+                        className="w-full px-3 py-2 rounded-lg border border-slate-300 dark:border-dbx-navy-400 bg-white dark:bg-dbx-navy-600 text-sm" />
+                    </div>
+                    <div>
+                      <label className="block text-sm font-medium text-slate-600 dark:text-slate-300 mb-1">Table</label>
+                      <input value={dec.table} onChange={e => setDec(d => ({ ...d, table: e.target.value }))} placeholder="(optional)"
+                        className="w-full px-3 py-2 rounded-lg border border-slate-300 dark:border-dbx-navy-400 bg-white dark:bg-dbx-navy-600 text-sm" />
+                    </div>
+                  </div>
+                  <label className="flex items-center gap-2 text-xs text-slate-600 dark:text-slate-300 cursor-pointer">
+                    <input type="checkbox" checked={dec.hasEmbedded} onChange={e => setDec(d => ({ ...d, hasEmbedded: e.target.checked }))} />
+                    This file names specific catalogs / schemas / tables / columns inside it (use those to place content)
+                  </label>
+                  <div>
+                    <div className="flex justify-between items-center mb-1">
+                      <label className="text-sm font-medium text-slate-600 dark:text-slate-300">
+                        Scope description <span className="text-red-500">*</span>
+                        {!dec.hasEmbedded && <span className="text-xs text-slate-400 ml-1">(required &mdash; the file has no embedded scope, so describe it well)</span>}
+                      </label>
+                      <span className={`text-xs ${decWordCount < 5 ? 'text-red-500' : 'text-slate-400'}`}>{decWordCount} words (min 5)</span>
+                    </div>
+                    <textarea value={dec.description} onChange={e => setDec(d => ({ ...d, description: e.target.value }))}
+                      rows={3} placeholder="What does this document cover, and which tables/areas is it about? e.g. 'Clinical trials glossary for the gold CDM schema: defines study, study_site, and quality-event tables and their status codes.'"
+                      className="w-full px-3 py-2 rounded-lg border border-slate-300 dark:border-dbx-navy-400 bg-white dark:bg-dbx-navy-600 text-sm" />
+                  </div>
+                </div>
+              )}
+
+              {docMode === 'single' && (
+                <div className="grid grid-cols-2 gap-3 border-l-2 border-l-slate-300 dark:border-l-dbx-navy-400 pl-3">
+                  <div>
+                    <label className="block text-sm font-medium text-slate-600 dark:text-slate-300 mb-1">Scope <span className="text-red-500">*</span></label>
+                    <input value={uploadScope} onChange={e => setUploadScope(e.target.value)} placeholder="e.g. my_catalog.my_schema"
+                      className="w-full px-3 py-2 rounded-lg border border-slate-300 dark:border-dbx-navy-400 bg-white dark:bg-dbx-navy-600 text-sm" />
+                  </div>
+                  <div>
+                    <label className="block text-sm font-medium text-slate-600 dark:text-slate-300 mb-1">Scope Type</label>
+                    <select value={uploadScopeType} onChange={e => setUploadScopeType(e.target.value)}
+                      className="w-full px-3 py-2 rounded-lg border border-slate-300 dark:border-dbx-navy-400 bg-white dark:bg-dbx-navy-600 text-sm">
+                      {SCOPE_TYPES.map(t => <option key={t} value={t}>{t}</option>)}
+                    </select>
+                  </div>
+                </div>
+              )}
+            </>
+          )}
+
           <div className="flex items-center justify-between">
-            <span className="text-xs text-slate-400">{dec.file ? dec.file.name : 'No file selected'}</span>
+            <span className="text-xs text-slate-400">{uploadFile ? uploadFile.name : 'No file selected'}</span>
             <div className="flex gap-2">
-              <button onClick={() => { setShowDecompose(false); setDec({ file: null, catalog: '', schema: '', table: '', description: '', hasEmbedded: false }); setDecResult(null) }} className="btn-ghost btn-sm">Cancel</button>
-              <button onClick={handleDecompose} disabled={!decReady}
-                className="btn-primary btn-sm disabled:opacity-50">{decomposing ? 'Decomposing… (this can take a minute)' : 'Decompose & Save'}</button>
+              <button onClick={resetUpload} className="btn-ghost btn-sm">Cancel</button>
+              <button onClick={submitUpload} disabled={!canSubmitUpload()} className="btn-primary btn-sm disabled:opacity-50">
+                {decomposing ? 'Splitting… (this can take a minute)'
+                  : uploading ? 'Adding…'
+                  : (docUpload && docMode === 'split') ? 'Split & Save'
+                  : 'Add'}
+              </button>
             </div>
           </div>
+
           {decResult && (
             <div className="text-xs px-3 py-2 rounded-md bg-slate-50 dark:bg-dbx-navy-600 text-slate-600 dark:text-slate-300 space-y-1">
               <div>
@@ -239,49 +306,10 @@ function ContextManager() {
               {(decResult.entries || []).length > 12 && <div className="text-slate-400">…and {decResult.entries.length - 12} more (see the table below)</div>}
             </div>
           )}
-        </div>
-      )}
-
-      {showUpload && (
-        <div className="card p-4 space-y-3">
-          <div>
-            <label className="text-sm font-medium text-slate-700 dark:text-slate-300">Upload file</label>
-            <p className="text-xs text-slate-500 dark:text-slate-400 mt-0.5">
-              Structured <code>.yaml</code>/<code>.json</code> (a <code>contexts</code> list) is parsed directly into entries.
-              A document (<code>.txt</code>, <code>.md</code>, <code>.pdf</code>, <code>.docx</code>) is attached to the scope you choose below &mdash; long docs are summarized automatically, and <code>.pdf</code>/<code>.docx</code> need the AI document functions enabled on the SQL warehouse.
-            </p>
-            <input type="file" accept=".yaml,.yml,.json,.txt,.md,.pdf,.docx" onChange={e => { setUploadFile(e.target.files[0] || null); setUploadResult(null); setError(null) }}
-              className="mt-2 block w-full text-sm text-slate-500 file:mr-4 file:py-2 file:px-4 file:rounded-lg file:border-0 file:text-sm file:font-medium file:bg-dbx-lava/10 file:text-dbx-lava hover:file:bg-dbx-lava/20" />
-          </div>
-          {docUpload && (
-            <div className="grid grid-cols-2 gap-3">
-              <div>
-                <label className="block text-sm font-medium text-slate-600 dark:text-slate-300 mb-1">Scope <span className="text-red-500">*</span></label>
-                <input value={uploadScope} onChange={e => setUploadScope(e.target.value)}
-                  placeholder="e.g. my_catalog.my_schema"
-                  className="w-full px-3 py-2 rounded-lg border border-slate-300 dark:border-dbx-navy-400 bg-white dark:bg-dbx-navy-600 text-sm" />
-              </div>
-              <div>
-                <label className="block text-sm font-medium text-slate-600 dark:text-slate-300 mb-1">Scope Type</label>
-                <select value={uploadScopeType} onChange={e => setUploadScopeType(e.target.value)}
-                  className="w-full px-3 py-2 rounded-lg border border-slate-300 dark:border-dbx-navy-400 bg-white dark:bg-dbx-navy-600 text-sm">
-                  {SCOPE_TYPES.map(t => <option key={t} value={t}>{t}</option>)}
-                </select>
-              </div>
-            </div>
-          )}
-          <div className="flex items-center justify-between">
-            <span className="text-xs text-slate-400">{uploadFile ? uploadFile.name : 'No file selected'}</span>
-            <div className="flex gap-2">
-              <button onClick={() => { setShowUpload(false); setUploadFile(null); setUploadScope(''); setUploadResult(null) }} className="btn-ghost btn-sm">Cancel</button>
-              <button onClick={handleUpload} disabled={!uploadFile || uploading || (docUpload && !uploadScope.trim())}
-                className="btn-primary btn-sm disabled:opacity-50">{uploading ? 'Uploading…' : 'Upload'}</button>
-            </div>
-          </div>
           {uploadResult && (
             <div className="text-xs px-3 py-2 rounded-md bg-slate-50 dark:bg-dbx-navy-600 text-slate-600 dark:text-slate-300 space-y-1">
               <div>
-                Uploaded {uploadResult.uploaded} {uploadResult.lane === 'document' ? 'document' : (uploadResult.uploaded === 1 ? 'entry' : 'entries')}.
+                Added {uploadResult.uploaded} {uploadResult.lane === 'document' ? 'document' : (uploadResult.uploaded === 1 ? 'entry' : 'entries')}.
                 {uploadResult.results?.some(r => r.extract_method === 'ai_extract') && ' Summarized with AI.'}
                 {uploadResult.results?.some(r => r.truncated) && ' Trimmed to the word limit.'}
               </div>
@@ -400,7 +428,7 @@ function ContextManager() {
         <div className="text-center py-8 text-slate-400">Loading...</div>
       ) : entries.length === 0 ? (
         <div className="card p-8 text-center text-slate-400">
-          No customer context entries yet. Click "Add Context" or "Upload File" to get started.
+          No customer context entries yet. Click "Write an Entry" or "Add from a File" to get started.
         </div>
       ) : (
         <div className="card overflow-hidden">
