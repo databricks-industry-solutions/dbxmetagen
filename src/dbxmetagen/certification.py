@@ -1,7 +1,9 @@
 """Certified-asset apply policy — shared by the generation job, the review job, and the app.
 
-Metadata *generation* always runs; this module only gates whether generated DDL is APPLIED
-to a Unity Catalog asset that carries the governed ``certification_status = certified`` tag.
+Metadata *generation* always runs; this module only gates whether generated DDL OVERWRITES the
+comments/tags on a Unity Catalog asset that carries the governed ``certification_status = certified``
+tag. It never alters the asset itself or its certification status -- only the comment/description
+and the domain/sensitivity/ontology tags dbxmetagen produces.
 
 ``certified_apply_policy`` (variables.yml, default ``warn``):
   * ``block`` — never apply to a certified asset. Hard: no per-run override. Fails CLOSED
@@ -210,6 +212,7 @@ def gate_ddls(spark, ddls: List[str], policy, skip_flag) -> Tuple[List[str], Lis
     if cert_hits:
         logger.warning(
             "WARN: applying %d DDL statement(s) to CERTIFIED assets (certified_apply_policy=warn, "
-            "skip_certified_assets not set). Certified metadata will be overwritten.", len(cert_hits),
+            "skip_certified_assets not set). The existing comments/tags on those assets will be "
+            "overwritten; the assets and their certified status are unchanged.", len(cert_hits),
         )
     return list(ddls), cert_hits, "warned"

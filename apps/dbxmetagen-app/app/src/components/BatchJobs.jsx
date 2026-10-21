@@ -125,11 +125,13 @@ export default function BatchJobs({ onNavigate, pipelineStats }) {
       + `and quality, then scaling up. Continue with ${explicitCount}?`
     )) return
     // Certified-asset warn: apply is on, policy=warn, and the user has NOT opted into
-    // skipping -> certified assets in scope will be overwritten. Warn before the run (#247).
+    // skipping -> the comments/tags on certified assets in scope get overwritten. Warn
+    // before the run (#247). The assets and their certified status are never changed.
     if (applyDdl && certifiedPolicy === 'warn' && !skipCertified && !window.confirm(
-      'Apply is on and the certified-asset policy is "warn": any UC-certified tables/columns '
-      + 'in scope WILL be overwritten. Check "Skip applying to certified assets" to protect '
-      + 'them instead. Continue and overwrite certified assets?'
+      'Apply is on and the certified-asset policy is "warn": the comments/tags on any '
+      + 'UC-certified tables/columns in scope WILL be overwritten (the assets themselves and '
+      + 'their certified status are not changed). Check "Skip applying to certified assets" to '
+      + 'leave their comments/tags untouched. Continue?'
     )) return
 
     // skip_certified_assets is only meaningful when applying; block always skips (the job
@@ -565,12 +567,12 @@ export default function BatchJobs({ onNavigate, pipelineStats }) {
                   <label className="flex items-center gap-2 text-sm text-slate-600 dark:text-slate-300 cursor-pointer ml-6">
                     <input type="checkbox" checked={skipCertified} onChange={e => setSkipCertified(e.target.checked)} />
                     Skip applying to certified assets
-                    <InfoTip text="Under the 'warn' policy, applying overwrites UC-certified assets by default (you'll be warned before the run). Check this to protect them: certified tables/columns are skipped while everything else still applies." />
+                    <InfoTip text="Under the 'warn' policy, applying overwrites the existing comments/tags on UC-certified assets by default (you'll be warned before the run). Check this to leave them untouched: certified tables/columns are skipped while everything else still applies. The asset and its certified status are never changed." />
                   </label>
                 )}
                 {applyDdl && certifiedPolicy === 'block' && (
                   <p className="text-xs text-emerald-700 dark:text-emerald-300 ml-6">
-                    <span className="px-1 py-0 rounded bg-emerald-100 dark:bg-emerald-900/40 font-medium">policy: block</span> Certified assets are protected and will be skipped on apply.
+                    <span className="px-1 py-0 rounded bg-emerald-100 dark:bg-emerald-900/40 font-medium">policy: block</span> Certified assets are protected — their comments/tags are skipped on apply.
                   </p>
                 )}
                 <label className="flex items-center gap-2 text-sm text-slate-600 dark:text-slate-300 cursor-pointer">

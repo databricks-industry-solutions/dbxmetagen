@@ -589,7 +589,7 @@ function ReviewEditor() {
     } else if (certifiedPolicy === 'warn' && !skipCertified) {
       const hits = certifiedInScope()
       const msg = hits.length
-        ? `This will OVERWRITE metadata on ${hits.length} CERTIFIED asset(s):\n\n${hits.slice(0, 20).join('\n')}${hits.length > 20 ? `\n…and ${hits.length - 20} more` : ''}\n\nCheck "Skip applying to certified assets" to protect them instead. Proceed and overwrite?`
+        ? `This will overwrite the comments/tags on ${hits.length} CERTIFIED asset(s) (the assets themselves and their certified status are not changed):\n\n${hits.slice(0, 20).join('\n')}${hits.length > 20 ? `\n…and ${hits.length - 20} more` : ''}\n\nCheck "Skip applying to certified assets" to leave their comments/tags untouched. Proceed?`
         : 'Apply DDL changes to your catalog? This modifies table/column metadata.'
       if (!confirm(msg)) return
     } else {
@@ -1152,7 +1152,7 @@ function ReviewEditor() {
                 <span className="font-semibold text-sm text-slate-700 dark:text-slate-200">{tbl.table_name}</span>
                 {tbl.domain && <span className="text-[10px] px-1.5 py-0.5 rounded-full bg-blue-100 text-blue-700 dark:bg-blue-900/40 dark:text-blue-300 font-medium">{tbl.domain}{tbl.subdomain ? ` / ${tbl.subdomain}` : ''}</span>}
                 {ucCurrent[tbl.table_name]?.certified && <span className="text-[10px] px-1.5 py-0.5 rounded-full bg-emerald-100 text-emerald-700 dark:bg-emerald-900/40 dark:text-emerald-300 font-medium"
-                  title={certifiedPolicy === 'block' ? 'Certified — protected from overwrite (policy: block)' : certifiedPolicy === 'warn' ? 'Certified — overwritten with warning unless you skip certified assets' : 'Certified in Unity Catalog'}>certified</span>}
+                  title={certifiedPolicy === 'block' ? 'Certified — its comments/tags are protected from overwrite (policy: block)' : certifiedPolicy === 'warn' ? 'Certified — its comments/tags will be overwritten (with a warning) unless you skip certified assets' : 'Certified in Unity Catalog'}>certified</span>}
                 {tbl.primary_entity && (<span className="inline-flex items-center gap-1">
                   <span className="text-[10px] px-1.5 py-0.5 rounded-full bg-purple-100 text-purple-700 dark:bg-purple-900/40 dark:text-purple-300 font-medium">{tbl.primary_entity.entity_type} ({Number(tbl.primary_entity.confidence ?? 0).toFixed(2)})</span>
                   {tbl.primary_entity.source_ontology && <span className="text-[9px] px-1 py-0 rounded bg-indigo-100 dark:bg-indigo-900/40 text-indigo-600 dark:text-indigo-300">{tbl.primary_entity.source_ontology}</span>}
@@ -1932,14 +1932,14 @@ function ReviewEditor() {
             </label>
             {certifiedPolicy === 'warn' && (
               <label className="flex items-center gap-1.5 text-xs text-slate-500 dark:text-slate-400 cursor-pointer select-none"
-                title="Certified assets are overwritten by default under the 'warn' policy (you'll be warned first). Check this to protect them: certified tables/columns will be skipped.">
+                title="Under the 'warn' policy, the comments/tags on certified assets are overwritten by default (you'll be warned first). Check this to leave them untouched: certified tables/columns are skipped. The asset and its certified status are never changed.">
                 <input type="checkbox" checked={skipCertified} onChange={e => setSkipCertified(e.target.checked)} className="rounded" />
                 Skip applying to certified assets
               </label>
             )}
             {certifiedPolicy === 'block' && (
               <span className="flex items-center gap-1.5 text-xs text-emerald-700 dark:text-emerald-300 select-none"
-                title="Deployment policy certified_apply_policy=block: certified assets are never overwritten and cannot be overridden here. Uncertify an asset to apply to it.">
+                title="Deployment policy certified_apply_policy=block: the comments/tags on certified assets are never overwritten and this cannot be overridden here. Uncertify an asset to let its comments/tags be updated.">
                 <span className="px-1 py-0 rounded bg-emerald-100 dark:bg-emerald-900/40 font-medium">policy: block</span>
                 Certified assets are protected
               </span>
@@ -1964,7 +1964,7 @@ function ReviewEditor() {
                 </p>
                 {ddlApplyResult.blocked?.length > 0 && (
                   <p className="text-sm text-emerald-700 dark:text-emerald-300">
-                    Protected {ddlApplyResult.blocked.length} certified object(s) from overwrite{certifiedPolicy === 'warn' ? '. Uncheck “Skip applying to certified assets” to overwrite them.' : ' (policy: block).'}
+                    Left the comments/tags on {ddlApplyResult.blocked.length} certified object(s) untouched{certifiedPolicy === 'warn' ? '. Uncheck “Skip applying to certified assets” to overwrite them.' : ' (policy: block).'}
                   </p>
                 )}
                 {ddlApplyResult.skipped?.length > 0 && (
