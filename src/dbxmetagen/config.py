@@ -68,6 +68,10 @@ class MetadataConfig:
             "apply_tags",
             "certified_apply_policy",
             "skip_certified_assets",
+            "enable_governed_tags",
+            "governed_domain_tag_name",
+            "governed_domain_separator",
+            "governed_tag_max_len",
             "ddl_output_format",
             "allow_data",
             "dry_run",
@@ -226,6 +230,22 @@ class MetadataConfig:
         self.skip_certified_assets = _parse_bool(
             getattr(self, "skip_certified_assets", False)
         )
+        # Governed UC-Domains tag publishing (UCG-3/4). Opt-in, default-off; the key is blank
+        # until verified in a Domains-enabled workspace. The ungoverned two-key domain path is
+        # unaffected. See governed_tags.py.
+        self.enable_governed_tags = _parse_bool(
+            getattr(self, "enable_governed_tags", False)
+        )
+        self.governed_domain_tag_name = str(
+            getattr(self, "governed_domain_tag_name", "") or ""
+        ).strip()
+        self.governed_domain_separator = str(
+            getattr(self, "governed_domain_separator", "/") or "/"
+        )
+        try:
+            self.governed_tag_max_len = int(getattr(self, "governed_tag_max_len", 256))
+        except (TypeError, ValueError):
+            self.governed_tag_max_len = 256
         self.dry_run = _parse_bool(getattr(self, "dry_run", False))
         self.cleanup_control_table = _parse_bool(
             getattr(self, "cleanup_control_table", False)

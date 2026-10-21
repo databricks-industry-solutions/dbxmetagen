@@ -62,6 +62,18 @@ variables:
   skip_certified_assets:
     description: Per-run opt-in to SKIP applying metadata to certified assets (only meaningful under certified_apply_policy=warn; block always skips, allow never skips). Set by the app's warn dialog / the generate checkbox.
     default: False
+  enable_governed_tags:
+    description: "Opt-in (UCG-3/4): publish the business domain as ONE native UC governed tag whose value slash-encodes the subdomain (e.g. banking/retail_banking) so tables join UC Domains / the semantic layer. Separate downstream step; the two ungoverned domain/subdomain tags stay the default. Capability-gated; no-ops unless this is true AND governed_domain_tag_name is set AND the governed tag + ASSIGN/APPLY TAG privilege exist."
+    default: False
+  governed_domain_tag_name:
+    description: "Governed tag KEY UC uses for Domains. Leave BLANK until verified in a Domains-enabled workspace (go/uc-glossary-beta); publishing no-ops while blank. Set to the exact key UC assigns when a Domain is created."
+    default: ""
+  governed_domain_separator:
+    description: "Separator encoding subdomain inside the single governed value (UC convention: Parent/Sub). Verify in beta before enabling."
+    default: "/"
+  governed_tag_max_len:
+    description: "Max governed-tag value length; values are truncated to this (UC governed-tag limit is 256)."
+    default: "256"
   ddl_output_format:
     description: Output format can be via sql file (default) or via tsv or excel if this improves reviewability. This file is the individual output files.
     default: sql

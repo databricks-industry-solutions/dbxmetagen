@@ -425,6 +425,16 @@ SCHEMA = os.environ.get("SCHEMA_NAME", "metadata_results")
 from dbxmetagen.certification import normalize_policy as _normalize_cert_policy
 _DEPLOY_CERT_POLICY = _normalize_cert_policy(os.environ.get("CERTIFIED_APPLY_POLICY", "warn"))
 
+# Governed UC-Domains tag publishing (UCG-3/4). Opt-in, default-off; the key stays blank until
+# verified in a Domains-enabled workspace. Publishing no-ops unless BOTH are set. See governed_tags.py.
+_ENABLE_GOVERNED_TAGS = os.environ.get("ENABLE_GOVERNED_TAGS", "false").strip().lower() == "true"
+_GOVERNED_DOMAIN_TAG = os.environ.get("GOVERNED_DOMAIN_TAG_NAME", "").strip()
+_GOVERNED_DOMAIN_SEP = os.environ.get("GOVERNED_DOMAIN_SEPARATOR", "/") or "/"
+try:
+    _GOVERNED_TAG_MAX_LEN = int(os.environ.get("GOVERNED_TAG_MAX_LEN", "256") or 256)
+except ValueError:
+    _GOVERNED_TAG_MAX_LEN = 256
+
 # Required-config validation (DP-2). The deploy still succeeds even when a required
 # per-workspace value is missing; instead the frontend renders a blocking banner from
 # /api/config's `config_valid`/`config_errors`, and lifespan logs a prominent error.
@@ -885,6 +895,8 @@ def get_config():
         "config_valid": len(_CONFIG_ERRORS) == 0,
         "config_errors": _CONFIG_ERRORS,
         "certified_apply_policy": _DEPLOY_CERT_POLICY,
+        "enable_governed_tags": _ENABLE_GOVERNED_TAGS and bool(_GOVERNED_DOMAIN_TAG),
+        "governed_domain_tag_name": _GOVERNED_DOMAIN_TAG,
         "version": pkg_version,
     }
 
@@ -2214,6 +2226,33 @@ def apply_ddl(
     if warnings:
         result["warnings"] = warnings
     return result
+
+
+class PublishGovernedTagsBody(BaseModel):
+    # Optional scope: comma-separated table names (bare or fully-qualified); blank = whole schema.
+    table_names: Optional[str] = None
+
+
+@app.post("/api/metadata/publish-governed-tags")
+def publish_governed_tags(body: PublishGovernedTagsBody):
+    """Publish the business domain as ONE native UC governed tag per table (value slash-encodes
+    the subdomain), so tables join UC Domains / the semantic layer. Opt-in, capability-gated,
+    graceful no-op (UCG-3/4). Reads persisted domain/subdomain; never touches the ungoverned
+    domain/subdomain tags. Requires ENABLE_GOVERNED_TAGS + GOVERNED_DOMAIN_TAG_NAME on the app."""
+    from types import SimpleNamespace
+    from dbxmetagen import governed_tags
+    cfg = SimpleNamespace(
+        catalog_name=CATALOG, schema_name=SCHEMA,
+        table_names=(body.table_names or ""),
+        enable_governed_tags=_ENABLE_GOVERNED_TAGS,
+        governed_domain_tag_name=_GOVERNED_DOMAIN_TAG,
+        governed_domain_separator=_GOVERNED_DOMAIN_SEP,
+        governed_tag_max_len=_GOVERNED_TAG_MAX_LEN,
+    )
+    summary = governed_tags.run_sync(execute_sql, lambda s: execute_sql(s), cfg)
+    if summary.get("capability_missing"):
+        summary["hint"] = governed_tags.GOVERNED_TAG_HINT
+    return summary
 
 
 # ---------------------------------------------------------------------------

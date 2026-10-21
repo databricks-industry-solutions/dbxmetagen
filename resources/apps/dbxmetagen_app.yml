@@ -103,6 +103,18 @@ resources:
           # cannot loosen. Read as os.environ.get("CERTIFIED_APPLY_POLICY", "warn").
           - name: CERTIFIED_APPLY_POLICY
             value: "${var.certified_apply_policy}"
+          # Governed UC-Domains tag publishing (UCG-3/4), opt-in + default-off. To enable after
+          # verifying the UC Domains tag key in a Domains-enabled workspace: set
+          # GOVERNED_DOMAIN_TAG_NAME to that key and ENABLE_GOVERNED_TAGS=true (and grant the app
+          # SP ASSIGN/APPLY TAG via scripts/grant_app_permissions.sh). Blank = no-op.
+          - name: ENABLE_GOVERNED_TAGS
+            value: "${var.enable_governed_tags}"
+          - name: GOVERNED_DOMAIN_TAG_NAME
+            value: "${var.governed_domain_tag_name}"
+          - name: GOVERNED_DOMAIN_SEPARATOR
+            value: "${var.governed_domain_separator}"
+          - name: GOVERNED_TAG_MAX_LEN
+            value: "${var.governed_tag_max_len}"
           - name: MLFLOW_TRACE_TIMEOUT_SECONDS
             value: "120"
           # MLFLOW_EXPERIMENT: optional override for trace experiment path.

@@ -225,6 +225,15 @@ function ReviewEditor() {
   // warn = apply-with-warning by default, this checkbox opts INTO skipping; allow = no gate.
   const { policy: certifiedPolicy } = useCertifiedApplyPolicy()
   const [skipCertified, setSkipCertified] = useState(false)  // warn-mode opt-in to skip certified
+  // Governed UC-Domains tag publishing (UCG-3/4) — only shown when enabled + configured on the app.
+  const [govTags, setGovTags] = useState({ enabled: false, key: '' })
+  const [govBusy, setGovBusy] = useState(false)
+  const [govResult, setGovResult] = useState(null)
+  useEffect(() => {
+    fetch('/api/config').then(r => r.ok ? r.json() : {}).then(d => {
+      if (d) setGovTags({ enabled: !!d.enable_governed_tags, key: d.governed_domain_tag_name || '' })
+    }).catch(() => {})
+  }, [])
   const [exportLoading, setExportLoading] = useState(false)
   const [exportResult, setExportResult] = useState(null)
   const [entityTypeOptions, setEntityTypeOptions] = useState([])
@@ -615,6 +624,27 @@ function ReviewEditor() {
       if (compareUc) loadUcCurrent(reviewData.map(t => t.table_name))
     } catch (e) { setDdlApplyResult({ ok: false, detail: e.message || 'Network error' }) }
     finally { setDdlLoading(false) }
+  }
+  const publishGovernedTags = async () => {
+    if (!confirm(
+      'Publish governed domain tags to Unity Catalog? This writes ONE native governed tag per '
+      + `table (key "${govTags.key}", value = domain or domain/subdomain) so tables join UC Domains / `
+      + 'the semantic layer. Your existing domain/subdomain tags are NOT changed.'
+    )) return
+    setGovBusy(true); setGovResult(null)
+    try {
+      const tn = scopeMode === 'table'
+        ? selectedTables.map(t => `${selectedCatalog}.${selectedSchema}.${t}`).join(',')
+        : ''   // schema mode -> whole schema
+      const res = await fetch('/api/metadata/publish-governed-tags', {
+        method: 'POST', headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ table_names: tn }),
+      })
+      const j = await res.json().catch(() => ({}))
+      if (!res.ok) { setGovResult({ error: errMsg(j.detail || `Request failed (${res.status})`) }); return }
+      setGovResult(j)
+    } catch (e) { setGovResult({ error: e.message || 'Network error' }) }
+    finally { setGovBusy(false) }
   }
   const exportVolume = async (fmt) => {
     setExportLoading(true); setExportResult(null)
@@ -1945,6 +1975,13 @@ function ReviewEditor() {
               </span>
             )}
             <span className="text-[10px] text-slate-400 dark:text-slate-500" title="Apply DDL will execute ALTER TABLE / COMMENT ON statements against your Unity Catalog tables">Apply writes comments and tags to your tables</span>
+            {govTags.enabled && (
+              <button onClick={publishGovernedTags} disabled={govBusy}
+                title={`Publish the domain as the native UC governed tag "${govTags.key}" (value = domain or domain/subdomain) so tables join UC Domains / the semantic layer. Separate from the ungoverned Domain Tags above; those are unchanged.`}
+                className="px-4 py-1.5 bg-dbx-teal text-white rounded-lg text-sm font-medium hover:bg-teal-700 disabled:opacity-50">
+                {govBusy ? 'Publishing…' : 'Publish governed tags'}
+              </button>
+            )}
             <span className="border-l border-slate-300 dark:border-dbx-navy-400/40 h-6" />
             <button onClick={() => exportVolume('tsv')} disabled={exportLoading} className="px-4 py-1.5 bg-dbx-oat dark:bg-dbx-navy-500 text-slate-700 dark:text-slate-200 rounded-lg text-sm font-medium hover:bg-dbx-oat-dark dark:hover:bg-dbx-navy-400 disabled:opacity-50">Export TSV</button>
             <button onClick={() => exportVolume('excel')} disabled={exportLoading} className="px-4 py-1.5 bg-dbx-oat dark:bg-dbx-navy-500 text-slate-700 dark:text-slate-200 rounded-lg text-sm font-medium hover:bg-dbx-oat-dark dark:hover:bg-dbx-navy-400 disabled:opacity-50">Export Excel</button>
@@ -1956,6 +1993,16 @@ function ReviewEditor() {
             </label>
           </div>
           {ddlError && <p className="text-sm text-red-600">{ddlError}</p>}
+          {govResult && (govResult.error
+            ? <p className="text-sm text-red-600">{govResult.error}</p>
+            : govResult.status === 'noop'
+              ? <p className="text-sm text-amber-700 dark:text-amber-300">Governed tags not published: {govResult.reason}</p>
+              : <p className={`text-sm ${(govResult.errors || 0) === 0 ? 'text-green-600' : 'text-amber-700'}`}>
+                  Published governed “{govResult.tag_key}” tag to {govResult.applied} table(s)
+                  {govResult.skipped ? `, skipped ${govResult.skipped}` : ''}{govResult.errors ? `, ${govResult.errors} error(s)` : ''}.
+                  {govResult.capability_missing && <span className="text-amber-700 dark:text-amber-300"> {govResult.hint}</span>}
+                </p>
+          )}
           {ddlApplyResult && (ddlApplyResult.detail
             ? <p className="text-sm text-red-600">{ddlApplyResult.detail}</p>
             : <div className="space-y-2">
