@@ -4764,13 +4764,12 @@ def generate_domain_config(file: UploadFile = File(...), name: str = Form(""),
 
     prompt = _build_domain_gen_prompt(text[:100000], description)
     endpoint = _safe_model_endpoint(os.environ.get("LLM_MODEL"))
-    # failOnError => false makes AI_QUERY return STRUCT<result, errorMessage> (NOT `.response`);
-    # read `.result` for the JSON and surface `.errorMessage`. One AI_QUERY via a subquery.
+    # Plain AI_QUERY (NO responseFormat -- not all model endpoints support structured JSON mode);
+    # the prompt asks for JSON and we parse it from the text. failOnError => false returns
+    # STRUCT<result, errorMessage>; read `.result` (the text) and surface `.errorMessage`.
     sql = (
-        f"SELECT q.resp.errorMessage AS error_message, "
-        f"from_json(q.resp.result, '{_DOMAIN_GEN_STRUCT}') AS parsed "
-        f"FROM (SELECT AI_QUERY('{endpoint}', :prompt, "
-        f"responseFormat => '{{\"type\":\"json_object\"}}', failOnError => false) AS resp) q"
+        "SELECT q.resp.result AS text, q.resp.errorMessage AS error_message "
+        f"FROM (SELECT AI_QUERY('{endpoint}', :prompt, failOnError => false) AS resp) q"
     )
     try:
         rows = execute_sql(sql, timeout=300,
@@ -4780,7 +4779,7 @@ def generate_domain_config(file: UploadFile = File(...), name: str = Form(""),
     row0 = rows[0] if rows else {}
     if row0.get("error_message"):
         raise HTTPException(502, detail=f"Domain-taxonomy model call failed: {row0['error_message']}")
-    parsed = row0.get("parsed") or {}
+    parsed = _extract_json_object(row0.get("text") or "")
     domains = _normalize_domain_taxonomy(parsed if isinstance(parsed, dict) else {})
     if not domains:
         raise HTTPException(422, detail=(
@@ -5636,6 +5635,28 @@ def _strip_llm_fences(text: str) -> str:
         text = text.split("\n", 1)[1] if "\n" in text else text[3:]
         text = text.rsplit("```", 1)[0]
     return text.strip()
+
+
+def _extract_json_object(text: str) -> dict:
+    """Parse a JSON OBJECT from an LLM text response, tolerating ``` fences and surrounding
+    prose. Used where the model is asked to return JSON but the endpoint doesn't support a
+    structured responseFormat. Returns {} when nothing parseable is found."""
+    if not text:
+        return {}
+    t = _strip_llm_fences(str(text))
+    try:
+        v = json.loads(t)
+        return v if isinstance(v, dict) else {}
+    except Exception:
+        pass
+    start, end = t.find("{"), t.rfind("}")
+    if start != -1 and end > start:
+        try:
+            v = json.loads(t[start : end + 1])
+            return v if isinstance(v, dict) else {}
+        except Exception:
+            return {}
+    return {}
 
 
 def _builder_yaml_to_state(raw: dict) -> dict:
@@ -17032,14 +17053,12 @@ def decompose_customer_context(file: UploadFile = File(...),
     prompt = _cc_build_decompose_prompt(text[:100000], scope_description, allowed,
                                         catalog, schema, has_embedded_scope)
     endpoint = _safe_model_endpoint(os.environ.get("LLM_MODEL"))
-    # failOnError => false makes AI_QUERY return STRUCT<result, errorMessage> (NOT `.response`);
-    # read `.result` for the JSON and surface `.errorMessage`. One AI_QUERY via a subquery.
+    # Plain AI_QUERY (NO responseFormat -- not all model endpoints support structured JSON mode);
+    # the prompt asks for JSON and we parse it from the text. failOnError => false returns
+    # STRUCT<result, errorMessage>; read `.result` (the text) and surface `.errorMessage`.
     sql = (
-        f"SELECT q.resp.errorMessage AS error_message, "
-        f"from_json(q.resp.result, 'STRUCT<entries: ARRAY<STRUCT<context_text:STRING, "
-        f"target_scope:STRING, scope_type:STRING, confidence:DOUBLE, reason:STRING>>>') AS parsed "
-        f"FROM (SELECT AI_QUERY('{endpoint}', :prompt, "
-        f"responseFormat => '{{\"type\":\"json_object\"}}', failOnError => false) AS resp) q"
+        "SELECT q.resp.result AS text, q.resp.errorMessage AS error_message "
+        f"FROM (SELECT AI_QUERY('{endpoint}', :prompt, failOnError => false) AS resp) q"
     )
     try:
         rows = execute_sql(sql, timeout=300,
@@ -17049,7 +17068,7 @@ def decompose_customer_context(file: UploadFile = File(...),
     row0 = rows[0] if rows else {}
     if row0.get("error_message"):
         raise HTTPException(502, detail=f"Decomposition model call failed: {row0['error_message']}")
-    parsed = row0.get("parsed") or {}
+    parsed = _extract_json_object(row0.get("text") or "")
     raw_entries = parsed.get("entries") if isinstance(parsed, dict) else None
     entries = _cc_validate_decomposed(raw_entries, allowed, catalog, schema, table)
     if not entries:
