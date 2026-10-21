@@ -4527,11 +4527,73 @@ def get_entity_detail(entity_type: str):
     return {"tables": tables, "properties": properties, "entity_uri": entity_uri, "source_ontology": source_ontology}
 
 
+def _volume_domain_config_prefix() -> str:
+    """Volume path prefix for app-GENERATED domain config YAMLs (committed configs stay in
+    the repo's configurations/; generated ones live here so the running wheel can write them)."""
+    volume_name = os.environ.get("VOLUME_NAME", "generated_metadata")
+    return f"/Volumes/{CATALOG}/{SCHEMA}/{volume_name}/domain_configs"
+
+
+def _dc_slug(s: str) -> str:
+    """Bare snake_case slug for a domain/subdomain/config key."""
+    return re.sub(r"[^a-z0-9]+", "_", (s or "").strip().lower()).strip("_")
+
+
+def _slugify_config_key(s: str) -> str:
+    """Config file key; always prefixed so _list_domain_configs_cached picks it up."""
+    base = _dc_slug(s) or "generated"
+    return base if base.startswith("domain_config") else f"domain_config_{base}"
+
+
+def _list_volume_domain_configs() -> list[dict]:
+    """List domain configs the app generated into the UC Volume. Tolerant of a missing dir."""
+    prefix = _volume_domain_config_prefix()
+    items = []
+    try:
+        ws = _get_effective_client()
+        entries = list(ws.files.list_directory_contents(prefix))
+    except Exception as e:
+        logger.debug("No volume domain configs at %s: %s", prefix, e)
+        return items
+    for ent in entries:
+        fname = os.path.basename(getattr(ent, "path", "") or "")
+        if not fname.startswith("domain_config") or not fname.endswith(".yaml"):
+            continue
+        key = fname[:-5]
+        domain_count = 0
+        try:
+            resp = ws.files.download(f"{prefix}/{fname}")
+            raw = yaml.safe_load(resp.contents.read())
+            domain_count = len(raw.get("domains", {})) if raw else 0
+        except Exception:
+            pass
+        items.append({
+            "key": key,
+            "name": key.replace("domain_config_", "").replace("_", " ").title() + " (generated)",
+            "source": "volume",
+            "domain_count": domain_count,
+            "path": f"{prefix}/{fname}",
+        })
+    return items
+
+
+def _save_domain_config_to_volume(key: str, yaml_content: str) -> str:
+    vol_path = f"{_volume_domain_config_prefix()}/{key}.yaml"
+    ws = _get_effective_client()
+    ws.files.upload(vol_path, io.BytesIO(yaml_content.encode("utf-8")), overwrite=True)
+    logger.info("Generated domain config saved to volume: %s", vol_path)
+    return vol_path
+
+
 def _resolve_domain_config_path(key: str) -> str:
     """Resolve a domain config key to a file path for the job parameter."""
     bundles = {b["key"]: b for b in _list_bundles_local()}
     if key in bundles:
         return _resolve_bundle_path_local(key)
+    # Committed file or app-generated volume config (both surfaced by the list, with a path).
+    for item in _list_domain_configs_cached():
+        if item.get("key") == key and item.get("path"):
+            return item["path"]
     cfg_dir = _find_domain_config_dir()
     if cfg_dir:
         path = os.path.join(cfg_dir, f"{key}.yaml")
@@ -4549,8 +4611,9 @@ def _list_domain_configs_cached() -> list[dict]:
             if not fname.startswith("domain_config") or not fname.endswith(".yaml"):
                 continue
             file_key = fname.replace(".yaml", "")
+            fpath = os.path.join(cfg_dir, fname)
             try:
-                with open(os.path.join(cfg_dir, fname), "r") as f:
+                with open(fpath, "r") as f:
                     raw = yaml.safe_load(f)
                 domain_count = len(raw.get("domains", {})) if raw else 0
             except Exception:
@@ -4560,7 +4623,13 @@ def _list_domain_configs_cached() -> list[dict]:
                 "name": file_key.replace("_", " ").replace("domain config ", "").title() + " (standalone)",
                 "source": "file",
                 "domain_count": domain_count,
+                "path": os.path.abspath(fpath),
             })
+    # App-generated configs on the volume (a committed file with the same key wins).
+    file_keys = {i["key"] for i in items}
+    for v in _list_volume_domain_configs():
+        if v["key"] not in file_keys:
+            items.append(v)
     return items
 
 
@@ -4568,6 +4637,128 @@ def _list_domain_configs_cached() -> list[dict]:
 def list_domain_configs():
     """List standalone domain config YAML files. Cached 300s."""
     return _list_domain_configs_cached()
+
+
+# ---------------------------------------------------------------------------
+# Generate a domain taxonomy YAML from a document (doc -> domains/subdomains).
+# Mirrors the customer-context decompose pattern (one grounded ai_query), but AUTHORS a
+# domain config instead of assigning context to tables -- so it needs no table grounding.
+# The result is saved to the Volume (the committed configurations/ is read-only in the wheel)
+# and immediately listed by /api/domain-configs for the Generate domain selector.
+# ---------------------------------------------------------------------------
+_DOMAIN_GEN_STRUCT = (
+    "STRUCT<domains: ARRAY<STRUCT<key:STRING, name:STRING, description:STRING, "
+    "keywords:ARRAY<STRING>, subdomains: ARRAY<STRUCT<key:STRING, name:STRING, "
+    "description:STRING, keywords:ARRAY<STRING>>>>>>"
+)
+_DOMAIN_GEN_MAX_DOMAINS = 60
+_DOMAIN_GEN_MAX_SUBDOMAINS = 40
+
+
+def _normalize_domain_taxonomy(parsed: dict) -> dict:
+    """Turn the model's {domains:[...]} into the canonical ``domains:`` mapping. Pure:
+    slugifies keys, requires name+description, dedupes, caps counts."""
+    out: dict = {}
+    for d in (parsed or {}).get("domains") or []:
+        if not isinstance(d, dict):
+            continue
+        name = (d.get("name") or "").strip()
+        key = _dc_slug(d.get("key") or name)
+        desc = (d.get("description") or "").strip()
+        if not key or not name or not desc or key in out:
+            continue
+        subs: dict = {}
+        for s in (d.get("subdomains") or [])[:_DOMAIN_GEN_MAX_SUBDOMAINS]:
+            if not isinstance(s, dict):
+                continue
+            sname = (s.get("name") or "").strip()
+            skey = _dc_slug(s.get("key") or sname)
+            sdesc = (s.get("description") or "").strip()
+            if not skey or not sname or not sdesc or skey in subs:
+                continue
+            subs[skey] = {
+                "name": sname, "description": sdesc,
+                "keywords": [str(k).strip() for k in (s.get("keywords") or []) if str(k).strip()][:15],
+            }
+        out[key] = {
+            "name": name, "description": desc,
+            "keywords": [str(k).strip() for k in (d.get("keywords") or []) if str(k).strip()][:15],
+            "subdomains": subs,
+        }
+        if len(out) >= _DOMAIN_GEN_MAX_DOMAINS:
+            break
+    return out
+
+
+def _build_domain_gen_prompt(text: str, description: str) -> str:
+    ctx = f"Context from the uploader: {description.strip()}\n" if description.strip() else ""
+    return (
+        "You are authoring a BUSINESS DOMAIN TAXONOMY for data classification from the document "
+        "below. Extract the domains and, under each, its subdomains. For each give a short "
+        "snake_case key, a human-readable name, a one-sentence description, and 4-10 lowercase "
+        "keywords that would plausibly appear in table/column names or comments for that area.\n"
+        f"{ctx}"
+        "Use only domains/subdomains the document actually supports; do not invent unrelated ones. "
+        'Return JSON of the form: {"domains":[{"key":"...","name":"...","description":"...",'
+        '"keywords":["..."],"subdomains":[{"key":"...","name":"...","description":"...",'
+        '"keywords":["..."]}]}]}\n\n'
+        f"DOCUMENT:\n{text}"
+    )
+
+
+@app.post("/api/domain-configs/generate")
+def generate_domain_config(file: UploadFile = File(...), name: str = Form(""),
+                           description: str = Form("")):
+    """Generate a domain taxonomy YAML from a document and save it to the Volume so it appears
+    in the Generate domain selector. Never writes to the committed configurations/ dir."""
+    filename = file.filename or "document"
+    ext = filename.rsplit(".", 1)[-1].lower() if "." in filename else ""
+    if ext not in _CC_TEXT_EXTS and ext not in _CC_BINARY_EXTS:
+        raise HTTPException(400, detail=(
+            f"Use a document (.txt/.md/.pdf/.docx) describing the domains/subdomains. Got '.{ext}'."))
+    raw = file.file.read()
+    text = (_cc_parse_binary_to_text(raw, ext, filename) if ext in _CC_BINARY_EXTS
+            else raw.decode("utf-8", errors="replace"))
+    if not text.strip():
+        raise HTTPException(400, detail="No text could be extracted from the document.")
+
+    prompt = _build_domain_gen_prompt(text[:100000], description)
+    endpoint = _safe_model_endpoint(os.environ.get("LLM_MODEL"))
+    sql = (
+        f"SELECT from_json(AI_QUERY('{endpoint}', :prompt, "
+        f"responseFormat => '{{\"type\":\"json_object\"}}', failOnError => false).response, "
+        f"'{_DOMAIN_GEN_STRUCT}') AS parsed"
+    )
+    try:
+        rows = execute_sql(sql, timeout=300,
+                           parameters=[StatementParameterListItem(name="prompt", value=prompt)])
+    except Exception as exc:
+        raise HTTPException(502, detail=f"Domain-taxonomy model call failed: {exc}")
+    parsed = (rows[0].get("parsed") if rows else None) or {}
+    domains = _normalize_domain_taxonomy(parsed if isinstance(parsed, dict) else {})
+    if not domains:
+        raise HTTPException(422, detail=(
+            "The model could not extract any domains. Add more detail, or structure the document "
+            "as a list of domains → subdomains with short descriptions."))
+
+    key = _slugify_config_key(name or filename.rsplit(".", 1)[0])
+    doc = {"version": "1.0", "generated_from": filename[:120], "mutually_exclusive": False,
+           "domains": domains}
+    yaml_content = yaml.safe_dump(doc, sort_keys=False, allow_unicode=True)
+    try:
+        vol_path = _save_domain_config_to_volume(key, yaml_content)
+    except Exception as exc:
+        raise HTTPException(500, detail=f"Failed to save domain config to the volume: {exc}")
+    _yaml_cache.clear()   # so the new config shows in the selector immediately
+    sub_total = sum(len(d["subdomains"]) for d in domains.values())
+    return {
+        "key": key,
+        "name": key.replace("domain_config_", "").replace("_", " ").title(),
+        "domain_count": len(domains), "subdomain_count": sub_total,
+        "path": vol_path, "source": "volume",
+        "domains": [{"key": k, "name": v["name"], "subdomains": list(v["subdomains"].keys())}
+                    for k, v in domains.items()],
+    }
 
 
 class OntologyApplyItem(BaseModel):

@@ -60,6 +60,14 @@ export default function BatchJobs({ onNavigate, pipelineStats }) {
   const [bundlesLoadError, setBundlesLoadError] = useState(null)
   const [domainConfig, setDomainConfig] = useState('')
   const [domainConfigs, setDomainConfigs] = useState([])
+  // Generate a domain taxonomy YAML from an uploaded document (saved to the volume, then
+  // selectable here). Does not touch the built-in configurations/ taxonomies.
+  const [showDomainGen, setShowDomainGen] = useState(false)
+  const [domainGenFile, setDomainGenFile] = useState(null)
+  const [domainGenName, setDomainGenName] = useState('')
+  const [domainGenDesc, setDomainGenDesc] = useState('')
+  const [domainGenBusy, setDomainGenBusy] = useState(false)
+  const [domainGenResult, setDomainGenResult] = useState(null)
   const [historyPage, setHistoryPage] = useState(0)
   const [health, setHealth] = useState(null)
   // Core-metadata run scope: 'all3' runs descriptions + sensitivity + domain;
@@ -244,6 +252,29 @@ export default function BatchJobs({ onNavigate, pipelineStats }) {
 
   const hasDomainSource = !!(ontologyBundle || domainConfig)
 
+  const generateDomainConfig = async () => {
+    if (!domainGenFile || domainGenBusy) return
+    setDomainGenBusy(true); setDomainGenResult(null)
+    try {
+      const fd = new FormData()
+      fd.append('file', domainGenFile)
+      if (domainGenName.trim()) fd.append('name', domainGenName.trim())
+      if (domainGenDesc.trim()) fd.append('description', domainGenDesc.trim())
+      const res = await fetch('/api/domain-configs/generate', { method: 'POST', body: fd })
+      const j = await res.json().catch(() => ({}))
+      if (!res.ok) { setDomainGenResult({ error: j.detail || `Request failed (${res.status})` }); return }
+      setDomainGenResult(j)
+      const list = await fetch('/api/domain-configs').then(r => r.ok ? r.json() : [])
+      setDomainConfigs(list)
+      // Auto-select the new taxonomy (domain-only selection: taxonomy, no ontology).
+      setDomainConfig(j.key); setOntologyBundle('')
+      try { localStorage.setItem('dbxmetagen_ontologyBundle', '') } catch {}
+      setDomainGenFile(null); setDomainGenName('')
+    } catch (e) {
+      setDomainGenResult({ error: e.message || 'Network error' })
+    } finally { setDomainGenBusy(false) }
+  }
+
   // This page shows only core-metadata-generation runs; the advanced analytics
   // pipeline's runs live in the Semantic Layer's advanced section.
   const coreRuns = runHistory.filter(r => classifyRun(r) === 'core')
@@ -389,6 +420,41 @@ export default function BatchJobs({ onNavigate, pipelineStats }) {
                 className="text-xs text-dbx-teal hover:underline mt-1 inline-block">
                 Or build a custom ontology &rarr;
               </button>
+              <div className="mt-0.5">
+                <button type="button" onClick={() => setShowDomainGen(s => !s)}
+                  className="text-xs text-dbx-teal hover:underline inline-block">
+                  Or generate a domain taxonomy from a document &rarr;
+                </button>
+              </div>
+              {showDomainGen && (
+                <div className="mt-2 rounded-lg border border-slate-200 dark:border-dbx-navy-400/40 p-3 space-y-2">
+                  <p className="text-xs text-slate-500 dark:text-slate-400">
+                    Upload a document listing your business <strong>domains and subdomains</strong> with short
+                    descriptions (.txt/.md/.pdf/.docx). It&rsquo;s turned into a domain-taxonomy YAML, saved, and
+                    selected here for domain classification &mdash; the built-in taxonomies are untouched.
+                  </p>
+                  <input type="file" accept=".txt,.md,.pdf,.docx"
+                    onChange={e => { setDomainGenFile(e.target.files[0] || null); setDomainGenResult(null) }}
+                    className="block w-full text-xs text-slate-500 file:mr-3 file:py-1.5 file:px-3 file:rounded file:border-0 file:text-xs file:font-medium file:bg-dbx-teal/10 file:text-dbx-teal hover:file:bg-dbx-teal/20" />
+                  <div className="grid grid-cols-2 gap-2">
+                    <input value={domainGenName} onChange={e => setDomainGenName(e.target.value)} placeholder="Name (e.g. Insurance)"
+                      className="w-full px-2 py-1.5 rounded border border-slate-300 dark:border-dbx-navy-400 bg-white dark:bg-dbx-navy-600 text-xs" />
+                    <input value={domainGenDesc} onChange={e => setDomainGenDesc(e.target.value)} placeholder="Optional: what it covers"
+                      className="w-full px-2 py-1.5 rounded border border-slate-300 dark:border-dbx-navy-400 bg-white dark:bg-dbx-navy-600 text-xs" />
+                  </div>
+                  <div className="flex items-center justify-between">
+                    <span className="text-xs text-slate-400">{domainGenFile ? domainGenFile.name : 'No file selected'}</span>
+                    <button type="button" onClick={generateDomainConfig} disabled={!domainGenFile || domainGenBusy}
+                      className="btn-primary btn-sm disabled:opacity-50">{domainGenBusy ? 'Generating… (can take a minute)' : 'Generate taxonomy'}</button>
+                  </div>
+                  {domainGenResult?.error && <p className="text-xs text-red-500">{String(domainGenResult.error)}</p>}
+                  {domainGenResult && !domainGenResult.error && (
+                    <p className="text-xs text-green-600 dark:text-green-400">
+                      Created &ldquo;{domainGenResult.name}&rdquo; &mdash; {domainGenResult.domain_count} domains, {domainGenResult.subdomain_count} subdomains. Selected for this run.
+                    </p>
+                  )}
+                </div>
+              )}
               {bundlesLoadError && (
                 <p className="text-xs text-amber-700 dark:text-amber-300 mt-1.5">
                   Could not load ontology bundles: {bundlesLoadError}.{' '}
