@@ -9,6 +9,7 @@ import pytest
 
 from dbxmetagen.governed_tags import (
     normalize_governed_domain_value,
+    normalize_tag_key,
     resolve_fqn,
     build_governed_tag_ddl,
     gate,
@@ -17,6 +18,19 @@ from dbxmetagen.governed_tags import (
     gate_and_build,
     _is_capability_error,
 )
+
+
+class TestNormalizeTagKey:
+    @pytest.mark.parametrize("val,expected", [
+        ("company_domain", "company_domain"), ("  Domain ", "Domain"),
+        ("", ""), (None, ""), ("none", ""), ("None", ""), ("__unset__", ""),
+    ])
+    def test_normalize(self, val, expected):
+        assert normalize_tag_key(val) == expected
+
+    def test_sentinel_none_gates_off(self):
+        ok, reason = gate(_cfg(governed_domain_tag_name="none"))
+        assert ok is False and "governed_domain_tag_name" in reason
 
 
 def _cfg(**kw):

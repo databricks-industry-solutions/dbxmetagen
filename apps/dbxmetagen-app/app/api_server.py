@@ -427,8 +427,9 @@ _DEPLOY_CERT_POLICY = _normalize_cert_policy(os.environ.get("CERTIFIED_APPLY_POL
 
 # Governed UC-Domains tag publishing (UCG-3/4). Opt-in, default-off; the key stays blank until
 # verified in a Domains-enabled workspace. Publishing no-ops unless BOTH are set. See governed_tags.py.
+from dbxmetagen.governed_tags import normalize_tag_key as _normalize_tag_key
 _ENABLE_GOVERNED_TAGS = os.environ.get("ENABLE_GOVERNED_TAGS", "false").strip().lower() == "true"
-_GOVERNED_DOMAIN_TAG = os.environ.get("GOVERNED_DOMAIN_TAG_NAME", "").strip()
+_GOVERNED_DOMAIN_TAG = _normalize_tag_key(os.environ.get("GOVERNED_DOMAIN_TAG_NAME", ""))
 _GOVERNED_DOMAIN_SEP = os.environ.get("GOVERNED_DOMAIN_SEPARATOR", "/") or "/"
 try:
     _GOVERNED_TAG_MAX_LEN = int(os.environ.get("GOVERNED_TAG_MAX_LEN", "256") or 256)

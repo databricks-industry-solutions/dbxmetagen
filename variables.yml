@@ -67,7 +67,7 @@ variables:
     default: False
   governed_domain_tag_name:
     description: "Governed tag KEY UC uses for Domains. Leave BLANK until verified in a Domains-enabled workspace (go/uc-glossary-beta); publishing no-ops while blank. Set to the exact key UC assigns when a Domain is created."
-    default: ""
+    default: "none"
   governed_domain_separator:
     description: "Separator encoding subdomain inside the single governed value (UC convention: Parent/Sub). Verify in beta before enabling."
     default: "/"

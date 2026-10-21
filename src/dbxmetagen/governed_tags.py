@@ -28,6 +28,18 @@ logger = logging.getLogger(__name__)
 
 AUDIT_TABLE = "governed_tag_apply_log"
 
+# Sentinel values meaning "no governed tag key configured". A non-empty default ("none") is
+# required because Databricks Apps reject an empty env-var value; the app/config/job all treat
+# these as unset so the feature stays a no-op until a real key is set.
+UNSET_TAG_KEYS = {"", "none", "__unset__"}
+
+
+def normalize_tag_key(key) -> str:
+    """Return the governed tag key, or "" if it is blank / a sentinel ('none')."""
+    k = str(key or "").strip()
+    return "" if k.lower() in UNSET_TAG_KEYS else k
+
+
 GOVERNED_TAG_HINT = (
     "The governed domain tag or the ASSIGN/APPLY TAG privilege appears to be missing. Create the "
     "governed tag (UC → Tags) with the configured key and allowed values, grant the app/principal "
@@ -90,7 +102,7 @@ def gate(config) -> Tuple[bool, Optional[str]]:
     """
     if not getattr(config, "enable_governed_tags", False):
         return False, "governed tags disabled (enable_governed_tags=false)"
-    if not str(getattr(config, "governed_domain_tag_name", "") or "").strip():
+    if not normalize_tag_key(getattr(config, "governed_domain_tag_name", "")):
         return False, "no governed_domain_tag_name configured (set it after verifying the UC Domains tag key)"
     return True, None
 
@@ -100,7 +112,7 @@ def build_statements(config, rows: List[Dict[str, Any]]) -> Tuple[List[Dict[str,
 
     ``to_apply`` items: ``{fqn, value, ddl}``; ``skipped`` items: ``{fqn, reason}`` (no domain).
     """
-    tag_key = str(getattr(config, "governed_domain_tag_name", "") or "").strip()
+    tag_key = normalize_tag_key(getattr(config, "governed_domain_tag_name", ""))
     sep = str(getattr(config, "governed_domain_separator", "/") or "/")
     max_len = int(getattr(config, "governed_tag_max_len", 256) or 256)
     to_apply: List[Dict[str, Any]] = []
@@ -233,14 +245,15 @@ def run_sync(query_fn: Callable[[str], List[Dict[str, Any]]], run_sql: Callable[
     rows = read_domain_rows(query_fn, cat, sch, getattr(config, "table_names", "") or "")
     to_apply, pre_skipped, _ = gate_and_build(config, rows)
     result = apply_statements(run_sql, to_apply)
-    write_audit(run_sql, cat, sch, config.governed_domain_tag_name, result, run_id)
+    tag_key = normalize_tag_key(config.governed_domain_tag_name)
+    write_audit(run_sql, cat, sch, tag_key, result, run_id)
     return {
         "status": "done",
         "applied": len(result["applied"]),
         "skipped": len(result["skipped"]) + len(pre_skipped),
         "errors": len(result["errors"]),
         "capability_missing": result.get("capability_missing", False),
-        "tag_key": config.governed_domain_tag_name,
+        "tag_key": tag_key,
         "details": result,
     }
 

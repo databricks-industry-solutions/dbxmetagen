@@ -236,9 +236,10 @@ class MetadataConfig:
         self.enable_governed_tags = _parse_bool(
             getattr(self, "enable_governed_tags", False)
         )
-        self.governed_domain_tag_name = str(
-            getattr(self, "governed_domain_tag_name", "") or ""
-        ).strip()
+        from dbxmetagen.governed_tags import normalize_tag_key as _norm_tag_key
+        self.governed_domain_tag_name = _norm_tag_key(
+            getattr(self, "governed_domain_tag_name", "")
+        )
         self.governed_domain_separator = str(
             getattr(self, "governed_domain_separator", "/") or "/"
         )
