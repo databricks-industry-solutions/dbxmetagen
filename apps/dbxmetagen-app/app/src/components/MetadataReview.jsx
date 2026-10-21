@@ -169,11 +169,14 @@ function ReviewEditor() {
   const [selectedTables, setSelectedTables] = useState([])
   const [activeType, setActiveType] = useState('comments')
   const { simplified } = useViewMode()
-  // Simplified view trims the review to the two types a steward works with and
-  // hides the advanced DDL-bundle export (ontology/FK tags live in advanced view).
-  const visibleMetaTypes = simplified ? META_TYPES.filter(t => t.key === 'comments' || t.key === 'pii') : META_TYPES
+  // Simplified view trims the review to the core types a steward works with
+  // (comments, PII/PHI, domain) and hides the advanced DDL-bundle export
+  // (ontology/FK tags live in advanced view). Domain is applyable from the
+  // Export & Apply bar's category dropdown, so it must also be reviewable here.
+  const SIMPLIFIED_META_KEYS = ['comments', 'pii', 'domain']
+  const visibleMetaTypes = simplified ? META_TYPES.filter(t => SIMPLIFIED_META_KEYS.includes(t.key)) : META_TYPES
   useEffect(() => {
-    if (simplified && !['comments', 'pii'].includes(activeType)) setActiveType('comments')
+    if (simplified && !SIMPLIFIED_META_KEYS.includes(activeType)) setActiveType('comments')
   }, [simplified, activeType])
   const [reviewData, setReviewData] = useState([])
   const [original, setOriginal] = useState([])
