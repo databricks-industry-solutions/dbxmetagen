@@ -376,6 +376,12 @@ variables:
   use_customer_context:
     description: "When true, enrich prompts with customer-provided context from the customer_context Delta table. Context is scoped hierarchically (catalog > schema > pattern > table). Requires the customer_context table to exist (seed from YAML or create via the app)."
     default: false
+  customer_context_retrieval:
+    description: "How in-scope customer context is selected for a table. 'exact' (default): keep the historical hierarchical concat of ALL matching entries up to the budget. 'ranked': within the SAME scope filter, thin a crowded scope to the entries most lexically relevant to the table (name + columns), always keeping catalog-level directives. Hierarchy is the hard filter in both."
+    default: exact
+  customer_context_top_k:
+    description: "In 'ranked' retrieval, the max number of in-scope context entries kept for a table (catalog-level directives are always kept on top of this)."
+    default: "8"
   ontology_vs_index:
     description: "Fully-qualified name of the Databricks Vector Search index for ontology retrieval (e.g. catalog.schema.ontology_vs_index). When set and the index exists, entity/edge classification uses HYBRID vector search instead of the keyword pass0 + full tier-1 LLM dump, dramatically reducing token cost for large ontologies. Leave empty to disable vector retrieval (default)."
     default: ""

@@ -127,6 +127,8 @@ class MetadataConfig:
             "include_profiling_context",
             "include_constraint_context",
             "use_customer_context",
+            "customer_context_retrieval",
+            "customer_context_top_k",
             "max_ai_candidates",
             "rule_score_min_for_ai",
             "max_candidates_per_table_pair",
@@ -267,6 +269,14 @@ class MetadataConfig:
         self.use_customer_context = _parse_bool(
             getattr(self, "use_customer_context", False)
         )
+        # Customer-context retrieval mode: 'exact' (default, historical) or 'ranked' (lexical
+        # relevance within the same scope filter). See customer_context.resolve_customer_context.
+        _cc_retr = str(getattr(self, "customer_context_retrieval", "exact") or "exact").strip().lower()
+        self.customer_context_retrieval = _cc_retr if _cc_retr in ("exact", "ranked") else "exact"
+        try:
+            self.customer_context_top_k = int(getattr(self, "customer_context_top_k", 8))
+        except (TypeError, ValueError):
+            self.customer_context_top_k = 8
         self.include_lineage = _parse_bool(getattr(self, "include_lineage", True))
         self.include_deterministic_pi = _parse_bool(
             getattr(self, "include_deterministic_pi", True)

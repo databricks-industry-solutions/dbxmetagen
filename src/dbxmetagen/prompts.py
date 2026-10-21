@@ -171,9 +171,25 @@ class Prompt(ABC):
                 col_meta[cn]["role"] = f"FOREIGN KEY -> {ref}"
 
     def enrich_from_customer_context(self, cache: list) -> None:
-        """Inject matching customer context from the prefetched cache (no SQL)."""
+        """Inject matching customer context from the prefetched cache (no SQL).
+
+        Retrieval mode is config-driven: 'exact' (default) keeps the historical hierarchical
+        concat; 'ranked' additionally thins a crowded scope to the entries most lexically
+        relevant to this table (name + columns), with the scope hierarchy still the hard filter.
+        """
         from dbxmetagen.customer_context import resolve_customer_context
-        ctx = resolve_customer_context(cache, self.full_table_name)
+        mode = getattr(self.config, "customer_context_retrieval", "exact")
+        signature = ""
+        if mode == "ranked":
+            try:
+                cols = list(getattr(self.df, "columns", []) or [])
+            except Exception:
+                cols = []
+            signature = " ".join([self.full_table_name] + cols)
+        ctx = resolve_customer_context(
+            cache, self.full_table_name, mode=mode, signature=signature,
+            top_k=int(getattr(self.config, "customer_context_top_k", 8)),
+        )
         if ctx:
             self.prompt_content["customer_context"] = ctx
 

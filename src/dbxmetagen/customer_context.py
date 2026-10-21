@@ -9,6 +9,7 @@ from __future__ import annotations
 
 import hashlib
 import logging
+import re
 from datetime import datetime, timezone
 from fnmatch import fnmatch
 from pathlib import Path
@@ -187,22 +188,68 @@ def _truncate_preserving_specificity(
     return "\n".join(texts), dropped, partial
 
 
+_TOKEN_RE = re.compile(r"[a-z0-9_]+")
+
+
+def _tokens(text: str) -> set:
+    return set(_TOKEN_RE.findall((text or "").lower()))
+
+
+def _lexical_score(signature_tokens: set, entry: Dict[str, Any]) -> float:
+    """Relevance of one entry to a table signature = token overlap, length-normalized. Pure."""
+    etoks = _tokens(f"{entry.get('context_text', '')} {entry.get('context_label', '')}")
+    if not etoks or not signature_tokens:
+        return 0.0
+    return len(signature_tokens & etoks) / (len(etoks) ** 0.5)
+
+
+def _select_ranked(
+    matches: List[Dict[str, Any]], signature: str, top_k: int
+) -> List[Dict[str, Any]]:
+    """Keep the ``top_k`` in-scope entries most relevant to the table (lexical overlap), but
+    ALWAYS retain catalog-scope entries (global directives are meant to apply regardless of
+    lexical similarity). Pure. ``matches`` already passed the hierarchy filter -- this only
+    thins a crowded scope; it never crosses scopes. No-op when matches already fit top_k.
+    """
+    sig = _tokens(signature)
+    if not sig or top_k <= 0:
+        return matches
+    always = [m for m in matches if m.get("scope_type") == "catalog"]
+    rest = [m for m in matches if m.get("scope_type") != "catalog"]
+    if len(rest) <= top_k:
+        return matches   # nothing to thin
+    rest.sort(key=lambda m: (
+        -_lexical_score(sig, m),
+        _SCOPE_ORDER.get(m.get("scope_type", ""), 99),   # tie-break: more specific first
+        -int(m.get("priority") or 0),
+    ))
+    # top_k applies to the ranked non-catalog entries; catalog directives are kept on top.
+    return always + rest[:top_k]
+
+
 def resolve_customer_context_with_report(
     cache: List[Dict[str, Any]],
     full_table_name: str,
     max_words: int = MAX_TOTAL_WORDS,
+    mode: str = "exact",
+    signature: str = "",
+    top_k: int = 8,
 ) -> Tuple[str, List[Dict[str, Any]], Optional[Dict[str, Any]]]:
     """Like ``resolve_customer_context`` but also returns what the budget cut.
 
     Returns ``(text, dropped, partial)`` -- see ``_truncate_preserving_specificity``.
     Both are empty/None unless the combined matching context exceeded ``max_words``.
-    Pure Python, no SQL -- used by the app's resolve-preview endpoint to show truncation.
+    ``mode='ranked'`` first thins a crowded scope to the ``top_k`` entries most lexically
+    relevant to ``signature`` (the table's name + columns), keeping catalog directives; the
+    hierarchy filter and broadest-first emission are unchanged. Pure Python, no SQL.
     """
     if not cache:
         return "", [], None
     matches = _match_rows(cache, full_table_name)
     if not matches:
         return "", [], None
+    if mode == "ranked":
+        matches = _select_ranked(matches, signature, top_k)
     return _truncate_preserving_specificity(matches, max_words)
 
 
@@ -210,6 +257,9 @@ def resolve_customer_context(
     cache: List[Dict[str, Any]],
     full_table_name: str,
     max_words: int = MAX_TOTAL_WORDS,
+    mode: str = "exact",
+    signature: str = "",
+    top_k: int = 8,
 ) -> str:
     """Resolve matching context entries from the prefetched cache. Pure Python, no SQL.
 
@@ -219,8 +269,15 @@ def resolve_customer_context(
     most-specific-first (see ``_truncate_preserving_specificity``). If the budget forces
     content to be dropped or truncated, a warning is logged naming the affected scopes --
     resolve-time truncation is no longer silent.
+
+    ``mode='ranked'`` (opt-in) first thins a crowded scope to the ``top_k`` entries most
+    lexically relevant to ``signature`` (the table name + columns), always keeping catalog
+    directives; the hierarchy filter and emission order are unchanged. Default ``'exact'`` is
+    the historical behavior.
     """
-    text, dropped, partial = resolve_customer_context_with_report(cache, full_table_name, max_words)
+    text, dropped, partial = resolve_customer_context_with_report(
+        cache, full_table_name, max_words, mode=mode, signature=signature, top_k=top_k
+    )
     if dropped or partial is not None:
         affected = list(dropped)
         if partial is not None:
