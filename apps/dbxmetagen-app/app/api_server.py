@@ -4764,17 +4764,23 @@ def generate_domain_config(file: UploadFile = File(...), name: str = Form(""),
 
     prompt = _build_domain_gen_prompt(text[:100000], description)
     endpoint = _safe_model_endpoint(os.environ.get("LLM_MODEL"))
+    # failOnError => false makes AI_QUERY return STRUCT<result, errorMessage> (NOT `.response`);
+    # read `.result` for the JSON and surface `.errorMessage`. One AI_QUERY via a subquery.
     sql = (
-        f"SELECT from_json(AI_QUERY('{endpoint}', :prompt, "
-        f"responseFormat => '{{\"type\":\"json_object\"}}', failOnError => false).response, "
-        f"'{_DOMAIN_GEN_STRUCT}') AS parsed"
+        f"SELECT q.resp.errorMessage AS error_message, "
+        f"from_json(q.resp.result, '{_DOMAIN_GEN_STRUCT}') AS parsed "
+        f"FROM (SELECT AI_QUERY('{endpoint}', :prompt, "
+        f"responseFormat => '{{\"type\":\"json_object\"}}', failOnError => false) AS resp) q"
     )
     try:
         rows = execute_sql(sql, timeout=300,
                            parameters=[StatementParameterListItem(name="prompt", value=prompt)])
     except Exception as exc:
         raise HTTPException(502, detail=f"Domain-taxonomy model call failed: {exc}")
-    parsed = (rows[0].get("parsed") if rows else None) or {}
+    row0 = rows[0] if rows else {}
+    if row0.get("error_message"):
+        raise HTTPException(502, detail=f"Domain-taxonomy model call failed: {row0['error_message']}")
+    parsed = row0.get("parsed") or {}
     domains = _normalize_domain_taxonomy(parsed if isinstance(parsed, dict) else {})
     if not domains:
         raise HTTPException(422, detail=(
@@ -17026,18 +17032,24 @@ def decompose_customer_context(file: UploadFile = File(...),
     prompt = _cc_build_decompose_prompt(text[:100000], scope_description, allowed,
                                         catalog, schema, has_embedded_scope)
     endpoint = _safe_model_endpoint(os.environ.get("LLM_MODEL"))
+    # failOnError => false makes AI_QUERY return STRUCT<result, errorMessage> (NOT `.response`);
+    # read `.result` for the JSON and surface `.errorMessage`. One AI_QUERY via a subquery.
     sql = (
-        f"SELECT from_json(AI_QUERY('{endpoint}', :prompt, "
-        f"responseFormat => '{{\"type\":\"json_object\"}}', failOnError => false).response, "
-        f"'STRUCT<entries: ARRAY<STRUCT<context_text:STRING, target_scope:STRING, "
-        f"scope_type:STRING, confidence:DOUBLE, reason:STRING>>>') AS parsed"
+        f"SELECT q.resp.errorMessage AS error_message, "
+        f"from_json(q.resp.result, 'STRUCT<entries: ARRAY<STRUCT<context_text:STRING, "
+        f"target_scope:STRING, scope_type:STRING, confidence:DOUBLE, reason:STRING>>>') AS parsed "
+        f"FROM (SELECT AI_QUERY('{endpoint}', :prompt, "
+        f"responseFormat => '{{\"type\":\"json_object\"}}', failOnError => false) AS resp) q"
     )
     try:
         rows = execute_sql(sql, timeout=300,
                            parameters=[StatementParameterListItem(name="prompt", value=prompt)])
     except Exception as exc:
         raise HTTPException(502, detail=f"Decomposition model call failed: {exc}")
-    parsed = (rows[0].get("parsed") if rows else None) or {}
+    row0 = rows[0] if rows else {}
+    if row0.get("error_message"):
+        raise HTTPException(502, detail=f"Decomposition model call failed: {row0['error_message']}")
+    parsed = row0.get("parsed") or {}
     raw_entries = parsed.get("entries") if isinstance(parsed, dict) else None
     entries = _cc_validate_decomposed(raw_entries, allowed, catalog, schema, table)
     if not entries:
