@@ -2185,7 +2185,13 @@ def _filter_stmts_by_policy(
         col = p.get("column")
         if col:
             cinfo = (ent.get("columns") or {}).get(col) or {}
-            cur_comment, is_certified = cinfo.get("comment"), bool(cinfo.get("certified"))
+            # A certified TABLE protects its column comments too: certification is a
+            # table-level governed tag, so columns are (almost) never individually tagged
+            # certified. Without the table OR here, a certified table's column comments would
+            # be overwritten while its table comment is correctly blocked. Mirrors the library
+            # gate (certification.partition_ddls_by_certification).
+            cur_comment = cinfo.get("comment")
+            is_certified = bool(cinfo.get("certified")) or bool(ent.get("certified"))
         else:
             cur_comment, is_certified = ent.get("comment"), bool(ent.get("certified"))
         obj = p["table"] + (f".{col}" if col else "")
@@ -16729,6 +16735,7 @@ def _cc_parse_binary_to_text(raw, ext, filename):
     ts = _dt.now().strftime("%Y%m%d_%H%M%S")
     current_date = _dt.now().strftime("%Y%m%d")
     volume_name = os.environ.get("VOLUME_NAME", "generated_metadata")
+    ws = _get_effective_client()
     current_user = "app"
     try:
         current_user = ws.current_user.me().user_name.split("@")[0]
