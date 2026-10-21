@@ -56,6 +56,12 @@ variables:
   apply_tags:
     description: Whether to apply tag DDLs (SET TAGS / SET TAG ON) independently of apply_ddl. Defaults to the value of apply_ddl. In federation_mode, apply_ddl stays False but apply_tags can be True to set UC-native tags on foreign tables.
     default: False
+  certified_apply_policy:
+    description: "How applying metadata treats UC-certified assets (certification_status=certified tag). Enforced on the review page, the app apply, AND the jobs. Generation always runs; only the apply is gated. One of: warn (default; apply but surface/warn, a per-run skip_certified_assets flag opts into skipping), block (never apply to certified; hard, no override; requires SELECT on system.information_schema.*_tags), allow (no gate)."
+    default: warn
+  skip_certified_assets:
+    description: Per-run opt-in to SKIP applying metadata to certified assets (only meaningful under certified_apply_policy=warn; block always skips, allow never skips). Set by the app's warn dialog / the generate checkbox.
+    default: False
   ddl_output_format:
     description: Output format can be via sql file (default) or via tsv or excel if this improves reviewability. This file is the individual output files.
     default: sql

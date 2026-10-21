@@ -2773,6 +2773,34 @@ def apply_comment_ddl(df: DataFrame, config: MetadataConfig) -> dict:
             "failed_statements": [],
         }
 
+    # Certified-asset apply gate (shared policy; see certification.py). Generation already
+    # happened -- this only decides whether generated DDL reaches a UC-certified asset.
+    # block -> skip certified (fail CLOSED if certification is unreadable); warn -> apply but
+    # log (skip only if skip_certified_assets set); allow -> no gate.
+    from dbxmetagen.certification import gate_ddls
+    _ddls = [row["ddl"] for row in ddl_statements if row["ddl"]]
+    skipped_certified = 0
+    try:
+        _to_apply, _cert_hits, _action = gate_ddls(
+            spark,
+            _ddls,
+            getattr(config, "certified_apply_policy", "warn"),
+            getattr(config, "skip_certified_assets", False),
+        )
+    except RuntimeError as exc:
+        # block policy + certification unreadable -> fail closed: apply nothing.
+        logger.error("Certified apply gate aborted (nothing applied): %s", exc)
+        return {
+            "success_count": 0,
+            "failed_count": 0,
+            "missing_tags": [],
+            "failed_statements": [],
+            "skipped_certified": len(_ddls),
+        }
+    if _action == "skipped":
+        skipped_certified = len(_cert_hits)
+    ddl_statements = [{"ddl": d} for d in _to_apply]
+
     use_batch = _can_batch_ddl()
 
     if use_batch:
@@ -2842,6 +2870,7 @@ def apply_comment_ddl(df: DataFrame, config: MetadataConfig) -> dict:
         "failed_count": len(failed_statements),
         "missing_tags": missing_tags,
         "failed_statements": failed_statements,
+        "skipped_certified": skipped_certified,
     }
 
 

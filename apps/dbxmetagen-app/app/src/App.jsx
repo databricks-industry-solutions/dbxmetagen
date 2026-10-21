@@ -1,5 +1,6 @@
 import React, { useState, useEffect, useRef } from 'react'
 import { ViewModeContext } from './hooks/useViewMode'
+import { CertifiedApplyPolicyContext } from './hooks/useCertifiedApplyPolicy'
 
 // Global fetch interceptor: detect expired Databricks Apps OAuth sessions.
 // When the session cookie expires, the proxy redirects to a login page --
@@ -329,6 +330,8 @@ export default function App() {
   const [sessionExpired, setSessionExpired] = useState(false)
   const [pipelineStats, setPipelineStats] = useState(null)
   const [appMeta, setAppMeta] = useState({ displayName: '', version: '' })
+  // Certified-asset apply policy (#247); deployment-wide, from /api/config.
+  const [certifiedApplyPolicy, setCertifiedApplyPolicy] = useState('warn')
   const [configErrors, setConfigErrors] = useState([])
   const [dark, setDark] = useState(() => {
     if (typeof window !== 'undefined') {
@@ -385,6 +388,7 @@ export default function App() {
         setConfigErrors(data.config_valid === false ? (data.config_errors || []) : [])
         // Apply the deploy default only when the user has made no explicit choice.
         setViewModeState(prev => prev ?? (data.default_view_mode === 'simplified' ? 'simplified' : 'advanced'))
+        if (['warn', 'block', 'allow'].includes(data.certified_apply_policy)) setCertifiedApplyPolicy(data.certified_apply_policy)
       }
     })
   }, [])
@@ -417,6 +421,7 @@ export default function App() {
 
   return (
     <ViewModeContext.Provider value={{ viewMode: viewMode || 'advanced', simplified, setViewMode }}>
+    <CertifiedApplyPolicyContext.Provider value={{ policy: certifiedApplyPolicy }}>
     <div className="min-h-screen bg-dbx-oat-light dark:bg-dbx-navy transition-colors">
       {configErrors.length > 0 && (
         <div className="bg-red-600 text-white px-6 py-3 text-sm">
@@ -548,6 +553,7 @@ export default function App() {
         </div>
       )}
     </div>
+    </CertifiedApplyPolicyContext.Provider>
     </ViewModeContext.Provider>
   )
 }

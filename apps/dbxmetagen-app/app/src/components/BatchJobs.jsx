@@ -4,6 +4,7 @@ import { cachedFetchObj, TTL } from '../apiCache'
 import { PageHeader, EmptyState, Skeleton, InfoTip } from './ui'
 import { useSharedJobRunner, TERMINAL_STATES, classifyRun } from '../hooks/useJobRunner'
 import { useViewMode } from '../hooks/useViewMode'
+import { useCertifiedApplyPolicy } from '../hooks/useCertifiedApplyPolicy'
 import RunEntry from './RunEntry'
 import TableScopePicker, { scopeToTableNames } from './TableScopePicker'
 
@@ -40,6 +41,8 @@ function HealthWarnings({ health }) {
 export default function BatchJobs({ onNavigate, pipelineStats }) {
   const { jobs, runHistory, runningAction, runError, runJob, jobsError, cancelRun } = useSharedJobRunner()
   const { simplified } = useViewMode()
+  const { policy: certifiedPolicy } = useCertifiedApplyPolicy()
+  const [skipCertified, setSkipCertified] = useState(false)
   const [tableNames, setTableNames] = useState('')
   // null = unknown (not yet loaded / transient error); false = never generated
   // metadata here; true = has. Drives the large-first-run nudge in runGenerate.
@@ -121,7 +124,17 @@ export default function BatchJobs({ onNavigate, pipelineStats }) {
       + 'metadata here yet. Consider starting with ~10 tables to check cost, performance, '
       + `and quality, then scaling up. Continue with ${explicitCount}?`
     )) return
+    // Certified-asset warn: apply is on, policy=warn, and the user has NOT opted into
+    // skipping -> certified assets in scope will be overwritten. Warn before the run (#247).
+    if (applyDdl && certifiedPolicy === 'warn' && !skipCertified && !window.confirm(
+      'Apply is on and the certified-asset policy is "warn": any UC-certified tables/columns '
+      + 'in scope WILL be overwritten. Check "Skip applying to certified assets" to protect '
+      + 'them instead. Continue and overwrite certified assets?'
+    )) return
 
+    // skip_certified_assets is only meaningful when applying; block always skips (the job
+    // enforces it regardless), warn skips only when the user opted in.
+    const skipCert = certifiedPolicy === 'block' ? true : (applyDdl && skipCertified)
     const common = {
       table_names: tableNames,
       apply_ddl: applyDdl,
@@ -129,6 +142,7 @@ export default function BatchJobs({ onNavigate, pipelineStats }) {
       ontology_bundle: ontologyBundle,
       use_customer_context: settings.use_customer_context,
       include_lineage: settings.include_lineage,
+      ...(skipCert ? { skip_certified_assets: true } : {}),
       ...(domainConfig ? { domain_config: domainConfig } : {}),
       extra_params: buildExtraParams(),
     }
@@ -547,6 +561,18 @@ export default function BatchJobs({ onNavigate, pipelineStats }) {
                   Apply to tables immediately
                   <InfoTip text="Applies SQL comments directly to your tables. When on, this writes SQL COMMENT ON statements to your Unity Catalog tables and columns — existing comments will be overwritten. Disable to review results first in the Review tab." />
                 </label>
+                {applyDdl && certifiedPolicy === 'warn' && (
+                  <label className="flex items-center gap-2 text-sm text-slate-600 dark:text-slate-300 cursor-pointer ml-6">
+                    <input type="checkbox" checked={skipCertified} onChange={e => setSkipCertified(e.target.checked)} />
+                    Skip applying to certified assets
+                    <InfoTip text="Under the 'warn' policy, applying overwrites UC-certified assets by default (you'll be warned before the run). Check this to protect them: certified tables/columns are skipped while everything else still applies." />
+                  </label>
+                )}
+                {applyDdl && certifiedPolicy === 'block' && (
+                  <p className="text-xs text-emerald-700 dark:text-emerald-300 ml-6">
+                    <span className="px-1 py-0 rounded bg-emerald-100 dark:bg-emerald-900/40 font-medium">policy: block</span> Certified assets are protected and will be skipped on apply.
+                  </p>
+                )}
                 <label className="flex items-center gap-2 text-sm text-slate-600 dark:text-slate-300 cursor-pointer">
                   <input type="checkbox" checked={federationMode} onChange={e => {
                     setFederationMode(e.target.checked)

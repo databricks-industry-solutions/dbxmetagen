@@ -98,6 +98,11 @@ resources:
           # the Settings widget. Read as os.environ.get("DEFAULT_VIEW_MODE", "advanced").
           - name: DEFAULT_VIEW_MODE
             value: "${var.default_view_mode}"
+          # CERTIFIED_APPLY_POLICY: warn (default) | block | allow. How applying metadata
+          # treats UC-certified assets. block is a HARD gate the app's per-request param
+          # cannot loosen. Read as os.environ.get("CERTIFIED_APPLY_POLICY", "warn").
+          - name: CERTIFIED_APPLY_POLICY
+            value: "${var.certified_apply_policy}"
           - name: MLFLOW_TRACE_TIMEOUT_SECONDS
             value: "120"
           # MLFLOW_EXPERIMENT: optional override for trace experiment path.

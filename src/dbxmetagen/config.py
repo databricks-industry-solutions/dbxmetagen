@@ -66,6 +66,8 @@ class MetadataConfig:
             "control_table",
             "apply_ddl",
             "apply_tags",
+            "certified_apply_policy",
+            "skip_certified_assets",
             "ddl_output_format",
             "allow_data",
             "dry_run",
@@ -215,6 +217,15 @@ class MetadataConfig:
         self.allow_data = _parse_bool(getattr(self, "allow_data", True))
         self.apply_ddl = _parse_bool(getattr(self, "apply_ddl", False))
         self.apply_tags = _parse_bool(getattr(self, "apply_tags", getattr(self, "apply_ddl", False)))
+        # Certified-asset apply policy (shared with the app). block|warn|allow; default warn.
+        # skip_certified_assets is the per-run opt-in to skip (only meaningful under warn).
+        from dbxmetagen.certification import normalize_policy as _norm_cert_policy
+        self.certified_apply_policy = _norm_cert_policy(
+            getattr(self, "certified_apply_policy", "warn")
+        )
+        self.skip_certified_assets = _parse_bool(
+            getattr(self, "skip_certified_assets", False)
+        )
         self.dry_run = _parse_bool(getattr(self, "dry_run", False))
         self.cleanup_control_table = _parse_bool(
             getattr(self, "cleanup_control_table", False)

@@ -419,6 +419,12 @@ def execute_sql(query: str, warehouse_id: Optional[str] = None, timeout: int = 3
 CATALOG = os.environ.get("CATALOG_NAME", "")
 SCHEMA = os.environ.get("SCHEMA_NAME", "metadata_results")
 
+# Certified-asset apply policy (shared with the jobs via certification.py). The deployment
+# default comes from variables.yml -> CERTIFIED_APPLY_POLICY env; block is a HARD gate the
+# per-request certified_policy param cannot loosen. See _filter_stmts_by_policy.
+from dbxmetagen.certification import normalize_policy as _normalize_cert_policy
+_DEPLOY_CERT_POLICY = _normalize_cert_policy(os.environ.get("CERTIFIED_APPLY_POLICY", "warn"))
+
 # Required-config validation (DP-2). The deploy still succeeds even when a required
 # per-workspace value is missing; instead the frontend renders a blocking banner from
 # /api/config's `config_valid`/`config_errors`, and lifespan logs a prominent error.
@@ -878,6 +884,7 @@ def get_config():
         ),
         "config_valid": len(_CONFIG_ERRORS) == 0,
         "config_errors": _CONFIG_ERRORS,
+        "certified_apply_policy": _DEPLOY_CERT_POLICY,
         "version": pkg_version,
     }
 
@@ -1037,6 +1044,9 @@ class JobRunRequest(BaseModel):
     sweep_stale_docs: bool = False
     sweep_stale_edges: bool = False
     sweep_stale_entities: bool = False
+    # Per-run opt-in to skip applying to certified assets (warn policy). block always skips,
+    # allow never skips -- enforced by the job via certified_apply_policy regardless of this.
+    skip_certified_assets: bool = False
     extra_params: dict = {}
 
 
@@ -1362,6 +1372,8 @@ def run_job(req: JobRunRequest):
         params["sweep_stale_entities"] = "true"
     if req.federation_mode:
         params["federation_mode"] = "true"
+    if req.skip_certified_assets:
+        params["skip_certified_assets"] = "true"
     if req.catalog_name:
         params["catalog_name"] = req.catalog_name
     if req.schema_name:
@@ -2132,7 +2144,12 @@ def _filter_stmts_by_policy(
     (exactly the pre-C3 behavior) — a metadata hiccup never regresses a working apply.
     """
     skip_existing = (conflict_mode or "overwrite").lower() == "skip_existing"
-    block_certified = (certified_policy or "block").lower() == "block"
+    # block is a HARD deploy-level gate: when variables.yml sets certified_apply_policy=block,
+    # certified assets are skipped regardless of the per-request param (the UI hides the opt-in).
+    # Otherwise (warn/allow) the request param governs: the warn-mode "skip certified" checkbox
+    # sends 'block' to skip, 'allow' to apply. A read error still fails OPEN (see below).
+    skip_certified_request = (certified_policy or "").lower() == "block"
+    block_certified = _DEPLOY_CERT_POLICY == "block" or skip_certified_request
     if not skip_existing and not block_certified:
         return list(stmts), [], []  # pure back-compat fast path — no UC read
 
@@ -2507,17 +2524,25 @@ def _run_bundle_apply(task_id: str, sections: dict[str, list[str]], volume_path:
     total_applied = 0
     total_errors = 0
     try:
+        total_blocked = 0
         for section_name, stmts in sections.items():
             task["current_section"] = section_name
             task["total_applied"] = total_applied
-            sec_applied, sec_errors = _execute_stmts_batched(stmts, batch=True)
-            results[section_name] = {"applied": sec_applied, "errors": len(sec_errors)}
+            # Route through the shared policy gate so a HARD deploy block (certified_apply_policy
+            # =block) also protects certified assets in the advanced bundle. Under warn/allow the
+            # gate is a no-op here (passing 'allow'); only the deploy-level block skips certified.
+            gated, _skipped, blocked = _filter_stmts_by_policy(stmts, "overwrite", "allow")
+            sec_applied, sec_errors = _execute_stmts_batched(gated, batch=True)
+            results[section_name] = {
+                "applied": sec_applied, "errors": len(sec_errors), "blocked_certified": len(blocked),
+            }
             total_applied += sec_applied
             total_errors += len(sec_errors)
+            total_blocked += len(blocked)
         task.update({
             "status": "done", "results": results, "total_applied": total_applied,
-            "total_errors": total_errors, "volume_path": volume_path,
-            "current_section": None,
+            "total_errors": total_errors, "total_blocked_certified": total_blocked,
+            "volume_path": volume_path, "current_section": None,
         })
     except Exception as e:
         task.update({"status": "error", "error": str(e)})
