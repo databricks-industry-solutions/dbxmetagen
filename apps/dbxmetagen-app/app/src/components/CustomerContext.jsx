@@ -7,6 +7,8 @@ const SCOPE_TYPES = ['catalog', 'schema', 'table', 'pattern']
 // the resolve endpoint (budget_words); if it's exceeded the least-specific entries are
 // dropped and surfaced in the preview below.
 const MAX_WORDS = 500
+// Upload guidance (enforced server-side; this is the generous default — see MAX_UPLOAD_MB env).
+const MAX_UPLOAD_MB = 25
 
 function wordCount(text) { return text ? text.trim().split(/\s+/).filter(Boolean).length : 0 }
 
@@ -307,6 +309,10 @@ function ContextManager() {
             <input type="file" accept=".yaml,.yml,.json,.txt,.md,.pdf,.docx,.csv,.xlsx,.xls"
               onChange={e => { setUploadFile(e.target.files[0] || null); setUploadResult(null); setDecResult(null); setError(null) }}
               className="mt-2 block w-full text-sm text-slate-500 file:mr-4 file:py-2 file:px-4 file:rounded-lg file:border-0 file:text-sm file:font-medium file:bg-dbx-lava/10 file:text-dbx-lava hover:file:bg-dbx-lava/20" />
+            <p className="text-xs text-slate-400 dark:text-slate-500 mt-1">
+              Up to {MAX_UPLOAD_MB}&nbsp;MB per file. Long documents are summarized into a concise entry
+              (&le;{MAX_WORDS} words); split very large glossaries by schema for the best results.
+            </p>
           </div>
 
           {structuredUpload && (
@@ -696,6 +702,7 @@ function AcronymsManager() {
         <label className="text-sm font-medium text-slate-700 dark:text-slate-300">Upload acronyms (.xlsx / .csv / .json / .yaml)</label>
         <input type="file" accept=".xlsx,.xls,.csv,.json,.yaml,.yml" onChange={e => { setFile(e.target.files[0] || null); setUpResult(null); setError(null) }}
           className="block w-full text-sm text-slate-500 file:mr-4 file:py-2 file:px-4 file:rounded-lg file:border-0 file:text-sm file:font-medium file:bg-dbx-lava/10 file:text-dbx-lava hover:file:bg-dbx-lava/20" />
+        <p className="text-xs text-slate-400 dark:text-slate-500">Up to {MAX_UPLOAD_MB}&nbsp;MB and 1,000 rows per upload &mdash; split larger lists into separate files.</p>
         <div className="grid grid-cols-2 gap-3">
           <div>
             <label className="block text-xs font-medium text-slate-600 dark:text-slate-300 mb-1">Scope type</label>
@@ -873,6 +880,7 @@ function OverridesManager() {
         <label className="text-sm font-medium text-slate-700 dark:text-slate-300">Upload descriptions (.xlsx / .csv / .json / .yaml)</label>
         <input type="file" accept=".xlsx,.xls,.csv,.json,.yaml,.yml" onChange={e => { setFile(e.target.files[0] || null); setUpResult(null); setError(null) }}
           className="block w-full text-sm text-slate-500 file:mr-4 file:py-2 file:px-4 file:rounded-lg file:border-0 file:text-sm file:font-medium file:bg-dbx-lava/10 file:text-dbx-lava hover:file:bg-dbx-lava/20" />
+        <p className="text-xs text-slate-400 dark:text-slate-500">Up to {MAX_UPLOAD_MB}&nbsp;MB and 1,000 rows per upload &mdash; split larger lists into separate files.</p>
         <div className="grid grid-cols-3 gap-3">
           <div>
             <label className="block text-xs font-medium text-slate-600 dark:text-slate-300 mb-1">Catalog</label>

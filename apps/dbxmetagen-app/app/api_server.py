@@ -446,6 +446,35 @@ _ENABLE_CONTEXT_VS = os.environ.get("ENABLE_CONTEXT_VECTOR_INDEX", "false").stri
 _CC_VS_INDEX_SUFFIX = os.environ.get("CONTEXT_VECTOR_INDEX", "customer_context_vs_index")
 _CC_VS_EMBED_MODEL = os.environ.get("EMBEDDING_MODEL", "databricks-gte-large-en")
 
+# Upload guardrail: a hard ceiling on any ingested file so an egregiously large upload (a
+# multi-GB dump, a 10M-line text file) can't exhaust the single app container's memory. Chosen
+# generous -- real glossaries / data dictionaries are far smaller -- so it only blocks abuse.
+# Env-overridable for ops. See _read_upload_capped.
+try:
+    _MAX_UPLOAD_MB = max(int(os.environ.get("MAX_UPLOAD_MB", "25") or 25), 1)
+except ValueError:
+    _MAX_UPLOAD_MB = 25
+
+
+def _read_upload_capped(file, max_mb: int = None) -> bytes:
+    """Read an UploadFile with a HARD byte cap, so a huge upload can never be loaded whole into
+    app memory. Reads at most max_mb+1 bytes (never the entirety of a giant file) and rejects
+    413 if it would exceed the cap. A guardrail against egregious/breaking input only -- the
+    limit is generous enough that normal scoped context files pass untouched."""
+    cap = int(max_mb if max_mb is not None else _MAX_UPLOAD_MB)
+    max_bytes = cap * 1024 * 1024
+    try:
+        raw = file.file.read(max_bytes + 1)
+    except Exception as e:
+        raise HTTPException(400, detail=f"Could not read the uploaded file: {e}")
+    if raw is None:
+        return b""
+    if len(raw) > max_bytes:
+        raise HTTPException(413, detail=(
+            f"This file exceeds the {cap} MB upload limit. Split it (for example by schema) or "
+            f"upload a more narrowly-scoped file — context works best as concise, scoped notes."))
+    return raw
+
 # Required-config validation (DP-2). The deploy still succeeds even when a required
 # per-workspace value is missing; instead the frontend renders a blocking banner from
 # /api/config's `config_valid`/`config_errors`, and lifespan logs a prominent error.
@@ -909,6 +938,7 @@ def get_config():
         "enable_governed_tags": _ENABLE_GOVERNED_TAGS and bool(_GOVERNED_DOMAIN_TAG),
         "governed_domain_tag_name": _GOVERNED_DOMAIN_TAG,
         "enable_context_vector_index": _ENABLE_CONTEXT_VS,
+        "max_upload_mb": _MAX_UPLOAD_MB,
         "version": pkg_version,
     }
 
@@ -4773,7 +4803,7 @@ def generate_domain_config(file: UploadFile = File(...), name: str = Form(""),
     if ext not in _CC_TEXT_EXTS and ext not in _CC_BINARY_EXTS:
         raise HTTPException(400, detail=(
             f"Use a document (.txt/.md/.pdf/.docx) describing the domains/subdomains. Got '.{ext}'."))
-    raw = file.file.read()
+    raw = _read_upload_capped(file)
     text = (_cc_parse_binary_to_text(raw, ext, filename) if ext in _CC_BINARY_EXTS
             else raw.decode("utf-8", errors="replace"))
     if not text.strip():
@@ -16880,10 +16910,21 @@ def _cc_tabular_to_text(raw: bytes, ext: str) -> str:
     lines = []
     if headers:
         lines.append("Columns: " + ", ".join(h for h in headers if h))
+    # Stop once we've produced more text than any downstream LLM call will ever read (the
+    # distill/decompose paths truncate at 100-200K chars). Generous, so a normal glossary is
+    # fully included; this only avoids building a multi-MB string from an abnormally wide/tall
+    # spreadsheet. The file itself is already byte-capped on upload.
+    budget, used = 300_000, 0
     for r in rows:
         parts = [f"{k}: {r[k]}" for k in headers if (r.get(k) or "").strip()]
-        if parts:
-            lines.append(" | ".join(parts))
+        if not parts:
+            continue
+        line = " | ".join(parts)
+        used += len(line) + 1
+        if used > budget:
+            lines.append("… (remaining rows omitted — file is larger than the context budget)")
+            break
+        lines.append(line)
     return "\n".join(lines)
 
 
@@ -16995,7 +17036,7 @@ def upload_customer_context(file: UploadFile = File(...),
     _ensure_customer_context_table()
     filename = file.filename or ""
     ext = filename.rsplit(".", 1)[-1].lower() if "." in filename else ""
-    raw = file.file.read()
+    raw = _read_upload_capped(file)
 
     # ---- Structured lane (deterministic, no LLM) ----
     if ext in ("yaml", "yml"):
@@ -17304,7 +17345,7 @@ def decompose_customer_context(file: UploadFile = File(...),
         raise HTTPException(400, detail=(
             f"Decompose accepts documents (.txt/.md/.pdf/.docx) and spreadsheets (.csv/.xlsx). "
             f"For already-structured context entries use the YAML/JSON upload. Got '.{ext}'."))
-    raw = file.file.read()
+    raw = _read_upload_capped(file)
     text = (_cc_parse_binary_to_text(raw, ext, filename) if ext in _CC_BINARY_EXTS
             else _cc_tabular_to_text(raw, ext) if ext in _CC_TABULAR_EXTS
             else raw.decode("utf-8", errors="replace"))
@@ -17671,7 +17712,7 @@ def upload_customer_acronyms(file: UploadFile = File(...),
         raise HTTPException(400, detail=f"scope_type must be one of {_ACRO_SCOPE_TYPES}")
     eff_scope = (scope or "").strip() or (CATALOG if scope_type == "catalog" else f"{CATALOG}.{SCHEMA}")
     _validate_acro_scope(eff_scope, scope_type)
-    rows = _parse_structured_rows(file.file.read(), ext)
+    rows = _parse_structured_rows(_read_upload_capped(file), ext)
     _require_columns(rows, [_ACRO_ABBR_COLS, _ACRO_EXP_COLS], "acronyms")
     results, errors, skipped = [], [], []
     for r in rows:
@@ -17780,7 +17821,7 @@ def upload_customer_overrides(file: UploadFile = File(...),
     sch = (schema_name or "").strip() or SCHEMA
     _validate_identifier(cat, "catalog")
     _validate_identifier(sch, "schema")
-    rows = _parse_structured_rows(file.file.read(), ext)
+    rows = _parse_structured_rows(_read_upload_capped(file), ext)
     _require_columns(rows, [_OVR_COL_COLS, _OVR_COMMENT_COLS], "descriptions")
     results, errors, skipped = [], [], []
     for r in rows:

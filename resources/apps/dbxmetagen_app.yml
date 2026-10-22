@@ -123,6 +123,9 @@ resources:
           # docs/CUSTOMER_CONTEXT_VECTOR_INDEX.md.
           - name: ENABLE_CONTEXT_VECTOR_INDEX
             value: "${var.enable_context_vector_index}"
+          # Upload size guardrail (MB) for context/acronym/description/document uploads.
+          - name: MAX_UPLOAD_MB
+            value: "${var.max_upload_mb}"
           - name: MLFLOW_TRACE_TIMEOUT_SECONDS
             value: "120"
           # MLFLOW_EXPERIMENT: optional override for trace experiment path.
