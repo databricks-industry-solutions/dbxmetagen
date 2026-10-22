@@ -47,6 +47,29 @@ function ContextManager() {
   // and let the user choose replace / append / combine. See resolveConflict.
   const [conflict, setConflict] = useState(null)
   const [resolving, setResolving] = useState(false)
+  // Opt-in customer-context vector index (gated by /api/config.enable_context_vector_index).
+  // The index is app + downstream only; metadata generation never queries it.
+  const [vsEnabled, setVsEnabled] = useState(false)
+  const [vsStatus, setVsStatus] = useState(null)
+  const [vsSyncing, setVsSyncing] = useState(false)
+  const [vsMsg, setVsMsg] = useState(null)
+
+  const loadVsStatus = useCallback(async () => {
+    const { data } = await safeFetch('/api/customer-context/vector/status')
+    if (data) { setVsEnabled(!!data.enabled); setVsStatus(data.enabled ? data : null) }
+  }, [])
+
+  useEffect(() => { loadVsStatus() }, [loadVsStatus])
+
+  const handleVsSync = async () => {
+    if (vsSyncing) return
+    setVsSyncing(true); setVsMsg(null); setError(null)
+    const { data, error: err } = await safeFetch('/api/customer-context/vector/sync', { method: 'POST' })
+    setVsSyncing(false)
+    if (err) { setError(err); return }
+    setVsMsg(data?.detail || 'Sync triggered.')
+    loadVsStatus()
+  }
 
   const load = useCallback(async () => {
     setLoading(true)
@@ -501,6 +524,35 @@ function ContextManager() {
           </div>
         )}
       </div>
+
+      {/* Semantic vector index (opt-in; app + downstream only — generation never queries it) */}
+      {vsEnabled && (
+        <div className="card p-4">
+          <div className="flex items-start justify-between gap-3">
+            <div>
+              <h3 className="text-sm font-semibold text-slate-700 dark:text-slate-300">Semantic context index</h3>
+              <p className="text-xs text-slate-500 dark:text-slate-400 mt-1 max-w-2xl">
+                Maintains a Vector Search index over your context entries for <strong>semantic</strong> retrieval
+                (used by the app&rsquo;s search, agents/RAG, and Genie). <strong>Metadata generation is unaffected</strong> —
+                it keeps using the scope hierarchy, so building or syncing this never changes or slows a generation run.
+                Click sync after adding or editing entries.
+              </p>
+            </div>
+            <button onClick={handleVsSync} disabled={vsSyncing} className="btn-primary btn-sm shrink-0 disabled:opacity-50">
+              {vsSyncing ? 'Syncing…' : 'Sync to vector index'}
+            </button>
+          </div>
+          {vsStatus && (
+            <div className="mt-2 flex flex-wrap gap-x-4 gap-y-1 text-xs text-slate-500 dark:text-slate-400">
+              <span>Endpoint: <span className="font-mono">{vsStatus.endpoint_state || '—'}</span></span>
+              <span>Index: <span className="font-mono">{vsStatus.index_ready ? 'ready' : (vsStatus.index_status === 'NOT_FOUND' ? 'not built' : 'provisioning')}</span></span>
+              {vsStatus.indexed_rows != null && <span>Indexed rows: {vsStatus.indexed_rows}</span>}
+              {vsStatus.active_entries != null && <span>Active entries: {vsStatus.active_entries}</span>}
+            </div>
+          )}
+          {vsMsg && <div className="mt-2 text-xs px-2.5 py-2 rounded-md bg-dbx-sky/10 text-dbx-sky border border-dbx-sky/30">{vsMsg}</div>}
+        </div>
+      )}
 
       {/* Filter */}
       <div className="flex gap-2 items-center">

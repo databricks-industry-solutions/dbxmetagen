@@ -382,6 +382,9 @@ variables:
   customer_context_top_k:
     description: "In 'ranked' retrieval, the max number of in-scope context entries kept for a table (catalog-level directives are always kept on top of this)."
     default: "8"
+  enable_context_vector_index:
+    description: "Opt-in (default off): maintain a Databricks Vector Search index over the customer_context table (Delta-Sync, managed embeddings on context_text, on the vs_endpoint_name endpoint) for SEMANTIC context retrieval. Consumed ONLY by the app (semantic resolve-preview) and downstream steps (agents/RAG, Genie); metadata GENERATION is unaffected and never queries it, so there is no added latency or dependency in the generation hot path. Build/sync is an explicit action in the app's Customer Context tab. See docs/CUSTOMER_CONTEXT_VECTOR_INDEX.md."
+    default: false
   ontology_vs_index:
     description: "Fully-qualified name of the Databricks Vector Search index for ontology retrieval (e.g. catalog.schema.ontology_vs_index). When set and the index exists, entity/edge classification uses HYBRID vector search instead of the keyword pass0 + full tier-1 LLM dump, dramatically reducing token cost for large ontologies. Leave empty to disable vector retrieval (default)."
     default: ""

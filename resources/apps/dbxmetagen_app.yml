@@ -71,6 +71,8 @@ resources:
             value: "${var.vs_endpoint_name}"
           - name: VECTOR_SEARCH_INDEX
             value: "metadata_vs_index"
+          - name: EMBEDDING_MODEL
+            value: "${var.embedding_model}"
           - name: LLM_MODEL
             value: "${var.model}"
           - name: ENABLE_OBO
@@ -115,6 +117,12 @@ resources:
             value: "${var.governed_domain_separator}"
           - name: GOVERNED_TAG_MAX_LEN
             value: "${var.governed_tag_max_len}"
+          # Customer-context Vector Search index (opt-in, default-off). When true, the app's
+          # Customer Context tab can build/sync a semantic index over customer_context for
+          # app + downstream use. Metadata generation never queries it. See
+          # docs/CUSTOMER_CONTEXT_VECTOR_INDEX.md.
+          - name: ENABLE_CONTEXT_VECTOR_INDEX
+            value: "${var.enable_context_vector_index}"
           - name: MLFLOW_TRACE_TIMEOUT_SECONDS
             value: "120"
           # MLFLOW_EXPERIMENT: optional override for trace experiment path.

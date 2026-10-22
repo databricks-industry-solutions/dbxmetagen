@@ -436,6 +436,16 @@ try:
 except ValueError:
     _GOVERNED_TAG_MAX_LEN = 256
 
+# Customer-context Vector Search index (opt-in, default-off). A Delta-Sync index over the
+# customer_context table for SEMANTIC retrieval. It is ONLY consumed by the app (semantic
+# resolve-preview) and downstream steps (agents/RAG, Genie, future pipeline). Metadata
+# GENERATION never touches it -- the gen path stays on the in-memory exact/ranked cache, so
+# there is zero added latency or new runtime dependency in the generation hot path, and a VS
+# hiccup can never affect a generation run. Index build/sync is an explicit, gated action.
+_ENABLE_CONTEXT_VS = os.environ.get("ENABLE_CONTEXT_VECTOR_INDEX", "false").strip().lower() == "true"
+_CC_VS_INDEX_SUFFIX = os.environ.get("CONTEXT_VECTOR_INDEX", "customer_context_vs_index")
+_CC_VS_EMBED_MODEL = os.environ.get("EMBEDDING_MODEL", "databricks-gte-large-en")
+
 # Required-config validation (DP-2). The deploy still succeeds even when a required
 # per-workspace value is missing; instead the frontend renders a blocking banner from
 # /api/config's `config_valid`/`config_errors`, and lifespan logs a prominent error.
@@ -898,6 +908,7 @@ def get_config():
         "certified_apply_policy": _DEPLOY_CERT_POLICY,
         "enable_governed_tags": _ENABLE_GOVERNED_TAGS and bool(_GOVERNED_DOMAIN_TAG),
         "governed_domain_tag_name": _GOVERNED_DOMAIN_TAG,
+        "enable_context_vector_index": _ENABLE_CONTEXT_VS,
         "version": pkg_version,
     }
 
@@ -17724,6 +17735,216 @@ def upload_customer_overrides(file: UploadFile = File(...),
     return {"uploaded": len(results), "catalog_name": cat, "schema_name": sch,
             "results": results, "errors": errors,
             "skipped": len(skipped), "skipped_reasons": [s["reason"] for s in skipped[:3]]}
+
+
+# ---------------------------------------------------------------------------
+# Customer-context Vector Search index (opt-in, default-off).
+#
+# A Delta-Sync index over the customer_context table with managed embeddings on the
+# context_text column, provisioned on the existing dbxmetagen-vs endpoint. It enables
+# SEMANTIC retrieval of context -- "find the context most meaningfully related to this
+# table", beyond the scope-hierarchy filter and the lexical 'ranked' thinning.
+#
+# INVARIANTS (match the stated constraints):
+#   * OPT-IN: every endpoint 503s unless ENABLE_CONTEXT_VECTOR_INDEX=true.
+#   * GENERATION IS UNTOUCHED: the batch metadata pipeline never calls these endpoints or
+#     the index; it keeps resolving context from the in-memory exact/ranked cache. Nothing
+#     here is on the generation hot path, so it cannot add latency or break a gen run.
+#   * NON-BLOCKING: sync kicks off create+sync and returns immediately ("provisioning" until
+#     the index is ONLINE); it never waits for readiness in-request. Poll the status endpoint.
+#   * BEST-EFFORT: a VS/endpoint hiccup returns a clear status, never a 500 cascade.
+# ---------------------------------------------------------------------------
+
+_cc_cdf_ready = False
+
+
+def _cc_vs_index_name() -> str:
+    return f"{CATALOG}.{SCHEMA}.{_CC_VS_INDEX_SUFFIX}"
+
+
+def _ensure_cc_cdf():
+    """Enable Change Data Feed on customer_context (required for a Delta-Sync index).
+
+    Idempotent + cached; only called from the gated sync endpoint, never from the context
+    write path, so the common upsert/upload flow is unaffected. Enabling CDF is a metadata-
+    only tblproperty change that starts recording the change feed going forward.
+    """
+    global _cc_cdf_ready
+    if _cc_cdf_ready:
+        return
+    _ensure_customer_context_table()
+    try:
+        execute_sql(
+            f"ALTER TABLE {fq(_CC_TABLE)} SET TBLPROPERTIES "
+            f"('delta.enableChangeDataFeed' = 'true')",
+            timeout=30,
+        )
+        _cc_cdf_ready = True
+    except Exception as e:
+        logger.warning("Could not enable CDF on customer_context: %s", e)
+
+
+@app.get("/api/customer-context/vector/status")
+def customer_context_vector_status():
+    """Endpoint + index state and active-row count for the customer-context VS index."""
+    if not _ENABLE_CONTEXT_VS:
+        return {"enabled": False}
+    idx_name = _cc_vs_index_name()
+    result: dict = {"enabled": True, "endpoint_name": VS_ENDPOINT, "index_name": idx_name,
+                    "embedding_model": _CC_VS_EMBED_MODEL}
+    try:
+        ws = get_workspace_client()
+        ep = ws.vector_search_endpoints.get_endpoint(VS_ENDPOINT)
+        result["endpoint_state"] = ep.endpoint_status.state.value if ep.endpoint_status else "UNKNOWN"
+    except Exception as e:
+        err = str(e)
+        result["endpoint_state"] = "NOT_FOUND" if ("does not exist" in err.lower() or "not found" in err.lower()) else "ERROR"
+    try:
+        ws = get_workspace_client()
+        idx = ws.vector_search_indexes.get_index(idx_name)
+        st = idx.status
+        result["index_ready"] = bool(st and st.ready)
+        result["index_status"] = str(st) if st else "UNKNOWN"
+        result["indexed_rows"] = getattr(st, "indexed_row_count", None) if st else None
+    except Exception as e:
+        err = str(e)
+        result["index_ready"] = False
+        result["index_status"] = "NOT_FOUND" if ("does not exist" in err.lower() or "not found" in err.lower()) else "ERROR"
+    try:
+        rows = execute_sql(f"SELECT COUNT(*) AS c FROM {fq(_CC_TABLE)} WHERE active = TRUE")
+        result["active_entries"] = int(rows[0]["c"]) if rows else 0
+    except Exception:
+        result["active_entries"] = None
+    return result
+
+
+@app.post("/api/customer-context/vector/sync")
+def customer_context_vector_sync():
+    """Provision (if needed) and trigger a sync of the customer-context VS index.
+
+    Opt-in. Non-blocking: creates the endpoint/index if missing and triggers a sync, then
+    returns right away with a status. The index provisions asynchronously; poll
+    GET /api/customer-context/vector/status until index_ready is true. Fully best-effort.
+    """
+    if not _ENABLE_CONTEXT_VS:
+        raise HTTPException(503, detail=(
+            "The customer-context vector index is disabled. Set enable_context_vector_index=true "
+            "(variables.yml / ENABLE_CONTEXT_VECTOR_INDEX) and redeploy to turn it on."))
+    from databricks.sdk.service.vectorsearch import (
+        DeltaSyncVectorIndexSpecRequest, EmbeddingSourceColumn, EndpointType,
+        PipelineType, VectorIndexType,
+    )
+    _ensure_cc_cdf()
+    idx_name = _cc_vs_index_name()
+    ws = get_workspace_client()
+    steps: list[str] = []
+
+    # 1. Endpoint (create if missing; do NOT wait for ONLINE -- that can take minutes).
+    try:
+        ws.vector_search_endpoints.get_endpoint(VS_ENDPOINT)
+        steps.append("endpoint_exists")
+    except Exception:
+        try:
+            ws.vector_search_endpoints.create_endpoint(name=VS_ENDPOINT, endpoint_type=EndpointType.STANDARD)
+            steps.append("endpoint_creating")
+        except Exception as e:
+            logger.warning("context VS endpoint create deferred: %s", e)
+            return {"status": "endpoint_provisioning", "index": idx_name, "steps": steps,
+                    "detail": f"Endpoint '{VS_ENDPOINT}' is still provisioning; retry sync shortly."}
+
+    # 2. Index (create if missing; returns quickly, provisions async).
+    created = False
+    try:
+        ws.vector_search_indexes.get_index(idx_name)
+        steps.append("index_exists")
+    except Exception:
+        try:
+            ws.vector_search_indexes.create_index(
+                name=idx_name,
+                endpoint_name=VS_ENDPOINT,
+                primary_key="context_id",
+                index_type=VectorIndexType.DELTA_SYNC,
+                delta_sync_index_spec=DeltaSyncVectorIndexSpecRequest(
+                    source_table=fq(_CC_TABLE),
+                    embedding_source_columns=[EmbeddingSourceColumn(
+                        name="context_text", embedding_model_endpoint_name=_CC_VS_EMBED_MODEL)],
+                    pipeline_type=PipelineType.TRIGGERED,
+                    columns_to_sync=["context_id", "context_text", "scope", "scope_type",
+                                     "context_label", "priority", "active"],
+                ),
+            )
+            created = True
+            steps.append("index_creating")
+        except Exception as e:
+            err = str(e)
+            if "not ready" in err.lower() or "provision" in err.lower():
+                return {"status": "endpoint_provisioning", "index": idx_name, "steps": steps,
+                        "detail": "Endpoint not ready yet; retry sync once it is ONLINE."}
+            logger.error("context VS index create failed: %s", e)
+            raise HTTPException(502, detail=f"Could not create the context vector index: {err}")
+
+    # 3. Sync (a freshly-created index auto-syncs; an existing one we trigger -- tolerate not-ready).
+    if not created:
+        try:
+            ws.vector_search_indexes.sync_index(index_name=idx_name)
+            steps.append("sync_triggered")
+        except Exception as e:
+            err = str(e)
+            if "not ready" in err.lower():
+                steps.append("sync_deferred_not_ready")
+            else:
+                logger.warning("context VS sync_index failed: %s", e)
+                steps.append("sync_error")
+
+    return {"status": "provisioning" if created else "sync_triggered",
+            "index": idx_name, "endpoint": VS_ENDPOINT, "steps": steps,
+            "detail": ("Index is provisioning; first build can take several minutes. "
+                       "Poll the status endpoint until index_ready is true.") if created
+                      else "Sync triggered; new/changed entries will be embedded shortly."}
+
+
+class ContextVectorSearchRequest(BaseModel):
+    query: str
+    scope_type: Optional[str] = None
+    num_results: int = 5
+
+
+@app.post("/api/customer-context/vector/search")
+def customer_context_vector_search(req: ContextVectorSearchRequest):
+    """Semantic search over active customer-context entries (app + downstream use).
+
+    This is NOT used by metadata generation; it backs the app's semantic resolve-preview and
+    is available to downstream consumers (agents/RAG, Genie). Always filters to active rows.
+    """
+    if not _ENABLE_CONTEXT_VS:
+        raise HTTPException(503, detail="The customer-context vector index is disabled.")
+    if not (req.query or "").strip():
+        raise HTTPException(400, detail="query must be non-empty")
+    idx_name = _cc_vs_index_name()
+    try:
+        index = _get_api_vs_index(idx_name)
+        filters = {"active": True}
+        if req.scope_type and req.scope_type in _CC_VALID_TYPES:
+            filters["scope_type"] = req.scope_type
+        results = index.similarity_search(
+            query_text=req.query,
+            columns=["context_id", "scope", "scope_type", "context_label", "context_text", "priority"],
+            filters=filters,
+            num_results=min(max(req.num_results, 1), 20),
+        )
+        cols = results.get("manifest", {}).get("columns", [])
+        col_names = [c.get("name", f"col{i}") for i, c in enumerate(cols)] if cols else []
+        matches = []
+        for row in results.get("result", {}).get("data_array", []):
+            matches.append(dict(zip(col_names, row)) if col_names else {"data": row})
+        return {"matches": matches, "count": len(matches)}
+    except Exception as e:
+        err = str(e)
+        if "does not exist" in err.lower() or "not found" in err.lower():
+            raise HTTPException(409, detail=(
+                "The context vector index has not been built yet. Click 'Sync to vector index' "
+                "first, then wait until it is ready."))
+        raise HTTPException(500, detail=f"Context vector search failed: {err}")
 
 
 # ---------------------------------------------------------------------------
