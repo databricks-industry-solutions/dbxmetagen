@@ -182,34 +182,44 @@ class Prompt(ABC):
             customer_context_vs_index -- no whole-table load. ``cache`` here holds only the small
             pattern set (wildcard scopes can't be an index equality filter). Falls back to a
             bounded per-table SQL read if the index is unavailable, so a VS issue never breaks a run.
-        """
-        mode = getattr(self.config, "customer_context_retrieval", "exact")
-        try:
-            cols = list(getattr(self.df, "columns", []) or [])
-        except Exception:
-            cols = []
-        top_k = int(getattr(self.config, "customer_context_top_k", 8))
 
-        if mode == "vector":
-            from dbxmetagen.customer_context import resolve_customer_context_vector
-            signature = " ".join([self.full_table_name] + cols)
-            ctx = resolve_customer_context_vector(
-                self.spark,
-                getattr(self.config, "catalog_name", ""),
-                getattr(self.config, "schema_name", ""),
-                self.full_table_name,
-                signature,
-                top_k=top_k,
-                pattern_cache=cache,
+        Best-effort: ANY failure here (a bad cache row, a VS/SQL hiccup, a misconfigured mode) is
+        logged and skipped, so customer-context enrichment can never abort a generation run -- the
+        metadata is still generated, just without this optional context.
+        """
+        try:
+            mode = getattr(self.config, "customer_context_retrieval", "exact")
+            try:
+                cols = list(getattr(self.df, "columns", []) or [])
+            except Exception:
+                cols = []
+            top_k = int(getattr(self.config, "customer_context_top_k", 8))
+
+            if mode == "vector":
+                from dbxmetagen.customer_context import resolve_customer_context_vector
+                signature = " ".join([self.full_table_name] + cols)
+                ctx = resolve_customer_context_vector(
+                    self.spark,
+                    getattr(self.config, "catalog_name", ""),
+                    getattr(self.config, "schema_name", ""),
+                    self.full_table_name,
+                    signature,
+                    top_k=top_k,
+                    pattern_cache=cache,
+                )
+            else:
+                from dbxmetagen.customer_context import resolve_customer_context
+                signature = " ".join([self.full_table_name] + cols) if mode == "ranked" else ""
+                ctx = resolve_customer_context(
+                    cache, self.full_table_name, mode=mode, signature=signature, top_k=top_k,
+                )
+            if ctx:
+                self.prompt_content["customer_context"] = ctx
+        except Exception as exc:  # noqa: BLE001 -- enrichment is strictly best-effort
+            logger.warning(
+                "customer_context enrichment skipped for %s (%s: %s)",
+                getattr(self, "full_table_name", "?"), type(exc).__name__, exc,
             )
-        else:
-            from dbxmetagen.customer_context import resolve_customer_context
-            signature = " ".join([self.full_table_name] + cols) if mode == "ranked" else ""
-            ctx = resolve_customer_context(
-                cache, self.full_table_name, mode=mode, signature=signature, top_k=top_k,
-            )
-        if ctx:
-            self.prompt_content["customer_context"] = ctx
 
     def enrich_from_ontology(self) -> None:
         """Inject entity type context from ontology_entities into prompt_content.

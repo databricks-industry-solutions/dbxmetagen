@@ -93,8 +93,18 @@ without coupling to the generation pipeline.
    retrieved rather than scope-matched only.
 
 5. **Scalable `vector` retrieval mode for generation (opt-in).** This is the point of the index:
-   a retrieval path that **scales with the size of the context set**. Set
-   `customer_context_retrieval=vector` (default `exact`). Then, per table being generated:
+   a retrieval path that **scales with the size of the context set**.
+
+   > **Status — not yet wired into generation.** The index and the library retrieval path below
+   > exist and are unit-tested, but `customer_context_retrieval` is not yet delivered to the
+   > generation jobs as a parameter/widget, so setting it (including via `--var`/`BUNDLE_VAR`) does
+   > **not** currently change what a generation run does — it reads the bundled default (`exact`).
+   > Wiring this into metadata generation *and* semantic-layer generation, with a per-run toggle and
+   > the required `run_as` Vector Search grant, is tracked in
+   > [issue #260](https://github.com/databricks-industry-solutions/dbxmetagen/issues/260). The
+   > description below is the intended design once wired.
+
+   Set `customer_context_retrieval=vector` (default `exact`). Then, per table being generated:
 
    ```python
    WorkspaceClient().vector_search_indexes.query_index(

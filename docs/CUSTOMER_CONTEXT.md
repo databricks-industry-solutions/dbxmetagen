@@ -64,6 +64,13 @@ How matching context is selected per table, set by `customer_context_retrieval`:
 The scope hierarchy is the hard filter in all three; default (`exact`/`ranked`) never touches
 Vector Search.
 
+> **Status.** The retrieval mode is currently a **deploy-level default** (the bundled
+> `variables.yml`), not a per-run option, and the `vector` mode is **not yet wired into the
+> generation jobs** — so today generation effectively uses `exact`. Delivering `vector` (and a
+> per-run toggle) to metadata generation *and* semantic-layer generation is tracked in
+> [issue #260](https://github.com/databricks-industry-solutions/dbxmetagen/issues/260). The
+> library path and the index already exist; enrichment is best-effort and never blocks a run.
+
 ## Limits & guardrails
 
 | Limit | Value | Setting |

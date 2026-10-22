@@ -539,12 +539,10 @@ function ContextManager() {
               <h3 className="text-sm font-semibold text-slate-700 dark:text-slate-300">Semantic context index</h3>
               <p className="text-xs text-slate-500 dark:text-slate-400 mt-1 max-w-2xl">
                 Maintains a Vector Search index over your context entries for <strong>semantic</strong> retrieval —
-                used by the app&rsquo;s search, agents/RAG, Genie, and an <strong>opt-in scalable retrieval mode during
-                metadata generation</strong> (<code>customer_context_retrieval=vector</code>): per table it does a
-                scope-prefiltered hybrid search against this index instead of loading the whole context table into
-                memory, so retrieval scales as your context grows. <strong>Default generation runs are unchanged</strong>
-                and never query it, and generation always falls back to the standard path if the index is unavailable.
-                Click sync after adding or editing entries.
+                used by the app&rsquo;s context search and preview, and available to downstream consumers (agents/RAG,
+                Genie). Using it as a scalable, scope-filtered retrieval mode <em>during metadata and semantic-layer
+                generation</em> is planned (issue&nbsp;#260) and not yet wired into the generation jobs — today
+                generation uses the scope hierarchy. Click sync after adding or editing entries.
               </p>
             </div>
             <button onClick={handleVsSync} disabled={vsSyncing} className="btn-primary btn-sm shrink-0 disabled:opacity-50">
