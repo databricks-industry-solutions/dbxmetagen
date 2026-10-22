@@ -20,6 +20,12 @@ Uploads are routed by file type. The structured lane is deterministic; the other
 **Spreadsheets and PDFs carry free-form context**, so they go through the AI lane. Only already-structured
 `.yaml` / `.json` take the deterministic lane.
 
+Every upload (context, acronyms, descriptions, decompose) can come from **your computer** or **from a
+UC Volume** — toggle *From my computer* / *From a volume* and browse to the file. Volume files are read
+with the app's access: the **logged-in user's identity under OBO**, otherwise the **app service principal**
+(which the grants script gives `READ VOLUME` on the deployment schema). Volumes elsewhere require that
+identity to have `READ VOLUME`.
+
 ### Decompose scope
 
 - Pick **catalog + schema** (leave Table blank) → pieces spread across that schema's real tables;
@@ -83,6 +89,50 @@ Vector Search.
 
 Oversized files are rejected before they are read into memory — split them by scope. These are
 guardrails against breaking/expensive uploads, not limits normal glossaries approach.
+
+## Uploading context — workflow
+
+1. Open the app's **Customer Context** tab.
+2. Choose the input: **Context** (free-form), **Acronyms**, or **Descriptions** (verbatim column comments).
+3. Pick the source — **From my computer** or **From a volume** (browse to the file).
+4. Set the **scope** so it matches the tables you'll generate on:
+   - *Context document* → attach to one scope, or **decompose** (split across the schema's tables, or pin to one table).
+   - *Acronyms* → schema or catalog.
+   - *Descriptions* → catalog + schema (per-row `Table_Name` wins).
+5. On a scope collision you'll be asked to **append / combine / replace** (see above).
+6. Use **Preview Resolution** on a table to confirm exactly what it will receive.
+7. Generate metadata with **Use Customer Context** enabled.
+
+## Guidelines
+
+- **Scope to match.** Context only applies to a table whose catalog/schema/pattern/table it is scoped to.
+  To affect `cat.sch.tbl`, scope at `cat`, `cat.sch`, a matching pattern, or the table itself.
+- **Keep entries concise.** Each entry caps at 500 words and is injected into prompts; prefer short,
+  factual notes. For large/table-specific knowledge, prefer decompose (per-table) over one huge blob.
+- **Pick the right lane.** Clean, already-structured entries → `.yaml`/`.json`. Everything free-form
+  (prose, glossaries, spreadsheets, PDFs) → the document/decompose lane.
+- **Decompose placement.** Leave *Table* blank to spread across a schema's tables; set *Table* to pin
+  every piece to that one table.
+- **Descriptions are verbatim.** Use the Descriptions input when you want exact column comments and the
+  LLM skipped for those columns.
+- **Split very large files** by schema rather than uploading one enormous file (25 MB hard cap).
+
+## Deploy options
+
+Customer context works out of the box. Relevant settings (bundle variables → app env):
+
+| Setting | Default | Purpose |
+|---------|---------|---------|
+| `max_upload_mb` | `25` | Hard ceiling on any single upload (guardrail against egregious files). |
+| `enable_context_vector_index` | `false` | Opt-in: build/sync the semantic index from the app. See [Vector index](CUSTOMER_CONTEXT_VECTOR_INDEX.md). |
+| `vs_endpoint_name` | `dbxmetagen-vs` | Vector Search endpoint used if the index is enabled. |
+| `embedding_model` | `databricks-bge-large-en` | Managed-embedding endpoint for the index. |
+| `enable_obo` | `false` | When true, volume reads and SQL run as the logged-in user; otherwise the app service principal. |
+| `default_view_mode` | `advanced` | Initial UI; `simplified` hides advanced tools. Per-user, remembered in the browser. |
+
+`scripts/grant_app_permissions.sh` grants the app service principal `READ VOLUME` (and the Vector Search
+endpoint) on the deployment schema. Reading context files from **other** volumes requires the acting
+identity (app SP, or the user under OBO) to have `READ VOLUME` there.
 
 ## Where to look
 

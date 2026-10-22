@@ -12,6 +12,48 @@ const MAX_UPLOAD_MB = 25
 
 function wordCount(text) { return text ? text.trim().split(/\s+/).filter(Boolean).length : 0 }
 
+// Pick a file from a UC Volume the app can read (OBO user if OBO, else the app SP). Browses via
+// /api/volumes/browse; the path box is editable to jump to any accessible volume.
+function VolumePicker({ onSelect, selected }) {
+  const [path, setPath] = useState('')
+  const [data, setData] = useState(null)
+  const [loading, setLoading] = useState(false)
+  const [err, setErr] = useState(null)
+  const browse = useCallback(async (p) => {
+    setLoading(true); setErr(null)
+    const { data, error } = await safeFetch(`/api/volumes/browse?path=${encodeURIComponent(p || '')}`)
+    setLoading(false)
+    if (error) { setErr(error); return }
+    setData(data); setPath(data.path || '')
+  }, [])
+  useEffect(() => { browse('') }, [browse])
+  return (
+    <div className="border border-slate-300 dark:border-dbx-navy-400 rounded-lg p-2 space-y-2 bg-white dark:bg-dbx-navy-600">
+      <div className="flex gap-2">
+        <input value={path} onChange={e => setPath(e.target.value)}
+          onKeyDown={e => e.key === 'Enter' && browse(path)}
+          placeholder="/Volumes/catalog/schema/volume"
+          className="flex-1 px-2 py-1.5 rounded-md border border-slate-300 dark:border-dbx-navy-400 bg-white dark:bg-dbx-navy-500 text-sm font-mono" />
+        <button type="button" onClick={() => browse(path)} className="btn-ghost btn-sm shrink-0">{loading ? '…' : 'Browse'}</button>
+      </div>
+      {err && <div className="text-xs text-red-500">{err}</div>}
+      <div className="max-h-52 overflow-auto text-sm divide-y divide-slate-100 dark:divide-dbx-navy-500">
+        {data?.parent != null && (
+          <button type="button" onClick={() => browse(data.parent)} className="block w-full text-left px-2 py-1.5 hover:bg-slate-50 dark:hover:bg-dbx-navy-500 text-slate-500">⬆ ..</button>
+        )}
+        {(data?.entries || []).map(e => e.is_directory ? (
+          <button type="button" key={e.path} onClick={() => browse(e.path)} className="block w-full text-left px-2 py-1.5 hover:bg-slate-50 dark:hover:bg-dbx-navy-500">📁 {e.name}</button>
+        ) : (
+          <button type="button" key={e.path} onClick={() => onSelect(e.path)}
+            className={`block w-full text-left px-2 py-1.5 hover:bg-slate-50 dark:hover:bg-dbx-navy-500 ${selected === e.path ? 'bg-dbx-lava/10 text-dbx-lava font-medium' : ''}`}>📄 {e.name}</button>
+        ))}
+        {data && (data.entries || []).length === 0 && !loading && <div className="px-2 py-2 text-xs text-slate-400">Empty folder.</div>}
+      </div>
+      {selected && <div className="text-xs text-slate-500 dark:text-slate-400 truncate">Selected: <span className="font-mono">{selected}</span></div>}
+    </div>
+  )
+}
+
 // Document lane (#249): these need a target scope; structured .yaml/.json carry their own.
 // Document lane (#249) = the AI ingestion path (split/decompose or single-scope distill).
 // Spreadsheets (.csv/.xlsx) join it: they carry free-form business context, not clean entries.
@@ -33,6 +75,8 @@ function ContextManager() {
   const [showUpload, setShowUpload] = useState(false)
   const [filterType, setFilterType] = useState('')
   const [uploadFile, setUploadFile] = useState(null)
+  const [uploadSrc, setUploadSrc] = useState('local')   // 'local' (file) or 'volume'
+  const [uploadVol, setUploadVol] = useState('')         // selected UC Volume file path
   const [uploadScope, setUploadScope] = useState('')
   const [uploadScopeType, setUploadScopeType] = useState('schema')
   const [uploading, setUploading] = useState(false)
@@ -140,15 +184,23 @@ function ContextManager() {
     setEditing(entry.context_id)
   }
 
-  const docUpload = uploadFile && isDocFile(uploadFile.name)
+  // Source can be a local file OR a file chosen from a UC Volume; downstream logic keys off a
+  // unified name/presence so the two paths share the same lane detection and submit flow.
+  const srcName = uploadSrc === 'volume' ? uploadVol : (uploadFile?.name || '')
+  const hasSrc = uploadSrc === 'volume' ? !!uploadVol : !!uploadFile
+  const appendSource = (fd) => {
+    if (uploadSrc === 'volume') fd.append('volume_path', uploadVol)
+    else fd.append('file', uploadFile)
+  }
+  const docUpload = hasSrc && isDocFile(srcName)
 
   const handleUpload = async () => {
-    if (!uploadFile || uploading) return
+    if (!hasSrc || uploading) return
     if (docUpload && !uploadScope.trim()) return
     setUploading(true)
     setError(null)
     const fd = new FormData()
-    fd.append('file', uploadFile)
+    appendSource(fd)
     if (docUpload) {
       fd.append('scope', uploadScope.trim())
       fd.append('scope_type', uploadScopeType)
@@ -158,7 +210,7 @@ function ContextManager() {
     if (err) { setError(err); return }
     if (data && data.conflict) { setConflict({ ...data, scope_type: data.scope_type || uploadScopeType }); return }
     setUploadResult(data)
-    setUploadFile(null)
+    setUploadFile(null); setUploadVol('')
     setUploadScope('')
     load()
   }
@@ -166,10 +218,10 @@ function ContextManager() {
   // A document upload is applied one of two ways (docMode); a structured .yaml/.json is
   // parsed directly and ignores the mode. Scope description is FORCED (>= 5 words) for the
   // split path, matching the server guard -- the model needs a steer to place pieces.
-  const structuredUpload = uploadFile && !docUpload
+  const structuredUpload = hasSrc && !docUpload
   const decWordCount = wordCount(dec.description)
   const canSubmitUpload = () => {
-    if (!uploadFile || uploading || decomposing) return false
+    if (!hasSrc || uploading || decomposing) return false
     if (structuredUpload) return true
     if (docMode === 'single') return !!uploadScope.trim()
     return !!dec.catalog.trim() && decWordCount >= 5   // split
@@ -179,18 +231,18 @@ function ContextManager() {
     return handleUpload()
   }
   const resetUpload = () => {
-    setShowUpload(false); setUploadFile(null); setUploadScope('')
+    setShowUpload(false); setUploadFile(null); setUploadVol(''); setUploadSrc('local'); setUploadScope('')
     setDec({ catalog: '', schema: '', table: '', description: '', hasEmbedded: false })
     setUploadResult(null); setDecResult(null)
   }
 
   const handleDecompose = async () => {
-    if (!uploadFile || decomposing) return
+    if (!hasSrc || decomposing) return
     setDecomposing(true)
     setError(null)
     setDecResult(null)
     const fd = new FormData()
-    fd.append('file', uploadFile)
+    appendSource(fd)
     fd.append('catalog', dec.catalog.trim())
     if (dec.schema.trim()) fd.append('schema', dec.schema.trim())
     if (dec.table.trim()) fd.append('table', dec.table.trim())
@@ -200,7 +252,7 @@ function ContextManager() {
     setDecomposing(false)
     if (err) { setError(err); return }
     setDecResult(data)
-    setUploadFile(null)
+    setUploadFile(null); setUploadVol('')
     load()
   }
 
@@ -306,12 +358,23 @@ function ContextManager() {
               <strong> split across the tables it describes</strong> or <strong>attached whole to one scope</strong>
               &mdash; you&rsquo;ll choose below. (<code>.pdf</code>/<code>.docx</code> need the AI document functions enabled on the SQL warehouse.)
             </p>
-            <input type="file" accept=".yaml,.yml,.json,.txt,.md,.pdf,.docx,.csv,.xlsx,.xls"
-              onChange={e => { setUploadFile(e.target.files[0] || null); setUploadResult(null); setDecResult(null); setError(null) }}
-              className="mt-2 block w-full text-sm text-slate-500 file:mr-4 file:py-2 file:px-4 file:rounded-lg file:border-0 file:text-sm file:font-medium file:bg-dbx-lava/10 file:text-dbx-lava hover:file:bg-dbx-lava/20" />
+            <div className="flex gap-1 mt-2 mb-2 bg-slate-100 dark:bg-dbx-navy-600 rounded-lg p-1 w-fit">
+              <button type="button" onClick={() => { setUploadSrc('local'); setUploadVol(''); setError(null) }}
+                className={`px-3 py-1 rounded-md text-xs font-medium ${uploadSrc === 'local' ? 'bg-white dark:bg-dbx-navy-500 shadow text-dbx-lava' : 'text-slate-500'}`}>From my computer</button>
+              <button type="button" onClick={() => { setUploadSrc('volume'); setUploadFile(null); setError(null) }}
+                className={`px-3 py-1 rounded-md text-xs font-medium ${uploadSrc === 'volume' ? 'bg-white dark:bg-dbx-navy-500 shadow text-dbx-lava' : 'text-slate-500'}`}>From a volume</button>
+            </div>
+            {uploadSrc === 'local' ? (
+              <input type="file" accept=".yaml,.yml,.json,.txt,.md,.pdf,.docx,.csv,.xlsx,.xls"
+                onChange={e => { setUploadFile(e.target.files[0] || null); setUploadResult(null); setDecResult(null); setError(null) }}
+                className="block w-full text-sm text-slate-500 file:mr-4 file:py-2 file:px-4 file:rounded-lg file:border-0 file:text-sm file:font-medium file:bg-dbx-lava/10 file:text-dbx-lava hover:file:bg-dbx-lava/20" />
+            ) : (
+              <VolumePicker selected={uploadVol} onSelect={p => { setUploadVol(p); setUploadResult(null); setDecResult(null); setError(null) }} />
+            )}
             <p className="text-xs text-slate-400 dark:text-slate-500 mt-1">
               Up to {MAX_UPLOAD_MB}&nbsp;MB per file. Long documents are summarized into a concise entry
               (&le;{MAX_WORDS} words); split very large glossaries by schema for the best results.
+              A volume file is read with the app&rsquo;s access (your identity under OBO, otherwise the app service principal).
             </p>
           </div>
 
@@ -400,7 +463,7 @@ function ContextManager() {
           )}
 
           <div className="flex items-center justify-between">
-            <span className="text-xs text-slate-400">{uploadFile ? uploadFile.name : 'No file selected'}</span>
+            <span className="text-xs text-slate-400 truncate max-w-xs">{hasSrc ? (uploadSrc === 'volume' ? srcName : uploadFile.name) : 'No file selected'}</span>
             <div className="flex gap-2">
               <button onClick={resetUpload} className="btn-ghost btn-sm">Cancel</button>
               <button onClick={submitUpload} disabled={!canSubmitUpload()} className="btn-primary btn-sm disabled:opacity-50">
@@ -635,6 +698,8 @@ function AcronymsManager() {
   const [saving, setSaving] = useState(false)
   const [form, setForm] = useState({ scope: '', scope_type: 'schema', abbreviation: '', expansion: '', notes: '' })
   const [file, setFile] = useState(null)
+  const [src, setSrc] = useState('local')
+  const [vol, setVol] = useState('')
   const [upScope, setUpScope] = useState('')
   const [upScopeType, setUpScopeType] = useState('schema')
   const [uploading, setUploading] = useState(false)
@@ -664,16 +729,17 @@ function AcronymsManager() {
     if (err) setError(err); else load()
   }
   const upload = async () => {
-    if (!file || uploading) return
+    const hasSrc = src === 'volume' ? !!vol : !!file
+    if (!hasSrc || uploading) return
     setUploading(true); setError(null)
     const fd = new FormData()
-    fd.append('file', file)
+    if (src === 'volume') fd.append('volume_path', vol); else fd.append('file', file)
     fd.append('scope_type', upScopeType)
     if (upScope.trim()) fd.append('scope', upScope.trim())
     const { data, error: err } = await safeFetch('/api/customer-acronyms/upload', { method: 'POST', body: fd })
     setUploading(false)
     if (err) { setError(err); return }
-    setUpResult(data); setFile(null); setUpScope(''); load()
+    setUpResult(data); setFile(null); setVol(''); setUpScope(''); load()
   }
 
   return (
@@ -698,8 +764,16 @@ function AcronymsManager() {
 
       <div className="card p-4 space-y-3">
         <label className="text-sm font-medium text-slate-700 dark:text-slate-300">Upload acronyms (.xlsx / .csv / .json / .yaml)</label>
-        <input type="file" accept=".xlsx,.xls,.csv,.json,.yaml,.yml" onChange={e => { setFile(e.target.files[0] || null); setUpResult(null); setError(null) }}
-          className="block w-full text-sm text-slate-500 file:mr-4 file:py-2 file:px-4 file:rounded-lg file:border-0 file:text-sm file:font-medium file:bg-dbx-lava/10 file:text-dbx-lava hover:file:bg-dbx-lava/20" />
+        <div className="flex gap-1 bg-slate-100 dark:bg-dbx-navy-600 rounded-lg p-1 w-fit">
+          <button type="button" onClick={() => { setSrc('local'); setVol('') }} className={`px-3 py-1 rounded-md text-xs font-medium ${src === 'local' ? 'bg-white dark:bg-dbx-navy-500 shadow text-dbx-lava' : 'text-slate-500'}`}>From my computer</button>
+          <button type="button" onClick={() => { setSrc('volume'); setFile(null) }} className={`px-3 py-1 rounded-md text-xs font-medium ${src === 'volume' ? 'bg-white dark:bg-dbx-navy-500 shadow text-dbx-lava' : 'text-slate-500'}`}>From a volume</button>
+        </div>
+        {src === 'local' ? (
+          <input type="file" accept=".xlsx,.xls,.csv,.json,.yaml,.yml" onChange={e => { setFile(e.target.files[0] || null); setUpResult(null); setError(null) }}
+            className="block w-full text-sm text-slate-500 file:mr-4 file:py-2 file:px-4 file:rounded-lg file:border-0 file:text-sm file:font-medium file:bg-dbx-lava/10 file:text-dbx-lava hover:file:bg-dbx-lava/20" />
+        ) : (
+          <VolumePicker selected={vol} onSelect={p => { setVol(p); setUpResult(null); setError(null) }} />
+        )}
         <p className="text-xs text-slate-400 dark:text-slate-500">Up to {MAX_UPLOAD_MB}&nbsp;MB and 1,000 rows per upload &mdash; split larger lists into separate files.</p>
         <div className="grid grid-cols-2 gap-3">
           <div>
@@ -716,8 +790,8 @@ function AcronymsManager() {
           </div>
         </div>
         <div className="flex items-center justify-between">
-          <span className="text-xs text-slate-400">{file ? file.name : 'No file selected'}</span>
-          <button onClick={upload} disabled={!file || uploading} className="btn-primary btn-sm disabled:opacity-50">{uploading ? 'Uploading…' : 'Upload'}</button>
+          <span className="text-xs text-slate-400 truncate max-w-xs">{src === 'volume' ? (vol || 'No file selected') : (file ? file.name : 'No file selected')}</span>
+          <button onClick={upload} disabled={(src === 'volume' ? !vol : !file) || uploading} className="btn-primary btn-sm disabled:opacity-50">{uploading ? 'Uploading…' : 'Upload'}</button>
         </div>
         {upResult && <div className="text-xs px-3 py-2 rounded-md bg-slate-50 dark:bg-dbx-navy-600 text-slate-600 dark:text-slate-300">
           Uploaded {upResult.uploaded} acronym(s) to {upResult.scope_type}:{upResult.scope}.
@@ -803,6 +877,8 @@ function OverridesManager() {
   const [saving, setSaving] = useState(false)
   const [form, setForm] = useState({ catalog_name: '', schema_name: '', table_name: '', column_name: '', comment: '' })
   const [file, setFile] = useState(null)
+  const [src, setSrc] = useState('local')
+  const [vol, setVol] = useState('')
   const [upCatalog, setUpCatalog] = useState('')
   const [upSchema, setUpSchema] = useState('')
   const [upTable, setUpTable] = useState('')
@@ -841,17 +917,18 @@ function OverridesManager() {
     if (err) setError(err); else load()
   }
   const upload = async () => {
-    if (!file || uploading) return
+    const hasSrc = src === 'volume' ? !!vol : !!file
+    if (!hasSrc || uploading) return
     setUploading(true); setError(null)
     const fd = new FormData()
-    fd.append('file', file)
+    if (src === 'volume') fd.append('volume_path', vol); else fd.append('file', file)
     if (upCatalog.trim()) fd.append('catalog_name', upCatalog.trim())
     if (upSchema.trim()) fd.append('schema_name', upSchema.trim())
     if (upTable.trim()) fd.append('table_name', upTable.trim())
     const { data, error: err } = await safeFetch('/api/customer-overrides/upload', { method: 'POST', body: fd })
     setUploading(false)
     if (err) { setError(err); return }
-    setUpResult(data); setFile(null); load()
+    setUpResult(data); setFile(null); setVol(''); load()
   }
 
   return (
@@ -876,8 +953,16 @@ function OverridesManager() {
 
       <div className="card p-4 space-y-3">
         <label className="text-sm font-medium text-slate-700 dark:text-slate-300">Upload descriptions (.xlsx / .csv / .json / .yaml)</label>
-        <input type="file" accept=".xlsx,.xls,.csv,.json,.yaml,.yml" onChange={e => { setFile(e.target.files[0] || null); setUpResult(null); setError(null) }}
-          className="block w-full text-sm text-slate-500 file:mr-4 file:py-2 file:px-4 file:rounded-lg file:border-0 file:text-sm file:font-medium file:bg-dbx-lava/10 file:text-dbx-lava hover:file:bg-dbx-lava/20" />
+        <div className="flex gap-1 bg-slate-100 dark:bg-dbx-navy-600 rounded-lg p-1 w-fit">
+          <button type="button" onClick={() => { setSrc('local'); setVol('') }} className={`px-3 py-1 rounded-md text-xs font-medium ${src === 'local' ? 'bg-white dark:bg-dbx-navy-500 shadow text-dbx-lava' : 'text-slate-500'}`}>From my computer</button>
+          <button type="button" onClick={() => { setSrc('volume'); setFile(null) }} className={`px-3 py-1 rounded-md text-xs font-medium ${src === 'volume' ? 'bg-white dark:bg-dbx-navy-500 shadow text-dbx-lava' : 'text-slate-500'}`}>From a volume</button>
+        </div>
+        {src === 'local' ? (
+          <input type="file" accept=".xlsx,.xls,.csv,.json,.yaml,.yml" onChange={e => { setFile(e.target.files[0] || null); setUpResult(null); setError(null) }}
+            className="block w-full text-sm text-slate-500 file:mr-4 file:py-2 file:px-4 file:rounded-lg file:border-0 file:text-sm file:font-medium file:bg-dbx-lava/10 file:text-dbx-lava hover:file:bg-dbx-lava/20" />
+        ) : (
+          <VolumePicker selected={vol} onSelect={p => { setVol(p); setUpResult(null); setError(null) }} />
+        )}
         <p className="text-xs text-slate-400 dark:text-slate-500">Up to {MAX_UPLOAD_MB}&nbsp;MB and 1,000 rows per upload &mdash; split larger lists into separate files.</p>
         <div className="grid grid-cols-3 gap-3">
           <div>
@@ -897,8 +982,8 @@ function OverridesManager() {
           </div>
         </div>
         <div className="flex items-center justify-between">
-          <span className="text-xs text-slate-400">{file ? file.name : 'No file selected'}</span>
-          <button onClick={upload} disabled={!file || uploading} className="btn-primary btn-sm disabled:opacity-50">{uploading ? 'Uploading…' : 'Upload'}</button>
+          <span className="text-xs text-slate-400 truncate max-w-xs">{src === 'volume' ? (vol || 'No file selected') : (file ? file.name : 'No file selected')}</span>
+          <button onClick={upload} disabled={(src === 'volume' ? !vol : !file) || uploading} className="btn-primary btn-sm disabled:opacity-50">{uploading ? 'Uploading…' : 'Upload'}</button>
         </div>
         {upResult && <div className="text-xs px-3 py-2 rounded-md bg-slate-50 dark:bg-dbx-navy-600 text-slate-600 dark:text-slate-300">
           Uploaded {upResult.uploaded} description(s) to {upResult.catalog_name}.{upResult.schema_name}.

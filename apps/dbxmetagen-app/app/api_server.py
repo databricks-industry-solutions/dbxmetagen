@@ -475,6 +475,42 @@ def _read_upload_capped(file, max_mb: int = None) -> bytes:
             f"upload a more narrowly-scoped file — context works best as concise, scoped notes."))
     return raw
 
+
+def _read_from_volume_capped(path: str) -> bytes:
+    """Download a UC Volume file with the SAME hard byte cap as an upload. Uses the EFFECTIVE
+    client — the logged-in user's identity under OBO, otherwise the app service principal — so the
+    file must be one that identity can read. Same 413 ceiling, so a huge volume file can't OOM."""
+    vp = (path or "").strip()
+    if not vp.startswith("/Volumes/"):
+        raise HTTPException(400, detail="volume_path must be a UC Volume path starting with /Volumes/")
+    cap = _MAX_UPLOAD_MB * 1024 * 1024
+    try:
+        resp = _get_effective_client().files.download(vp)
+        data = resp.contents.read(cap + 1)
+    except HTTPException:
+        raise
+    except Exception as e:
+        raise HTTPException(400, detail=(
+            f"Could not read '{vp}' from the volume — does the app"
+            f"{' (or your identity under OBO)' if _OBO_ENABLED else ' service principal'} have "
+            f"READ VOLUME on it? ({e})"))
+    if data is None:
+        return b""
+    if len(data) > cap:
+        raise HTTPException(413, detail=f"This file exceeds the {_MAX_UPLOAD_MB} MB upload limit.")
+    return data
+
+
+def _resolve_ingest_source(file, volume_path) -> tuple[bytes, str]:
+    """Return (raw_bytes, filename) from EITHER a multipart upload or a UC Volume path. Lets every
+    ingestion endpoint accept both without duplicating the capped-read / download logic."""
+    if file is not None and getattr(file, "filename", None):
+        return _read_upload_capped(file), (file.filename or "")
+    vp = (volume_path or "").strip()
+    if vp:
+        return _read_from_volume_capped(vp), vp.rstrip("/").rsplit("/", 1)[-1]
+    raise HTTPException(400, detail="Provide a file to upload or a volume_path to read from.")
+
 # Required-config validation (DP-2). The deploy still succeeds even when a required
 # per-workspace value is missing; instead the frontend renders a blocking banner from
 # /api/config's `config_valid`/`config_errors`, and lifespan logs a prominent error.
@@ -17025,18 +17061,44 @@ def _cc_distill_text(text):
     return text, "", "truncated"
 
 
+@app.get("/api/volumes/browse")
+def browse_volume(path: str = None):
+    """List the immediate children (folders + files) of a UC Volume path, for the context file
+    picker. Uses the EFFECTIVE client (the logged-in user under OBO, else the app service
+    principal), so only locations that identity can read are visible. Defaults to this
+    deployment's catalog.schema (which lists its volumes)."""
+    p = (path or "").strip() or f"/Volumes/{CATALOG}/{SCHEMA}"
+    if not p.startswith("/Volumes/"):
+        raise HTTPException(400, detail="path must start with /Volumes/")
+    try:
+        entries = list(_get_effective_client().files.list_directory_contents(p))
+    except Exception as e:
+        raise HTTPException(400, detail=f"Could not list '{p}': {e}")
+    out = []
+    for e in entries:
+        ep = e.path if hasattr(e, "path") else str(e)
+        is_dir = bool(getattr(e, "is_directory", False))
+        out.append({"path": ep, "name": ep.rstrip("/").rsplit("/", 1)[-1],
+                    "is_directory": is_dir, "size": getattr(e, "file_size", None)})
+    out.sort(key=lambda r: (not r["is_directory"], r["name"].lower()))
+    # Allow navigating up, but not above /Volumes/<catalog>/<schema>.
+    segs = [s for s in p.strip("/").split("/") if s]
+    parent = "/" + "/".join(segs[:-1]) if len(segs) > 3 else None
+    return {"path": p, "parent": parent, "entries": out}
+
+
 @app.post("/api/customer-context/upload")
-def upload_customer_context(file: UploadFile = File(...),
+def upload_customer_context(file: UploadFile = File(None),
                             scope: str = Form(None),
                             scope_type: str = Form(None),
-                            on_conflict: str = Form("detect")):
-    """Ingest customer context from a file (#249). Structured .yaml/.yml/.json is parsed
-    into entries deterministically; a .txt/.md/.pdf/.docx document is attached to the
-    supplied scope (long docs distilled via ai_extract; binary via ai_parse_document)."""
+                            on_conflict: str = Form("detect"),
+                            volume_path: str = Form(None)):
+    """Ingest customer context from a file (#249) or a UC Volume path (volume_path). Structured
+    .yaml/.yml/.json is parsed into entries deterministically; a .txt/.md/.pdf/.docx document is
+    attached to the supplied scope (long docs distilled via ai_extract; binary via ai_parse_document)."""
     _ensure_customer_context_table()
-    filename = file.filename or ""
+    raw, filename = _resolve_ingest_source(file, volume_path)
     ext = filename.rsplit(".", 1)[-1].lower() if "." in filename else ""
-    raw = _read_upload_capped(file)
 
     # ---- Structured lane (deterministic, no LLM) ----
     if ext in ("yaml", "yml"):
@@ -17312,15 +17374,16 @@ def _cc_validate_decomposed(entries, allowed_tables, catalog, schema, table):
 
 
 @app.post("/api/customer-context/decompose")
-def decompose_customer_context(file: UploadFile = File(...),
+def decompose_customer_context(file: UploadFile = File(None),
                                catalog: str = Form(...),
                                schema: str = Form(None),
                                table: str = Form(None),
                                scope_description: str = Form(...),
-                               has_embedded_scope: bool = Form(False)):
-    """Extract an unstructured document into many scope-assigned context entries,
-    grounded against the real tables under catalog[.schema]. Auto-commits; entries
-    are editable afterward in the Context table."""
+                               has_embedded_scope: bool = Form(False),
+                               volume_path: str = Form(None)):
+    """Extract an unstructured document (uploaded or from a UC Volume path) into many
+    scope-assigned context entries, grounded against the real tables under catalog[.schema].
+    Auto-commits; entries are editable afterward in the Context table."""
     _ensure_customer_context_table()
     # --- validate inputs (scope_description is FORCED -- the model needs a steer) ---
     catalog = (catalog or "").strip()
@@ -17339,13 +17402,12 @@ def decompose_customer_context(file: UploadFile = File(...),
     if table and not schema:
         raise HTTPException(400, detail="Specifying a table also requires its schema")
 
-    filename = file.filename or ""
+    raw, filename = _resolve_ingest_source(file, volume_path)
     ext = filename.rsplit(".", 1)[-1].lower() if "." in filename else ""
     if ext not in _CC_TEXT_EXTS and ext not in _CC_BINARY_EXTS and ext not in _CC_TABULAR_EXTS:
         raise HTTPException(400, detail=(
             f"Decompose accepts documents (.txt/.md/.pdf/.docx) and spreadsheets (.csv/.xlsx). "
             f"For already-structured context entries use the YAML/JSON upload. Got '.{ext}'."))
-    raw = _read_upload_capped(file)
     text = (_cc_parse_binary_to_text(raw, ext, filename) if ext in _CC_BINARY_EXTS
             else _cc_tabular_to_text(raw, ext) if ext in _CC_TABULAR_EXTS
             else raw.decode("utf-8", errors="replace"))
@@ -17699,20 +17761,22 @@ def delete_customer_acronym(acronym_id: str):
 
 
 @app.post("/api/customer-acronyms/upload")
-def upload_customer_acronyms(file: UploadFile = File(...),
+def upload_customer_acronyms(file: UploadFile = File(None),
                              scope: str = Form(None),
-                             scope_type: str = Form("schema")):
-    """Ingest acronyms from .xlsx/.csv/.json/.yaml (any structured/record-shaped file). Tolerant
+                             scope_type: str = Form("schema"),
+                             volume_path: str = Form(None)):
+    """Ingest acronyms from .xlsx/.csv/.json/.yaml (uploaded or a UC Volume path). Tolerant
     column mapping (Abbreviation/Current Abbreviation/Acronym; Expansion/Stands For/Meaning;
     Notes/What does it do?/Type of Entity). scope defaults to this app's catalog or schema per
     scope_type."""
     _ensure_customer_acronyms_table()
-    ext = (file.filename or "").rsplit(".", 1)[-1].lower() if "." in (file.filename or "") else ""
+    raw, filename = _resolve_ingest_source(file, volume_path)
+    ext = filename.rsplit(".", 1)[-1].lower() if "." in filename else ""
     if scope_type not in _ACRO_SCOPE_TYPES:
         raise HTTPException(400, detail=f"scope_type must be one of {_ACRO_SCOPE_TYPES}")
     eff_scope = (scope or "").strip() or (CATALOG if scope_type == "catalog" else f"{CATALOG}.{SCHEMA}")
     _validate_acro_scope(eff_scope, scope_type)
-    rows = _parse_structured_rows(_read_upload_capped(file), ext)
+    rows = _parse_structured_rows(raw, ext)
     _require_columns(rows, [_ACRO_ABBR_COLS, _ACRO_EXP_COLS], "acronyms")
     results, errors, skipped = [], [], []
     for r in rows:
@@ -17807,21 +17871,23 @@ def delete_customer_override(override_id: str):
 
 
 @app.post("/api/customer-overrides/upload")
-def upload_customer_overrides(file: UploadFile = File(...),
+def upload_customer_overrides(file: UploadFile = File(None),
                               catalog_name: str = Form(None),
                               schema_name: str = Form(None),
-                              table_name: str = Form("")):
-    """Ingest column descriptions from .xlsx/.csv/.json/.yaml as verbatim comment overrides.
-    Tolerant column mapping (Table/Table_Name; Column/Column_Name; Comment/Description).
-    catalog/schema default to this app's; per-row Table_Name wins over the form default
-    (blank = schema-wide)."""
+                              table_name: str = Form(""),
+                              volume_path: str = Form(None)):
+    """Ingest column descriptions from .xlsx/.csv/.json/.yaml (uploaded or a UC Volume path) as
+    verbatim comment overrides. Tolerant column mapping (Table/Table_Name; Column/Column_Name;
+    Comment/Description). catalog/schema default to this app's; per-row Table_Name wins over the
+    form default (blank = schema-wide)."""
     _ensure_customer_overrides_table()
-    ext = (file.filename or "").rsplit(".", 1)[-1].lower() if "." in (file.filename or "") else ""
+    raw, filename = _resolve_ingest_source(file, volume_path)
+    ext = filename.rsplit(".", 1)[-1].lower() if "." in filename else ""
     cat = (catalog_name or "").strip() or CATALOG
     sch = (schema_name or "").strip() or SCHEMA
     _validate_identifier(cat, "catalog")
     _validate_identifier(sch, "schema")
-    rows = _parse_structured_rows(_read_upload_capped(file), ext)
+    rows = _parse_structured_rows(raw, ext)
     _require_columns(rows, [_OVR_COL_COLS, _OVR_COMMENT_COLS], "descriptions")
     results, errors, skipped = [], [], []
     for r in rows:
