@@ -16850,7 +16850,30 @@ def delete_customer_context(context_id: str):
 #   a clear 422 telling the user to enable it or upload text -- never a silent failure.
 _CC_TEXT_EXTS = {"txt", "md", "markdown"}
 _CC_BINARY_EXTS = {"pdf", "docx", "pptx"}
+# Spreadsheets feed the AI context lane (NOT the deterministic structured lane): an .xlsx/.csv
+# often holds free-form business context (a glossary, a data dictionary, SME notes) that should
+# be distilled / decomposed like any other document. Clean structured ENTRIES still go through
+# the .yaml/.json lane. The sheet is serialized to text (_cc_tabular_to_text) before the AI call.
+_CC_TABULAR_EXTS = {"csv", "xlsx", "xls"}
 _CC_SAFE_FILE_RE = re.compile(r"[^A-Za-z0-9._-]+")
+
+
+def _cc_tabular_to_text(raw: bytes, ext: str) -> str:
+    """Render an uploaded spreadsheet (.xlsx/.csv) as readable text so the AI context lane
+    (distill / decompose) can treat it like any other document. One line per row of
+    'header: value' pairs (blanks skipped); a leading column list gives the model the schema."""
+    rows = _parse_structured_rows(raw, ext)
+    if not rows:
+        return ""
+    headers = list(rows[0].keys())
+    lines = []
+    if headers:
+        lines.append("Columns: " + ", ".join(h for h in headers if h))
+    for r in rows:
+        parts = [f"{k}: {r[k]}" for k in headers if (r.get(k) or "").strip()]
+        if parts:
+            lines.append(" | ".join(parts))
+    return "\n".join(lines)
 
 
 def _cc_ingest_entries(entries):
@@ -16987,13 +17010,15 @@ def upload_customer_context(file: UploadFile = File(...),
         return {"uploaded": len(results), "results": results, "lane": "structured"}
 
     # ---- Document lane (free text attached to a scope) ----
-    if ext in _CC_TEXT_EXTS or ext in _CC_BINARY_EXTS:
+    if ext in _CC_TEXT_EXTS or ext in _CC_BINARY_EXTS or ext in _CC_TABULAR_EXTS:
         if not (scope and scope.strip()) or not scope_type:
             raise HTTPException(400, detail="A document upload needs a target 'scope' and 'scope_type'")
         if scope_type not in _CC_VALID_TYPES:
             raise HTTPException(400, detail=f"scope_type must be one of {_CC_VALID_TYPES}")
         if ext in _CC_BINARY_EXTS:
             text = _cc_parse_binary_to_text(raw, ext, filename)
+        elif ext in _CC_TABULAR_EXTS:
+            text = _cc_tabular_to_text(raw, ext)
         else:
             text = raw.decode("utf-8", errors="replace")
         context_text, key_objects, method = _cc_distill_text(text)
@@ -17016,7 +17041,7 @@ def upload_customer_context(file: UploadFile = File(...),
             result["key_objects"] = key_objects
         return {"uploaded": 1, "results": [result], "lane": "document"}
 
-    raise HTTPException(400, detail=f"Unsupported file type '.{ext}'. Use .yaml/.yml/.json/.txt/.md/.pdf/.docx")
+    raise HTTPException(400, detail=f"Unsupported file type '.{ext}'. Use .yaml/.yml/.json/.txt/.md/.pdf/.docx/.csv/.xlsx")
 
 
 @app.get("/api/customer-context/resolve/{full_table_name:path}")
@@ -17201,12 +17226,13 @@ def decompose_customer_context(file: UploadFile = File(...),
 
     filename = file.filename or ""
     ext = filename.rsplit(".", 1)[-1].lower() if "." in filename else ""
-    if ext not in _CC_TEXT_EXTS and ext not in _CC_BINARY_EXTS:
+    if ext not in _CC_TEXT_EXTS and ext not in _CC_BINARY_EXTS and ext not in _CC_TABULAR_EXTS:
         raise HTTPException(400, detail=(
-            f"Decompose accepts documents (.txt/.md/.pdf/.docx). For already-structured "
-            f"data use the YAML/JSON upload. Got '.{ext}'."))
+            f"Decompose accepts documents (.txt/.md/.pdf/.docx) and spreadsheets (.csv/.xlsx). "
+            f"For already-structured context entries use the YAML/JSON upload. Got '.{ext}'."))
     raw = file.file.read()
     text = (_cc_parse_binary_to_text(raw, ext, filename) if ext in _CC_BINARY_EXTS
+            else _cc_tabular_to_text(raw, ext) if ext in _CC_TABULAR_EXTS
             else raw.decode("utf-8", errors="replace"))
     if not text.strip():
         raise HTTPException(400, detail="No text could be extracted from the document")
@@ -17337,9 +17363,37 @@ def _ensure_customer_overrides_table():
     """, timeout=30)
 
 
-def _parse_tabular_file(raw: bytes, ext: str):
-    """Parse an uploaded .xlsx/.csv into a list of dicts keyed by lowercased header.
-    Shared by the acronym and description uploads so the column-mapping lane is identical."""
+# Wrapper keys a structured .json/.yaml may nest its row list under (first match wins).
+_STRUCT_LIST_KEYS = ("rows", "data", "items", "records", "entries",
+                     "acronyms", "overrides", "descriptions", "contexts")
+
+
+def _normalize_struct_rows(data):
+    """Coerce parsed JSON/YAML into a list of dicts keyed by lowercased header, matching the
+    xlsx/csv row shape so the tolerant column mapping (_pick) is identical for every format.
+    Accepts a bare list, an object nesting a list under a common key, or a single record."""
+    if isinstance(data, dict):
+        for k in _STRUCT_LIST_KEYS:
+            if isinstance(data.get(k), list):
+                data = data[k]
+                break
+        else:
+            data = [data] if data else []
+    if not isinstance(data, list):
+        raise HTTPException(400, detail="Expected a list of objects (or an object containing one).")
+    out = []
+    for item in data:
+        if not isinstance(item, dict):
+            continue
+        out.append({str(k).strip().lower(): ("" if v is None else str(v).strip())
+                    for k, v in item.items()})
+    return out
+
+
+def _parse_structured_rows(raw: bytes, ext: str):
+    """Parse an uploaded .xlsx/.csv/.json/.yaml into a list of dicts keyed by lowercased header.
+    Shared by the acronym and description uploads so the column-mapping lane is identical across
+    every structured format (the data just has to be tabular/record-shaped)."""
     ext = ext.lower()
     if ext in ("xlsx", "xls"):
         import openpyxl
@@ -17373,7 +17427,21 @@ def _parse_tabular_file(raw: bytes, ext: str):
             {(k or "").strip().lower(): ("" if v is None else str(v).strip()) for k, v in r.items()}
             for r in reader
         ]
-    raise HTTPException(400, detail=f"Unsupported file type '.{ext}'. Use .xlsx or .csv")
+    if ext == "json":
+        import json as _json
+        try:
+            data = _json.loads(raw.decode("utf-8"))
+        except Exception as exc:
+            raise HTTPException(400, detail=f"Invalid JSON: {exc}")
+        return _normalize_struct_rows(data)
+    if ext in ("yaml", "yml"):
+        import yaml as _yaml
+        try:
+            data = _yaml.safe_load(raw.decode("utf-8"))
+        except Exception as exc:
+            raise HTTPException(400, detail=f"Invalid YAML: {exc}")
+        return _normalize_struct_rows(data)
+    raise HTTPException(400, detail=f"Unsupported file type '.{ext}'. Use .xlsx, .csv, .json, or .yaml")
 
 
 def _pick(row: dict, names) -> str:
@@ -17513,16 +17581,17 @@ def delete_customer_acronym(acronym_id: str):
 def upload_customer_acronyms(file: UploadFile = File(...),
                              scope: str = Form(None),
                              scope_type: str = Form("schema")):
-    """Ingest acronyms from .xlsx/.csv. Tolerant column mapping (Abbreviation/Current
-    Abbreviation/Acronym; Expansion/Stands For/Meaning; Notes/What does it do?/Type of
-    Entity). scope defaults to this app's catalog or schema per scope_type."""
+    """Ingest acronyms from .xlsx/.csv/.json/.yaml (any structured/record-shaped file). Tolerant
+    column mapping (Abbreviation/Current Abbreviation/Acronym; Expansion/Stands For/Meaning;
+    Notes/What does it do?/Type of Entity). scope defaults to this app's catalog or schema per
+    scope_type."""
     _ensure_customer_acronyms_table()
     ext = (file.filename or "").rsplit(".", 1)[-1].lower() if "." in (file.filename or "") else ""
     if scope_type not in _ACRO_SCOPE_TYPES:
         raise HTTPException(400, detail=f"scope_type must be one of {_ACRO_SCOPE_TYPES}")
     eff_scope = (scope or "").strip() or (CATALOG if scope_type == "catalog" else f"{CATALOG}.{SCHEMA}")
     _validate_acro_scope(eff_scope, scope_type)
-    rows = _parse_tabular_file(file.file.read(), ext)
+    rows = _parse_structured_rows(file.file.read(), ext)
     _require_columns(rows, [_ACRO_ABBR_COLS, _ACRO_EXP_COLS], "acronyms")
     results, errors, skipped = [], [], []
     for r in rows:
@@ -17621,16 +17690,17 @@ def upload_customer_overrides(file: UploadFile = File(...),
                               catalog_name: str = Form(None),
                               schema_name: str = Form(None),
                               table_name: str = Form("")):
-    """Ingest column descriptions from .xlsx/.csv as verbatim comment overrides. Tolerant
-    column mapping (Table/Table_Name; Column/Column_Name; Comment/Description). catalog/schema
-    default to this app's; per-row Table_Name wins over the form default (blank = schema-wide)."""
+    """Ingest column descriptions from .xlsx/.csv/.json/.yaml as verbatim comment overrides.
+    Tolerant column mapping (Table/Table_Name; Column/Column_Name; Comment/Description).
+    catalog/schema default to this app's; per-row Table_Name wins over the form default
+    (blank = schema-wide)."""
     _ensure_customer_overrides_table()
     ext = (file.filename or "").rsplit(".", 1)[-1].lower() if "." in (file.filename or "") else ""
     cat = (catalog_name or "").strip() or CATALOG
     sch = (schema_name or "").strip() or SCHEMA
     _validate_identifier(cat, "catalog")
     _validate_identifier(sch, "schema")
-    rows = _parse_tabular_file(file.file.read(), ext)
+    rows = _parse_structured_rows(file.file.read(), ext)
     _require_columns(rows, [_OVR_COL_COLS, _OVR_COMMENT_COLS], "descriptions")
     results, errors, skipped = [], [], []
     for r in rows:

@@ -11,7 +11,10 @@ const MAX_WORDS = 500
 function wordCount(text) { return text ? text.trim().split(/\s+/).filter(Boolean).length : 0 }
 
 // Document lane (#249): these need a target scope; structured .yaml/.json carry their own.
-const DOC_EXTS = ['txt', 'md', 'markdown', 'pdf', 'docx', 'pptx']
+// Document lane (#249) = the AI ingestion path (split/decompose or single-scope distill).
+// Spreadsheets (.csv/.xlsx) join it: they carry free-form business context, not clean entries.
+// Structured .yaml/.json carry their own scope and are parsed deterministically instead.
+const DOC_EXTS = ['txt', 'md', 'markdown', 'pdf', 'docx', 'pptx', 'csv', 'xlsx', 'xls']
 function isDocFile(name) {
   const ext = (name || '').split('.').pop().toLowerCase()
   return DOC_EXTS.includes(ext)
@@ -273,11 +276,12 @@ function ContextManager() {
             <label className="text-sm font-medium text-slate-700 dark:text-slate-300">Add context from a file</label>
             <p className="text-xs text-slate-500 dark:text-slate-400 mt-0.5">
               Pick a file. A structured <code>.yaml</code>/<code>.json</code> (a <code>contexts</code> list) is parsed
-              straight into entries. A document (<code>.txt</code>, <code>.md</code>, <code>.pdf</code>, <code>.docx</code>)
-              can be <strong>split across the tables it describes</strong> or <strong>attached whole to one scope</strong>
+              straight into entries. A document or spreadsheet (<code>.txt</code>, <code>.md</code>, <code>.pdf</code>,
+              <code>.docx</code>, <code>.csv</code>, <code>.xlsx</code>) carries free-form business context and can be
+              <strong> split across the tables it describes</strong> or <strong>attached whole to one scope</strong>
               &mdash; you&rsquo;ll choose below. (<code>.pdf</code>/<code>.docx</code> need the AI document functions enabled on the SQL warehouse.)
             </p>
-            <input type="file" accept=".yaml,.yml,.json,.txt,.md,.pdf,.docx"
+            <input type="file" accept=".yaml,.yml,.json,.txt,.md,.pdf,.docx,.csv,.xlsx,.xls"
               onChange={e => { setUploadFile(e.target.files[0] || null); setUploadResult(null); setDecResult(null); setError(null) }}
               className="mt-2 block w-full text-sm text-slate-500 file:mr-4 file:py-2 file:px-4 file:rounded-lg file:border-0 file:text-sm file:font-medium file:bg-dbx-lava/10 file:text-dbx-lava hover:file:bg-dbx-lava/20" />
           </div>
@@ -619,8 +623,9 @@ function AcronymsManager() {
         <p className="text-sm text-slate-500 dark:text-slate-400 max-w-2xl">
           Abbreviations the model should expand in descriptions and classifications. Uploaded as a layer
           on top of the built-in global list, scoped to a <strong>schema</strong> or <strong>catalog</strong>;
-          the more-specific scope wins. Upload an <code>.xlsx</code>/<code>.csv</code> with columns like
-          <em> Abbreviation</em> and <em>Stands For</em>, or add one below.
+          the more-specific scope wins. Upload a structured file (<code>.xlsx</code>, <code>.csv</code>,
+          <code> .json</code>, <code>.yaml</code>) with columns/fields like <em>Abbreviation</em> and
+          <em> Stands For</em>, or add one below.
         </p>
         <button onClick={() => setAdding(a => !a)} className="btn-primary btn-sm shrink-0">Add Acronym</button>
       </div>
@@ -633,8 +638,8 @@ function AcronymsManager() {
       )}
 
       <div className="card p-4 space-y-3">
-        <label className="text-sm font-medium text-slate-700 dark:text-slate-300">Upload acronyms (.xlsx / .csv)</label>
-        <input type="file" accept=".xlsx,.xls,.csv" onChange={e => { setFile(e.target.files[0] || null); setUpResult(null); setError(null) }}
+        <label className="text-sm font-medium text-slate-700 dark:text-slate-300">Upload acronyms (.xlsx / .csv / .json / .yaml)</label>
+        <input type="file" accept=".xlsx,.xls,.csv,.json,.yaml,.yml" onChange={e => { setFile(e.target.files[0] || null); setUpResult(null); setError(null) }}
           className="block w-full text-sm text-slate-500 file:mr-4 file:py-2 file:px-4 file:rounded-lg file:border-0 file:text-sm file:font-medium file:bg-dbx-lava/10 file:text-dbx-lava hover:file:bg-dbx-lava/20" />
         <div className="grid grid-cols-2 gap-3">
           <div>
@@ -794,9 +799,10 @@ function OverridesManager() {
       <div className="flex items-start justify-between">
         <p className="text-sm text-slate-500 dark:text-slate-400 max-w-2xl">
           Pre-written column descriptions applied <strong>verbatim</strong> — the model is skipped for these columns.
-          Layered under any <code>metadata_overrides.csv</code> (the file wins on conflict). Upload an
-          <code> .xlsx</code>/<code>.csv</code> with <em>Table_Name</em>, <em>Column_Name</em>, and
-          <em> Description</em> columns, or add one below. Applies to the next <em>descriptions</em> generation run.
+          Layered under any <code>metadata_overrides.csv</code> (the file wins on conflict). Upload a structured
+          file (<code>.xlsx</code>, <code>.csv</code>, <code>.json</code>, <code>.yaml</code>) with
+          <em> Table_Name</em>, <em>Column_Name</em>, and <em>Description</em> columns/fields, or add one below.
+          Applies to the next <em>descriptions</em> generation run.
         </p>
         <button onClick={() => setAdding(a => !a)} className="btn-primary btn-sm shrink-0">Add Description</button>
       </div>
@@ -809,8 +815,8 @@ function OverridesManager() {
       )}
 
       <div className="card p-4 space-y-3">
-        <label className="text-sm font-medium text-slate-700 dark:text-slate-300">Upload descriptions (.xlsx / .csv)</label>
-        <input type="file" accept=".xlsx,.xls,.csv" onChange={e => { setFile(e.target.files[0] || null); setUpResult(null); setError(null) }}
+        <label className="text-sm font-medium text-slate-700 dark:text-slate-300">Upload descriptions (.xlsx / .csv / .json / .yaml)</label>
+        <input type="file" accept=".xlsx,.xls,.csv,.json,.yaml,.yml" onChange={e => { setFile(e.target.files[0] || null); setUpResult(null); setError(null) }}
           className="block w-full text-sm text-slate-500 file:mr-4 file:py-2 file:px-4 file:rounded-lg file:border-0 file:text-sm file:font-medium file:bg-dbx-lava/10 file:text-dbx-lava hover:file:bg-dbx-lava/20" />
         <div className="grid grid-cols-3 gap-3">
           <div>
