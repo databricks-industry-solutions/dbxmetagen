@@ -17124,7 +17124,9 @@ def _cc_ground_tables(catalog: str, schema: Optional[str], table: Optional[str] 
         where += " AND table_schema = :sch"
         params.append(StatementParameterListItem(name="sch", value=schema))
     if table:
-        where += " AND table_name = :tbl"
+        # Case-insensitive: UC stores identifiers lowercased, so an exact match on a
+        # user-typed 'Patients' would spuriously miss and 422 as "table not found".
+        where += " AND LOWER(table_name) = LOWER(:tbl)"
         params.append(StatementParameterListItem(name="tbl", value=table))
     rows = execute_sql(
         f"SELECT table_catalog, table_schema, table_name "
@@ -17220,7 +17222,9 @@ def _cc_validate_decomposed(entries, allowed_tables, catalog, schema, table):
 
     # --- explicit table chosen: pin everything to it ---
     if schema and table:
-        explicit = f"{catalog}.{schema}.{table}"
+        # Prefer the REAL grounded FQN (correct casing from information_schema) over the
+        # user-typed name, so the stored scope matches what generation compares against.
+        explicit = allowed_tables[0] if allowed_tables else f"{catalog}.{schema}.{table}"
         out = []
         for e in entries or []:
             if not isinstance(e, dict):
