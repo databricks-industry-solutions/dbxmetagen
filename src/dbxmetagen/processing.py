@@ -2321,7 +2321,10 @@ def get_domain_classification(
         prompt.enrich_from_knowledge_base()
     if getattr(config, "use_ontology_context", False):
         prompt.enrich_from_ontology()
-    if getattr(config, "use_customer_context", False) and _customer_context_cache:
+    if getattr(config, "use_customer_context", False) and (
+        _customer_context_cache
+        or getattr(config, "customer_context_retrieval", "exact") == "vector"
+    ):
         prompt.enrich_from_customer_context(_customer_context_cache)
     prompt_messages = prompt.create_prompt_template()
 
@@ -2517,7 +2520,10 @@ def get_generated_metadata_data_aware(
             prompt.enrich_from_knowledge_base()
         if getattr(config, "use_ontology_context", False):
             prompt.enrich_from_ontology()
-        if getattr(config, "use_customer_context", False) and _customer_context_cache:
+        if getattr(config, "use_customer_context", False) and (
+            _customer_context_cache
+            or getattr(config, "customer_context_retrieval", "exact") == "vector"
+        ):
             prompt.enrich_from_customer_context(_customer_context_cache)
         prompt_messages = prompt.create_prompt_template()
         check_token_length_against_num_words(prompt_messages, config)
@@ -3599,10 +3605,19 @@ def generate_and_persist_metadata(config: Any) -> None:
 
     global _customer_context_cache
     if getattr(config, "use_customer_context", False):
-        from dbxmetagen.customer_context import prefetch_customer_context
-        _customer_context_cache = prefetch_customer_context(
-            spark, config.catalog_name, config.schema_name
-        )
+        # 'vector' retrieval is the scalable path: it does NOT load the whole table -- it queries
+        # the VS index per table. We prefetch ONLY the small pattern set here (wildcard scopes
+        # can't be an index equality prefilter). 'exact'/'ranked' keep the full in-memory cache.
+        if getattr(config, "customer_context_retrieval", "exact") == "vector":
+            from dbxmetagen.customer_context import prefetch_customer_context_patterns
+            _customer_context_cache = prefetch_customer_context_patterns(
+                spark, config.catalog_name, config.schema_name
+            )
+        else:
+            from dbxmetagen.customer_context import prefetch_customer_context
+            _customer_context_cache = prefetch_customer_context(
+                spark, config.catalog_name, config.schema_name
+            )
     else:
         _customer_context_cache = []
 

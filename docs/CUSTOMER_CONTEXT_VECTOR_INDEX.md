@@ -92,13 +92,40 @@ without coupling to the generation pipeline.
    the same way they already optionally use profiling/lineage context — but now semantically
    retrieved rather than scope-matched only.
 
-5. **Future: an opt-in `vector` retrieval mode for generation.** The generation retrieval seam
-   already exists — `resolve_customer_context(..., mode=, signature=, top_k=)` dispatches on
-   `customer_context_retrieval` (`exact` | `ranked`). A `vector` mode could, **strictly opt-in**,
-   do a scope-filtered ANN query here instead of the lexical thin. It is deliberately **not wired**
-   today, precisely to honor "don't impact generation": adding it would put a per-table VS call on
-   the hot path. If a very large estate ever needs it, it slots in behind the flag without touching
-   callers — the seam and the index are both already in place.
+5. **Scalable `vector` retrieval mode for generation (opt-in).** This is the point of the index:
+   a retrieval path that **scales with the size of the context set**. Set
+   `customer_context_retrieval=vector` (default `exact`). Then, per table being generated:
+
+   ```python
+   WorkspaceClient().vector_search_indexes.query_index(
+       index_name   = f"{catalog}.{schema}.customer_context_vs_index",
+       query_text   = "<table short name> <col1> <col2> ...",   # what is already known
+       query_type   = "HYBRID",                                  # semantic ANN + BM25 keyword
+       columns      = ["context_id","context_text","scope","scope_type","context_label","priority"],
+       num_results  = customer_context_top_k,
+       filters_json = '{"scope": ["cat","cat.sch","cat.sch.tbl"], "active": true}',   # PREFILTER
+   )
+   ```
+
+   - The scope hierarchy is pushed into the index as a **prefilter** (`scope IN [...]`), so the
+     search is confined to this table's scope server-side and **never scans the whole index**.
+   - **HYBRID** ranking catches exact tokens (table/column names, codes, acronyms) via BM25 and
+     meaning via ANN.
+   - **Wildcard (`pattern`) scopes** can't be an equality prefilter, so the few pattern rows are
+     prefetched once (small, bounded) and merged in — the hierarchy stays complete.
+   - **No whole-table load.** In `vector` mode the run prefetches **only** the pattern rows, not
+     the entire `customer_context` table — the memory/scan bottleneck of `exact`/`ranked` is gone.
+   - **Fail-open, two triggers:** if the flag is `exact`/`ranked` → the in-memory path (unchanged);
+     if the flag is `vector` **but the index is unavailable** (missing / not-ready / error) → a
+     **bounded** per-table SQL read (`scope IN (...) OR scope_type='pattern'`) resolved the normal
+     way. A VS problem can never stall or break a generation run.
+   - Results flow through the **same** budget/ordering (`_truncate_preserving_specificity`) as every
+     other mode — only *retrieval* changed, not *injection*.
+
+   Default runs (`exact`/`ranked`) are byte-for-byte unchanged and never touch Vector Search. The
+   seam is `prompts.py:enrich_from_customer_context` → `customer_context.resolve_customer_context_vector`.
+   A future per-run UI checkbox (vs the deploy-level `customer_context_retrieval` var) can toggle it
+   per generation run by threading the mode as a job parameter.
 
 In every case the index is **read** downstream; it is **built/synced only** from the app's explicit
 action (or a future scheduled job mirroring the governed-tags pattern). Generation remains a pure

@@ -377,7 +377,7 @@ variables:
     description: "When true, enrich prompts with customer-provided context from the customer_context Delta table. Context is scoped hierarchically (catalog > schema > pattern > table). Requires the customer_context table to exist (seed from YAML or create via the app)."
     default: false
   customer_context_retrieval:
-    description: "How in-scope customer context is selected for a table. 'exact' (default): keep the historical hierarchical concat of ALL matching entries up to the budget. 'ranked': within the SAME scope filter, thin a crowded scope to the entries most lexically relevant to the table (name + columns), always keeping catalog-level directives. Hierarchy is the hard filter in both."
+    description: "How in-scope customer context is selected for a table. 'exact' (default): historical hierarchical concat of ALL matching entries up to the budget (in-memory). 'ranked': within the SAME scope filter, thin a crowded scope to the entries most lexically relevant to the table (in-memory). 'vector' (opt-in, SCALABLE): per-table scope-PREFILTERED HYBRID Vector Search against customer_context_vs_index — does NOT load the whole table into memory; falls back to a bounded per-table SQL read if the index is unavailable. Requires enable_context_vector_index + a built index (app: Customer Context → Sync to vector index), and the run principal to read the index. Hierarchy is the hard filter in all three."
     default: exact
   customer_context_top_k:
     description: "In 'ranked' retrieval, the max number of in-scope context entries kept for a table (catalog-level directives are always kept on top of this)."

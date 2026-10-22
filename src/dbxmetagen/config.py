@@ -269,10 +269,13 @@ class MetadataConfig:
         self.use_customer_context = _parse_bool(
             getattr(self, "use_customer_context", False)
         )
-        # Customer-context retrieval mode: 'exact' (default, historical) or 'ranked' (lexical
-        # relevance within the same scope filter). See customer_context.resolve_customer_context.
+        # Customer-context retrieval mode: 'exact' (default, historical), 'ranked' (lexical
+        # relevance within the same scope filter), or 'vector' (opt-in, scalable: per-table
+        # scope-prefiltered HYBRID Vector Search against customer_context_vs_index, no in-memory
+        # load of the whole table; falls back to a bounded SQL read if the index is unavailable).
+        # See customer_context.resolve_customer_context / resolve_customer_context_vector.
         _cc_retr = str(getattr(self, "customer_context_retrieval", "exact") or "exact").strip().lower()
-        self.customer_context_retrieval = _cc_retr if _cc_retr in ("exact", "ranked") else "exact"
+        self.customer_context_retrieval = _cc_retr if _cc_retr in ("exact", "ranked", "vector") else "exact"
         try:
             self.customer_context_top_k = int(getattr(self, "customer_context_top_k", 8))
         except (TypeError, ValueError):

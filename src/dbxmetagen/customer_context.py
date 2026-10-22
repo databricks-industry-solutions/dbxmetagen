@@ -8,7 +8,9 @@ per run, 0 per table).
 from __future__ import annotations
 
 import hashlib
+import json
 import logging
+import os
 import re
 from datetime import datetime, timezone
 from fnmatch import fnmatch
@@ -18,6 +20,10 @@ from typing import Any, Dict, List, Optional, Tuple
 import yaml
 
 logger = logging.getLogger(__name__)
+
+# Opt-in 'vector' retrieval reads this Delta-Sync index (built by the app). Suffix is
+# single-sourced with the app via the same env var so both agree on the name.
+VS_INDEX_SUFFIX = os.environ.get("CONTEXT_VECTOR_INDEX", "customer_context_vs_index")
 
 # Per-entry cap: the max words a SINGLE context entry may hold. Enforced at seed time
 # (validate_context_text) and on upload (the app mirrors this). MAX_WORDS kept as a
@@ -294,6 +300,167 @@ def resolve_customer_context(
             " (most-specific entry partially kept)" if partial is not None else "",
         )
     return text
+
+
+# ---------------------------------------------------------------------------
+# Opt-in 'vector' retrieval (scalable): per-table scope-prefiltered HYBRID Vector Search.
+#
+# Instead of loading the whole customer_context table into memory and scanning it per table,
+# `vector` mode queries the customer_context_vs_index for JUST this table -- with the scope
+# hierarchy pushed into the index as a PREFILTER so the search never scans out-of-scope rows,
+# and HYBRID (semantic ANN + BM25 keyword) ranking so exact tokens (table/column names, codes)
+# are caught alongside meaning. Pattern-scoped entries (wildcards, not an equality IN) are few
+# and are supplied from a small prefetched pattern cache. Everything then flows through the SAME
+# `_truncate_preserving_specificity` budget/ordering as every other mode.
+#
+# FAIL-OPEN: any failure (index missing/not-ready, VS error, empty result) raises so the caller
+# falls back to a BOUNDED per-table SQL read -- never the whole-table load, and never a broken run.
+# ---------------------------------------------------------------------------
+
+_CC_VS_COLUMNS = ["context_id", "context_text", "scope", "scope_type", "context_label", "priority"]
+
+
+def context_vs_index_name(catalog: str, schema: str) -> str:
+    return f"{catalog}.{schema}.{VS_INDEX_SUFFIX}"
+
+
+def _exact_scopes(full_table_name: str) -> List[str]:
+    """The hierarchy scopes expressible as equality for a table: catalog, catalog.schema, table."""
+    parts = full_table_name.split(".")
+    scopes: List[str] = []
+    if len(parts) >= 1 and parts[0]:
+        scopes.append(parts[0])
+    if len(parts) >= 2 and parts[1]:
+        scopes.append(f"{parts[0]}.{parts[1]}")
+    if len(parts) >= 3 and parts[2]:
+        scopes.append(full_table_name)
+    return scopes
+
+
+def prefetch_customer_context_patterns(spark: Any, catalog: str, schema: str) -> List[Dict[str, Any]]:
+    """Load ONLY pattern-scoped active rows (small, bounded). Used by 'vector' mode so wildcard
+    scopes -- which can't be an equality prefilter -- are still honored without loading the table."""
+    fq = f"{catalog}.{schema}.customer_context"
+    try:
+        rows = spark.sql(
+            f"SELECT scope, scope_type, context_text, context_label, priority "
+            f"FROM {fq} WHERE active = TRUE AND scope_type = 'pattern'"
+        ).collect()
+        return [row.asDict() for row in rows]
+    except Exception as exc:
+        logger.warning("pattern-context prefetch failed (%s: %s); patterns omitted in vector mode",
+                       type(exc).__name__, exc)
+        return []
+
+
+def _query_context_vs_index(
+    catalog: str, schema: str, full_table_name: str, signature: str, top_k: int,
+) -> List[Dict[str, Any]]:
+    """Scope-prefiltered HYBRID query against the context VS index. Returns row dicts (the
+    requested columns only). Raises on any failure so the caller can fall back."""
+    from databricks.sdk import WorkspaceClient
+
+    idx = context_vs_index_name(catalog, schema)
+    scopes = _exact_scopes(full_table_name)
+    if not scopes:
+        return []
+    filters = json.dumps({"scope": scopes, "active": True})
+    w = WorkspaceClient()
+    resp = w.vector_search_indexes.query_index(
+        index_name=idx,
+        columns=_CC_VS_COLUMNS,
+        query_text=signature or full_table_name,
+        query_type="HYBRID",
+        num_results=max(int(top_k or 8), 1),
+        filters_json=filters,
+    )
+    # Map data_array rows to dicts via the manifest column names (a trailing score column is
+    # ignored by keying on the names we asked for).
+    col_names: List[str] = []
+    try:
+        col_names = [c.name for c in resp.manifest.columns]  # type: ignore[attr-defined]
+    except Exception:
+        col_names = list(_CC_VS_COLUMNS)
+    data = []
+    try:
+        data = resp.result.data_array or []  # type: ignore[attr-defined]
+    except Exception:
+        data = []
+    out: List[Dict[str, Any]] = []
+    for row in data:
+        d = dict(zip(col_names, row))
+        out.append({k: d.get(k) for k in _CC_VS_COLUMNS})
+    return out
+
+
+def _dedupe_rows(rows: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
+    seen = set()
+    uniq = []
+    for r in rows:
+        key = (r.get("scope"), r.get("scope_type"), r.get("context_text"))
+        if key in seen:
+            continue
+        seen.add(key)
+        uniq.append(r)
+    return uniq
+
+
+def resolve_customer_context_vector(
+    spark: Any,
+    catalog: str,
+    schema: str,
+    full_table_name: str,
+    signature: str,
+    top_k: int = 8,
+    max_words: int = MAX_TOTAL_WORDS,
+    pattern_cache: Optional[List[Dict[str, Any]]] = None,
+) -> str:
+    """Opt-in scalable retrieval. Tries the scope-prefiltered HYBRID VS query (+ matching
+    patterns from ``pattern_cache``); on ANY failure falls back to a BOUNDED per-table SQL read.
+    Never loads the whole customer_context table. Result is budgeted/ordered identically to the
+    other modes, so only retrieval differs."""
+    pattern_matches = _match_rows(pattern_cache or [], full_table_name)
+    try:
+        vs_rows = _query_context_vs_index(catalog, schema, full_table_name, signature, top_k)
+        matches = _dedupe_rows(list(vs_rows) + list(pattern_matches))
+        source = "vector"
+    except Exception as exc:
+        logger.warning(
+            "customer_context vector retrieval unavailable for %s (%s: %s); "
+            "falling back to a bounded scope-filtered read.",
+            full_table_name, type(exc).__name__, exc,
+        )
+        matches = _match_rows(_bounded_context_read(spark, catalog, schema, full_table_name),
+                              full_table_name)
+        source = "fallback"
+    if not matches:
+        return ""
+    text, dropped, partial = _truncate_preserving_specificity(matches, max_words)
+    if dropped or partial is not None:
+        logger.info("customer_context[%s] budget trimmed for %s (kept %d words).",
+                    source, full_table_name, len(text.split()))
+    return text
+
+
+def _bounded_context_read(
+    spark: Any, catalog: str, schema: str, full_table_name: str
+) -> List[Dict[str, Any]]:
+    """Fallback for vector mode: read ONLY the rows that could match this table -- the exact
+    hierarchy scopes plus all (few) patterns -- never the whole table. Scope values are UC
+    identifiers; quote-escaped for safe interpolation."""
+    fq = f"{catalog}.{schema}.customer_context"
+    scopes = _exact_scopes(full_table_name)
+    in_list = ", ".join("'" + s.replace("'", "''") + "'" for s in scopes) or "''"
+    try:
+        rows = spark.sql(
+            f"SELECT scope, scope_type, context_text, context_label, priority FROM {fq} "
+            f"WHERE active = TRUE AND (scope IN ({in_list}) OR scope_type = 'pattern')"
+        ).collect()
+        return [row.asDict() for row in rows]
+    except Exception as exc:
+        logger.warning("bounded context read failed for %s (%s: %s)",
+                       full_table_name, type(exc).__name__, exc)
+        return []
 
 
 def seed_customer_context_table(
