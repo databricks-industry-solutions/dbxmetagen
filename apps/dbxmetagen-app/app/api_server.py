@@ -17110,15 +17110,22 @@ _CC_DECOMPOSE_MAX_ENTRIES = 200    # defensive cap on what one document can prod
 _CC_DECOMPOSE_WORDS = 150          # per-entry word cap for decomposed pieces (tighter than 500)
 
 
-def _cc_ground_tables(catalog: str, schema: Optional[str]) -> list[str]:
+def _cc_ground_tables(catalog: str, schema: Optional[str], table: Optional[str] = None) -> list[str]:
     """Fetch real fully-qualified table names under catalog[.schema] -- the ONLY
     scopes a decomposed entry may target at table level. Capped; an over-cap result
-    signals the caller to narrow to a schema (raised as 422 by the endpoint)."""
+    signals the caller to narrow to a schema (raised as 422 by the endpoint).
+
+    When ``table`` is given, this is CONSTRAINED to exactly that table -- the user made an
+    explicit choice, so the grounding list (and therefore every table the model may target)
+    is just that one table. An empty result then means the table does not exist."""
     params = [StatementParameterListItem(name="cat", value=catalog)]
     where = "table_catalog = :cat AND table_schema NOT IN ('information_schema')"
     if schema:
         where += " AND table_schema = :sch"
         params.append(StatementParameterListItem(name="sch", value=schema))
+    if table:
+        where += " AND table_name = :tbl"
+        params.append(StatementParameterListItem(name="tbl", value=table))
     rows = execute_sql(
         f"SELECT table_catalog, table_schema, table_name "
         f"FROM system.information_schema.tables WHERE {where} "
@@ -17129,9 +17136,13 @@ def _cc_ground_tables(catalog: str, schema: Optional[str]) -> list[str]:
 
 
 def _cc_build_decompose_prompt(text, scope_description, allowed_tables, catalog,
-                               schema, has_embedded_scope):
+                               schema, has_embedded_scope, table=None):
     """Pure builder for the decomposition prompt. Grounds the model in the real
-    table list and the caller's scope description; forbids inventing names."""
+    table list and the caller's scope description; forbids inventing names.
+
+    When ``table`` is set, the caller explicitly scoped this document to ONE table, so the
+    prompt pins every piece to that table -- the model must not place anything on a sibling
+    table, the schema, or the catalog."""
     allowed_block = "\n".join(f"  - {t}" for t in allowed_tables) or "  (none listed)"
     schema_scope = f"{catalog}.{schema}" if schema else "(schema not fixed)"
     embedded = ("The document itself references specific catalogs/schemas/tables/columns -- "
@@ -17139,6 +17150,28 @@ def _cc_build_decompose_prompt(text, scope_description, allowed_tables, catalog,
                 if has_embedded_scope else
                 "The document does NOT clearly name its target objects -- rely on the "
                 "caller's scope description and the term/table names to place each piece.")
+
+    if table:
+        target = f"{catalog}.{schema}.{table}"
+        return (
+            "You are organizing a customer's business glossary / data documentation into "
+            "scoped metadata-generation context. The caller has EXPLICITLY scoped this entire "
+            f"document to a single table: {target}.\n\n"
+            f"Caller's scope description of this document:\n{scope_description}\n\n"
+            "Split the DOCUMENT into small, self-contained context entries. "
+            "RULES:\n"
+            f"1. EVERY entry MUST use scope_type 'table' and target_scope '{target}'. Do NOT "
+            "assign any piece to a different table, to the schema, or to the catalog -- the user "
+            "chose this table deliberately.\n"
+            "2. Omit any piece that is clearly not relevant to this table rather than retargeting it.\n"
+            "3. Keep each context_text concise (< 120 words), factual, and standalone.\n"
+            "4. Set confidence 0.0-1.0 for how well the piece applies to this table.\n\n"
+            "Return JSON of the form: "
+            '{"entries":[{"context_text":"...","target_scope":"' + target + '","scope_type":"table",'
+            '"confidence":0.0,"reason":"..."}]}\n\n'
+            f"DOCUMENT:\n{text}"
+        )
+
     return (
         "You are organizing a customer's business glossary / data documentation into "
         "scoped metadata-generation context. Split the DOCUMENT into small, self-contained "
@@ -17168,11 +17201,44 @@ def _cc_validate_decomposed(entries, allowed_tables, catalog, schema, table):
     real scope: a table target must be in allowed_tables (case-insensitive); schema/catalog
     targets must match the caller's; anything else is coerced to the most-specific scope the
     caller supplied (table > schema > catalog). Returns normalized dicts with a `coerced` flag.
+
+    EXPLICIT-TABLE OVERRIDE: when the caller chose a specific ``table``, that choice is
+    authoritative -- EVERY entry is pinned to that table regardless of what the model proposed
+    (a piece the model tried to place elsewhere is flagged ``coerced``). This prevents the
+    decomposition from wandering to a sibling table or to the schema/catalog when the user
+    deliberately scoped the document to one table.
     """
+    def _clip(ctext):
+        words = ctext.split()
+        return " ".join(words[:_CC_DECOMPOSE_WORDS]) if len(words) > _CC_DECOMPOSE_WORDS else ctext
+
+    def _conf(e):
+        try:
+            return float(e.get("confidence")) if e.get("confidence") is not None else None
+        except (TypeError, ValueError):
+            return None
+
+    # --- explicit table chosen: pin everything to it ---
+    if schema and table:
+        explicit = f"{catalog}.{schema}.{table}"
+        out = []
+        for e in entries or []:
+            if not isinstance(e, dict):
+                continue
+            ctext = (e.get("context_text") or "").strip()
+            if not ctext:
+                continue
+            tgt = (e.get("target_scope") or "").strip()
+            coerced = bool(tgt) and tgt.lower() != explicit.lower()
+            out.append({"context_text": _clip(ctext), "scope": explicit, "scope_type": "table",
+                        "confidence": _conf(e), "coerced": coerced,
+                        "reason": (e.get("reason") or "")[:200]})
+        return out[:_CC_DECOMPOSE_MAX_ENTRIES]
+
+    # --- no explicit table: snap to allowed table / schema / catalog, else coerce to fallback ---
     allowed_lc = {t.lower(): t for t in allowed_tables}
     fallback_scope, fallback_type = (
-        (f"{catalog}.{schema}.{table}", "table") if (schema and table)
-        else (f"{catalog}.{schema}", "schema") if schema
+        (f"{catalog}.{schema}", "schema") if schema
         else (catalog, "catalog")
     )
     schema_scope = f"{catalog}.{schema}" if schema else None
@@ -17185,10 +17251,6 @@ def _cc_validate_decomposed(entries, allowed_tables, catalog, schema, table):
             continue
         stype = (e.get("scope_type") or "").strip().lower()
         tgt = (e.get("target_scope") or "").strip()
-        try:
-            conf = float(e.get("confidence")) if e.get("confidence") is not None else None
-        except (TypeError, ValueError):
-            conf = None
         coerced = False
         if stype == "table" and tgt.lower() in allowed_lc:
             scope, scope_type = allowed_lc[tgt.lower()], "table"
@@ -17198,11 +17260,8 @@ def _cc_validate_decomposed(entries, allowed_tables, catalog, schema, table):
             scope, scope_type = schema_scope, "schema"
         else:
             scope, scope_type, coerced = fallback_scope, fallback_type, True
-        words = ctext.split()
-        if len(words) > _CC_DECOMPOSE_WORDS:
-            ctext = " ".join(words[:_CC_DECOMPOSE_WORDS])
-        out.append({"context_text": ctext, "scope": scope, "scope_type": scope_type,
-                    "confidence": conf, "coerced": coerced,
+        out.append({"context_text": _clip(ctext), "scope": scope, "scope_type": scope_type,
+                    "confidence": _conf(e), "coerced": coerced,
                     "reason": (e.get("reason") or "")[:200]})
     return out[:_CC_DECOMPOSE_MAX_ENTRIES]
 
@@ -17249,7 +17308,13 @@ def decompose_customer_context(file: UploadFile = File(...),
         raise HTTPException(400, detail="No text could be extracted from the document")
 
     # --- ground against real tables; force narrowing if the surface is too large ---
-    allowed = _cc_ground_tables(catalog, schema)
+    # When the caller chose a table, grounding is constrained to exactly that table, so the
+    # decomposition can never wander to a sibling table (the user's explicit choice wins).
+    allowed = _cc_ground_tables(catalog, schema, table)
+    if table and not allowed:
+        raise HTTPException(422, detail=(
+            f"Table '{catalog}.{schema}.{table}' was not found. Check the name, or scope to the "
+            f"schema (leave Table blank) to let the document be split across its tables."))
     if len(allowed) > _CC_DECOMPOSE_MAX_TABLES:
         raise HTTPException(422, detail=(
             f"{catalog}{'.' + schema if schema else ''} has more than "
@@ -17258,7 +17323,7 @@ def decompose_customer_context(file: UploadFile = File(...),
 
     # --- one grounded ai_query decomposition; robust to per-call failure ---
     prompt = _cc_build_decompose_prompt(text[:100000], scope_description, allowed,
-                                        catalog, schema, has_embedded_scope)
+                                        catalog, schema, has_embedded_scope, table)
     endpoint = _safe_model_endpoint(os.environ.get("LLM_MODEL"))
     # Plain AI_QUERY (NO responseFormat -- not all model endpoints support structured JSON mode);
     # the prompt asks for JSON and we parse it from the text. failOnError => false returns

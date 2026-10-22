@@ -322,7 +322,7 @@ function ContextManager() {
                 <label className="flex items-start gap-2 text-sm text-slate-600 dark:text-slate-300 cursor-pointer">
                   <input type="radio" name="docmode" className="mt-1" checked={docMode === 'split'} onChange={() => setDocMode('split')} />
                   <span><strong>Split across the tables it describes</strong> <span className="text-slate-400">(recommended for a glossary / data dictionary / spec)</span><br />
-                    <span className="text-xs text-slate-500 dark:text-slate-400">Each piece is auto-assigned to a <strong>real table</strong> under the catalog/schema you pick &mdash; names are validated (invented tables are never used), and unplaceable pieces fall back to your scope.</span></span>
+                    <span className="text-xs text-slate-500 dark:text-slate-400">Each piece is auto-assigned to a <strong>real table</strong> under the catalog/schema you pick &mdash; names are validated (invented tables are never used), and unplaceable pieces fall back to your scope. <strong>Leave Table blank</strong> to let pieces spread across the schema; <strong>set Table</strong> to pin <em>every</em> piece to that one table.</span></span>
                 </label>
                 <label className="flex items-start gap-2 text-sm text-slate-600 dark:text-slate-300 cursor-pointer">
                   <input type="radio" name="docmode" className="mt-1" checked={docMode === 'single'} onChange={() => setDocMode('single')} />
@@ -351,7 +351,7 @@ function ContextManager() {
                     </div>
                     <div>
                       <label className="block text-sm font-medium text-slate-600 dark:text-slate-300 mb-1">Table</label>
-                      <input value={dec.table} onChange={e => setDec(d => ({ ...d, table: e.target.value }))} placeholder="(optional)"
+                      <input value={dec.table} onChange={e => setDec(d => ({ ...d, table: e.target.value }))} placeholder="(optional — pins all to this table)"
                         className="w-full px-3 py-2 rounded-lg border border-slate-300 dark:border-dbx-navy-400 bg-white dark:bg-dbx-navy-600 text-sm" />
                     </div>
                   </div>
