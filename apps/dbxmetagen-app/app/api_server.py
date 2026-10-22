@@ -16545,6 +16545,13 @@ class CustomerContextRequest(BaseModel):
     context_text: str
     context_label: str = ""
     priority: int = 0
+    # Conflict handling when active context already exists at this exact scope.
+    # 'detect' (default) returns a {conflict: true} payload instead of writing, so the UI can
+    # ask the user to 'replace' | 'append' | 'combine'. See upsert_customer_context.
+    on_conflict: str = "detect"
+    # When editing an existing entry, the UI sends its context_id so the row is updated in
+    # place (no conflict check, no new row). A create omits it.
+    context_id: str = ""
 
 
 _CC_TABLE = "customer_context"
@@ -16643,36 +16650,178 @@ def _build_customer_context_upsert(ctx_id, scope, scope_type, context_text,
     return sql, params
 
 
+# Conflict-resolution modes for a scope-keyed context write (manual entry + single-scope
+# document upload). 'detect' never writes on a collision -- it reports it so the UI can ask.
+_CC_CONFLICT_MODES = {"detect", "replace", "append", "combine"}
+
+
+def _cc_scope_id(scope: str) -> str:
+    """Canonical (scope-keyed) context_id. One such row per scope; 'replace'/clean writes use it."""
+    import hashlib
+    return hashlib.sha256(scope.encode()).hexdigest()[:16]
+
+
+def _cc_content_id(scope: str, text: str) -> str:
+    """Content-inclusive context_id (scope + text). Used by 'append'/'combine' and decompose so
+    distinct entries at one scope coexist instead of overwriting each other."""
+    import hashlib
+    return hashlib.sha256(f"{scope}::{text}".encode()).hexdigest()[:16]
+
+
+def _cc_active_at_scope(scope: str, exclude_id: str = "") -> list:
+    """Active context rows at this EXACT scope (string match), optionally excluding one id."""
+    rows = execute_sql(
+        f"SELECT context_id, scope, scope_type, context_text, context_label, priority "
+        f"FROM {fq(_CC_TABLE)} WHERE active = TRUE AND scope = :scope",
+        timeout=30, parameters=[StatementParameterListItem(name="scope", value=scope)],
+    )
+    out = []
+    for r in rows:
+        if exclude_id and r.get("context_id") == exclude_id:
+            continue
+        r["word_count"] = len((r.get("context_text") or "").split())
+        out.append(r)
+    return out
+
+
+def _cc_soft_delete_ids(ids: list, now: str) -> None:
+    """Soft-delete (active=FALSE) the given context_ids so they remain as recoverable history."""
+    for cid in ids:
+        if not cid or not _SAFE_IDENT_RE.match(cid):
+            continue
+        execute_sql(
+            f"UPDATE {fq(_CC_TABLE)} SET active = FALSE, updated_at = CAST(:now AS TIMESTAMP) "
+            f"WHERE context_id = :cid",
+            timeout=30,
+            parameters=[StatementParameterListItem(name="now", value=now),
+                        StatementParameterListItem(name="cid", value=cid)],
+        )
+
+
+def _cc_combine_texts(existing_texts: list, incoming_text: str) -> str:
+    """LLM-merge several context notes for the SAME scope into one coherent, de-duplicated
+    entry. Preserves every distinct fact; invents nothing. Plain AI_QUERY (no responseFormat),
+    reading .result/.errorMessage under failOnError => false (see decompose for the pattern)."""
+    joined = "\n\n---\n\n".join([t for t in existing_texts if (t or "").strip()] + [incoming_text])
+    prompt = (
+        "You are merging several business-context notes that describe the SAME data scope "
+        "(a catalog, schema, or table) into ONE description. Combine them into a single coherent, "
+        "non-redundant description. Preserve every distinct fact, acronym, business rule, and data "
+        "object mentioned in ANY note; drop only exact duplication. Do not invent anything not "
+        f"present in the notes. Keep it under {_CC_MAX_WORDS} words. Return ONLY the merged "
+        f"description as plain prose, with no preamble.\n\nNOTES TO MERGE:\n{joined}"
+    )
+    endpoint = _safe_model_endpoint(os.environ.get("LLM_MODEL"))
+    sql = (
+        "SELECT q.resp.result AS text, q.resp.errorMessage AS error_message "
+        f"FROM (SELECT AI_QUERY('{endpoint}', :prompt, failOnError => false) AS resp) q"
+    )
+    try:
+        rows = execute_sql(sql, timeout=180,
+                           parameters=[StatementParameterListItem(name="prompt", value=prompt[:200000])])
+    except Exception as exc:
+        raise HTTPException(502, detail=f"Combine model call failed: {exc}")
+    row0 = rows[0] if rows else {}
+    if row0.get("error_message"):
+        raise HTTPException(502, detail=f"Combine model call failed: {row0['error_message']}")
+    merged = (row0.get("text") or "").strip()
+    if not merged:
+        raise HTTPException(502, detail="Combine produced no text; try 'append' or 'replace' instead.")
+    # Enforce the per-entry word cap on the merged result (truncate at a word boundary).
+    w = merged.split()
+    if len(w) > _CC_MAX_WORDS:
+        merged = " ".join(w[:_CC_MAX_WORDS])
+    return merged
+
+
+def _cc_write_entry(ctx_id, scope, scope_type, context_text, context_label, priority, now):
+    """Run the bound-parameter MERGE for one entry (shared by every write path)."""
+    sql, params = _build_customer_context_upsert(
+        ctx_id, scope, scope_type, context_text, context_label, priority, now,
+    )
+    # Bound parameters store the value verbatim (stored == sent by construction), so no
+    # per-write round-trip readback guard is needed -- it would just double the warehouse
+    # round-trips for a tripwire that cannot fire. The escaping-regression tripwire lives in
+    # the tests instead: test_29 executes THIS builder against a real warehouse, and test_28
+    # is a negative control that fails if anyone reverts to '' escaping.
+    execute_sql(sql, timeout=30, parameters=params)
+
+
 @app.post("/api/customer-context")
 def upsert_customer_context(req: CustomerContextRequest):
-    """Create or update a customer context entry."""
+    """Create or update a customer context entry, never silently overwriting existing context.
+
+    Editing (req.context_id set) updates that row in place. A create (no context_id) that lands
+    on a scope which already has active context does NOT write under the default
+    on_conflict='detect'; it returns {conflict: true, existing, incoming} so the UI can ask the
+    user to replace / append / combine. The chosen action re-POSTs with on_conflict set:
+      * replace  -- soft-delete all active entries at the scope (kept as history), write new canonical row.
+      * append   -- keep existing, add the new text as its own (content-keyed) row.
+      * combine  -- LLM-merge existing + incoming into one entry; originals kept as inactive history.
+    """
     _ensure_customer_context_table()
     if req.scope_type not in _CC_VALID_TYPES:
         raise HTTPException(400, detail=f"scope_type must be one of {_CC_VALID_TYPES}")
     if not req.scope.strip():
         raise HTTPException(400, detail="scope must be non-empty")
+    on_conflict = (req.on_conflict or "detect").strip().lower()
+    if on_conflict not in _CC_CONFLICT_MODES:
+        raise HTTPException(400, detail=f"on_conflict must be one of {sorted(_CC_CONFLICT_MODES)}")
     words = req.context_text.split()
     if len(words) > _CC_MAX_WORDS:
         raise HTTPException(400, detail=f"context_text exceeds {_CC_MAX_WORDS} word limit ({len(words)} words)")
     if not words:
         raise HTTPException(400, detail="context_text must be non-empty")
 
-    import hashlib
     from datetime import datetime as _dt
-    ctx_id = hashlib.sha256(req.scope.encode()).hexdigest()[:16]
     now = _dt.utcnow().isoformat()
-    sql, params = _build_customer_context_upsert(
-        ctx_id, req.scope, req.scope_type, req.context_text,
-        req.context_label, req.priority, now,
-    )
-    # Bound parameters store the value verbatim (stored == sent by construction), so no
-    # per-write round-trip readback guard is needed -- it would just double the warehouse
-    # round-trips (2N on the bulk YAML-upload path) for a tripwire that cannot fire. The
-    # escaping-regression tripwire lives in the tests instead: test_29 executes THIS builder
-    # against a real warehouse, and test_28 is a negative control that fails if anyone reverts
-    # to '' escaping.
-    execute_sql(sql, timeout=30, parameters=params)
-    return {"context_id": ctx_id, "scope": req.scope, "word_count": len(words)}
+
+    # --- Edit in place: update exactly the targeted row, no conflict logic. ---
+    if req.context_id:
+        if not _SAFE_IDENT_RE.match(req.context_id):
+            raise HTTPException(400, detail="Invalid context_id")
+        _cc_write_entry(req.context_id, req.scope, req.scope_type, req.context_text,
+                        req.context_label, req.priority, now)
+        return {"context_id": req.context_id, "scope": req.scope,
+                "word_count": len(words), "resolution": "edit"}
+
+    # --- Create: detect a collision with any active context already at this scope. ---
+    existing = _cc_active_at_scope(req.scope)
+    if existing and on_conflict == "detect":
+        return {
+            "conflict": True, "scope": req.scope, "scope_type": req.scope_type,
+            "incoming": {"context_text": req.context_text,
+                         "context_label": req.context_label, "word_count": len(words)},
+            "existing": [{"context_id": e["context_id"], "context_text": e["context_text"],
+                          "context_label": e.get("context_label") or "",
+                          "word_count": e["word_count"]} for e in existing],
+        }
+
+    if not existing or on_conflict == "replace":
+        # Clean scope, or user chose replace: soft-delete anything active here, write canonical row.
+        if existing:
+            _cc_soft_delete_ids([e["context_id"] for e in existing], now)
+        ctx_id = _cc_scope_id(req.scope)
+        _cc_write_entry(ctx_id, req.scope, req.scope_type, req.context_text,
+                        req.context_label, req.priority, now)
+        return {"context_id": ctx_id, "scope": req.scope, "word_count": len(words),
+                "resolution": "replace" if existing else "created"}
+
+    if on_conflict == "append":
+        ctx_id = _cc_content_id(req.scope, req.context_text)
+        _cc_write_entry(ctx_id, req.scope, req.scope_type, req.context_text,
+                        req.context_label, req.priority, now)
+        return {"context_id": ctx_id, "scope": req.scope, "word_count": len(words),
+                "resolution": "append"}
+
+    # combine: merge existing + incoming, write as a fresh content-keyed row, retire the originals.
+    merged = _cc_combine_texts([e["context_text"] for e in existing], req.context_text)
+    ctx_id = _cc_content_id(req.scope, merged)
+    _cc_write_entry(ctx_id, req.scope, req.scope_type, merged, req.context_label,
+                    req.priority, now)
+    _cc_soft_delete_ids([e["context_id"] for e in existing], now)
+    return {"context_id": ctx_id, "scope": req.scope, "word_count": len(merged.split()),
+            "resolution": "combine", "merged_from": len(existing)}
 
 
 @app.delete("/api/customer-context/{context_id}")
@@ -16712,6 +16861,11 @@ def _cc_ingest_entries(entries):
     for entry in entries:
         try:
             req = CustomerContextRequest(**entry)
+            # Structured files are authoritative config for their scopes: replace per scope
+            # (recoverable -- originals kept as inactive history) rather than returning a
+            # conflict mid-batch. A per-entry on_conflict in the file still wins.
+            if not (isinstance(entry, dict) and entry.get("on_conflict")):
+                req.on_conflict = "replace"
             results.append(upsert_customer_context(req))
         except HTTPException as exc:
             results.append({"error": exc.detail, "scope": (entry or {}).get("scope", "?") if isinstance(entry, dict) else "?"})
@@ -16799,7 +16953,8 @@ def _cc_distill_text(text):
 @app.post("/api/customer-context/upload")
 def upload_customer_context(file: UploadFile = File(...),
                             scope: str = Form(None),
-                            scope_type: str = Form(None)):
+                            scope_type: str = Form(None),
+                            on_conflict: str = Form("detect")):
     """Ingest customer context from a file (#249). Structured .yaml/.yml/.json is parsed
     into entries deterministically; a .txt/.md/.pdf/.docx document is attached to the
     supplied scope (long docs distilled via ai_extract; binary via ai_parse_document)."""
@@ -16846,8 +17001,16 @@ def upload_customer_context(file: UploadFile = File(...),
         if not context_text.strip():
             raise HTTPException(400, detail="No text could be extracted from the document")
         req = CustomerContextRequest(scope=scope.strip(), scope_type=scope_type,
-                                     context_text=context_text, context_label=filename[:120])
+                                     context_text=context_text, context_label=filename[:120],
+                                     on_conflict=(on_conflict or "detect"))
         result = upsert_customer_context(req)
+        # On a collision the incoming (already-extracted) text travels in the conflict payload,
+        # so the UI resolves via the lightweight JSON endpoint -- no need to re-upload the file.
+        if isinstance(result, dict) and result.get("conflict"):
+            result.update({"lane": "document", "extract_method": method, "truncated": truncated})
+            if key_objects:
+                result["key_objects"] = key_objects
+            return result
         result.update({"extract_method": method, "truncated": truncated})
         if key_objects:
             result["key_objects"] = key_objects

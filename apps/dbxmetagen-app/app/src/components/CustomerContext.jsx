@@ -39,6 +39,11 @@ function ContextManager() {
   const [dec, setDec] = useState({ catalog: '', schema: '', table: '', description: '', hasEmbedded: false })
   const [decomposing, setDecomposing] = useState(false)
   const [decResult, setDecResult] = useState(null)
+  // Overwrite protection: when a write lands on a scope that already has active context, the
+  // server returns {conflict:true, existing, incoming} instead of overwriting. We hold it here
+  // and let the user choose replace / append / combine. See resolveConflict.
+  const [conflict, setConflict] = useState(null)
+  const [resolving, setResolving] = useState(false)
 
   const load = useCallback(async () => {
     setLoading(true)
@@ -54,14 +59,42 @@ function ContextManager() {
     if (saving) return   // ignore double-clicks -- a second concurrent MERGE conflicts
     setSaving(true)
     setError(null)
+    // Editing an existing row sends its context_id so it updates in place (never a conflict);
+    // a new entry omits it and the server checks the scope for a collision.
+    const payload = { ...form, context_id: (editing && editing !== 'new') ? editing : '' }
     const { data, error: err } = await safeFetch('/api/customer-context', {
       method: 'POST', headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify(form),
+      body: JSON.stringify(payload),
     })
-    if (err) { setError(err); setSaving(false); return }
+    setSaving(false)
+    if (err) { setError(err); return }
+    if (data && data.conflict) { setConflict({ ...data, scope_type: form.scope_type }); return }
     setEditing(null)
     setForm({ scope: '', scope_type: 'schema', context_text: '', context_label: '', priority: 0 })
-    setSaving(false)
+    load()
+  }
+
+  // Apply the user's choice for an existing-context collision. Re-POSTs the incoming text (which
+  // travels in the conflict payload, so a document never needs re-uploading) with on_conflict set.
+  const resolveConflict = async (mode) => {
+    if (!conflict || resolving) return
+    setResolving(true)
+    setError(null)
+    const { error: err } = await safeFetch('/api/customer-context', {
+      method: 'POST', headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        scope: conflict.scope, scope_type: conflict.scope_type,
+        context_text: conflict.incoming.context_text,
+        context_label: conflict.incoming.context_label || '',
+        on_conflict: mode,
+      }),
+    })
+    setResolving(false)
+    if (err) { setError(err); return }
+    setConflict(null)
+    setEditing(null)
+    setForm({ scope: '', scope_type: 'schema', context_text: '', context_label: '', priority: 0 })
+    resetUpload()
     load()
   }
 
@@ -95,6 +128,7 @@ function ContextManager() {
     const { data, error: err } = await safeFetch('/api/customer-context/upload', { method: 'POST', body: fd })
     setUploading(false)
     if (err) { setError(err); return }
+    if (data && data.conflict) { setConflict({ ...data, scope_type: data.scope_type || uploadScopeType }); return }
     setUploadResult(data)
     setUploadFile(null)
     setUploadScope('')
@@ -174,6 +208,62 @@ function ContextManager() {
         <div className="card border-l-4 border-l-red-500 px-4 py-3 text-sm flex justify-between items-start">
           <span className="text-red-600 dark:text-red-400">{error}</span>
           <button onClick={() => setError(null)} className="text-slate-400 hover:text-slate-600 ml-2">&times;</button>
+        </div>
+      )}
+
+      {conflict && (
+        <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/40 p-4" onClick={() => !resolving && setConflict(null)}>
+          <div className="card max-w-2xl w-full max-h-[85vh] overflow-y-auto p-5 space-y-4" onClick={e => e.stopPropagation()}>
+            <div>
+              <h3 className="font-semibold text-slate-800 dark:text-slate-100">This scope already has context</h3>
+              <p className="text-sm text-slate-500 dark:text-slate-400 mt-1">
+                <span className="font-mono text-slate-700 dark:text-slate-300">{conflict.scope}</span> already has{' '}
+                {conflict.existing.length} active {conflict.existing.length === 1 ? 'entry' : 'entries'}. Choose how to apply the new context &mdash; nothing is overwritten until you pick.
+              </p>
+            </div>
+
+            <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
+              <div className="space-y-2">
+                <div className="text-xs font-semibold uppercase tracking-wide text-slate-400">Existing ({conflict.existing.length})</div>
+                {conflict.existing.map((e, i) => (
+                  <div key={e.context_id || i} className="text-xs p-2.5 rounded-md bg-slate-50 dark:bg-dbx-navy-600 text-slate-600 dark:text-slate-300">
+                    {e.context_label && <div className="font-medium text-slate-500 dark:text-slate-400 mb-0.5">{e.context_label} · {e.word_count}w</div>}
+                    <div className="line-clamp-4 whitespace-pre-wrap">{e.context_text}</div>
+                  </div>
+                ))}
+              </div>
+              <div className="space-y-2">
+                <div className="text-xs font-semibold uppercase tracking-wide text-dbx-sky">Incoming (new)</div>
+                <div className="text-xs p-2.5 rounded-md bg-dbx-sky/5 border border-dbx-sky/20 text-slate-600 dark:text-slate-300">
+                  {conflict.incoming.context_label && <div className="font-medium text-slate-500 dark:text-slate-400 mb-0.5">{conflict.incoming.context_label} · {conflict.incoming.word_count}w</div>}
+                  <div className="line-clamp-[10] whitespace-pre-wrap">{conflict.incoming.context_text}</div>
+                </div>
+              </div>
+            </div>
+
+            <div className="space-y-2 pt-1">
+              <button onClick={() => resolveConflict('append')} disabled={resolving}
+                className="w-full text-left px-3 py-2.5 rounded-lg border border-dbx-lava/30 bg-dbx-lava/5 hover:bg-dbx-lava/10 disabled:opacity-50 transition-colors">
+                <div className="text-sm font-semibold text-slate-800 dark:text-slate-100">Add alongside <span className="text-xs font-normal text-dbx-lava">· recommended</span></div>
+                <div className="text-xs text-slate-500 dark:text-slate-400">Keep every existing entry and add this as a new one. Nothing is lost; all entries at this scope are injected together.</div>
+              </button>
+              <button onClick={() => resolveConflict('combine')} disabled={resolving}
+                className="w-full text-left px-3 py-2.5 rounded-lg border border-slate-200 dark:border-dbx-navy-400 hover:bg-slate-50 dark:hover:bg-dbx-navy-600 disabled:opacity-50 transition-colors">
+                <div className="text-sm font-semibold text-slate-800 dark:text-slate-100">Combine &amp; summarize</div>
+                <div className="text-xs text-slate-500 dark:text-slate-400">Merge the existing and new context into one coherent entry with AI. The originals are kept as recoverable history.</div>
+              </button>
+              <button onClick={() => resolveConflict('replace')} disabled={resolving}
+                className="w-full text-left px-3 py-2.5 rounded-lg border border-red-200 dark:border-red-700/40 hover:bg-red-50 dark:hover:bg-red-900/15 disabled:opacity-50 transition-colors">
+                <div className="text-sm font-semibold text-red-600 dark:text-red-400">Replace</div>
+                <div className="text-xs text-slate-500 dark:text-slate-400">Retire the existing {conflict.existing.length === 1 ? 'entry' : 'entries'} (kept as recoverable history) and keep only this new context.</div>
+              </button>
+            </div>
+
+            <div className="flex items-center justify-between pt-1">
+              <span className="text-xs text-slate-400">{resolving ? 'Applying…' : ''}</span>
+              <button onClick={() => setConflict(null)} disabled={resolving} className="btn-ghost btn-sm disabled:opacity-50">Cancel</button>
+            </div>
+          </div>
         </div>
       )}
 
