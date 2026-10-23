@@ -132,7 +132,7 @@ googleapis-common-protos==1.75.0
     #   grpcio-status
 graphene==3.4.3
     # via mlflow
-graphql-core==3.2.11
+graphql-core==3.2.12
     # via
     #   graphene
     #   graphql-relay
