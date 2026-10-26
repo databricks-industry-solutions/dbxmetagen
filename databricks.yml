@@ -92,14 +92,12 @@ targets:
   dev:
     mode: development
     default: true
-    run_as: ${var.run_as}
     permissions:
       - user_name: ${var.deploying_user}
         level: CAN_MANAGE
 
   demo:
     mode: development
-    run_as: ${var.run_as}
     permissions:
       - user_name: ${var.deploying_user}
         level: CAN_MANAGE
@@ -108,20 +106,18 @@ targets:
     mode: production
     workspace:
       root_path: ${var.current_working_directory}
-    # Prod jobs run as ${var.run_as}, which defaults to the deploying user -- the
-    # same identity that has always been the job runner. This keeps existing prod
-    # deployments unchanged (no sudden PERMISSION_DENIED, no behavior change on
-    # upgrade) and avoids a first-deploy chicken-and-egg where the app SPN does not
-    # exist yet.
+    # No target-level run_as (here or in dev/demo): a target run_as applies to EVERY
+    # resource, and DAB rejects an app whose run_as differs from the deploying
+    # identity ("apps do not support a setting a run_as user that is different from
+    # the owner"). Instead each job sets `run_as: ${var.run_as}` itself
+    # (resources/jobs/*.yml), so the app stays owned by the deployer while jobs can
+    # run as a service principal.
     #
-    # OPT-IN: to run prod jobs as the app's OWN service principal (so operational
-    # writes like build_knowledge_base -> column_knowledge_base never depend on a
-    # named human holding MODIFY), override run_as in a gitignored
-    # variable-overrides.json AFTER the app + SPN exist and the SPN has been granted
-    # MODIFY on the output schema:
-    #   {"run_as": {"service_principal_name": "<app-spn-client-id>"}}
+    # Default: jobs run as the deploying user (unchanged behavior). To run them as an
+    # EXISTING service principal from the first deploy, set in variable-overrides.json
+    # (CLI) or the UI's "Configure variable overrides" editor:
+    #   {"run_as": {"service_principal_name": "<sp-application-id>"}}
     # The deploying identity must be able to act as that SP. See variables.yml.
-    run_as: ${var.run_as}
     permissions:
       - user_name: ${var.current_user}
         level: CAN_MANAGE

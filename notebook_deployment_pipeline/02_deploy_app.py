@@ -459,6 +459,43 @@ if not run_jobs_as_app_sp:
     print("run_jobs_as_app_sp=false -- leaving jobs to run as the deploying user "
           "(set the widget to 'true' to run them as the app SP)")
 elif app_spn_uuid and bound_job_ids:
+    # The jobs' notebooks live under repo_path and their wheel in volume_path, both
+    # readable only by the deployer so far. Running as the SP needs read access to
+    # both, or every task fails with "Unable to access the notebook ...".
+    from databricks.sdk.service.iam import AccessControlRequest, PermissionLevel
+    try:
+        repo_id = w.workspace.get_status(repo_path).object_id
+        w.permissions.update(
+            request_object_type="directories",
+            request_object_id=str(repo_id),
+            access_control_list=[AccessControlRequest(
+                service_principal_name=app_spn_uuid,
+                permission_level=PermissionLevel.CAN_READ)])
+        print(f"  Granted CAN_READ on {repo_path} to app SPN")
+    except Exception as e:
+        print(f"  WARNING: could not grant CAN_READ on {repo_path} (grant it via Share): {e}")
+    _vol = volume_path.split("/")  # /Volumes/<catalog>/<schema>/<volume>/...
+    if len(_vol) >= 5 and _vol[1] == "Volumes":
+        for stmt in [
+            f"GRANT USE CATALOG ON CATALOG `{_vol[2]}` TO `{app_spn_uuid}`",
+            f"GRANT USE SCHEMA ON SCHEMA `{_vol[2]}`.`{_vol[3]}` TO `{app_spn_uuid}`",
+            f"GRANT READ VOLUME ON VOLUME `{_vol[2]}`.`{_vol[3]}`.`{_vol[4]}` TO `{app_spn_uuid}`",
+        ]:
+            state = w.statement_execution.execute_statement(
+                warehouse_id=warehouse_id, statement=stmt, wait_timeout="30s").status.state.value
+            print(f"  [{state}] {stmt}")
+
+    # The jobs create objects the app never does (output volume, MCP functions,
+    # materialized metric views), so the app SP needs these on top of its app grants.
+    for stmt in [
+        f"GRANT CREATE VOLUME ON SCHEMA `{catalog_name}`.`{schema_name}` TO `{app_spn_uuid}`",
+        f"GRANT CREATE FUNCTION ON SCHEMA `{catalog_name}`.`{schema_name}` TO `{app_spn_uuid}`",
+        f"GRANT CREATE MATERIALIZED VIEW ON SCHEMA `{catalog_name}`.`{schema_name}` TO `{app_spn_uuid}`",
+    ]:
+        state = w.statement_execution.execute_statement(
+            warehouse_id=warehouse_id, statement=stmt, wait_timeout="30s").status.state.value
+        print(f"  [{state}] {stmt}")
+
     run_as_settings = jobs_svc.JobSettings(
         run_as=jobs_svc.JobRunAs(service_principal_name=app_spn_uuid))
     for res_name, jid in bound_job_ids.items():

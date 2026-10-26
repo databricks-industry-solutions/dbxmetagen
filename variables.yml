@@ -165,19 +165,25 @@ variables:
     default: ${var.current_user}
   run_as:
     description: >-
-      Identity that jobs run as, in ALL targets (dev, demo, prod). Defaults to the
-      deploying user -- the identity that has always been the job runner -- so
-      upgrading to this version changes nothing by default.
+      Identity that every job runs as. Applied per job (each resources/jobs/*.yml
+      references this variable in its own run_as), NOT at the target level: a target-level
+      run_as also applies to the app, and DAB rejects an app whose run_as differs
+      from the deploying identity. Defaults to the deploying user -- the identity
+      that has always been the job runner -- so nothing changes unless you set it.
 
-      OPT-IN (prod): to run prod jobs as the app's own service principal so
-      operational writes never depend on a named human, override this complex
-      variable in a gitignored variable-overrides.json AFTER the app + SPN exist
-      and the SPN has been granted MODIFY on the output schema:
-        {"run_as": {"service_principal_name": "<app-spn-client-id>"}}
-      The deploying identity must be able to act as that SP.
-
-      Note: in development-mode targets (dev, demo), DAB requires run_as to be the
-      deploying user and rejects an SP, so the SP override applies to prod only.
+      To run jobs as an EXISTING service principal (so operational writes never
+      depend on a named human holding MODIFY), override this complex variable in
+      .databricks/bundle/<target>/variable-overrides.json (CLI) or the UI's
+      "Configure variable overrides" editor, before or after the first deploy:
+        {"run_as": {"service_principal_name": "<sp-application-id>"}}
+      Requirements: the deploying identity holds the "Service Principal: User"
+      role on that SP BEFORE the deploy (workspace admins are not exempt), and the
+      SP has the app SP's output-schema + Vector Search privileges, CREATE VOLUME /
+      FUNCTION / MATERIALIZED VIEW on the output schema, and CAN_READ on the bundle folder (root_path) holding the job notebooks.
+      scripts/grant_app_permissions.sh does all of this when it detects an SP run_as, so
+      run it once before the first deploy too (deploy.sh does this automatically).
+      Use a dedicated SP rather than the app's own SP: the app SP is recreated
+      (new id) whenever the app is deleted/recreated.
     type: complex
     default:
       user_name: ${workspace.current_user.userName}

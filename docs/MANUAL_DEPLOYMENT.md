@@ -131,7 +131,11 @@ Optional keys you may add: `vs_endpoint_name`, `enable_obo`, `node_type`,
 (a bare `policy_id` string is intentionally not a variable: the v1.8.0+ direct
 deploy engine rejects an empty `policy_id`, so the whole cluster block is
 substituted instead). For a service-principal run identity or OBO scopes, add the
-complex variables (see `example.env` for all keys):
+complex variables (see `example.env` for all keys). `run_as` sets the identity the
+**jobs** run as (the app stays owned by the deployer); the SP must already exist,
+and the deployer must hold the *Service Principal: User* role on it **before** deploying
+(workspace admins are not exempt; `scripts/grant_app_permissions.sh` grants it, or use
+Settings > Identity and access > Service principals > the SP > Permissions):
 
 ```json
 {
@@ -259,6 +263,28 @@ GRANT MODIFY ON SCHEMA `<catalog>`.`<schema>` TO `<SPN_UUID>`;
 GRANT READ VOLUME ON SCHEMA `<catalog>`.`<schema>` TO `<SPN_UUID>`;
 GRANT WRITE VOLUME ON SCHEMA `<catalog>`.`<schema>` TO `<SPN_UUID>`;
 ```
+
+### If jobs run as a service principal (`run_as` override)
+
+The jobs SP gets the app SP's privileges plus a few create privileges: run the same
+statements again with `<SPN_UUID>` replaced by the `run_as` service principal's
+application id, and grant it `CAN_USE` on the Vector Search endpoint (section 8).
+The jobs also create objects the app never does, so add:
+
+```sql
+GRANT CREATE VOLUME ON SCHEMA `<catalog>`.`<schema>` TO `<JOBS_SP_UUID>`;
+GRANT CREATE FUNCTION ON SCHEMA `<catalog>`.`<schema>` TO `<JOBS_SP_UUID>`;
+GRANT CREATE MATERIALIZED VIEW ON SCHEMA `<catalog>`.`<schema>` TO `<JOBS_SP_UUID>`;
+```
+
+Also give it **Can Read** on the bundle folder (Workspace > `<root_path>`, e.g.
+`/Workspace/Users/<you>/.bundle/dbxmetagen/prod` > Share); the job notebooks live
+there and are otherwise readable only by the deployer.
+
+**Before** the deploy, the deploying user must also hold the **Service Principal:
+User** role on that SP (Settings > Identity and access > Service principals > the
+SP > Permissions > Grant access). Workspace admins are not exempt; without it every
+job create fails with `must have 'servicePrincipal.user' role`.
 
 ---
 
