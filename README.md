@@ -768,6 +768,34 @@ and Python 3.11+. If either is missing, the UI deploy can fail or ship a stale w
 prefer the CLI deploy, or see [docs/MANUAL_DEPLOYMENT.md](docs/MANUAL_DEPLOYMENT.md) for the
 in-workspace build requirements.
 
+### Applying DDL fails with `PARSE_SYNTAX_ERROR` on every comment
+
+Generated DDL wraps comment text in double quotes (`COMMENT ON TABLE ... IS "Order history"`). When
+double-quoted identifiers are enabled, Databricks reads `"..."` as an identifier instead of a string,
+so every comment statement fails:
+
+```
+[PARSE_SYNTAX_ERROR] Syntax error at or near '"Order history"'. SQLSTATE: 42601
+```
+
+On SQL warehouses this is a workspace- or warehouse-level setting that Databricks enables on request,
+so it usually shows up only in the app's **Review → Apply** step (which runs on the warehouse) while
+jobs on clusters succeed. On classic clusters it comes from
+`spark.sql.ansi.doubleQuotedIdentifiers=true` in the Spark config or cluster policy.
+
+**Fix:** apply the comments from the metadata job with `apply_ddl=true` on a cluster that doesn't have
+the setting. Alternatively, ask your account team whether it can be turned off for the warehouse the
+app uses, or remove it from the cluster's Spark config.
+
+### FMAPI calls fail with `429` / `REQUEST_LIMIT_EXCEEDED`
+
+The model serving endpoint is rate-limiting you. dbxmetagen retries with backoff, but that only
+absorbs short bursts; under sustained throttling, tables are marked failed while the rest of the
+run continues. See [Foundation Model API limits](https://docs.databricks.com/aws/en/machine-learning/foundation-model-apis/limits).
+
+**Fix:** Ask your account team to raise the rate limits for the endpoint you're using. 
+Until then, run fewer jobs against the same endpoint at once and/or narrow the table scope.
+
 ### Known Limitations
 
 - **`sample_size=0` degrades PI and domain quality.** With no row sampling, PI detection and domain
