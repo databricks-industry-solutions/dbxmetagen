@@ -150,3 +150,73 @@ def test_combine_preview_empty_scope_404(cc, monkeypatch):
         api_server.combine_preview_customer_context(
             CombinePreviewRequest(scope="cat.sch", scope_type="schema"))
     assert ei.value.status_code == 404
+
+
+# --- acronym edit: a move/in-place update, never a duplicate ----------------
+
+import hashlib
+import types
+
+AcronymRequest = api_server.AcronymRequest
+
+
+def _acro_calls(monkeypatch):
+    """Record every execute_sql issued by _upsert_acronym (MERGE, and the optional retire).
+
+    Also swap StatementParameterListItem for a real stand-in: under the core-suite conftest
+    stubs the SDK class can be a MagicMock, so its .name/.value wouldn't echo the bound values.
+    """
+    monkeypatch.setattr(api_server, "StatementParameterListItem",
+                        lambda name, value: types.SimpleNamespace(name=name, value=value))
+    calls = []
+
+    def fake_exec(sql, timeout=None, parameters=None):
+        calls.append({"sql": " ".join(sql.split()),
+                      "params": {p.name: p.value for p in (parameters or [])}})
+        return []
+
+    monkeypatch.setattr(api_server, "execute_sql", fake_exec)
+    return calls
+
+
+def test_acronym_add_only_upserts(monkeypatch):
+    calls = _acro_calls(monkeypatch)
+    api_server._upsert_acronym(AcronymRequest(
+        scope="cat.sch", scope_type="schema", abbreviation="CD", expansion="clinical data"))
+    assert len(calls) == 1                       # just the MERGE; no retire
+    assert "MERGE INTO" in calls[0]["sql"]
+
+
+def test_acronym_edit_in_place_when_id_canonical(monkeypatch):
+    calls = _acro_calls(monkeypatch)
+    canon = hashlib.sha256("cat.sch::CD".encode()).hexdigest()[:16]
+    api_server._upsert_acronym(AcronymRequest(
+        scope="cat.sch", scope_type="schema", abbreviation="CD",
+        expansion="clinical data v2", acronym_id=canon))
+    assert len(calls) == 1                       # id already canonical -> MERGE updates in place
+    assert "active = FALSE" not in calls[0]["sql"]
+
+
+def test_acronym_edit_retires_noncanonical_original(monkeypatch):
+    """The real bug: editing a row whose id isn't sha256(scope::abbreviation) (e.g. seeded data)
+    must retire that original instead of leaving a duplicate at the same (scope, abbreviation)."""
+    calls = _acro_calls(monkeypatch)
+    out = api_server._upsert_acronym(AcronymRequest(
+        scope="cat.sch", scope_type="schema", abbreviation="CD",
+        expansion="clinical data", acronym_id="ctxtest-cd"))
+    assert len(calls) == 2
+    assert "MERGE INTO" in calls[0]["sql"]
+    assert "active = FALSE" in calls[1]["sql"]
+    assert calls[1]["params"]["old_id"] == "ctxtest-cd"
+    assert out["acronym_id"] == hashlib.sha256("cat.sch::CD".encode()).hexdigest()[:16]
+
+
+def test_acronym_edit_key_change_retires_original(monkeypatch):
+    calls = _acro_calls(monkeypatch)
+    old = hashlib.sha256("cat.sch::CD".encode()).hexdigest()[:16]
+    api_server._upsert_acronym(AcronymRequest(
+        scope="cat.sch", scope_type="schema", abbreviation="CLD",  # abbreviation changed
+        expansion="clinical data", acronym_id=old))
+    assert len(calls) == 2
+    assert "active = FALSE" in calls[1]["sql"]
+    assert calls[1]["params"]["old_id"] == old

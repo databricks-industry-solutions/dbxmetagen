@@ -17545,6 +17545,11 @@ class AcronymRequest(BaseModel):
     abbreviation: str
     expansion: str
     notes: str = ""
+    # When editing, the UI sends the row's original acronym_id. The canonical id is
+    # sha256(scope::abbreviation); if the edit changes the abbreviation/scope (or the original
+    # row predates canonical ids, e.g. seeded data), the upsert writes the canonical row and the
+    # ORIGINAL is retired -- so an edit is a move/in-place update, never a duplicate. Blank = add.
+    acronym_id: str = ""
 
 
 class OverrideRequest(BaseModel):
@@ -17782,6 +17787,20 @@ def _upsert_acronym(req: AcronymRequest):
             TRUE, 'app', CAST(:now AS TIMESTAMP), CAST(:now AS TIMESTAMP)
         )
     """, timeout=30, parameters=params)
+    # Edit that changed the key (or a row with a non-canonical id, e.g. seeded data): the MERGE
+    # above wrote/updated the CANONICAL id, so retire the original row to avoid a duplicate at the
+    # same (scope, abbreviation). When the original already was canonical, acr_id == acronym_id
+    # and this is a no-op (the MERGE updated it in place).
+    if req.acronym_id and req.acronym_id != acr_id:
+        if not _SAFE_IDENT_RE.match(req.acronym_id):
+            raise HTTPException(400, detail="Invalid acronym_id")
+        execute_sql(
+            f"UPDATE {fq(_ACRO_TABLE)} SET active = FALSE, updated_at = CAST(:now AS TIMESTAMP) "
+            f"WHERE acronym_id = :old_id",
+            timeout=30,
+            parameters=[StatementParameterListItem(name="now", value=now),
+                        StatementParameterListItem(name="old_id", value=req.acronym_id)],
+        )
     return {"acronym_id": acr_id, "abbreviation": req.abbreviation}
 
 

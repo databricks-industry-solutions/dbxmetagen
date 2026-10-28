@@ -748,11 +748,10 @@ function AcronymsManager() {
   const [adding, setAdding] = useState(false)
   const [saving, setSaving] = useState(false)
   const [form, setForm] = useState({ scope: '', scope_type: 'schema', abbreviation: '', expansion: '', notes: '' })
-  // When editing, `editingId` is the row's acronym_id and `orig` remembers its original
-  // (scope, abbreviation). The id is sha256(scope::abbreviation), so changing either key makes
-  // the upsert write a NEW row -- we then retire the original so an edit is a move, not a dupe.
+  // When editing, `editingId` is the row's original acronym_id, sent back so the server retires
+  // that exact row (the canonical id is derived from scope+abbreviation) -- an edit is a
+  // move/in-place update, never a duplicate, regardless of the original row's id scheme.
   const [editingId, setEditingId] = useState(null)
-  const [orig, setOrig] = useState(null)
   const [file, setFile] = useState(null)
   const [src, setSrc] = useState('local')
   const [vol, setVol] = useState('')
@@ -770,27 +769,24 @@ function AcronymsManager() {
   useEffect(() => { load() }, [load])
 
   const blankForm = { scope: '', scope_type: 'schema', abbreviation: '', expansion: '', notes: '' }
-  const startAdd = () => { setForm(blankForm); setEditingId(null); setOrig(null); setAdding(true); setError(null) }
+  const startAdd = () => { setForm(blankForm); setEditingId(null); setAdding(true); setError(null) }
   const startEdit = (a) => {
     setForm({ scope: a.scope, scope_type: a.scope_type, abbreviation: a.abbreviation, expansion: a.expansion, notes: a.notes || '' })
-    setEditingId(a.acronym_id); setOrig({ scope: a.scope, abbreviation: a.abbreviation })
-    setAdding(true); setError(null)
+    setEditingId(a.acronym_id); setAdding(true); setError(null)
   }
-  const cancelForm = () => { setAdding(false); setEditingId(null); setOrig(null); setForm(blankForm) }
+  const cancelForm = () => { setAdding(false); setEditingId(null); setForm(blankForm) }
 
   const save = async () => {
     if (saving) return
     setSaving(true); setError(null)
+    // On edit, send the original acronym_id so the server retires that exact row and writes the
+    // canonical one -- a move, not a duplicate (the server handles any id-scheme mismatch).
+    const payload = editingId ? { ...form, acronym_id: editingId } : form
     const { error: err } = await safeFetch('/api/customer-acronyms', {
-      method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(form),
+      method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(payload),
     })
-    if (err) { setSaving(false); setError(err); return }
-    // Editing the scope or abbreviation changes the row's id, so the upsert above wrote a NEW
-    // row -- retire the original so the edit moves the acronym rather than leaving a duplicate.
-    if (editingId && orig && (orig.scope !== form.scope || orig.abbreviation !== form.abbreviation)) {
-      await safeFetch(`/api/customer-acronyms/${editingId}`, { method: 'DELETE' })
-    }
     setSaving(false)
+    if (err) { setError(err); return }
     cancelForm(); load()
   }
   const del = async (id) => {
