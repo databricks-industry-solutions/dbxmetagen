@@ -7,7 +7,7 @@ authors = [{ name = "Eli Swanson", email = "eli.swanson@databricks.com" }]
 license = { text = "DB License" }
 requires-python = ">=3.10.12,<3.14.0"
 dependencies = [
-    "mlflow==3.11.1",
+    "mlflow==3.17.2",
     # Range, not a hard pin: a bare `==` forces pip to DOWNGRADE the runtime's openai
     # (DBR/serverless ship newer), which then trips the runtime's own langchain-openai/
     # litellm resolver checks (neither is a dbxmetagen dependency). A range lets pip keep
