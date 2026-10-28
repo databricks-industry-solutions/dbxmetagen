@@ -175,18 +175,25 @@ variables:
     default: ${workspace.current_user.userName}
   run_as:
     description: >-
-      Identity that jobs run as. Defaults to the deploying user. To run jobs as a
-      service principal instead, override this complex variable, e.g. in a gitignored
-      variable-overrides.json:
-        {"run_as": {"service_principal_name": "00000000-0000-0000-0000-000000000000"}}
-      Note: in development-mode targets (dev, demo), DAB requires run_as to be the
-      deploying user; SP run_as is intended for the prod target.
+      Identity that dev/demo jobs run as. Development-mode targets (dev, demo)
+      require run_as to be the deploying user, so it defaults to that. The PROD
+      target intentionally does NOT set run_as: it lets DAB default run_as to the
+      deploying identity, typed correctly for a user OR a service principal. That is
+      what makes an SP-deployed prod bundle work with no override (a hardcoded
+      user_name: <sp-app-id> is rejected by the Jobs API with "cannot be set as
+      run_as"). For the advanced "deploy as X but run jobs as a DIFFERENT service
+      principal Y" pattern, add an explicit run_as back to the prod target.
     type: complex
     default:
       user_name: ${workspace.current_user.userName}
   current_working_directory:
-    description: Working directory or bundle root.
-    default: /Users/${var.current_user}/.bundle/${bundle.name}/${bundle.target}
+    description: >-
+      Prod bundle root_path. MUST be under /Workspace -- Databricks Apps reject a
+      source_code_path that is not a valid workspace path, and /Users/... (no
+      /Workspace prefix) is rejected at app-deploy time with "Source code path must
+      be a valid workspace path". For an SP deployer, current_user resolves to the
+      SP's application-id, so this path lands under that identity's home.
+    default: /Workspace/Users/${var.current_user}/.bundle/${bundle.name}/${bundle.target}
   review_input_file_type:
     description: excel or tsv. allows reviewed DDL to be in either format.
     default: tsv

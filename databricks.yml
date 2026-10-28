@@ -107,8 +107,15 @@ targets:
   prod:
     mode: production
     workspace:
+      # Must be under /Workspace -- see var.current_working_directory. A bare
+      # /Users/... path deploys jobs fine but the APP deploy rejects it with
+      # "Source code path must be a valid workspace path".
       root_path: ${var.current_working_directory}
-    run_as: ${var.run_as}
+    # run_as is intentionally OMITTED: DAB defaults it to the deploying identity,
+    # typed correctly for a user OR a service principal. Hardcoding
+    # user_name: <sp-app-id> (the old ${var.run_as} default) makes an SP-deployed
+    # prod bundle fail with "cannot be set as run_as". To run jobs as a service
+    # principal DIFFERENT from the deployer, add an explicit run_as here.
     permissions:
       - user_name: ${var.current_user}
         level: CAN_MANAGE
