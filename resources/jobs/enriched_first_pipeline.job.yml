@@ -48,6 +48,8 @@ resources:
           default: ${var.incremental}
         - name: include_previously_failed_tables
           default: "false"
+        - name: include_existing_table_comment
+          default: "true"
         - name: federation_mode
           default: "false"
         - name: include_profiling_context
@@ -152,6 +154,7 @@ resources:
             notebook_path: ../../notebooks/generate_metadata.py
             base_parameters:
               mode: "comment"
+              include_existing_table_comment: "{{job.parameters.include_existing_table_comment}}"
               table_names: "{{job.parameters.table_names}}"
               catalog_name: "{{job.parameters.catalog_name}}"
               current_user: "{{job.parameters.current_user}}"
@@ -179,6 +182,7 @@ resources:
             notebook_path: ../../notebooks/generate_metadata.py
             base_parameters:
               mode: "pi"
+              include_existing_table_comment: "{{job.parameters.include_existing_table_comment}}"
               table_names: "{{job.parameters.table_names}}"
               catalog_name: "{{job.parameters.catalog_name}}"
               current_user: "{{job.parameters.current_user}}"
@@ -202,6 +206,7 @@ resources:
             notebook_path: ../../notebooks/generate_metadata.py
             base_parameters:
               mode: "domain"
+              include_existing_table_comment: "{{job.parameters.include_existing_table_comment}}"
               table_names: "{{job.parameters.table_names}}"
               catalog_name: "{{job.parameters.catalog_name}}"
               current_user: "{{job.parameters.current_user}}"

@@ -387,6 +387,24 @@ def apply_ddl_to_databricks(
 
     try:
         ddls = extract_ddls_from_file(sql_file, file_type)
+        # Certified-asset apply gate (shared policy; see certification.py). block -> skip
+        # certified (fail CLOSED if unreadable); warn -> apply but log (skip only if
+        # skip_certified_assets set); allow -> no gate.
+        from dbxmetagen.certification import gate_ddls
+        _valid = [d for d in ddls if d]
+        try:
+            ddls, _cert_hits, _action = gate_ddls(
+                spark,
+                _valid,
+                getattr(config, "certified_apply_policy", "warn"),
+                getattr(config, "skip_certified_assets", False),
+            )
+        except RuntimeError as exc:
+            logging.error("Certified apply gate aborted (nothing applied): %s", exc)
+            print(f"Certified apply gate aborted: {exc}")
+            return
+        if _action == "skipped" and _cert_hits:
+            print(f"Skipped {len(_cert_hits)} DDL statement(s) on certified assets (policy=block/skip).")
         print(f"Applying {len(ddls)} DDL statements from {sql_file}...")
         applied_count = 0
         for ddl in ddls:

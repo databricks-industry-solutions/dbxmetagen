@@ -2,7 +2,10 @@ import React, { useState, useEffect, useRef, useCallback, Component } from 'reac
 import { ErrorBanner } from '../App'
 import { cachedFetchObj, TTL } from '../apiCache'
 import { PageHeader, EmptyState, Skeleton, InfoTip } from './ui'
-import { useSharedJobRunner, TERMINAL_STATES } from '../hooks/useJobRunner'
+import { useSharedJobRunner, TERMINAL_STATES, classifyRun } from '../hooks/useJobRunner'
+import { useViewMode } from '../hooks/useViewMode'
+import { useCertifiedApplyPolicy } from '../hooks/useCertifiedApplyPolicy'
+import RunEntry from './RunEntry'
 import TableScopePicker, { scopeToTableNames } from './TableScopePicker'
 
 class TabErrorBoundary extends Component {
@@ -23,102 +26,6 @@ class TabErrorBoundary extends Component {
   }
 }
 
-const STATUS_LABELS = {
-  'RUNNING': 'Running', 'PENDING': 'Queued', 'SKIPPED': 'Skipped', 'INTERNAL_ERROR': 'Internal Error',
-  'SUCCESS': 'Succeeded', 'FAILED': 'Failed', 'TIMEDOUT': 'Timed Out', 'CANCELLED': 'Cancelled',
-}
-
-function stateBadge(state, result) {
-  if (!state) return null
-  let color = 'bg-dbx-oat text-slate-600 dark:bg-dbx-navy-500 dark:text-slate-300'
-  if (state === 'RUNNING' || state === 'PENDING') color = 'bg-blue-50 text-blue-700 dark:bg-blue-900/40 dark:text-blue-300'
-  if (state === 'TERMINATED' && result === 'SUCCESS') color = 'bg-emerald-50 text-emerald-700 dark:bg-emerald-900/40 dark:text-emerald-300'
-  if (state === 'TERMINATED' && result === 'FAILED') color = 'bg-red-50 text-red-700 dark:bg-red-900/40 dark:text-red-300'
-  if (state === 'TERMINATED' && result === 'TIMEDOUT') color = 'bg-amber-50 text-amber-700 dark:bg-amber-900/40 dark:text-amber-300'
-  if (state === 'TERMINATED' && result === 'CANCELLED') color = 'bg-slate-100 text-slate-500 dark:bg-slate-800 dark:text-slate-400'
-  if (state === 'SKIPPED') color = 'bg-slate-100 text-slate-500 dark:bg-slate-800 dark:text-slate-400'
-  if (state === 'INTERNAL_ERROR') color = 'bg-red-100 text-red-800 dark:bg-red-900/40 dark:text-red-300'
-  const label = result ? (STATUS_LABELS[result] || result) : (STATUS_LABELS[state] || state)
-  return <span className={`badge ${color}`}>{label}</span>
-}
-
-function runAccentColor(run) {
-  if (!TERMINAL_STATES.has(run.state)) return 'border-l-blue-400'
-  if (run.result === 'SUCCESS') return 'border-l-emerald-400'
-  if (run.result === 'FAILED') return 'border-l-red-400'
-  return 'border-l-slate-300 dark:border-l-slate-600'
-}
-
-function TaskProgress({ tasks }) {
-  if (!tasks || tasks.length === 0) return null
-  const done = tasks.filter(t => TERMINAL_STATES.has(t.state)).length
-  const failed = tasks.filter(t => t.result === 'FAILED').length
-  return (
-    <div className="mt-2.5">
-      <div className="flex items-center gap-2 mb-1.5">
-        <span className="text-xs text-slate-500 dark:text-slate-400">Tasks: {done}/{tasks.length}</span>
-        {failed > 0 && <span className="text-xs text-red-600 dark:text-red-400 font-medium">{failed} failed</span>}
-      </div>
-      <div className="flex gap-1">
-        {tasks.map(t => {
-          let bg = 'bg-slate-200 dark:bg-dbx-navy-500'
-          if (t.state === 'RUNNING' || t.state === 'PENDING') bg = 'bg-blue-400 animate-pulse'
-          if (t.result === 'SUCCESS') bg = 'bg-emerald-500'
-          if (t.result === 'FAILED') bg = 'bg-red-500'
-          if (t.result === 'EXCLUDED') bg = 'bg-slate-300 dark:bg-dbx-navy-400'
-          return <div key={t.task_key} className={`h-2.5 flex-1 rounded-full ${bg}`} title={`${t.task_key}: ${t.state}${t.result ? ' / ' + t.result : ''}`} />
-        })}
-      </div>
-    </div>
-  )
-}
-
-function RunEntry({ run }) {
-  const [expanded, setExpanded] = useState(false)
-  const hasTasks = run.tasks && run.tasks.length > 0
-  return (
-    <div className={`py-3 px-4 border-l-4 ${runAccentColor(run)} border-b border-dbx-oat-dark/30 dark:border-dbx-navy-400/20 last:border-b-0`}>
-      <div className="flex items-center justify-between gap-2">
-        <div className="flex items-center gap-2.5 min-w-0">
-          <span className="text-sm font-medium truncate text-slate-800 dark:text-slate-200">{run.job_name || 'Unnamed Job'}</span>
-          {stateBadge(run.state, run.result)}
-          {!TERMINAL_STATES.has(run.state) && (
-            <span className="inline-block w-2 h-2 bg-blue-500 rounded-full animate-pulse" title="Checking status..." />
-          )}
-        </div>
-        <div className="flex items-center gap-3 shrink-0">
-          {run.run_page_url && (
-            <a href={run.run_page_url} target="_blank" rel="noopener noreferrer"
-              className="text-xs text-dbx-teal hover:text-dbx-teal/80 font-medium">View in Databricks</a>
-          )}
-          {hasTasks && (
-            <button onClick={() => setExpanded(prev => !prev)} className="text-xs text-slate-500 hover:text-slate-700 dark:hover:text-slate-300 font-medium" aria-label={expanded ? 'Hide tasks' : 'Show tasks'}>
-              {expanded ? 'Hide tasks' : `${run.tasks.length} tasks`}
-            </button>
-          )}
-          <span className="text-xs text-slate-400 font-mono">#{run.run_id}</span>
-        </div>
-      </div>
-      {run.state_message && run.result === 'FAILED' && (
-        <div className="mt-2 text-xs text-red-600 dark:text-red-400 bg-red-50 dark:bg-red-900/20 rounded-lg px-3 py-2 break-words">
-          {run.state_message}
-        </div>
-      )}
-      {hasTasks && !expanded && <TaskProgress tasks={run.tasks} />}
-      {hasTasks && expanded && (
-        <div className="mt-2.5 space-y-1 animate-slide-up">
-          {run.tasks.map(t => (
-            <div key={t.task_key} className="flex items-center justify-between text-xs px-3 py-1.5 bg-dbx-oat-light dark:bg-dbx-navy-500/50 rounded-lg">
-              <span className="font-mono text-slate-600 dark:text-slate-300">{t.task_key}</span>
-              {stateBadge(t.state, t.result)}
-            </div>
-          ))}
-        </div>
-      )}
-    </div>
-  )
-}
-
 function HealthWarnings({ health }) {
   if (!health || health.errors.length === 0) return null
   return (
@@ -132,8 +39,14 @@ function HealthWarnings({ health }) {
 }
 
 export default function BatchJobs({ onNavigate, pipelineStats }) {
-  const { jobs, runHistory, runningAction, runError, runJob, jobsError } = useSharedJobRunner()
+  const { jobs, runHistory, runningAction, runError, runJob, jobsError, cancelRun } = useSharedJobRunner()
+  const { simplified } = useViewMode()
+  const { policy: certifiedPolicy } = useCertifiedApplyPolicy()
+  const [skipCertified, setSkipCertified] = useState(false)
   const [tableNames, setTableNames] = useState('')
+  // null = unknown (not yet loaded / transient error); false = never generated
+  // metadata here; true = has. Drives the large-first-run nudge in runGenerate.
+  const [hasRun, setHasRun] = useState(null)
   const [applyDdl, setApplyDdl] = useState(false)
   const [federationMode, setFederationMode] = useState(false)
   const [catalogName, setCatalogName] = useState('')
@@ -147,6 +60,14 @@ export default function BatchJobs({ onNavigate, pipelineStats }) {
   const [bundlesLoadError, setBundlesLoadError] = useState(null)
   const [domainConfig, setDomainConfig] = useState('')
   const [domainConfigs, setDomainConfigs] = useState([])
+  // Generate a domain taxonomy YAML from an uploaded document (saved to the volume, then
+  // selectable here). Does not touch the built-in configurations/ taxonomies.
+  const [showDomainGen, setShowDomainGen] = useState(false)
+  const [domainGenFile, setDomainGenFile] = useState(null)
+  const [domainGenName, setDomainGenName] = useState('')
+  const [domainGenDesc, setDomainGenDesc] = useState('')
+  const [domainGenBusy, setDomainGenBusy] = useState(false)
+  const [domainGenResult, setDomainGenResult] = useState(null)
   const [historyPage, setHistoryPage] = useState(0)
   const [health, setHealth] = useState(null)
   // Core-metadata run scope: 'all3' runs descriptions + sensitivity + domain;
@@ -167,6 +88,7 @@ export default function BatchJobs({ onNavigate, pipelineStats }) {
     use_kb_comments: false,
     use_customer_context: false,
     include_lineage: true,
+    include_existing_table_comment: true,  // matches variables.yml global default
     build_kb_after: true,
     use_serverless: true,
   })
@@ -194,6 +116,36 @@ export default function BatchJobs({ onNavigate, pipelineStats }) {
   // the unified settings.use_serverless.
   const runGenerate = (scope) => {
     setGenMenuOpen(false)
+
+    // --- Pre-run guardrails (cheap click-through confirms; cost/perf safety) ---
+    const raw = tableNames.trim()
+    // Wildcards can silently fan out to a whole schema — confirm intent.
+    if (raw.includes('*') && !window.confirm(
+      'Wildcard patterns (e.g. catalog.schema.*) can match a large number of tables, '
+      + 'which can be slow and costly. Continue?'
+    )) return
+    // First run + a large explicit selection: nudge toward a small pilot. Count
+    // only explicit (non-wildcard) entries; wildcards are covered by the check
+    // above. Fires only when we KNOW nothing has been generated here (hasRun===false).
+    const explicitCount = raw.split(',').map(s => s.trim()).filter(t => t && !t.includes('*')).length
+    if (hasRun === false && explicitCount >= 100 && !window.confirm(
+      `You're about to run on ${explicitCount} tables, and dbxmetagen hasn't generated `
+      + 'metadata here yet. Consider starting with ~10 tables to check cost, performance, '
+      + `and quality, then scaling up. Continue with ${explicitCount}?`
+    )) return
+    // Certified-asset warn: apply is on, policy=warn, and the user has NOT opted into
+    // skipping -> the comments/tags on certified assets in scope get overwritten. Warn
+    // before the run (#247). The assets and their certified status are never changed.
+    if (applyDdl && certifiedPolicy === 'warn' && !skipCertified && !window.confirm(
+      'Apply is on and the certified-asset policy is "warn": the comments/tags on any '
+      + 'UC-certified tables/columns in scope WILL be overwritten (the assets themselves and '
+      + 'their certified status are not changed). Check "Skip applying to certified assets" to '
+      + 'leave their comments/tags untouched. Continue?'
+    )) return
+
+    // skip_certified_assets is only meaningful when applying; block always skips (the job
+    // enforces it regardless), warn skips only when the user opted in.
+    const skipCert = certifiedPolicy === 'block' ? true : (applyDdl && skipCertified)
     const common = {
       table_names: tableNames,
       apply_ddl: applyDdl,
@@ -201,6 +153,8 @@ export default function BatchJobs({ onNavigate, pipelineStats }) {
       ontology_bundle: ontologyBundle,
       use_customer_context: settings.use_customer_context,
       include_lineage: settings.include_lineage,
+      include_existing_table_comment: settings.include_existing_table_comment,
+      ...(skipCert ? { skip_certified_assets: true } : {}),
       ...(domainConfig ? { domain_config: domainConfig } : {}),
       extra_params: buildExtraParams(),
     }
@@ -282,6 +236,7 @@ export default function BatchJobs({ onNavigate, pipelineStats }) {
           use_kb_comments: cfg.use_kb_comments ?? prev.use_kb_comments,
           use_customer_context: cfg.use_customer_context ?? prev.use_customer_context,
           include_lineage: cfg.include_lineage ?? prev.include_lineage,
+          include_existing_table_comment: cfg.include_existing_table_comment ?? prev.include_existing_table_comment,
         }))
         setApplyDdl(cfg.apply_ddl ?? false)
         setFederationMode(cfg.federation_mode ?? false)
@@ -292,12 +247,42 @@ export default function BatchJobs({ onNavigate, pipelineStats }) {
     fetch('/api/domain-configs').then(r => r.ok ? r.json() : []).then(setDomainConfigs)
       .catch(() => setError(prev => prev ? `${prev} | Domain configs could not be loaded` : 'Domain configs could not be loaded'))
     fetch('/api/jobs/health').then(r => r.ok ? r.json() : null).then(setHealth).catch(() => {})
+    // Has metadata ever been generated here? Non-ok / network error leaves hasRun
+    // null (unknown) so the first-run nudge stays silent unless we KNOW it's empty.
+    fetch('/api/metadata/has-run').then(r => r.ok ? r.json() : null)
+      .then(d => { if (d) setHasRun(!!d.has_run) }).catch(() => {})
   }, [loadBundles])
 
   const hasDomainSource = !!(ontologyBundle || domainConfig)
 
-  const activeRuns = runHistory.filter(r => !TERMINAL_STATES.has(r.state))
-  const completedRuns = runHistory.filter(r => TERMINAL_STATES.has(r.state))
+  const generateDomainConfig = async () => {
+    if (!domainGenFile || domainGenBusy) return
+    setDomainGenBusy(true); setDomainGenResult(null)
+    try {
+      const fd = new FormData()
+      fd.append('file', domainGenFile)
+      if (domainGenName.trim()) fd.append('name', domainGenName.trim())
+      if (domainGenDesc.trim()) fd.append('description', domainGenDesc.trim())
+      const res = await fetch('/api/domain-configs/generate', { method: 'POST', body: fd })
+      const j = await res.json().catch(() => ({}))
+      if (!res.ok) { setDomainGenResult({ error: j.detail || `Request failed (${res.status})` }); return }
+      setDomainGenResult(j)
+      const list = await fetch('/api/domain-configs').then(r => r.ok ? r.json() : [])
+      setDomainConfigs(list)
+      // Auto-select the new taxonomy (domain-only selection: taxonomy, no ontology).
+      setDomainConfig(j.key); setOntologyBundle('')
+      try { localStorage.setItem('dbxmetagen_ontologyBundle', '') } catch {}
+      setDomainGenFile(null); setDomainGenName('')
+    } catch (e) {
+      setDomainGenResult({ error: e.message || 'Network error' })
+    } finally { setDomainGenBusy(false) }
+  }
+
+  // This page shows only core-metadata-generation runs; the advanced analytics
+  // pipeline's runs live in the Semantic Layer's advanced section.
+  const coreRuns = runHistory.filter(r => classifyRun(r) === 'core')
+  const activeRuns = coreRuns.filter(r => !TERMINAL_STATES.has(r.state))
+  const completedRuns = coreRuns.filter(r => TERMINAL_STATES.has(r.state))
 
   return (
     <div className="space-y-5">
@@ -321,7 +306,7 @@ export default function BatchJobs({ onNavigate, pipelineStats }) {
           <p className="text-xs text-gray-400 col-span-2">Set before deployment in the project settings.</p>
         </div>
 
-        <details className="mt-4 group">
+        {!simplified && <details className="mt-4 group">
           <summary className="section-title cursor-pointer select-none flex items-center gap-1.5 py-2 border-t border-dbx-oat-dark/30 dark:border-dbx-navy-400/20 mt-3 pt-3">
             <svg className="w-3 h-3 transition-transform group-open:rotate-90" fill="none" viewBox="0 0 24 24" stroke="currentColor">
               <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M9 5l7 7-7 7" />
@@ -438,6 +423,41 @@ export default function BatchJobs({ onNavigate, pipelineStats }) {
                 className="text-xs text-dbx-teal hover:underline mt-1 inline-block">
                 Or build a custom ontology &rarr;
               </button>
+              <div className="mt-0.5">
+                <button type="button" onClick={() => setShowDomainGen(s => !s)}
+                  className="text-xs text-dbx-teal hover:underline inline-block">
+                  Or generate a domain taxonomy from a document &rarr;
+                </button>
+              </div>
+              {showDomainGen && (
+                <div className="mt-2 rounded-lg border border-slate-200 dark:border-dbx-navy-400/40 p-3 space-y-2">
+                  <p className="text-xs text-slate-500 dark:text-slate-400">
+                    Upload a document listing your business <strong>domains and subdomains</strong> with short
+                    descriptions (.txt/.md/.pdf/.docx). It&rsquo;s turned into a domain-taxonomy YAML, saved, and
+                    selected here for domain classification &mdash; the built-in taxonomies are untouched.
+                  </p>
+                  <input type="file" accept=".txt,.md,.pdf,.docx"
+                    onChange={e => { setDomainGenFile(e.target.files[0] || null); setDomainGenResult(null) }}
+                    className="block w-full text-xs text-slate-500 file:mr-3 file:py-1.5 file:px-3 file:rounded file:border-0 file:text-xs file:font-medium file:bg-dbx-teal/10 file:text-dbx-teal hover:file:bg-dbx-teal/20" />
+                  <div className="grid grid-cols-2 gap-2">
+                    <input value={domainGenName} onChange={e => setDomainGenName(e.target.value)} placeholder="Name (e.g. Insurance)"
+                      className="w-full px-2 py-1.5 rounded border border-slate-300 dark:border-dbx-navy-400 bg-white dark:bg-dbx-navy-600 text-xs" />
+                    <input value={domainGenDesc} onChange={e => setDomainGenDesc(e.target.value)} placeholder="Optional: what it covers"
+                      className="w-full px-2 py-1.5 rounded border border-slate-300 dark:border-dbx-navy-400 bg-white dark:bg-dbx-navy-600 text-xs" />
+                  </div>
+                  <div className="flex items-center justify-between">
+                    <span className="text-xs text-slate-400">{domainGenFile ? domainGenFile.name : 'No file selected'}</span>
+                    <button type="button" onClick={generateDomainConfig} disabled={!domainGenFile || domainGenBusy}
+                      className="btn-primary btn-sm disabled:opacity-50">{domainGenBusy ? 'Generating… (can take a minute)' : 'Generate taxonomy'}</button>
+                  </div>
+                  {domainGenResult?.error && <p className="text-xs text-red-500">{String(domainGenResult.error)}</p>}
+                  {domainGenResult && !domainGenResult.error && (
+                    <p className="text-xs text-green-600 dark:text-green-400">
+                      Created &ldquo;{domainGenResult.name}&rdquo; &mdash; {domainGenResult.domain_count} domains, {domainGenResult.subdomain_count} subdomains. Selected for this run.
+                    </p>
+                  )}
+                </div>
+              )}
               {bundlesLoadError && (
                 <p className="text-xs text-amber-700 dark:text-amber-300 mt-1.5">
                   Could not load ontology bundles: {bundlesLoadError}.{' '}
@@ -562,7 +582,7 @@ export default function BatchJobs({ onNavigate, pipelineStats }) {
               )}
             </div>
           </div>
-        </details>
+        </details>}
       </div>
 
       {/* Step 1: Generate Core Metadata — always visible, the primary action */}
@@ -581,6 +601,9 @@ export default function BatchJobs({ onNavigate, pipelineStats }) {
             <p className="text-sm text-slate-500 dark:text-slate-400 flex items-center gap-1.5">
               Generate <strong className="text-slate-700 dark:text-slate-200">descriptions, sensitivity, and domain</strong> for the chosen tables.
               <InfoTip text="Core metadata = table/column descriptions (comments), PII/PHI/PCI classification, and business-domain classification. Results land in Review & Apply before anything is written. Use the dropdown beside Generate to run just one type for targeted re-runs." />
+            </p>
+            <p className="text-xs text-slate-500 dark:text-slate-400">
+              Tip: start with a handful of tables to evaluate cost, performance, and quality, then scale up iteratively.
             </p>
 
             <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
@@ -609,6 +632,18 @@ export default function BatchJobs({ onNavigate, pipelineStats }) {
                   Apply to tables immediately
                   <InfoTip text="Applies SQL comments directly to your tables. When on, this writes SQL COMMENT ON statements to your Unity Catalog tables and columns — existing comments will be overwritten. Disable to review results first in the Review tab." />
                 </label>
+                {applyDdl && certifiedPolicy === 'warn' && (
+                  <label className="flex items-center gap-2 text-sm text-slate-600 dark:text-slate-300 cursor-pointer ml-6">
+                    <input type="checkbox" checked={skipCertified} onChange={e => setSkipCertified(e.target.checked)} />
+                    Skip applying to certified assets
+                    <InfoTip text="Under the 'warn' policy, applying overwrites the existing comments/tags on UC-certified assets by default (you'll be warned before the run). Check this to leave them untouched: certified tables/columns are skipped while everything else still applies. The asset and its certified status are never changed." />
+                  </label>
+                )}
+                {applyDdl && certifiedPolicy === 'block' && (
+                  <p className="text-xs text-emerald-700 dark:text-emerald-300 ml-6">
+                    <span className="px-1 py-0 rounded bg-emerald-100 dark:bg-emerald-900/40 font-medium">policy: block</span> Certified assets are protected — their comments/tags are skipped on apply.
+                  </p>
+                )}
                 <label className="flex items-center gap-2 text-sm text-slate-600 dark:text-slate-300 cursor-pointer">
                   <input type="checkbox" checked={federationMode} onChange={e => {
                     setFederationMode(e.target.checked)
@@ -620,7 +655,7 @@ export default function BatchJobs({ onNavigate, pipelineStats }) {
               </div>
             </div>
 
-            <details className="group mt-3">
+            {!simplified && <details className="group mt-3">
               <summary className="text-xs font-medium text-slate-500 dark:text-slate-400 cursor-pointer select-none flex items-center gap-1.5 py-2 border-t border-dbx-oat-dark/30 dark:border-dbx-navy-400/20 pt-3">
                 <svg className="w-3 h-3 transition-transform group-open:rotate-90" fill="none" viewBox="0 0 24 24" stroke="currentColor">
                   <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M9 5l7 7-7 7" />
@@ -667,6 +702,10 @@ export default function BatchJobs({ onNavigate, pipelineStats }) {
                     <input type="checkbox" checked={settings.use_customer_context} onChange={e => setSetting('use_customer_context', e.target.checked)} />
                     Use customer context
                   </label>
+                  <label className="flex items-center gap-2 text-xs text-slate-600 dark:text-slate-300 cursor-pointer" title="Include the table's existing Unity Catalog comment in the prompt. On by default: helps carry forward prior author intent, but a strong existing comment can make the model lean on it over new context/acronyms. Turn off for fresh comments driven only by data + context.">
+                    <input type="checkbox" checked={settings.include_existing_table_comment} onChange={e => setSetting('include_existing_table_comment', e.target.checked)} />
+                    Include existing table comment
+                  </label>
                 </div>
                 <div className="flex flex-col gap-2 pt-1">
                   <label className="flex items-center gap-2 text-xs text-slate-600 dark:text-slate-300 cursor-pointer" title="Build table + column knowledge base after metadata generation so the Review tab is populated">
@@ -681,12 +720,29 @@ export default function BatchJobs({ onNavigate, pipelineStats }) {
                   </label>
                 </div>
               </div>
-            </details>
+            </details>}
 
-            <p className="text-xs text-slate-500 dark:text-slate-400 mt-2 font-medium">
+            {/* Customer context is the one enrichment worth exposing in Simplified view:
+                acronyms always apply automatically, but context is opt-in (default off),
+                so without this toggle a simplified-view user could never enable the
+                context they uploaded. The full toggle still lives in the advanced block. */}
+            {simplified && (
+              <div className="flex flex-col gap-2 mt-3">
+                <label className="flex items-center gap-2 text-xs text-slate-600 dark:text-slate-300 cursor-pointer" title="Enrich prompts with customer-provided context from the Customer Context tab. Context is matched hierarchically by catalog, schema, pattern, or table scope.">
+                  <input type="checkbox" checked={settings.use_customer_context} onChange={e => setSetting('use_customer_context', e.target.checked)} />
+                  Use customer context
+                </label>
+                <label className="flex items-center gap-2 text-xs text-slate-600 dark:text-slate-300 cursor-pointer" title="Include the table's existing Unity Catalog comment in the prompt. On by default: helps carry forward prior author intent, but a strong existing comment can make the model lean on it over new context/acronyms. Turn off for fresh comments driven only by data + context.">
+                  <input type="checkbox" checked={settings.include_existing_table_comment} onChange={e => setSetting('include_existing_table_comment', e.target.checked)} />
+                  Include existing table comment
+                </label>
+              </div>
+            )}
+
+            {!simplified && <p className="text-xs text-slate-500 dark:text-slate-400 mt-2 font-medium">
               Ontology: {ontologyBundle ? bundles.find(b => b.key === ontologyBundle)?.name || ontologyBundle : <em>None</em>}
               {' | '}Domains: {domainConfig ? domainConfigs.find(d => d.key === domainConfig)?.name || domainConfig : (ontologyBundle ? 'from selected ontology' : <em>none</em>)}
-            </p>
+            </p>}
             {/* Primary generate: main click runs all 3 modes (KB-enriched by
                 default); the caret dropdown picks all-3 or a single mode. */}
             <div className="flex flex-wrap items-center gap-3 mt-2">
@@ -694,18 +750,18 @@ export default function BatchJobs({ onNavigate, pipelineStats }) {
                 <button onClick={() => runGenerate('all3')}
                   disabled={!!runningAction || !tableNames.trim()}
                   title="Generate all three metadata types (descriptions, sensitivity, and domain). By default, descriptions are generated first and used to enrich sensitivity and domain classification."
-                  className="btn-primary btn-md rounded-r-none">
+                  className={`btn-primary btn-md ${simplified ? '' : 'rounded-r-none'}`}>
                   {(runningAction === 'kb_enriched' || runningAction === 'all3') ? 'Starting...' : 'Generate Metadata'}
                 </button>
-                <button onClick={() => setGenMenuOpen(o => !o)}
+                {!simplified && <button onClick={() => setGenMenuOpen(o => !o)}
                   disabled={!!runningAction || !tableNames.trim()}
                   aria-label="Choose what to generate"
                   className="btn-primary btn-md rounded-l-none border-l border-white/25 px-2">
                   <svg className={`w-4 h-4 transition-transform ${genMenuOpen ? 'rotate-180' : ''}`} fill="none" viewBox="0 0 24 24" stroke="currentColor">
                     <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M19 9l-7 7-7-7" />
                   </svg>
-                </button>
-                {genMenuOpen && (
+                </button>}
+                {!simplified && genMenuOpen && (
                   <div className="absolute top-full left-0 mt-1 w-64 z-20 card p-1.5 shadow-elevated animate-slide-up">
                     <p className="text-[10px] font-semibold uppercase tracking-wider text-slate-400 px-2 py-1">Run</p>
                     <button onClick={() => runGenerate('all3')} disabled={!!runningAction || !tableNames.trim()}
@@ -735,7 +791,7 @@ export default function BatchJobs({ onNavigate, pipelineStats }) {
               </span>
             </div>
 
-            <details className="group mt-1">
+            {!simplified && <details className="group mt-1">
               <summary className="text-xs text-slate-500 dark:text-slate-400 cursor-pointer select-none inline-flex items-center gap-1.5">
                 <svg className="w-3 h-3 transition-transform group-open:rotate-90" fill="none" viewBox="0 0 24 24" stroke="currentColor">
                   <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M9 5l7 7-7 7" />
@@ -752,7 +808,7 @@ export default function BatchJobs({ onNavigate, pipelineStats }) {
                   <InfoTip text="Descriptions are generated first, then a knowledge-base build runs, then sensitivity + domain classification are enriched with those descriptions — so they benefit from the new comments even before DDL is applied." />
                 </p>
               </div>
-            </details>
+            </details>}
 
             <div className="border-t border-slate-200/80 dark:border-dbx-navy-400/20 pt-4 mt-2">
               <button onClick={() => onNavigate?.('context')} className="btn-ghost btn-sm text-slate-600 dark:text-slate-300">
@@ -770,8 +826,9 @@ export default function BatchJobs({ onNavigate, pipelineStats }) {
 
       {/* Next steps: the advanced pipeline lives in the Semantic Layer and the
           post-generation maintenance actions live in Sync & Ops. Simple links
-          to where each action actually runs, instead of full pointer cards. */}
-      {onNavigate && (
+          to where each action actually runs, instead of full pointer cards.
+          All route to advanced-only tabs, so the block is hidden in simplified view. */}
+      {onNavigate && !simplified && (
         <div className="pt-1">
           <p className="text-xs font-semibold uppercase tracking-wider text-slate-400 dark:text-slate-500 mb-2">Next steps</p>
           <div className="grid grid-cols-2 sm:grid-cols-4 gap-2">
@@ -791,7 +848,7 @@ export default function BatchJobs({ onNavigate, pipelineStats }) {
             <span className="inline-block w-2 h-2 bg-blue-500 rounded-full animate-pulse" />
             <span className="text-xs text-slate-400">Auto-refreshing every 5s</span>
           </div>
-          {activeRuns.map(r => <RunEntry key={r.run_id} run={r} />)}
+          {activeRuns.map(r => <RunEntry key={r.run_id} run={r} onCancel={cancelRun} />)}
         </section>
       )}
 
