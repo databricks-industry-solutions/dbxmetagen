@@ -748,6 +748,11 @@ function AcronymsManager() {
   const [adding, setAdding] = useState(false)
   const [saving, setSaving] = useState(false)
   const [form, setForm] = useState({ scope: '', scope_type: 'schema', abbreviation: '', expansion: '', notes: '' })
+  // When editing, `editingId` is the row's acronym_id and `orig` remembers its original
+  // (scope, abbreviation). The id is sha256(scope::abbreviation), so changing either key makes
+  // the upsert write a NEW row -- we then retire the original so an edit is a move, not a dupe.
+  const [editingId, setEditingId] = useState(null)
+  const [orig, setOrig] = useState(null)
   const [file, setFile] = useState(null)
   const [src, setSrc] = useState('local')
   const [vol, setVol] = useState('')
@@ -764,16 +769,29 @@ function AcronymsManager() {
   }, [])
   useEffect(() => { load() }, [load])
 
+  const blankForm = { scope: '', scope_type: 'schema', abbreviation: '', expansion: '', notes: '' }
+  const startAdd = () => { setForm(blankForm); setEditingId(null); setOrig(null); setAdding(true); setError(null) }
+  const startEdit = (a) => {
+    setForm({ scope: a.scope, scope_type: a.scope_type, abbreviation: a.abbreviation, expansion: a.expansion, notes: a.notes || '' })
+    setEditingId(a.acronym_id); setOrig({ scope: a.scope, abbreviation: a.abbreviation })
+    setAdding(true); setError(null)
+  }
+  const cancelForm = () => { setAdding(false); setEditingId(null); setOrig(null); setForm(blankForm) }
+
   const save = async () => {
     if (saving) return
     setSaving(true); setError(null)
     const { error: err } = await safeFetch('/api/customer-acronyms', {
       method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(form),
     })
+    if (err) { setSaving(false); setError(err); return }
+    // Editing the scope or abbreviation changes the row's id, so the upsert above wrote a NEW
+    // row -- retire the original so the edit moves the acronym rather than leaving a duplicate.
+    if (editingId && orig && (orig.scope !== form.scope || orig.abbreviation !== form.abbreviation)) {
+      await safeFetch(`/api/customer-acronyms/${editingId}`, { method: 'DELETE' })
+    }
     setSaving(false)
-    if (err) { setError(err); return }
-    setForm({ scope: '', scope_type: 'schema', abbreviation: '', expansion: '', notes: '' })
-    setAdding(false); load()
+    cancelForm(); load()
   }
   const del = async (id) => {
     const { error: err } = await safeFetch(`/api/customer-acronyms/${id}`, { method: 'DELETE' })
@@ -803,7 +821,7 @@ function AcronymsManager() {
           <code> .json</code>, <code>.yaml</code>) with columns/fields like <em>Abbreviation</em> and
           <em> Stands For</em>, or add one below.
         </p>
-        <button onClick={() => setAdding(a => !a)} className="btn-primary btn-sm shrink-0">Add Acronym</button>
+        <button onClick={() => adding ? cancelForm() : startAdd()} className="btn-primary btn-sm shrink-0">Add Acronym</button>
       </div>
 
       {error && (
@@ -853,6 +871,7 @@ function AcronymsManager() {
 
       {adding && (
         <div className="card p-4 grid grid-cols-2 gap-3">
+          <div className="col-span-2 text-sm font-semibold text-slate-800 dark:text-slate-100">{editingId ? 'Edit acronym' : 'Add acronym'}</div>
           <div>
             <label className="block text-xs font-medium text-slate-600 dark:text-slate-300 mb-1">Scope type</label>
             <select value={form.scope_type} onChange={e => setForm(f => ({ ...f, scope_type: e.target.value }))}
@@ -881,9 +900,9 @@ function AcronymsManager() {
               className="w-full px-3 py-2 rounded-lg border border-slate-300 dark:border-dbx-navy-400 bg-white dark:bg-dbx-navy-600 text-sm" />
           </div>
           <div className="col-span-2 flex gap-2 justify-end">
-            <button onClick={() => setAdding(false)} className="btn-ghost btn-sm">Cancel</button>
+            <button onClick={cancelForm} className="btn-ghost btn-sm">Cancel</button>
             <button onClick={save} disabled={saving || !form.scope.trim() || !form.abbreviation.trim() || !form.expansion.trim()}
-              className="btn-primary btn-sm disabled:opacity-50">{saving ? 'Saving…' : 'Save'}</button>
+              className="btn-primary btn-sm disabled:opacity-50">{saving ? 'Saving…' : (editingId ? 'Save changes' : 'Save')}</button>
           </div>
         </div>
       )}
@@ -905,7 +924,10 @@ function AcronymsManager() {
                     <td className="px-4 py-3 font-mono text-xs text-slate-700 dark:text-slate-300">{a.abbreviation}</td>
                     <td className="px-4 py-3 text-slate-600 dark:text-slate-400">{a.expansion}{a.notes ? ` (${a.notes})` : ''}</td>
                     <td className="px-4 py-3 text-xs text-slate-500">{a.scope_type}:{a.scope}</td>
-                    <td className="px-4 py-3 text-right"><button onClick={() => del(a.acronym_id)} className="text-xs text-red-500 hover:underline">Delete</button></td>
+                    <td className="px-4 py-3 text-right whitespace-nowrap">
+                      <button onClick={() => startEdit(a)} className="text-xs text-dbx-sky hover:underline mr-3">Edit</button>
+                      <button onClick={() => del(a.acronym_id)} className="text-xs text-red-500 hover:underline">Delete</button>
+                    </td>
                   </tr>
                 ))}
               </tbody>
