@@ -1,4 +1,4 @@
-import React, { useState, useEffect, useCallback } from 'react'
+import React, { useState, useEffect, useCallback, useMemo } from 'react'
 import { safeFetch } from '../App'
 
 const SCOPE_TYPES = ['catalog', 'schema', 'table', 'pattern']
@@ -88,11 +88,14 @@ function ContextManager() {
   const [dec, setDec] = useState({ catalog: '', schema: '', table: '', description: '', hasEmbedded: false })
   const [decomposing, setDecomposing] = useState(false)
   const [decResult, setDecResult] = useState(null)
-  // Overwrite protection: when a write lands on a scope that already has active context, the
-  // server returns {conflict:true, existing, incoming} instead of overwriting. We hold it here
-  // and let the user choose replace / append / combine. See resolveConflict.
-  const [conflict, setConflict] = useState(null)
-  const [resolving, setResolving] = useState(false)
+  // Disambiguation: every ingest path merely APPENDS, so a scope can accumulate >1 active entry
+  // ("needs disambiguation"). `resolve` holds the group being reconciled; `proposal` is the
+  // editable combined text (generated on demand); nothing is overwritten until the user saves.
+  // See openResolve / generateProposal / applyResolve.
+  const [resolve, setResolve] = useState(null)
+  const [proposal, setProposal] = useState('')
+  const [genProposal, setGenProposal] = useState(false)
+  const [applying, setApplying] = useState(false)
   // Opt-in customer-context vector index (gated by /api/config.enable_context_vector_index).
   // The index is app + downstream only; metadata generation never queries it.
   const [vsEnabled, setVsEnabled] = useState(false)
@@ -131,48 +134,69 @@ function ContextManager() {
     if (saving) return   // ignore double-clicks -- a second concurrent MERGE conflicts
     setSaving(true)
     setError(null)
-    // Editing an existing row sends its context_id so it updates in place (never a conflict);
-    // a new entry omits it and the server checks the scope for a collision.
+    // Editing an existing row sends its context_id so it updates in place; a new entry omits it
+    // and the server appends (never blocks). If the scope then has >1 entry it shows up flagged.
     const payload = { ...form, context_id: (editing && editing !== 'new') ? editing : '' }
-    const { data, error: err } = await safeFetch('/api/customer-context', {
+    const { error: err } = await safeFetch('/api/customer-context', {
       method: 'POST', headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify(payload),
     })
     setSaving(false)
     if (err) { setError(err); return }
-    if (data && data.conflict) { setConflict({ ...data, scope_type: form.scope_type }); return }
     setEditing(null)
     setForm({ scope: '', scope_type: 'schema', context_text: '', context_label: '', priority: 0 })
     load()
   }
 
-  // Apply the user's choice for an existing-context collision. Re-POSTs the incoming text (which
-  // travels in the conflict payload, so a document never needs re-uploading) with on_conflict set.
-  const resolveConflict = async (mode) => {
-    if (!conflict || resolving) return
-    setResolving(true)
-    setError(null)
+  // Open the resolve panel for a scope that has multiple active entries (needs disambiguation).
+  const openResolve = (group) => {
+    setResolve({ scope: group.scope, scope_type: group.scope_type, sources: group.entries })
+    setProposal(''); setError(null)
+  }
+
+  // Generate (on demand) an AI-merged proposal for the scope. Pure preview -- writes nothing.
+  const generateProposal = async () => {
+    if (!resolve || genProposal) return
+    setGenProposal(true); setError(null)
+    const { data, error: err } = await safeFetch('/api/customer-context/combine-preview', {
+      method: 'POST', headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ scope: resolve.scope, scope_type: resolve.scope_type }),
+    })
+    setGenProposal(false)
+    if (err) { setError(err); return }
+    setProposal(data?.merged_text || '')
+  }
+
+  // Collapse the scope to ONE canonical entry from `text` (the edited proposal or a chosen
+  // original): on_conflict='replace' retires every active row here and writes the single row.
+  const applyResolve = async (text) => {
+    if (!resolve || applying || !text || !text.trim()) return
+    setApplying(true); setError(null)
     const { error: err } = await safeFetch('/api/customer-context', {
       method: 'POST', headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({
-        scope: conflict.scope, scope_type: conflict.scope_type,
-        context_text: conflict.incoming.context_text,
-        context_label: conflict.incoming.context_label || '',
-        on_conflict: mode,
+        scope: resolve.scope, scope_type: resolve.scope_type,
+        context_text: text, context_label: '', on_conflict: 'replace',
       }),
     })
-    setResolving(false)
+    setApplying(false)
     if (err) { setError(err); return }
-    setConflict(null)
-    setEditing(null)
-    setForm({ scope: '', scope_type: 'schema', context_text: '', context_label: '', priority: 0 })
-    resetUpload()
+    setResolve(null); setProposal('')
     load()
   }
 
   const handleDelete = async (id) => {
     const { error: err } = await safeFetch(`/api/customer-context/${id}`, { method: 'DELETE' })
     if (err) setError(err); else load()
+  }
+
+  // Delete EVERY active entry at a scope (the Delete action on a multi-entry/grouped row).
+  const handleDeleteScope = async (group) => {
+    for (const e of group.entries) {
+      const { error: err } = await safeFetch(`/api/customer-context/${e.context_id}`, { method: 'DELETE' })
+      if (err) { setError(err); return }
+    }
+    load()
   }
 
   const handleEdit = (entry) => {
@@ -208,7 +232,6 @@ function ContextManager() {
     const { data, error: err } = await safeFetch('/api/customer-context/upload', { method: 'POST', body: fd })
     setUploading(false)
     if (err) { setError(err); return }
-    if (data && data.conflict) { setConflict({ ...data, scope_type: data.scope_type || uploadScopeType }); return }
     setUploadResult(data)
     setUploadFile(null); setUploadVol('')
     setUploadScope('')
@@ -266,6 +289,24 @@ function ContextManager() {
   const wc = wordCount(form.context_text)
   const overLimit = wc > MAX_WORDS
 
+  // Group active entries by (scope_type, scope) so each scope appears ONCE. A scope with >1
+  // entry "needs disambiguation" -- derived purely from the stored rows, so every path that
+  // merely appends participates automatically. Resolving collapses it to one canonical entry.
+  const groups = useMemo(() => {
+    const m = new Map()
+    for (const e of entries) {
+      const key = `${e.scope_type}\u0000${e.scope}`
+      if (!m.has(key)) m.set(key, { scope: e.scope, scope_type: e.scope_type, entries: [] })
+      m.get(key).entries.push(e)
+    }
+    return Array.from(m.values()).map(g => ({
+      ...g,
+      count: g.entries.length,
+      totalWords: g.entries.reduce((s, e) => s + (e.word_count || 0), 0),
+      labels: Array.from(new Set(g.entries.map(e => e.context_label).filter(Boolean))),
+    }))
+  }, [entries])
+
   return (
     <div className="space-y-6">
       <div className="flex items-center justify-between">
@@ -291,57 +332,52 @@ function ContextManager() {
         </div>
       )}
 
-      {conflict && (
-        <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/40 p-4" onClick={() => !resolving && setConflict(null)}>
+      {resolve && (
+        <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/40 p-4" onClick={() => !applying && !genProposal && setResolve(null)}>
           <div className="card max-w-2xl w-full max-h-[85vh] overflow-y-auto p-5 space-y-4" onClick={e => e.stopPropagation()}>
             <div>
-              <h3 className="font-semibold text-slate-800 dark:text-slate-100">This scope already has context</h3>
+              <h3 className="font-semibold text-slate-800 dark:text-slate-100">Disambiguate this scope</h3>
               <p className="text-sm text-slate-500 dark:text-slate-400 mt-1">
-                <span className="font-mono text-slate-700 dark:text-slate-300">{conflict.scope}</span> already has{' '}
-                {conflict.existing.length} active {conflict.existing.length === 1 ? 'entry' : 'entries'}. Choose how to apply the new context &mdash; nothing is overwritten until you pick.
+                <span className="font-mono text-slate-700 dark:text-slate-300">{resolve.scope}</span> has{' '}
+                {resolve.sources.length} active entries. Keep just one, or generate an AI-combined summary you can edit &mdash; nothing is overwritten until you save. The originals are kept as recoverable history.
               </p>
             </div>
 
-            <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
-              <div className="space-y-2">
-                <div className="text-xs font-semibold uppercase tracking-wide text-slate-400">Existing ({conflict.existing.length})</div>
-                {conflict.existing.map((e, i) => (
-                  <div key={e.context_id || i} className="text-xs p-2.5 rounded-md bg-slate-50 dark:bg-dbx-navy-600 text-slate-600 dark:text-slate-300">
-                    {e.context_label && <div className="font-medium text-slate-500 dark:text-slate-400 mb-0.5">{e.context_label} · {e.word_count}w</div>}
-                    <div className="line-clamp-4 whitespace-pre-wrap">{e.context_text}</div>
+            <div className="space-y-2">
+              <div className="text-xs font-semibold uppercase tracking-wide text-slate-400">Current entries ({resolve.sources.length})</div>
+              {resolve.sources.map((e, i) => (
+                <div key={e.context_id || i} className="text-xs p-2.5 rounded-md bg-slate-50 dark:bg-dbx-navy-600 text-slate-600 dark:text-slate-300">
+                  <div className="flex items-center justify-between gap-2 mb-1">
+                    <span className="font-medium text-slate-500 dark:text-slate-400">{e.context_label || 'entry'} · {e.word_count}w</span>
+                    <button onClick={() => applyResolve(e.context_text)} disabled={applying || genProposal}
+                      className="text-xs text-dbx-sky hover:underline disabled:opacity-50 shrink-0">Keep only this</button>
                   </div>
-                ))}
-              </div>
-              <div className="space-y-2">
-                <div className="text-xs font-semibold uppercase tracking-wide text-dbx-sky">Incoming (new)</div>
-                <div className="text-xs p-2.5 rounded-md bg-dbx-sky/5 border border-dbx-sky/20 text-slate-600 dark:text-slate-300">
-                  {conflict.incoming.context_label && <div className="font-medium text-slate-500 dark:text-slate-400 mb-0.5">{conflict.incoming.context_label} · {conflict.incoming.word_count}w</div>}
-                  <div className="line-clamp-[10] whitespace-pre-wrap">{conflict.incoming.context_text}</div>
+                  <div className="whitespace-pre-wrap">{e.context_text}</div>
                 </div>
-              </div>
+              ))}
             </div>
 
             <div className="space-y-2 pt-1">
-              <button onClick={() => resolveConflict('append')} disabled={resolving}
-                className="w-full text-left px-3 py-2.5 rounded-lg border border-dbx-lava/30 bg-dbx-lava/5 hover:bg-dbx-lava/10 disabled:opacity-50 transition-colors">
-                <div className="text-sm font-semibold text-slate-800 dark:text-slate-100">Add alongside <span className="text-xs font-normal text-dbx-lava">· recommended</span></div>
-                <div className="text-xs text-slate-500 dark:text-slate-400">Keep every existing entry and add this as a new one. Nothing is lost; all entries at this scope are injected together.</div>
-              </button>
-              <button onClick={() => resolveConflict('combine')} disabled={resolving}
-                className="w-full text-left px-3 py-2.5 rounded-lg border border-slate-200 dark:border-dbx-navy-400 hover:bg-slate-50 dark:hover:bg-dbx-navy-600 disabled:opacity-50 transition-colors">
-                <div className="text-sm font-semibold text-slate-800 dark:text-slate-100">Combine &amp; summarize</div>
-                <div className="text-xs text-slate-500 dark:text-slate-400">Merge the existing and new context into one coherent entry with AI. The originals are kept as recoverable history.</div>
-              </button>
-              <button onClick={() => resolveConflict('replace')} disabled={resolving}
-                className="w-full text-left px-3 py-2.5 rounded-lg border border-red-200 dark:border-red-700/40 hover:bg-red-50 dark:hover:bg-red-900/15 disabled:opacity-50 transition-colors">
-                <div className="text-sm font-semibold text-red-600 dark:text-red-400">Replace</div>
-                <div className="text-xs text-slate-500 dark:text-slate-400">Retire the existing {conflict.existing.length === 1 ? 'entry' : 'entries'} (kept as recoverable history) and keep only this new context.</div>
-              </button>
+              <div className="flex items-center justify-between gap-2">
+                <div className="text-xs font-semibold uppercase tracking-wide text-dbx-sky">Combined proposal</div>
+                <button onClick={generateProposal} disabled={genProposal || applying}
+                  className="btn-ghost btn-sm disabled:opacity-50">{genProposal ? 'Generating…' : (proposal ? 'Regenerate' : 'Generate combined proposal')}</button>
+              </div>
+              <textarea value={proposal} onChange={e => setProposal(e.target.value)} rows={6}
+                placeholder="Click “Generate combined proposal” to merge all entries with AI, then edit it here — or paste your own canonical text."
+                className="w-full px-3 py-2 rounded-lg border border-slate-300 dark:border-dbx-navy-400 bg-white dark:bg-dbx-navy-700 text-sm" />
+              <div className={`text-xs ${wordCount(proposal) > MAX_WORDS ? 'text-red-500 font-medium' : 'text-slate-400'}`}>
+                {wordCount(proposal)} / {MAX_WORDS} words — saving replaces all entries at this scope with this single text.
+              </div>
             </div>
 
             <div className="flex items-center justify-between pt-1">
-              <span className="text-xs text-slate-400">{resolving ? 'Applying…' : ''}</span>
-              <button onClick={() => setConflict(null)} disabled={resolving} className="btn-ghost btn-sm disabled:opacity-50">Cancel</button>
+              <span className="text-xs text-slate-400">{applying ? 'Applying…' : ''}</span>
+              <div className="flex gap-2">
+                <button onClick={() => { setResolve(null); setProposal('') }} disabled={applying || genProposal} className="btn-ghost btn-sm disabled:opacity-50">Cancel</button>
+                <button onClick={() => applyResolve(proposal)} disabled={applying || genProposal || wordCount(proposal) === 0 || wordCount(proposal) > MAX_WORDS}
+                  className="btn-primary btn-sm disabled:opacity-50">Save combined</button>
+              </div>
             </div>
           </div>
         </div>
@@ -642,7 +678,7 @@ function ContextManager() {
       {/* Table */}
       {loading ? (
         <div className="text-center py-8 text-slate-400">Loading...</div>
-      ) : entries.length === 0 ? (
+      ) : groups.length === 0 ? (
         <div className="card p-8 text-center text-slate-400">
           No customer context entries yet. Click "Write an Entry" or "Add from a File" to get started.
         </div>
@@ -655,28 +691,43 @@ function ContextManager() {
                 <th className="px-4 py-2.5 text-left font-medium text-slate-500 dark:text-slate-400">Type</th>
                 <th className="px-4 py-2.5 text-left font-medium text-slate-500 dark:text-slate-400">Label</th>
                 <th className="px-4 py-2.5 text-left font-medium text-slate-500 dark:text-slate-400">Words</th>
-                <th className="px-4 py-2.5 text-left font-medium text-slate-500 dark:text-slate-400">Priority</th>
+                <th className="px-4 py-2.5 text-left font-medium text-slate-500 dark:text-slate-400">Entries</th>
                 <th className="px-4 py-2.5 text-right font-medium text-slate-500 dark:text-slate-400">Actions</th>
               </tr>
             </thead>
             <tbody className="divide-y divide-slate-100 dark:divide-dbx-navy-500">
-              {entries.map(e => (
-                <tr key={e.context_id} className="hover:bg-slate-50 dark:hover:bg-dbx-navy-600/50">
-                  <td className="px-4 py-3 font-mono text-xs text-slate-700 dark:text-slate-300">{e.scope}</td>
-                  <td className="px-4 py-3">
-                    <span className="inline-flex px-2 py-0.5 rounded-full text-xs font-medium bg-slate-100 dark:bg-dbx-navy-500 text-slate-600 dark:text-slate-300">
-                      {e.scope_type}
-                    </span>
-                  </td>
-                  <td className="px-4 py-3 text-slate-600 dark:text-slate-400">{e.context_label || '-'}</td>
-                  <td className="px-4 py-3 text-slate-500">{e.word_count}</td>
-                  <td className="px-4 py-3 text-slate-500">{e.priority}</td>
-                  <td className="px-4 py-3 text-right">
-                    <button onClick={() => handleEdit(e)} className="text-xs text-dbx-sky hover:underline mr-3">Edit</button>
-                    <button onClick={() => handleDelete(e.context_id)} className="text-xs text-red-500 hover:underline">Delete</button>
-                  </td>
-                </tr>
-              ))}
+              {groups.map(g => {
+                const multi = g.count > 1
+                const only = g.entries[0]
+                return (
+                  <tr key={`${g.scope_type}:${g.scope}`} className="hover:bg-slate-50 dark:hover:bg-dbx-navy-600/50">
+                    <td className="px-4 py-3 font-mono text-xs text-slate-700 dark:text-slate-300">
+                      {g.scope}
+                      {multi && (
+                        <span className="ml-2 inline-flex px-2 py-0.5 rounded-full text-[10px] font-semibold bg-amber-500/15 text-amber-700 dark:text-amber-400 align-middle whitespace-nowrap">
+                          needs disambiguation
+                        </span>
+                      )}
+                    </td>
+                    <td className="px-4 py-3">
+                      <span className="inline-flex px-2 py-0.5 rounded-full text-xs font-medium bg-slate-100 dark:bg-dbx-navy-500 text-slate-600 dark:text-slate-300">
+                        {g.scope_type}
+                      </span>
+                    </td>
+                    <td className="px-4 py-3 text-slate-600 dark:text-slate-400">{g.labels.length ? g.labels.join(', ') : '-'}</td>
+                    <td className="px-4 py-3 text-slate-500">{g.totalWords}</td>
+                    <td className="px-4 py-3 text-slate-500">{g.count}</td>
+                    <td className="px-4 py-3 text-right whitespace-nowrap">
+                      {multi ? (
+                        <button onClick={() => openResolve(g)} className="text-xs text-amber-600 dark:text-amber-400 font-medium hover:underline mr-3">Resolve</button>
+                      ) : (
+                        <button onClick={() => handleEdit(only)} className="text-xs text-dbx-sky hover:underline mr-3">Edit</button>
+                      )}
+                      <button onClick={() => multi ? handleDeleteScope(g) : handleDelete(only.context_id)} className="text-xs text-red-500 hover:underline">Delete{multi ? ' all' : ''}</button>
+                    </td>
+                  </tr>
+                )
+              })}
             </tbody>
           </table>
         </div>

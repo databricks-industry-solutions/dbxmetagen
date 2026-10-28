@@ -16628,10 +16628,13 @@ class CustomerContextRequest(BaseModel):
     context_text: str
     context_label: str = ""
     priority: int = 0
-    # Conflict handling when active context already exists at this exact scope.
-    # 'detect' (default) returns a {conflict: true} payload instead of writing, so the UI can
-    # ask the user to 'replace' | 'append' | 'combine'. See upsert_customer_context.
-    on_conflict: str = "detect"
+    # How a create reconciles with context already active at this exact scope.
+    # 'append' (default) ALWAYS writes a new row and never overwrites -- a scope that ends up
+    # with >1 active entry is surfaced as "needs disambiguation" in the UI and reconciled via
+    # the resolve panel, which re-POSTs with 'replace' (collapse to one canonical row) or
+    # 'combine' (LLM-merge, retire originals). 'detect' is accepted for backward compatibility
+    # and treated as 'append' (it no longer blocks). See upsert_customer_context.
+    on_conflict: str = "append"
     # When editing an existing entry, the UI sends its context_id so the row is updated in
     # place (no conflict check, no new row). A create omits it.
     context_id: str = ""
@@ -16834,13 +16837,15 @@ def _cc_write_entry(ctx_id, scope, scope_type, context_text, context_label, prio
 def upsert_customer_context(req: CustomerContextRequest):
     """Create or update a customer context entry, never silently overwriting existing context.
 
-    Editing (req.context_id set) updates that row in place. A create (no context_id) that lands
-    on a scope which already has active context does NOT write under the default
-    on_conflict='detect'; it returns {conflict: true, existing, incoming} so the UI can ask the
-    user to replace / append / combine. The chosen action re-POSTs with on_conflict set:
-      * replace  -- soft-delete all active entries at the scope (kept as history), write new canonical row.
-      * append   -- keep existing, add the new text as its own (content-keyed) row.
-      * combine  -- LLM-merge existing + incoming into one entry; originals kept as inactive history.
+    Editing (req.context_id set) updates that row in place. A create (no context_id) ALWAYS
+    appends and never blocks: every ingest path (manual, structured upload, decompose) writes a
+    row, so a scope that accumulates >1 active entry is derivably "needs disambiguation" and is
+    reconciled later via the resolve panel. The panel re-POSTs with on_conflict set:
+      * append  (default) -- add the new text as its own (content-keyed) row; never overwrites.
+      * replace -- soft-delete all active entries at the scope (kept as history), write one
+                   canonical (scope-keyed) row. The resolve panel's "Save combined".
+      * combine -- LLM-merge existing + incoming into one entry; originals kept as inactive history.
+      * detect  -- legacy alias for append (no longer returns a {conflict: true} payload).
     """
     _ensure_customer_context_table()
     if req.scope_type not in _CC_VALID_TYPES:
@@ -16868,20 +16873,14 @@ def upsert_customer_context(req: CustomerContextRequest):
         return {"context_id": req.context_id, "scope": req.scope,
                 "word_count": len(words), "resolution": "edit"}
 
-    # --- Create: detect a collision with any active context already at this scope. ---
+    # --- Create: never block, never auto-overwrite. The default is APPEND; a scope that ends up
+    # with >1 active entry is derivably "needs disambiguation" and is reconciled via the resolve
+    # panel (which calls back with replace/combine). This keeps all ingest paths on one rule. ---
     existing = _cc_active_at_scope(req.scope)
-    if existing and on_conflict == "detect":
-        return {
-            "conflict": True, "scope": req.scope, "scope_type": req.scope_type,
-            "incoming": {"context_text": req.context_text,
-                         "context_label": req.context_label, "word_count": len(words)},
-            "existing": [{"context_id": e["context_id"], "context_text": e["context_text"],
-                          "context_label": e.get("context_label") or "",
-                          "word_count": e["word_count"]} for e in existing],
-        }
 
-    if not existing or on_conflict == "replace":
-        # Clean scope, or user chose replace: soft-delete anything active here, write canonical row.
+    if on_conflict == "replace":
+        # Resolve action ("Save combined"/"Keep one"): retire everything active at this scope,
+        # write one canonical (scope-keyed) row from the supplied (possibly edited) text.
         if existing:
             _cc_soft_delete_ids([e["context_id"] for e in existing], now)
         ctx_id = _cc_scope_id(req.scope)
@@ -16890,21 +16889,25 @@ def upsert_customer_context(req: CustomerContextRequest):
         return {"context_id": ctx_id, "scope": req.scope, "word_count": len(words),
                 "resolution": "replace" if existing else "created"}
 
-    if on_conflict == "append":
-        ctx_id = _cc_content_id(req.scope, req.context_text)
-        _cc_write_entry(ctx_id, req.scope, req.scope_type, req.context_text,
-                        req.context_label, req.priority, now)
-        return {"context_id": ctx_id, "scope": req.scope, "word_count": len(words),
-                "resolution": "append"}
+    if on_conflict == "combine":
+        # Resolve action: LLM-merge existing + incoming into one entry, retire the originals.
+        merged = (_cc_combine_texts([e["context_text"] for e in existing], req.context_text)
+                  if existing else req.context_text)
+        ctx_id = _cc_content_id(req.scope, merged)
+        _cc_write_entry(ctx_id, req.scope, req.scope_type, merged, req.context_label,
+                        req.priority, now)
+        if existing:
+            _cc_soft_delete_ids([e["context_id"] for e in existing], now)
+        return {"context_id": ctx_id, "scope": req.scope, "word_count": len(merged.split()),
+                "resolution": "combine", "merged_from": len(existing)}
 
-    # combine: merge existing + incoming, write as a fresh content-keyed row, retire the originals.
-    merged = _cc_combine_texts([e["context_text"] for e in existing], req.context_text)
-    ctx_id = _cc_content_id(req.scope, merged)
-    _cc_write_entry(ctx_id, req.scope, req.scope_type, merged, req.context_label,
-                    req.priority, now)
-    _cc_soft_delete_ids([e["context_id"] for e in existing], now)
-    return {"context_id": ctx_id, "scope": req.scope, "word_count": len(merged.split()),
-            "resolution": "combine", "merged_from": len(existing)}
+    # Default (append / legacy 'detect'): append a content-keyed row. Never blocks, never
+    # overwrites. needs_disambiguation tells the UI this scope now has competing entries.
+    ctx_id = _cc_content_id(req.scope, req.context_text)
+    _cc_write_entry(ctx_id, req.scope, req.scope_type, req.context_text,
+                    req.context_label, req.priority, now)
+    return {"context_id": ctx_id, "scope": req.scope, "word_count": len(words),
+            "resolution": "append", "needs_disambiguation": len(existing) >= 1}
 
 
 @app.delete("/api/customer-context/{context_id}")
@@ -16919,6 +16922,40 @@ def delete_customer_context(context_id: str):
         f"WHERE context_id = '{context_id}'"
     )
     return {"deleted": True, "context_id": context_id}
+
+
+class CombinePreviewRequest(BaseModel):
+    scope: str
+    scope_type: str = ""
+
+
+@app.post("/api/customer-context/combine-preview")
+def combine_preview_customer_context(req: CombinePreviewRequest):
+    """Preview a combined/summarized proposal for all active entries at a scope WITHOUT writing.
+
+    Feeds the resolve panel ("needs disambiguation"): the user sees the originals plus this
+    editable proposal, then applies it via POST /api/customer-context with on_conflict='replace'
+    (the edited text becomes the single canonical row; originals are retired, recoverable). Pure
+    read + one LLM merge; reuses _cc_active_at_scope and _cc_combine_texts verbatim. No DB write.
+    """
+    _ensure_customer_context_table()
+    if not req.scope.strip():
+        raise HTTPException(400, detail="scope must be non-empty")
+    existing = _cc_active_at_scope(req.scope)
+    if not existing:
+        raise HTTPException(404, detail="No active context entries at this scope")
+    sources = [{"context_id": e["context_id"], "context_label": e.get("context_label") or "",
+                "word_count": e["word_count"], "context_text": e["context_text"]}
+               for e in existing]
+    if len(existing) == 1:
+        merged = existing[0]["context_text"]
+    else:
+        # _cc_combine_texts(existing_texts, incoming) merges existing_texts + [incoming] into one;
+        # pass all-but-first as existing and the first as incoming so every note is preserved.
+        merged = _cc_combine_texts([e["context_text"] for e in existing[1:]],
+                                   existing[0]["context_text"])
+    return {"scope": req.scope, "scope_type": req.scope_type, "merged_text": merged,
+            "word_count": len(merged.split()), "entry_count": len(existing), "sources": sources}
 
 
 # ---- Customer-context upload: two-lane ingest (#249) ------------------------
@@ -16978,11 +17015,11 @@ def _cc_ingest_entries(entries):
     for entry in entries:
         try:
             req = CustomerContextRequest(**entry)
-            # Structured files are authoritative config for their scopes: replace per scope
-            # (recoverable -- originals kept as inactive history) rather than returning a
-            # conflict mid-batch. A per-entry on_conflict in the file still wins.
+            # Uniform rule: every ingest APPENDS and never auto-overwrites. A scope that ends up
+            # with >1 active entry is flagged for disambiguation in the UI and reconciled there
+            # (structured files used to silently replace). A per-entry on_conflict still wins.
             if not (isinstance(entry, dict) and entry.get("on_conflict")):
-                req.on_conflict = "replace"
+                req.on_conflict = "append"
             results.append(upsert_customer_context(req))
         except HTTPException as exc:
             results.append({"error": exc.detail, "scope": (entry or {}).get("scope", "?") if isinstance(entry, dict) else "?"})
