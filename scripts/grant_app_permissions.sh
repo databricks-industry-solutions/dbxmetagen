@@ -318,6 +318,23 @@ if [ -n "${RUN_AS_SP}" ]; then
         if [ "$(sql_state "${result}")" = "SUCCEEDED" ]; then echo "    OK"; else echo "    FAILED"; echo "    ${result}"; GRANT_FAIL=1; fi
     done
 fi
+
+# Governed UC-Domains tag publishing (UCG-3/4): only attempted when a governed tag key is set
+# (GOVERNED_DOMAIN_TAG_NAME, exported from {target}.env / overrides). The exact grant syntax for
+# governed tags is confirmed in the Domains beta; these are ADDITIVE and soft-fail (the governed
+# feature is opt-in and no-ops without them). Nothing else depends on them.
+if [ -n "${GOVERNED_DOMAIN_TAG_NAME:-}" ]; then
+    echo "  (governed tags) requesting ASSIGN/APPLY TAG for key '${GOVERNED_DOMAIN_TAG_NAME}'"
+    for GSTMT in \
+        "GRANT APPLY TAG ON SCHEMA \`${CATALOG}\`.\`${SCHEMA}\` TO \`${SPN_APP_ID}\`" \
+        "GRANT ASSIGN ON GOVERNED TAG \`${GOVERNED_DOMAIN_TAG_NAME}\` TO \`${SPN_APP_ID}\`"; do
+        echo "    ${GSTMT}"
+        GRESULT=$(run_sql "${GSTMT}")
+        if [ "$(sql_state "${GRESULT}")" = "SUCCEEDED" ]; then echo "      OK"; else
+            echo "      SKIPPED (governed-tag grant not applied; verify syntax/privilege in the Domains beta)";
+            echo "      ${GRESULT}"; fi
+    done
+fi
 if [ "${GRANT_FAIL}" -eq 1 ]; then
     echo ""
     echo "WARNING: One or more GRANT statements failed. The app will still start, but some"

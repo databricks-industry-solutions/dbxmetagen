@@ -1,0 +1,60 @@
+resources:
+  jobs:
+    governed_tag_sync_job:
+      name: "${var.app_name}${var.app_name_suffix}_governed_tag_sync"
+      budget_policy_id: ${var.budget_policy_id}
+
+      # Opt-in, downstream-reader job (roadmap UCG-4/UCG-3): reads already-persisted domain/
+      # subdomain predictions and publishes ONE native UC governed tag (value slash-encodes the
+      # subdomain) so tables join UC Domains / the semantic layer. Default-OFF and capability-gated
+      # -- a no-op unless enable_governed_tags=true AND governed_domain_tag_name is set AND the
+      # governed tag + ASSIGN/APPLY TAG privilege exist. Never edits the ungoverned domain path.
+
+      permissions:
+        - service_principal_name: ${resources.apps.dbxmetagen_app.service_principal_client_id}
+          level: CAN_MANAGE_RUN
+
+      run_as: ${var.run_as}
+
+      email_notifications:
+        on_failure:
+          - ${var.alert_email}
+
+      parameters:
+        - name: catalog_name
+          default: ${var.catalog_name}
+        - name: schema_name
+          default: ${var.schema_name}
+        - name: table_names
+          default: ""
+        - name: enable_governed_tags
+          default: "false"
+        - name: governed_domain_tag_name
+          default: ""
+        - name: governed_domain_separator
+          default: "/"
+        - name: governed_tag_max_len
+          default: "256"
+
+      tasks:
+        - task_key: publish_governed_tags
+          max_retries: 0
+          timeout_seconds: 86400
+          environment_key: default
+          notebook_task:
+            notebook_path: ../../notebooks/publish_governed_tags.py
+            base_parameters:
+              catalog_name: "{{job.parameters.catalog_name}}"
+              schema_name: "{{job.parameters.schema_name}}"
+              table_names: "{{job.parameters.table_names}}"
+              enable_governed_tags: "{{job.parameters.enable_governed_tags}}"
+              governed_domain_tag_name: "{{job.parameters.governed_domain_tag_name}}"
+              governed_domain_separator: "{{job.parameters.governed_domain_separator}}"
+              governed_tag_max_len: "{{job.parameters.governed_tag_max_len}}"
+
+      environments:
+        - environment_key: default
+          spec:
+            environment_version: "2"
+            dependencies:
+              - ../../dist/*.whl

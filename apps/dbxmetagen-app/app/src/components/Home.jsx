@@ -1,4 +1,5 @@
 import React from 'react'
+import { useViewMode } from '../hooks/useViewMode'
 
 /**
  * Two-door landing. The app's primary entry point: the user picks one of two
@@ -49,7 +50,14 @@ const SECONDARY = [
   { id: 'genie', label: 'Build Genie space', desc: 'Natural-language SQL over your data' },
 ]
 
+// Mirror of App.jsx SIMPLIFIED_TABS: destinations that still exist in simplified view.
+// Home must not surface doors/links that route to advanced-only tabs (they would bounce
+// back to Generate), so both the semantic-layer door and the secondary links are gated.
+const SIMPLIFIED_DESTS = new Set(['home', 'jobs', 'metadata', 'guide', 'context'])
+
 export default function Home({ onNavigate }) {
+  const { simplified } = useViewMode()
+  const secondary = simplified ? SECONDARY.filter(s => SIMPLIFIED_DESTS.has(s.id)) : SECONDARY
   return (
     <div className="max-w-4xl mx-auto py-6">
       <div className="text-center mb-8">
@@ -59,7 +67,7 @@ export default function Home({ onNavigate }) {
         </p>
       </div>
 
-      <div className="grid grid-cols-1 md:grid-cols-2 gap-5">
+      <div className={`grid grid-cols-1 gap-5 ${simplified ? 'max-w-md mx-auto' : 'md:grid-cols-2'}`}>
         <DoorCard
           accent="#FF3621"
           eyebrow="Start here"
@@ -74,20 +82,24 @@ export default function Home({ onNavigate }) {
           cta="Generate metadata"
           onClick={() => onNavigate('jobs')}
         />
-        <DoorCard
-          accent="#1B7EAB"
-          eyebrow="Full semantic layer"
-          title="Generate semantic layer"
-          description="Build metric views, a vector index, and a knowledge graph for AI/BI and Genie. Generates and reviews the underlying metadata for you first."
-          bullets={[
-            'Metric views (KPIs your tools can query)',
-            'Vector index for semantic search',
-            'Knowledge graph of how tables relate',
-            'Metadata generated as the foundation',
-          ]}
-          cta="Build semantic layer"
-          onClick={() => onNavigate('semantic')}
-        />
+        {/* Semantic layer is an advanced-only surface (hidden tab in simplified view),
+            so the door is hidden there too — otherwise it dead-ends back to Generate. */}
+        {!simplified && (
+          <DoorCard
+            accent="#1B7EAB"
+            eyebrow="Full semantic layer"
+            title="Generate semantic layer"
+            description="Build metric views, a vector index, and a knowledge graph for AI/BI and Genie. Generates and reviews the underlying metadata for you first."
+            bullets={[
+              'Metric views (KPIs your tools can query)',
+              'Vector index for semantic search',
+              'Knowledge graph of how tables relate',
+              'Metadata generated as the foundation',
+            ]}
+            cta="Build semantic layer"
+            onClick={() => onNavigate('semantic')}
+          />
+        )}
       </div>
 
       <div className="mt-8 border-t border-slate-200 dark:border-dbx-navy-400/30 pt-5">
@@ -95,7 +107,7 @@ export default function Home({ onNavigate }) {
           Already have metadata?
         </p>
         <div className="grid grid-cols-1 sm:grid-cols-3 gap-2.5">
-          {SECONDARY.map(s => (
+          {secondary.map(s => (
             <button
               key={s.id}
               onClick={() => onNavigate(s.id)}

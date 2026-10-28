@@ -202,6 +202,27 @@ class TestConfigBooleanParsing:
         # This should respect the explicit setting
         assert config.allow_data_in_comments is False
 
+    def test_include_existing_table_comment_string_false_is_false(self):
+        """A string "false" (as delivered by a job parameter / notebook widget) must
+        coerce to the boolean False. Before the fix this field was never run through
+        _parse_bool, so "false" survived and `if config.include_existing_table_comment:`
+        was always truthy -- an unchecked toggle had no effect (field escalation)."""
+        config = MetadataConfig(
+            skip_yaml_loading=True, include_existing_table_comment="false"
+        )
+        assert config.include_existing_table_comment is False
+
+    def test_include_existing_table_comment_defaults_true(self):
+        """Unset -> True, matching the variables.yml default (backward compatible)."""
+        config = MetadataConfig(skip_yaml_loading=True)
+        assert config.include_existing_table_comment is True
+
+    def test_include_existing_table_comment_string_true_is_true(self):
+        config = MetadataConfig(
+            skip_yaml_loading=True, include_existing_table_comment="true"
+        )
+        assert config.include_existing_table_comment is True
+
 
 class TestBackwardCompatibility:
     """Test that the new boolean parsing doesn't break existing code."""

@@ -71,6 +71,8 @@ resources:
             value: "${var.vs_endpoint_name}"
           - name: VECTOR_SEARCH_INDEX
             value: "metadata_vs_index"
+          - name: EMBEDDING_MODEL
+            value: "${var.embedding_model}"
           - name: LLM_MODEL
             value: "${var.model}"
           - name: ENABLE_OBO
@@ -93,6 +95,37 @@ resources:
           # os.environ.get("APP_DISPLAY_NAME", "").
           - name: APP_DISPLAY_NAME
             value: "${var.app_display_name}"
+          # DEFAULT_VIEW_MODE: 'advanced' (default) or 'simplified' -- the initial UI
+          # view mode for users who haven't chosen one. Users override per-browser via
+          # the Settings widget. Read as os.environ.get("DEFAULT_VIEW_MODE", "advanced").
+          - name: DEFAULT_VIEW_MODE
+            value: "${var.default_view_mode}"
+          # CERTIFIED_APPLY_POLICY: warn (default) | block | allow. How applying metadata
+          # treats UC-certified assets. block is a HARD gate the app's per-request param
+          # cannot loosen. Read as os.environ.get("CERTIFIED_APPLY_POLICY", "warn").
+          - name: CERTIFIED_APPLY_POLICY
+            value: "${var.certified_apply_policy}"
+          # Governed UC-Domains tag publishing (UCG-3/4), opt-in + default-off. To enable after
+          # verifying the UC Domains tag key in a Domains-enabled workspace: set
+          # GOVERNED_DOMAIN_TAG_NAME to that key and ENABLE_GOVERNED_TAGS=true (and grant the app
+          # SP ASSIGN/APPLY TAG via scripts/grant_app_permissions.sh). Blank = no-op.
+          - name: ENABLE_GOVERNED_TAGS
+            value: "${var.enable_governed_tags}"
+          - name: GOVERNED_DOMAIN_TAG_NAME
+            value: "${var.governed_domain_tag_name}"
+          - name: GOVERNED_DOMAIN_SEPARATOR
+            value: "${var.governed_domain_separator}"
+          - name: GOVERNED_TAG_MAX_LEN
+            value: "${var.governed_tag_max_len}"
+          # Customer-context Vector Search index (opt-in, default-off). When true, the app's
+          # Customer Context tab can build/sync a semantic index over customer_context for
+          # app + downstream use. Metadata generation never queries it. See
+          # docs/CUSTOMER_CONTEXT_VECTOR_INDEX.md.
+          - name: ENABLE_CONTEXT_VECTOR_INDEX
+            value: "${var.enable_context_vector_index}"
+          # Upload size guardrail (MB) for context/acronym/description/document uploads.
+          - name: MAX_UPLOAD_MB
+            value: "${var.max_upload_mb}"
           - name: MLFLOW_TRACE_TIMEOUT_SECONDS
             value: "120"
           # MLFLOW_EXPERIMENT: optional override for trace experiment path.

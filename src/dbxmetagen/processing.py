@@ -2321,7 +2321,10 @@ def get_domain_classification(
         prompt.enrich_from_knowledge_base()
     if getattr(config, "use_ontology_context", False):
         prompt.enrich_from_ontology()
-    if getattr(config, "use_customer_context", False) and _customer_context_cache:
+    if getattr(config, "use_customer_context", False) and (
+        _customer_context_cache
+        or getattr(config, "customer_context_retrieval", "exact") == "vector"
+    ):
         prompt.enrich_from_customer_context(_customer_context_cache)
     prompt_messages = prompt.create_prompt_template()
 
@@ -2517,7 +2520,10 @@ def get_generated_metadata_data_aware(
             prompt.enrich_from_knowledge_base()
         if getattr(config, "use_ontology_context", False):
             prompt.enrich_from_ontology()
-        if getattr(config, "use_customer_context", False) and _customer_context_cache:
+        if getattr(config, "use_customer_context", False) and (
+            _customer_context_cache
+            or getattr(config, "customer_context_retrieval", "exact") == "vector"
+        ):
             prompt.enrich_from_customer_context(_customer_context_cache)
         prompt_messages = prompt.create_prompt_template()
         check_token_length_against_num_words(prompt_messages, config)
@@ -2773,6 +2779,34 @@ def apply_comment_ddl(df: DataFrame, config: MetadataConfig) -> dict:
             "failed_statements": [],
         }
 
+    # Certified-asset apply gate (shared policy; see certification.py). Generation already
+    # happened -- this only decides whether generated DDL reaches a UC-certified asset.
+    # block -> skip certified (fail CLOSED if certification is unreadable); warn -> apply but
+    # log (skip only if skip_certified_assets set); allow -> no gate.
+    from dbxmetagen.certification import gate_ddls
+    _ddls = [row["ddl"] for row in ddl_statements if row["ddl"]]
+    skipped_certified = 0
+    try:
+        _to_apply, _cert_hits, _action = gate_ddls(
+            spark,
+            _ddls,
+            getattr(config, "certified_apply_policy", "warn"),
+            getattr(config, "skip_certified_assets", False),
+        )
+    except RuntimeError as exc:
+        # block policy + certification unreadable -> fail closed: apply nothing.
+        logger.error("Certified apply gate aborted (nothing applied): %s", exc)
+        return {
+            "success_count": 0,
+            "failed_count": 0,
+            "missing_tags": [],
+            "failed_statements": [],
+            "skipped_certified": len(_ddls),
+        }
+    if _action == "skipped":
+        skipped_certified = len(_cert_hits)
+    ddl_statements = [{"ddl": d} for d in _to_apply]
+
     use_batch = _can_batch_ddl()
 
     if use_batch:
@@ -2842,6 +2876,7 @@ def apply_comment_ddl(df: DataFrame, config: MetadataConfig) -> dict:
         "failed_count": len(failed_statements),
         "missing_tags": missing_tags,
         "failed_statements": failed_statements,
+        "skipped_certified": skipped_certified,
     }
 
 
@@ -3570,12 +3605,44 @@ def generate_and_persist_metadata(config: Any) -> None:
 
     global _customer_context_cache
     if getattr(config, "use_customer_context", False):
-        from dbxmetagen.customer_context import prefetch_customer_context
-        _customer_context_cache = prefetch_customer_context(
-            spark, config.catalog_name, config.schema_name
-        )
+        # 'vector' retrieval is the scalable path: it does NOT load the whole table -- it queries
+        # the VS index per table. We prefetch ONLY the small pattern set here (wildcard scopes
+        # can't be an index equality prefilter). 'exact'/'ranked' keep the full in-memory cache.
+        if getattr(config, "customer_context_retrieval", "exact") == "vector":
+            from dbxmetagen.customer_context import prefetch_customer_context_patterns
+            _customer_context_cache = prefetch_customer_context_patterns(
+                spark, config.catalog_name, config.schema_name
+            )
+        else:
+            from dbxmetagen.customer_context import prefetch_customer_context
+            _customer_context_cache = prefetch_customer_context(
+                spark, config.catalog_name, config.schema_name
+            )
     else:
         _customer_context_cache = []
+
+    # App-managed, scope-aware acronyms: overlay onto the baseline variables.yml acro_content
+    # (schema scope > catalog scope > baseline). Always attempted -- a missing table is a
+    # no-op -- because acronyms only enrich the abbreviations hint in the prompt and the
+    # baseline global set still ships untouched. One query per run. The acronym TABLE lives
+    # in the output schema (catalog_name.schema_name), so prefetch reads from there; but
+    # scope is matched against the SOURCE tables (config.table_names), consistent with
+    # customer_context -- a schema-scoped acronym targets the data schema, not the results schema.
+    try:
+        from dbxmetagen.customer_context import prefetch_acronyms, merge_acronyms_into_acro_content
+        _acro_rows = prefetch_acronyms(spark, config.catalog_name, config.schema_name)
+        config.acro_content = merge_acronyms_into_acro_content(
+            config.acro_content, _acro_rows, config.table_names
+        )
+    except Exception as exc:
+        logger.info("Acronym merge skipped (%s)", type(exc).__name__)
+
+    # App-managed, scope-aware column descriptions: layered UNDER the file CSV by the override
+    # loader. Gated on the same allow_manual_override flag as the CSV overrides, in comment/pi
+    # runs only (the loader applies them in comment mode).
+    if getattr(config, "allow_manual_override", True) and config.mode in ("comment", "pi"):
+        from dbxmetagen.overrides import prefetch_customer_overrides
+        prefetch_customer_overrides(spark, config.catalog_name, config.schema_name)
 
     skipped_tables = []
 

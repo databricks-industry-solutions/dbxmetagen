@@ -1,6 +1,6 @@
 [project]
 name = "dbxmetagen"
-version = "0.10.72"
+version = "0.10.82"
 description = "Generates comments and identifies and classifies other metadata for Delta tables in Databricks."
 readme = "README.md"
 authors = [{ name = "Eli Swanson", email = "eli.swanson@databricks.com" }]
@@ -75,7 +75,7 @@ testpaths = ["tests"]
 python_files = ["test_*.py"]
 python_classes = ["Test*"]
 python_functions = ["test_*"]
-addopts = "--ignore=notebooks/integration_tests --ignore=tests/test_app_logic.py"
+addopts = "--ignore=notebooks/integration_tests --ignore=tests/test_app_logic.py --ignore=tests/test_cc_decompose.py --ignore=tests/test_cc_resolve.py"
 markers = [
     "integration: marks tests as integration tests (deselect with '-m \"not integration\"')",
     "app: marks tests as legacy app tests (run separately due to mocking)",

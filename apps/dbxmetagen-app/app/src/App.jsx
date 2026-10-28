@@ -1,4 +1,6 @@
 import React, { useState, useEffect, useRef } from 'react'
+import { ViewModeContext } from './hooks/useViewMode'
+import { CertifiedApplyPolicyContext } from './hooks/useCertifiedApplyPolicy'
 
 // Global fetch interceptor: detect expired Databricks Apps OAuth sessions.
 // When the session cookie expires, the proxy redirects to a login page --
@@ -56,20 +58,22 @@ const TAB_ACCENT = {
   agent: 'border-t-dbx-teal',
 }
 
-// Primary nav mirrors the two-door landing: Home + the two outcomes.
+// Primary nav mirrors the core flow: Home + generate → review/apply, plus the
+// semantic-layer outcome. Review & Apply is primary (not buried in More) so the
+// generate → review → apply path is discoverable end-to-end.
 const PRIMARY_NAV = [
   { id: 'home',     label: 'Home' },
   { id: 'jobs',     label: 'Generate Metadata' },
+  { id: 'metadata', label: 'Review & Apply' },
   { id: 'semantic', label: 'Semantic Layer' },
 ]
 
-// Everything else — review, exploration, and the deeper build tools — lives
-// under one "More" menu so it doesn't compete with the two primary paths.
+// Everything else — exploration and the deeper build tools — lives under one
+// "More" menu so it doesn't compete with the primary paths.
 // Coverage is folded into Review & Apply (not a standalone destination).
 const MORE_NAV = {
   category: 'More',
   items: [
-    { id: 'metadata', label: 'Review & Apply', desc: 'Review, edit, and apply AI-generated metadata' },
     { id: 'agent', label: 'Explore / Agent', desc: 'Chat, graph explorer, and semantic search' },
     { id: 'genie', label: 'Build Genie Space', desc: 'Build natural-language SQL spaces' },
     { id: 'entities', label: 'Entity Browser', desc: 'Entity-first navigation with conformance view' },
@@ -233,6 +237,52 @@ class TabErrorBoundary extends React.Component {
 const VALID_TABS = new Set(Object.keys(COMPONENTS))
 const readHash = () => { const h = window.location.hash.replace('#', ''); return VALID_TABS.has(h) ? h : 'home' }
 
+// Tabs available in simplified view: the core generate -> review/apply flow, plus
+// home and the guide (reachable via the header "?"). Advanced surfaces are hidden.
+// 'context' has no PRIMARY_NAV entry (it lives in the advanced-only "More" menu), so
+// including it here does not add a nav tab -- it only lets the Customer Context link in
+// the Generate form reach the tab instead of being bounced back to jobs by the guard below.
+const SIMPLIFIED_TABS = new Set(['home', 'jobs', 'metadata', 'guide', 'context'])
+
+// Gear icon settings menu (top-right). Currently hosts the view-mode toggle; the
+// natural home for future app-level settings.
+function SettingsMenu({ simplified, onChange }) {
+  const [open, setOpen] = useState(false)
+  return (
+    <div className="relative">
+      <button onClick={() => setOpen(o => !o)}
+        className="w-8 h-8 flex items-center justify-center rounded-lg bg-white/10 backdrop-blur-sm border border-white/10 text-dbx-oat/80 hover:text-white hover:bg-white/20 transition-all"
+        title="Settings" aria-label="Settings" aria-expanded={open}>
+        <svg className="w-4 h-4" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+          <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M10.325 4.317c.426-1.756 2.924-1.756 3.35 0a1.724 1.724 0 002.573 1.066c1.543-.94 3.31.826 2.37 2.37a1.724 1.724 0 001.065 2.572c1.756.426 1.756 2.924 0 3.35a1.724 1.724 0 00-1.066 2.573c.94 1.543-.826 3.31-2.37 2.37a1.724 1.724 0 00-2.572 1.065c-.426 1.756-2.924 1.756-3.35 0a1.724 1.724 0 00-2.573-1.066c-1.543.94-3.31-.826-2.37-2.37a1.724 1.724 0 00-1.065-2.572c-1.756-.426-1.756-2.924 0-3.35a1.724 1.724 0 001.066-2.573c-.94-1.543.826-3.31 2.37-2.37.996.608 2.296.07 2.572-1.065z" />
+          <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M15 12a3 3 0 11-6 0 3 3 0 016 0z" />
+        </svg>
+      </button>
+      {open && (
+        <div className="absolute right-0 top-full mt-2 w-72 bg-white dark:bg-dbx-navy-600 rounded-xl shadow-elevated border border-slate-200 dark:border-dbx-navy-400/30 p-4 text-xs z-50 space-y-3 animate-slide-up">
+          <p className="font-semibold text-slate-700 dark:text-slate-200">Settings</p>
+          <div className="space-y-1.5">
+            <p className="font-medium text-slate-600 dark:text-slate-300">View</p>
+            <div className="inline-flex bg-slate-100 dark:bg-dbx-navy-500 rounded-lg p-0.5">
+              <button onClick={() => onChange('simplified')}
+                className={`px-2.5 py-1 rounded-md text-xs font-medium transition-all ${simplified ? 'bg-white dark:bg-dbx-navy-400 text-dbx-lava shadow-sm' : 'text-slate-500 dark:text-slate-400'}`}>
+                Simplified
+              </button>
+              <button onClick={() => onChange('advanced')}
+                className={`px-2.5 py-1 rounded-md text-xs font-medium transition-all ${!simplified ? 'bg-white dark:bg-dbx-navy-400 text-dbx-lava shadow-sm' : 'text-slate-500 dark:text-slate-400'}`}>
+                Advanced
+              </button>
+            </div>
+            <p className="text-[11px] text-slate-400 dark:text-slate-500 leading-snug">
+              Simplified hides advanced tools (Semantic Layer, Ontology, Entity Browser, Sync) and trims the Generate form to comments. A display preference, not an access control; remembered on this browser.
+            </p>
+          </div>
+        </div>
+      )}
+    </div>
+  )
+}
+
 function AuthStatusBadge() {
   const [auth, setAuth] = useState(null)
   const [expanded, setExpanded] = useState(false)
@@ -280,6 +330,8 @@ export default function App() {
   const [sessionExpired, setSessionExpired] = useState(false)
   const [pipelineStats, setPipelineStats] = useState(null)
   const [appMeta, setAppMeta] = useState({ displayName: '', version: '' })
+  // Certified-asset apply policy (#247); deployment-wide, from /api/config.
+  const [certifiedApplyPolicy, setCertifiedApplyPolicy] = useState('warn')
   const [configErrors, setConfigErrors] = useState([])
   const [dark, setDark] = useState(() => {
     if (typeof window !== 'undefined') {
@@ -289,6 +341,18 @@ export default function App() {
     }
     return false
   })
+  // View mode (#246). null = not yet resolved: use the user's saved choice if any,
+  // else fall back to the backend default once /api/config loads, else 'advanced'.
+  const [viewMode, setViewModeState] = useState(() => {
+    try { const v = localStorage.getItem('dbxmetagen_viewMode'); if (v === 'simplified' || v === 'advanced') return v } catch {}
+    return null
+  })
+  const setViewMode = (v) => {
+    const mode = v === 'simplified' ? 'simplified' : 'advanced'
+    setViewModeState(mode)
+    try { localStorage.setItem('dbxmetagen_viewMode', mode) } catch {}
+  }
+  const simplified = (viewMode || 'advanced') === 'simplified'
 
   useEffect(() => {
     setVisitedTabs(prev => {
@@ -322,9 +386,18 @@ export default function App() {
       if (data) {
         setAppMeta({ displayName: data.app_display_name || '', version: data.version || '' })
         setConfigErrors(data.config_valid === false ? (data.config_errors || []) : [])
+        // Apply the deploy default only when the user has made no explicit choice.
+        setViewModeState(prev => prev ?? (data.default_view_mode === 'simplified' ? 'simplified' : 'advanced'))
+        if (['warn', 'block', 'allow'].includes(data.certified_apply_policy)) setCertifiedApplyPolicy(data.certified_apply_policy)
       }
     })
   }, [])
+
+  // In simplified mode, keep the user off advanced-only tabs (e.g. a stale hash or
+  // deep link). Fall back to Generate Metadata.
+  useEffect(() => {
+    if (simplified && !SIMPLIFIED_TABS.has(activeTab)) setActiveTab('jobs')
+  }, [simplified, activeTab])
 
   useEffect(() => {
     cachedFetchObj('/api/coverage/holistic', {}, TTL.DASHBOARD)
@@ -347,6 +420,8 @@ export default function App() {
   }, [])
 
   return (
+    <ViewModeContext.Provider value={{ viewMode: viewMode || 'advanced', simplified, setViewMode }}>
+    <CertifiedApplyPolicyContext.Provider value={{ policy: certifiedApplyPolicy }}>
     <div className="min-h-screen bg-dbx-oat-light dark:bg-dbx-navy transition-colors">
       {configErrors.length > 0 && (
         <div className="bg-red-600 text-white px-6 py-3 text-sm">
@@ -382,6 +457,7 @@ export default function App() {
             <button onClick={() => setActiveTab('guide')} data-tour="header-guide"
               className="w-8 h-8 flex items-center justify-center rounded-lg bg-white/10 backdrop-blur-sm border border-white/10 text-dbx-oat/80 hover:text-white hover:bg-white/20 transition-all text-sm font-bold"
               title="Getting Started" aria-label="Getting Started">?</button>
+            <SettingsMenu simplified={simplified} onChange={setViewMode} />
             <button onClick={() => setDark(d => !d)}
               className="w-8 h-8 flex items-center justify-center rounded-lg bg-white/10 backdrop-blur-sm border border-white/10 text-dbx-oat/80 hover:text-white hover:bg-white/20 transition-all"
               title={dark ? 'Switch to light mode' : 'Switch to dark mode'}
@@ -425,7 +501,7 @@ export default function App() {
       {activeTab !== 'home' && (
       <nav className="bg-white/80 dark:bg-dbx-navy-700/90 backdrop-blur-sm border-b border-dbx-oat-dark/50 dark:border-dbx-navy-400/20 shadow-nav sticky top-0 z-40">
         <div className="flex items-center gap-1.5 px-6 py-2 max-w-[90rem] mx-auto">
-          {PRIMARY_NAV.map(item => (
+          {(simplified ? PRIMARY_NAV.filter(i => SIMPLIFIED_TABS.has(i.id)) : PRIMARY_NAV).map(item => (
             <button
               key={item.id}
               onClick={() => setActiveTab(item.id)}
@@ -437,8 +513,13 @@ export default function App() {
               {item.label}
             </button>
           ))}
-          <div className="w-px h-6 bg-slate-200 dark:bg-dbx-navy-400/40 mx-0.5 flex-shrink-0" />
-          <NavDropdown cat={MORE_NAV} activeTab={activeTab} onSelect={setActiveTab} dataTour="nav-more" />
+          {/* Advanced tools live under "More" — hidden entirely in simplified view. */}
+          {!simplified && (
+            <>
+              <div className="w-px h-6 bg-slate-200 dark:bg-dbx-navy-400/40 mx-0.5 flex-shrink-0" />
+              <NavDropdown cat={MORE_NAV} activeTab={activeTab} onSelect={setActiveTab} dataTour="nav-more" />
+            </>
+          )}
         </div>
       </nav>
       )}
@@ -472,5 +553,7 @@ export default function App() {
         </div>
       )}
     </div>
+    </CertifiedApplyPolicyContext.Provider>
+    </ViewModeContext.Provider>
   )
 }
