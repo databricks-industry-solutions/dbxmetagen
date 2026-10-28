@@ -1,0 +1,31 @@
+{
+  "_comment": [
+    "Customer context for metadata generation -- JSON equivalent of customer_context.yaml.",
+    "Upload this from the app (Customer Context > Upload File) or seed it the same way as the",
+    "YAML form. Entries are injected into the LLM prompt for every matching table so generated",
+    "comments/classifications reflect YOUR business meaning.",
+    "Each entry: scope (identifier to match), scope_type (catalog|schema|table|pattern),",
+    "context_text (<= 500 words), context_label (optional), priority (optional int, lower sorts",
+    "first). More specific scopes win: table > pattern > schema > catalog. The top-level shape is",
+    "either this object with a 'contexts' list, or a bare JSON array of the entries."
+  ],
+  "contexts": [
+    {
+      "scope": "my_catalog.my_schema",
+      "scope_type": "schema",
+      "context_text": "This schema is an investment-operations warehouse. \"Position\" means a portfolio holding (a security a fund owns), NOT a job role or GPS location. \"Book\" refers to a trading book. Amounts are in USD unless a currency column says otherwise.",
+      "context_label": "investment-ops glossary",
+      "priority": 10
+    },
+    {
+      "scope": "my_catalog.my_schema.fct_*",
+      "scope_type": "pattern",
+      "context_text": "Tables prefixed fct_ are fact tables at transaction grain; each row is one trade. Treat *_amt columns as monetary measures and *_dt as event dates."
+    },
+    {
+      "scope": "my_catalog.my_schema.dim_account",
+      "scope_type": "table",
+      "context_text": "One row per client account. account_status uses codes A=active, C=closed, S=suspended. Do NOT treat ssn_hash as a real SSN -- it is a salted hash used only for joins."
+    }
+  ]
+}

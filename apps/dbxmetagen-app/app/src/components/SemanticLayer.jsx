@@ -1838,6 +1838,7 @@ export default function SemanticLayer({ onNavigate, pipelineStats, onRefreshPipe
             runningAction={jobRunner.runningAction}
             runError={jobRunner.runError}
             runHistory={jobRunner.runHistory}
+            cancelRun={jobRunner.cancelRun}
             pipelineStats={pipelineStats}
             useServerless={pipelineServerless}
             onServerlessChange={setPipelineServerless}

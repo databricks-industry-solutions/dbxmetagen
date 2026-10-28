@@ -33,6 +33,8 @@ resources:
           default: "{{job.run_id}}"
         - name: include_previously_failed_tables
           default: "false"
+        - name: include_existing_table_comment
+          default: "true"
         - name: apply_ddl
           default: "false"
         - name: federation_mode
@@ -67,6 +69,7 @@ resources:
             notebook_path: ../../notebooks/generate_metadata.py
             base_parameters:
               mode: "{{job.parameters.mode}}"
+              include_existing_table_comment: "{{job.parameters.include_existing_table_comment}}"
               table_names: "{{job.parameters.table_names}}"
               catalog_name: "{{job.parameters.catalog_name}}"
               schema_name: "{{job.parameters.schema_name}}"

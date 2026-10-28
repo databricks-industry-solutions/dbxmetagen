@@ -17,6 +17,61 @@ logger = logging.getLogger(__name__)
 
 _csv_cache: dict = {}
 
+# App-managed, scope-aware column description overrides (the "descriptions document"
+# upload). Layered UNDER the file CSV -- a column present in both metadata_overrides.csv
+# and this table keeps the file value (the file is the hand-authored, most-local artifact).
+# Resolved once per run into this module global by prefetch_customer_overrides(); a missing
+# table or empty cache makes the merge a no-op, so behavior is unchanged without uploads.
+CUSTOMER_OVERRIDES_TABLE = "customer_overrides"
+_customer_overrides_cache: list = []
+
+
+def prefetch_customer_overrides(spark, catalog: str, schema: str) -> list:
+    """Load active customer_overrides rows once per run into the module cache. Tolerant of a
+    missing table (returns [], logs at info). Mirrors the customer_context prefetch pattern."""
+    global _customer_overrides_cache
+    fq = f"{catalog}.{schema}.{CUSTOMER_OVERRIDES_TABLE}"
+    try:
+        rows = spark.sql(
+            f"SELECT catalog_name, schema_name, table_name, column_name, comment "
+            f"FROM {fq} WHERE active = TRUE"
+        ).collect()
+        _customer_overrides_cache = [r.asDict() for r in rows]
+    except Exception as exc:
+        logger.info("customer_overrides not readable (%s), skipping uploaded overrides",
+                    type(exc).__name__)
+        _customer_overrides_cache = []
+    return _customer_overrides_cache
+
+
+def _cust_override_matches(row: dict, full_table_name: str) -> bool:
+    """Match a customer_overrides row to a FQN. A blank table_name = schema-wide (any table)."""
+    parts = full_table_name.split(".")
+    if len(parts) != 3:
+        return False
+    cat, sch, tbl = parts
+    r_cat, r_sch, r_tbl = row.get("catalog_name"), row.get("schema_name"), row.get("table_name")
+    if _is_blank(r_cat) or str(r_cat).lower() != cat.lower():
+        return False
+    if _is_blank(r_sch) or str(r_sch).lower() != sch.lower():
+        return False
+    if not _is_blank(r_tbl) and str(r_tbl).lower() not in (tbl.lower(), "*"):
+        return False
+    return True
+
+
+def _customer_overrides_for_table(full_table_name: str) -> dict:
+    """Return {column_name: comment} from the cache for a table (active, non-blank comment)."""
+    out: dict = {}
+    for row in _customer_overrides_cache:
+        col = row.get("column_name")
+        comment = row.get("comment")
+        if _is_blank(col) or _is_blank(comment):
+            continue
+        if _cust_override_matches(row, full_table_name):
+            out.setdefault(str(col), str(comment))
+    return out
+
 
 def _validate_csv_field_counts(resolved_path: str) -> None:
     """Raise ValueError if any data row has a different field count than the header."""
@@ -77,15 +132,21 @@ def get_override_column_set(
     """
     if config.mode == "domain":
         return set()
+
+    cols = set()
+    # Uploaded column descriptions (comment mode only) are verbatim overrides, so their
+    # columns must also be excluded from the LLM call -- same contract as the file CSV.
+    if config.mode == "comment":
+        cols.update(_customer_overrides_for_table(table_name).keys())
+
     resolved = _resolve_csv_path(csv_path)
     if not resolved:
-        return set()
+        return cols
     try:
         csv_df = _load_csv_cached(resolved)
     except Exception:
-        return set()
+        return cols
 
-    cols = set()
     for _, row in csv_df.iterrows():
         col_name = row.get("column")
         if _is_blank(col_name):
@@ -111,35 +172,42 @@ def load_override_data_for_table(
     """
     if config.mode == "domain":
         return {}
-    resolved = _resolve_csv_path(csv_path)
-    if not resolved:
-        return {}
-    try:
-        csv_df = _load_csv_cached(resolved)
-    except Exception:
-        return {}
 
     result: dict = {}
-    for _, row in csv_df.iterrows():
-        col_name = row.get("column")
-        if _is_blank(col_name):
-            continue
-        if not _table_matches(row, table_name):
-            continue
-        values = {}
-        if config.mode == "comment":
-            comment = row.get("comment")
-            if _is_blank(comment):
-                continue
-            values["comment"] = str(comment)
-        elif config.mode == "pi":
-            cls_val = row.get("classification")
-            type_val = row.get("type")
-            if _is_blank(cls_val) and _is_blank(type_val):
-                continue
-            values["classification"] = str(cls_val) if not _is_blank(cls_val) else "None"
-            values["type"] = str(type_val) if not _is_blank(type_val) else "None"
-        result[col_name] = values
+    resolved = _resolve_csv_path(csv_path)
+    if resolved:
+        try:
+            csv_df = _load_csv_cached(resolved)
+        except Exception:
+            csv_df = None
+        if csv_df is not None:
+            for _, row in csv_df.iterrows():
+                col_name = row.get("column")
+                if _is_blank(col_name):
+                    continue
+                if not _table_matches(row, table_name):
+                    continue
+                values = {}
+                if config.mode == "comment":
+                    comment = row.get("comment")
+                    if _is_blank(comment):
+                        continue
+                    values["comment"] = str(comment)
+                elif config.mode == "pi":
+                    cls_val = row.get("classification")
+                    type_val = row.get("type")
+                    if _is_blank(cls_val) and _is_blank(type_val):
+                        continue
+                    values["classification"] = str(cls_val) if not _is_blank(cls_val) else "None"
+                    values["type"] = str(type_val) if not _is_blank(type_val) else "None"
+                result[col_name] = values
+
+    # Layer uploaded column descriptions UNDER the file CSV (comment mode only): the file
+    # wins on conflict, so only columns the CSV did not set are filled from the upload.
+    if config.mode == "comment":
+        for col_name, comment in _customer_overrides_for_table(table_name).items():
+            if col_name not in result:
+                result[col_name] = {"comment": comment}
     return result
 
 

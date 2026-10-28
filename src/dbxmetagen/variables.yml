@@ -56,6 +56,24 @@ variables:
   apply_tags:
     description: Whether to apply tag DDLs (SET TAGS / SET TAG ON) independently of apply_ddl. Defaults to the value of apply_ddl. In federation_mode, apply_ddl stays False but apply_tags can be True to set UC-native tags on foreign tables.
     default: False
+  certified_apply_policy:
+    description: "How applying metadata treats UC-certified assets (certification_status=certified tag). Gates only whether generated comments/tags OVERWRITE those on a certified asset -- the asset and its certified status are never changed. Enforced on the review page, the app apply, AND the jobs. Generation always runs; only the apply is gated. One of: warn (default; overwrite but surface/warn, a per-run skip_certified_assets flag opts into leaving them untouched), block (never overwrite comments/tags on certified assets; hard, no override; requires SELECT on system.information_schema.*_tags), allow (no gate)."
+    default: warn
+  skip_certified_assets:
+    description: Per-run opt-in to SKIP applying metadata to certified assets (only meaningful under certified_apply_policy=warn; block always skips, allow never skips). Set by the app's warn dialog / the generate checkbox.
+    default: False
+  enable_governed_tags:
+    description: "Opt-in (UCG-3/4): publish the business domain as ONE native UC governed tag whose value slash-encodes the subdomain (e.g. banking/retail_banking) so tables join UC Domains / the semantic layer. Separate downstream step; the two ungoverned domain/subdomain tags stay the default. Capability-gated; no-ops unless this is true AND governed_domain_tag_name is set AND the governed tag + ASSIGN/APPLY TAG privilege exist."
+    default: False
+  governed_domain_tag_name:
+    description: "Governed tag KEY UC uses for Domains. Leave BLANK until verified in a Domains-enabled workspace (go/uc-glossary-beta); publishing no-ops while blank. Set to the exact key UC assigns when a Domain is created."
+    default: "none"
+  governed_domain_separator:
+    description: "Separator encoding subdomain inside the single governed value (UC convention: Parent/Sub). Verify in beta before enabling."
+    default: "/"
+  governed_tag_max_len:
+    description: "Max governed-tag value length; values are truncated to this (UC governed-tag limit is 256)."
+    default: "256"
   ddl_output_format:
     description: Output format can be via sql file (default) or via tsv or excel if this improves reviewability. This file is the individual output files.
     default: sql
@@ -358,6 +376,18 @@ variables:
   use_customer_context:
     description: "When true, enrich prompts with customer-provided context from the customer_context Delta table. Context is scoped hierarchically (catalog > schema > pattern > table). Requires the customer_context table to exist (seed from YAML or create via the app)."
     default: false
+  customer_context_retrieval:
+    description: "How in-scope customer context is selected for a table. 'exact' (default): historical hierarchical concat of ALL matching entries up to the budget (in-memory). 'ranked': within the SAME scope filter, thin a crowded scope to the entries most lexically relevant to the table (in-memory). 'vector' (opt-in, SCALABLE): per-table scope-PREFILTERED HYBRID Vector Search against customer_context_vs_index — does NOT load the whole table into memory; falls back to a bounded per-table SQL read if the index is unavailable. Requires enable_context_vector_index + a built index (app: Customer Context → Sync to vector index), and the run principal to read the index. Hierarchy is the hard filter in all three."
+    default: exact
+  customer_context_top_k:
+    description: "In 'ranked' retrieval, the max number of in-scope context entries kept for a table (catalog-level directives are always kept on top of this)."
+    default: "8"
+  enable_context_vector_index:
+    description: "Opt-in (default off): maintain a Databricks Vector Search index over the customer_context table (Delta-Sync, managed embeddings on context_text, on the vs_endpoint_name endpoint) for SEMANTIC context retrieval. Consumed ONLY by the app (semantic resolve-preview) and downstream steps (agents/RAG, Genie); metadata GENERATION is unaffected and never queries it, so there is no added latency or dependency in the generation hot path. Build/sync is an explicit action in the app's Customer Context tab. See docs/CUSTOMER_CONTEXT_VECTOR_INDEX.md."
+    default: false
+  max_upload_mb:
+    description: "Hard ceiling (MB) on any single context/acronym/description/document upload in the app. A guardrail so an egregiously large file can't exhaust the app's memory; generous enough that normal glossaries/dictionaries pass. Raise only if you genuinely need larger uploads."
+    default: "25"
   ontology_vs_index:
     description: "Fully-qualified name of the Databricks Vector Search index for ontology retrieval (e.g. catalog.schema.ontology_vs_index). When set and the index exists, entity/edge classification uses HYBRID vector search instead of the keyword pass0 + full tier-1 LLM dump, dramatically reducing token cost for large ontologies. Leave empty to disable vector retrieval (default)."
     default: ""
