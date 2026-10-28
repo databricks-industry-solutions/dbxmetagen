@@ -88,6 +88,7 @@ export default function BatchJobs({ onNavigate, pipelineStats }) {
     use_kb_comments: false,
     use_customer_context: false,
     include_lineage: true,
+    include_existing_table_comment: true,  // matches variables.yml global default
     build_kb_after: true,
     use_serverless: true,
   })
@@ -152,6 +153,7 @@ export default function BatchJobs({ onNavigate, pipelineStats }) {
       ontology_bundle: ontologyBundle,
       use_customer_context: settings.use_customer_context,
       include_lineage: settings.include_lineage,
+      include_existing_table_comment: settings.include_existing_table_comment,
       ...(skipCert ? { skip_certified_assets: true } : {}),
       ...(domainConfig ? { domain_config: domainConfig } : {}),
       extra_params: buildExtraParams(),
@@ -234,6 +236,7 @@ export default function BatchJobs({ onNavigate, pipelineStats }) {
           use_kb_comments: cfg.use_kb_comments ?? prev.use_kb_comments,
           use_customer_context: cfg.use_customer_context ?? prev.use_customer_context,
           include_lineage: cfg.include_lineage ?? prev.include_lineage,
+          include_existing_table_comment: cfg.include_existing_table_comment ?? prev.include_existing_table_comment,
         }))
         setApplyDdl(cfg.apply_ddl ?? false)
         setFederationMode(cfg.federation_mode ?? false)
@@ -699,6 +702,10 @@ export default function BatchJobs({ onNavigate, pipelineStats }) {
                     <input type="checkbox" checked={settings.use_customer_context} onChange={e => setSetting('use_customer_context', e.target.checked)} />
                     Use customer context
                   </label>
+                  <label className="flex items-center gap-2 text-xs text-slate-600 dark:text-slate-300 cursor-pointer" title="Include the table's existing Unity Catalog comment in the prompt. On by default: helps carry forward prior author intent, but a strong existing comment can make the model lean on it over new context/acronyms. Turn off for fresh comments driven only by data + context.">
+                    <input type="checkbox" checked={settings.include_existing_table_comment} onChange={e => setSetting('include_existing_table_comment', e.target.checked)} />
+                    Include existing table comment
+                  </label>
                 </div>
                 <div className="flex flex-col gap-2 pt-1">
                   <label className="flex items-center gap-2 text-xs text-slate-600 dark:text-slate-300 cursor-pointer" title="Build table + column knowledge base after metadata generation so the Review tab is populated">
@@ -714,6 +721,23 @@ export default function BatchJobs({ onNavigate, pipelineStats }) {
                 </div>
               </div>
             </details>}
+
+            {/* Customer context is the one enrichment worth exposing in Simplified view:
+                acronyms always apply automatically, but context is opt-in (default off),
+                so without this toggle a simplified-view user could never enable the
+                context they uploaded. The full toggle still lives in the advanced block. */}
+            {simplified && (
+              <div className="flex flex-col gap-2 mt-3">
+                <label className="flex items-center gap-2 text-xs text-slate-600 dark:text-slate-300 cursor-pointer" title="Enrich prompts with customer-provided context from the Customer Context tab. Context is matched hierarchically by catalog, schema, pattern, or table scope.">
+                  <input type="checkbox" checked={settings.use_customer_context} onChange={e => setSetting('use_customer_context', e.target.checked)} />
+                  Use customer context
+                </label>
+                <label className="flex items-center gap-2 text-xs text-slate-600 dark:text-slate-300 cursor-pointer" title="Include the table's existing Unity Catalog comment in the prompt. On by default: helps carry forward prior author intent, but a strong existing comment can make the model lean on it over new context/acronyms. Turn off for fresh comments driven only by data + context.">
+                  <input type="checkbox" checked={settings.include_existing_table_comment} onChange={e => setSetting('include_existing_table_comment', e.target.checked)} />
+                  Include existing table comment
+                </label>
+              </div>
+            )}
 
             {!simplified && <p className="text-xs text-slate-500 dark:text-slate-400 mt-2 font-medium">
               Ontology: {ontologyBundle ? bundles.find(b => b.key === ontologyBundle)?.name || ontologyBundle : <em>None</em>}

@@ -3624,12 +3624,15 @@ def generate_and_persist_metadata(config: Any) -> None:
     # App-managed, scope-aware acronyms: overlay onto the baseline variables.yml acro_content
     # (schema scope > catalog scope > baseline). Always attempted -- a missing table is a
     # no-op -- because acronyms only enrich the abbreviations hint in the prompt and the
-    # baseline global set still ships untouched. One query per run.
+    # baseline global set still ships untouched. One query per run. The acronym TABLE lives
+    # in the output schema (catalog_name.schema_name), so prefetch reads from there; but
+    # scope is matched against the SOURCE tables (config.table_names), consistent with
+    # customer_context -- a schema-scoped acronym targets the data schema, not the results schema.
     try:
         from dbxmetagen.customer_context import prefetch_acronyms, merge_acronyms_into_acro_content
         _acro_rows = prefetch_acronyms(spark, config.catalog_name, config.schema_name)
         config.acro_content = merge_acronyms_into_acro_content(
-            config.acro_content, _acro_rows, config.catalog_name, config.schema_name
+            config.acro_content, _acro_rows, config.table_names
         )
     except Exception as exc:
         logger.info("Acronym merge skipped (%s)", type(exc).__name__)

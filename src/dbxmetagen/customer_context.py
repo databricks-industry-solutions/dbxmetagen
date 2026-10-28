@@ -598,13 +598,36 @@ def prefetch_acronyms(spark: Any, catalog: str, schema: str) -> List[Dict[str, A
         return []
 
 
-def _acro_scope_matches(row: Dict[str, Any], catalog: str, schema: str) -> bool:
+def _acro_source_scopes(source_tables: Any) -> Tuple[set, set]:
+    """Derive the set of source catalogs and ``catalog.schema`` scopes from the tables
+    being documented in this run. Wildcards are fine: ``cat.sch.*`` still yields catalog
+    ``cat`` and schema ``cat.sch``."""
+    catalogs: set = set()
+    schemas: set = set()
+    for t in (source_tables or []):
+        parts = str(t).split(".")
+        if len(parts) >= 1 and parts[0]:
+            catalogs.add(parts[0])
+        if len(parts) >= 2 and parts[0] and parts[1]:
+            schemas.add(f"{parts[0]}.{parts[1]}")
+    return catalogs, schemas
+
+
+def _acro_scope_matches(row: Dict[str, Any], source_catalogs: set, source_schemas: set) -> bool:
+    """Does an acronym row apply to any SOURCE table in this run?
+
+    Scope is matched against the tables being documented (their catalog /
+    ``catalog.schema``), NOT the output/results schema -- consistent with how
+    ``customer_context`` resolves scope (``_match_rows``). A catalog-scoped acronym
+    applies when any source table is in that catalog; a schema-scoped acronym applies
+    when any source table is in that schema.
+    """
     st = (row.get("scope_type") or "").lower()
     scope = row.get("scope") or ""
     if st == "catalog":
-        return scope == catalog
+        return scope in source_catalogs
     if st == "schema":
-        return scope == f"{catalog}.{schema}"
+        return scope in source_schemas
     return False
 
 
@@ -626,12 +649,19 @@ def _coerce_acro_dict(base: Any) -> Dict[str, Any]:
 
 
 def merge_acronyms_into_acro_content(
-    base: Any, rows: List[Dict[str, Any]], catalog: str, schema: str
+    base: Any, rows: List[Dict[str, Any]], source_tables: Any
 ) -> Any:
     """Overlay scoped acronym rows onto the baseline acro_content. Returns the baseline
     unchanged (same object) when no scoped rows match, so a deployment with no uploaded
-    acronyms behaves exactly as before. Schema-scoped entries win over catalog-scoped."""
-    scoped = [r for r in rows if _acro_scope_matches(r, catalog, schema)]
+    acronyms behaves exactly as before. Schema-scoped entries win over catalog-scoped.
+
+    ``source_tables`` is the list of tables being documented in this run
+    (``config.table_names``); acronym scope is matched against those SOURCE tables'
+    catalog / ``catalog.schema`` -- NOT the output/results schema. (Historically this
+    matched against ``config.schema_name``, the OUTPUT schema, so a schema-scoped acronym
+    on the data schema never matched -- issue surfaced in field testing.)"""
+    source_catalogs, source_schemas = _acro_source_scopes(source_tables)
+    scoped = [r for r in rows if _acro_scope_matches(r, source_catalogs, source_schemas)]
     if not scoped:
         return base
     merged = _coerce_acro_dict(base)

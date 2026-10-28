@@ -1125,6 +1125,9 @@ class JobRunRequest(BaseModel):
     use_kb_comments: bool = False
     use_customer_context: bool = False
     include_lineage: bool = False
+    # Defaults True to match variables.yml (global default) -- older callers that omit it
+    # keep today's behavior; the field lets the UI turn it OFF explicitly.
+    include_existing_table_comment: bool = True
     federation_mode: bool = False
     # Analytics pipeline params
     catalog_name: Optional[str] = None
@@ -1454,6 +1457,9 @@ def run_job(req: JobRunRequest):
         params["use_customer_context"] = "true"
     if req.include_lineage:
         params["include_lineage"] = "true"
+    # Always forwarded (not omit-when-false): the library default is TRUE, so omitting a
+    # false value would silently re-enable it. Explicit string keeps the UI toggle honest.
+    params["include_existing_table_comment"] = "true" if req.include_existing_table_comment else "false"
     if req.sweep_stale_docs:
         params["sweep_stale_docs"] = "true"
     if req.sweep_stale_edges:

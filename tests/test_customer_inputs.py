@@ -16,6 +16,7 @@ import pytest
 from dbxmetagen.customer_context import (
     merge_acronyms_into_acro_content,
     _acro_scope_matches,
+    _acro_source_scopes,
 )
 import dbxmetagen.overrides as overrides
 from dbxmetagen.overrides import (
@@ -27,9 +28,14 @@ from dbxmetagen.overrides import (
 
 # --- acronyms ---------------------------------------------------------------
 
+# Scope is matched against the SOURCE tables being documented (config.table_names),
+# so tests pass a source-table FQN list. 'cat.sch.t' -> catalog 'cat', schema 'cat.sch'.
+_SRC = ["cat.sch.t"]
+
+
 def test_merge_acronyms_no_scoped_rows_returns_base_unchanged():
     base = '{"CD": "clinical data"}'
-    out = merge_acronyms_into_acro_content(base, [], "cat", "sch")
+    out = merge_acronyms_into_acro_content(base, [], _SRC)
     assert out is base  # identity: untouched when nothing matches
 
 
@@ -37,7 +43,7 @@ def test_merge_acronyms_non_matching_scope_returns_base():
     base = {"CD": "clinical data"}
     rows = [{"scope": "other.schema", "scope_type": "schema",
              "abbreviation": "QE", "expansion": "quality event", "notes": ""}]
-    out = merge_acronyms_into_acro_content(base, rows, "cat", "sch")
+    out = merge_acronyms_into_acro_content(base, rows, _SRC)
     assert out is base
 
 
@@ -45,8 +51,17 @@ def test_merge_acronyms_overlays_on_json_string_base():
     base = '{"CD": "clinical data"}'
     rows = [{"scope": "cat.sch", "scope_type": "schema",
              "abbreviation": "QE", "expansion": "quality event", "notes": ""}]
-    out = merge_acronyms_into_acro_content(base, rows, "cat", "sch")
+    out = merge_acronyms_into_acro_content(base, rows, _SRC)
     assert out == {"CD": "clinical data", "QE": "quality event"}
+
+
+def test_merge_acronyms_schema_scope_matches_source_table_schema():
+    # The bug fix: a schema-scoped acronym on the DATA schema (not the output schema)
+    # must now apply to a source table in that schema.
+    rows = [{"scope": "cat.sch", "scope_type": "schema",
+             "abbreviation": "QE", "expansion": "quality event", "notes": ""}]
+    out = merge_acronyms_into_acro_content({}, rows, ["cat.sch.patients"])
+    assert out["QE"] == "quality event"
 
 
 def test_merge_acronyms_schema_scope_beats_catalog_scope():
@@ -54,29 +69,47 @@ def test_merge_acronyms_schema_scope_beats_catalog_scope():
         {"scope": "cat", "scope_type": "catalog", "abbreviation": "QE", "expansion": "catalog-level", "notes": ""},
         {"scope": "cat.sch", "scope_type": "schema", "abbreviation": "QE", "expansion": "schema-level", "notes": ""},
     ]
-    out = merge_acronyms_into_acro_content({}, rows, "cat", "sch")
+    out = merge_acronyms_into_acro_content({}, rows, _SRC)
     assert out["QE"] == "schema-level"
 
 
 def test_merge_acronyms_folds_notes_into_expansion():
     rows = [{"scope": "cat", "scope_type": "catalog",
              "abbreviation": "CD", "expansion": "clinical data", "notes": "Artifact"}]
-    out = merge_acronyms_into_acro_content({}, rows, "cat", "sch")
+    out = merge_acronyms_into_acro_content({}, rows, _SRC)
     assert out["CD"] == "clinical data (Artifact)"
 
 
 def test_merge_acronyms_malformed_base_falls_back_to_scoped_only():
     out = merge_acronyms_into_acro_content("not json at all", [
         {"scope": "cat", "scope_type": "catalog", "abbreviation": "CD", "expansion": "clinical data", "notes": ""},
-    ], "cat", "sch")
+    ], _SRC)
     assert out == {"CD": "clinical data"}
 
 
+def test_merge_acronyms_multi_schema_run_matches_each_source_schema():
+    # A run spanning two source schemas: each schema-scoped acronym applies.
+    rows = [
+        {"scope": "cat.a", "scope_type": "schema", "abbreviation": "AA", "expansion": "alpha", "notes": ""},
+        {"scope": "cat.b", "scope_type": "schema", "abbreviation": "BB", "expansion": "bravo", "notes": ""},
+        {"scope": "cat.c", "scope_type": "schema", "abbreviation": "CC", "expansion": "charlie", "notes": ""},
+    ]
+    out = merge_acronyms_into_acro_content({}, rows, ["cat.a.t1", "cat.b.t2"])
+    assert out == {"AA": "alpha", "BB": "bravo"}  # cat.c not in scope
+
+
+def test_acro_source_scopes_handles_wildcards():
+    cats, schemas = _acro_source_scopes(["cat.sch.*", "cat.other.tbl"])
+    assert cats == {"cat"}
+    assert schemas == {"cat.sch", "cat.other"}
+
+
 def test_acro_scope_matches():
-    assert _acro_scope_matches({"scope_type": "catalog", "scope": "cat"}, "cat", "sch")
-    assert _acro_scope_matches({"scope_type": "schema", "scope": "cat.sch"}, "cat", "sch")
-    assert not _acro_scope_matches({"scope_type": "schema", "scope": "cat"}, "cat", "sch")
-    assert not _acro_scope_matches({"scope_type": "pattern", "scope": "x"}, "cat", "sch")
+    cats, schemas = {"cat"}, {"cat.sch"}
+    assert _acro_scope_matches({"scope_type": "catalog", "scope": "cat"}, cats, schemas)
+    assert _acro_scope_matches({"scope_type": "schema", "scope": "cat.sch"}, cats, schemas)
+    assert not _acro_scope_matches({"scope_type": "schema", "scope": "cat"}, cats, schemas)
+    assert not _acro_scope_matches({"scope_type": "pattern", "scope": "x"}, cats, schemas)
 
 
 # --- uploaded description overrides -----------------------------------------
