@@ -54,6 +54,7 @@ done
 
 echo "=================================================================="
 echo " deploy.sh (legacy wrapper -- fully supported). It chains:"
+echo "   scripts/grant_app_permissions.sh -t $TARGET -p $PROFILE   (pre-deploy, only if run_as is an SP)"
 echo "   databricks bundle deploy -t $TARGET -p $PROFILE"
 echo "   databricks bundle run    -t $TARGET -p $PROFILE dbxmetagen_app"
 echo "   scripts/grant_app_permissions.sh -t $TARGET -p $PROFILE"
@@ -178,6 +179,28 @@ fi
 # step below deploys the app source AND starts it, so the started lifecycle is not
 # needed here. (A complex var cannot be set via --var/BUNDLE_VAR_*; the one-step
 # started:true is opt-in via variable-overrides.json on the direct engine only.)
+GRANT_ARGS=(-t "$TARGET" -p "$PROFILE")
+[ "$SKIP_VS" = true ] && GRANT_ARGS+=(--no-vs)
+
+# --- Pre-deploy grants, only when jobs run_as is a service principal ---
+# The Jobs API refuses to create a job whose run_as SP the deployer lacks the
+# "Service Principal: User" role on, so grant_app_permissions.sh must set that up
+# BEFORE the deploy (it also grants the jobs SP; the app SP is handled post-deploy).
+_run_as_sp=$(databricks bundle validate -t "$TARGET" -p "$PROFILE" "${DEPLOY_VARS[@]}" --output json 2>/dev/null | python3 -c "
+import sys, json
+try:
+    v = json.load(sys.stdin).get('variables', {}).get('run_as', {})
+    ra = v.get('value', v.get('default')) or {}
+    print(ra.get('service_principal_name', '') if isinstance(ra, dict) else '')
+except Exception:
+    print('')
+" 2>/dev/null || echo "")
+if [ -n "$_run_as_sp" ]; then
+    echo ""
+    echo "=== grant_app_permissions.sh (pre-deploy: jobs run_as SP ${_run_as_sp}) ==="
+    scripts/grant_app_permissions.sh "${GRANT_ARGS[@]}"
+fi
+
 echo ""
 echo "=== bundle deploy (target=${TARGET}, profile=${PROFILE}) ==="
 # Capture the exit code without set -e aborting first, so we can attach a CLI-version
@@ -205,8 +228,6 @@ fi
 # --- Post-deploy UC + Vector Search grants (idempotent) ---
 echo ""
 echo "=== grant_app_permissions.sh ==="
-GRANT_ARGS=(-t "$TARGET" -p "$PROFILE")
-[ "$SKIP_VS" = true ] && GRANT_ARGS+=(--no-vs)
 scripts/grant_app_permissions.sh "${GRANT_ARGS[@]}"
 
 echo ""

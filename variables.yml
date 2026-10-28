@@ -173,16 +173,39 @@ variables:
   current_user:
     description: User deploying the bundle. Can apply to service principals as well.
     default: ${workspace.current_user.userName}
+  alert_email:
+    description: >-
+      Email address that job on_failure notifications are sent to. Defaults to the
+      deploying user for backward compatibility; override to a team distribution
+      list (a real email address, NOT a Unity Catalog group name -- Databricks job
+      email notifications do not accept group names) in variable-overrides.json so
+      operational failure alerts are not tied to a named individual.
+    default: ${var.current_user}
   run_as:
     description: >-
-      Identity that dev/demo jobs run as. Development-mode targets (dev, demo)
-      require run_as to be the deploying user, so it defaults to that. The PROD
-      target intentionally does NOT set run_as: it lets DAB default run_as to the
-      deploying identity, typed correctly for a user OR a service principal. That is
-      what makes an SP-deployed prod bundle work with no override (a hardcoded
-      user_name: <sp-app-id> is rejected by the Jobs API with "cannot be set as
-      run_as"). For the advanced "deploy as X but run jobs as a DIFFERENT service
-      principal Y" pattern, add an explicit run_as back to the prod target.
+      Identity that every job runs as. Applied per job (each resources/jobs/*.yml
+      references this variable in its own run_as), NOT at the target level: a target-level
+      run_as also applies to the app, and DAB rejects an app whose run_as differs
+      from the deploying identity. Defaults to the deploying user -- the identity
+      that has always been the job runner -- so nothing changes unless you set it.
+
+      To run jobs as an EXISTING service principal (so operational writes never
+      depend on a named human holding MODIFY), override this complex variable in
+      .databricks/bundle/<target>/variable-overrides.json (CLI) or the UI's
+      "Configure variable overrides" editor, before or after the first deploy:
+        {"run_as": {"service_principal_name": "<sp-application-id>"}}
+      Requirements: the deploying identity holds the "Service Principal: User"
+      role on that SP BEFORE the deploy (workspace admins are not exempt), and the
+      SP has the app SP's output-schema + Vector Search privileges, CREATE VOLUME /
+      FUNCTION / MATERIALIZED VIEW on the output schema, and CAN_READ on the bundle folder (root_path) holding the job notebooks.
+      scripts/grant_app_permissions.sh does all of this when it detects an SP run_as, so
+      run it once before the first deploy too (deploy.sh does this automatically).
+      Use a dedicated SP rather than the app's own SP: the app SP is recreated
+      (new id) whenever the app is deleted/recreated.
+
+      An SP run_as is intended for the PROD target. dev and demo are development-mode
+      targets, where DAB requires run_as to equal the deploying user, so leave the
+      default there (overriding to an SP in dev/demo will be rejected).
     type: complex
     default:
       user_name: ${workspace.current_user.userName}

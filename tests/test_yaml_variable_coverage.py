@@ -46,6 +46,9 @@ class TestYAMLVariableCoverage:
             "current_working_directory",  # Runtime-determined
             "deploying_user",  # Bundle-level variable
             "run_as",  # Bundle-level job run identity (complex var), not a MetadataConfig param
+            "alert_email",  # Bundle-level job on_failure email, not a MetadataConfig param
+            "enable_context_vector_index",  # App-level feature flag, not a MetadataConfig param
+            "max_upload_mb",  # App-level upload cap, not a MetadataConfig param
             "enable_obo",  # App-level env var, not a MetadataConfig param
             "enable_agent_mcp",  # App-level env var (custom /mcp route), not a MetadataConfig param
             "job_table_names",  # Job-level default (table_names used instead)

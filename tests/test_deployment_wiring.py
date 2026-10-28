@@ -195,3 +195,41 @@ def test_every_job_name_is_keyword_discoverable():
         "job names share no _JOB_NAME_KEYWORDS term, so the app cannot resolve "
         f"them by name: {undiscoverable}. Add a keyword or rename the job."
     )
+
+
+def test_run_as_is_per_job_not_per_target():
+    """run_as must be set on each job, never at the target level.
+
+    A target-level run_as applies to every resource, including the app, and DAB
+    rejects an app whose run_as differs from the deploying identity ("apps do not
+    support a setting a run_as user that is different from the owner"). Setting it
+    per job keeps the app owned by the deployer while a run_as SP override in
+    variable-overrides.json still applies to every job.
+    """
+    bundle = yaml.safe_load((ROOT / "databricks.yml").read_text())
+    with_target_run_as = [t for t, cfg in (bundle.get("targets") or {}).items()
+                          if "run_as" in (cfg or {})]
+    assert not with_target_run_as, (
+        f"targets {with_target_run_as} set run_as; move it to the job resources"
+    )
+
+    missing = []
+    for f in JOBS_DIR.glob("*.job.yml"):
+        doc = yaml.safe_load(f.read_text()) or {}
+        for key, job in (doc.get("resources", {}).get("jobs") or {}).items():
+            if job.get("run_as") != "${var.run_as}":
+                missing.append(f"{f.name}:{key}")
+    assert not missing, f"jobs without run_as: ${{var.run_as}}: {missing}"
+
+
+def test_job_failure_alerts_use_alert_email():
+    """Job on_failure notifications go to ${var.alert_email} (defaults to the
+    deploying user; override to a team address), not a hardcoded user."""
+    wrong = []
+    for f in JOBS_DIR.glob("*.job.yml"):
+        doc = yaml.safe_load(f.read_text()) or {}
+        for key, job in (doc.get("resources", {}).get("jobs") or {}).items():
+            on_failure = (job.get("email_notifications") or {}).get("on_failure")
+            if on_failure != ["${var.alert_email}"]:
+                wrong.append(f"{f.name}:{key}")
+    assert not wrong, f"jobs not alerting ${{var.alert_email}}: {wrong}"

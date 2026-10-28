@@ -18,7 +18,7 @@
   "_comment_budget_policy": "Serverless budget policy ID for cost attribution on serverless jobs. Plain string variable -- empty is accepted at job level. Left EMPTY here so verbatim copy is safe; set it to your budget policy UUID to attribute serverless cost.",
   "budget_policy_id": "",
 
-  "_comment_run_as": "Identity jobs run as. Default is the deploying user. Set an SP to own all jobs (the old spn_id). The SP needs USE CATALOG/USE SCHEMA/CREATE TABLE/SELECT/MODIFY on the target schema plus CAN_ATTACH_TO on clusters.",
+  "_comment_run_as": "Identity every JOB runs as (set per job, so the app stays owned by the deployer). Default is the deploying user -- DELETE this key to keep that. To use a service principal, replace the placeholder with an EXISTING SP application id (works from the first deploy; prefer a dedicated SP over the app's own SP, which changes if the app is recreated). The deployer must hold the Service Principal: User role on it BEFORE deploying (admins are not exempt). grant_app_permissions.sh grants that role and gives the SP the same output-schema + Vector Search privileges as the app SP -- run it before the first deploy as well as after (deploy.sh does both).",
   "run_as": { "service_principal_name": "00000000-0000-0000-0000-000000000000" },
 
   "_comment_app": "app_name = app display name + job-name prefix. app_name_suffix appends to both, so multiple instances can coexist in one workspace (the app is a singleton by name).",

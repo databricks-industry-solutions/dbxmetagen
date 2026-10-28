@@ -8,9 +8,11 @@ resources:
         - service_principal_name: ${resources.apps.dbxmetagen_app.service_principal_client_id}
           level: CAN_MANAGE_RUN
 
+      run_as: ${var.run_as}
+
       email_notifications:
         on_failure:
-          - ${var.current_user}
+          - ${var.alert_email}
 
       parameters:
         - name: catalog_name
@@ -23,6 +25,10 @@ resources:
           default: ${var.warehouse_id}
         - name: genie_space_name
           default: ""
+        # Granted CAN_MANAGE on the Genie space this job creates. The space is owned
+        # by the job's run_as identity; with a run_as SP nobody else could see it.
+        - name: genie_space_manager
+          default: ${var.current_user}
         - name: materialize
           default: "false"
         - name: materialization_schedule
@@ -57,6 +63,7 @@ resources:
               schema_name: "{{job.parameters.schema_name}}"
               warehouse_id: "{{job.parameters.warehouse_id}}"
               genie_space_name: "{{job.parameters.genie_space_name}}"
+              genie_space_manager: "{{job.parameters.genie_space_manager}}"
 
       environments:
         - environment_key: default

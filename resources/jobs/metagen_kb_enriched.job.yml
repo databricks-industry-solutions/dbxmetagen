@@ -16,9 +16,11 @@ resources:
         - service_principal_name: ${resources.apps.dbxmetagen_app.service_principal_client_id}
           level: CAN_MANAGE_RUN
 
+      run_as: ${var.run_as}
+
       email_notifications:
         on_failure:
-          - ${var.current_user}
+          - ${var.alert_email}
 
       parameters:
         - name: table_names

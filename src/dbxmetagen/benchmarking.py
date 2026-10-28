@@ -25,18 +25,33 @@ def setup_benchmarking(config):
     # Enable autologging
     mlflow.openai.autolog()
 
-    # Start an MLflow run BEFORE resolving experiment name so the fallback works
-    if not mlflow.active_run():
-        mlflow.start_run()
+    # Start an MLflow run BEFORE resolving experiment name so the fallback works.
+    # The default experiment is the notebook's, owned by whoever first ran it
+    # (normally the deployer). When jobs run as a different identity (a run_as
+    # service principal) it is not writable and start_run fails, so fall back to an
+    # experiment in the running identity's own home folder. Benchmarking is
+    # optional: if that also fails, disable it rather than fail metadata generation.
+    try:
+        if not mlflow.active_run():
+            mlflow.start_run()
+        notebook_path = config.notebook_path
+        experiment_name = (
+            notebook_path
+            if notebook_path
+            else mlflow.get_experiment(mlflow.active_run().info.experiment_id).name
+        )
+    except Exception as e:
+        try:
+            identity = SparkSession.builder.getOrCreate().sql("SELECT current_user()").first()[0]
+            experiment_name = f"/Users/{identity}/dbxmetagen_benchmarks"
+            print(f"Benchmarking: default experiment not usable ({e}); using {experiment_name}")
+            mlflow.set_experiment(experiment_name)
+            mlflow.start_run()
+        except Exception as e2:
+            print(f"WARNING: benchmarking disabled for this run: {e2}")
+            return None
 
     run_start_time_ms = mlflow.active_run().info.start_time
-
-    notebook_path = config.notebook_path
-    experiment_name = (
-        notebook_path
-        if notebook_path
-        else mlflow.get_experiment(mlflow.active_run().info.experiment_id).name
-    )
 
     # Set run_id as a tag for informational purposes
     if (
