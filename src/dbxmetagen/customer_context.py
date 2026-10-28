@@ -91,19 +91,26 @@ def prefetch_customer_context(spark: Any, catalog: str, schema: str) -> List[Dic
 
 
 def _match_rows(cache: List[Dict[str, Any]], full_table_name: str) -> List[Dict[str, Any]]:
-    """Return cache rows whose scope matches ``full_table_name`` (any granularity)."""
-    parts = full_table_name.split(".")
+    """Return cache rows whose scope matches ``full_table_name`` (any granularity).
+
+    Comparison is case-insensitive: Unity Catalog identifiers are case-insensitive, so a
+    scope typed in a different case than the table must still match (keeps context and
+    acronym resolution consistent -- see ``_acro_scope_matches``). ``fnmatch`` is case-
+    sensitive on POSIX, so the pattern path is lower-cased on both sides too.
+    """
+    ftn = full_table_name.lower()
+    parts = ftn.split(".")
     catalog = parts[0] if len(parts) >= 1 else ""
     schema_scope = f"{parts[0]}.{parts[1]}" if len(parts) >= 2 else ""
     matches = []
     for row in cache:
         st = row.get("scope_type", "")
-        scope = row.get("scope", "")
+        scope = (row.get("scope") or "").lower()
         if (
             (st == "catalog" and scope == catalog)
             or (st == "schema" and scope == schema_scope)
-            or (st == "table" and scope == full_table_name)
-            or (st == "pattern" and fnmatch(full_table_name, scope))
+            or (st == "table" and scope == ftn)
+            or (st == "pattern" and fnmatch(ftn, scope))
         ):
             matches.append(row)
     return matches
@@ -601,11 +608,12 @@ def prefetch_acronyms(spark: Any, catalog: str, schema: str) -> List[Dict[str, A
 def _acro_source_scopes(source_tables: Any) -> Tuple[set, set]:
     """Derive the set of source catalogs and ``catalog.schema`` scopes from the tables
     being documented in this run. Wildcards are fine: ``cat.sch.*`` still yields catalog
-    ``cat`` and schema ``cat.sch``."""
+    ``cat`` and schema ``cat.sch``. Identifiers are lower-cased because Unity Catalog
+    names are case-insensitive -- so a scope typed in a different case still matches."""
     catalogs: set = set()
     schemas: set = set()
     for t in (source_tables or []):
-        parts = str(t).split(".")
+        parts = str(t).lower().split(".")
         if len(parts) >= 1 and parts[0]:
             catalogs.add(parts[0])
         if len(parts) >= 2 and parts[0] and parts[1]:
@@ -622,8 +630,12 @@ def _acro_scope_matches(row: Dict[str, Any], source_catalogs: set, source_schema
     applies when any source table is in that catalog; a schema-scoped acronym applies
     when any source table is in that schema.
     """
+    # Lower-case the scope before comparison: Unity Catalog identifiers are
+    # case-insensitive, so an acronym whose scope was typed in a different case than the
+    # source table must still match (field report: a differently-cased scope never
+    # expanded). The source-scope sets are already lower-cased in _acro_source_scopes.
     st = (row.get("scope_type") or "").lower()
-    scope = row.get("scope") or ""
+    scope = (row.get("scope") or "").lower()
     if st == "catalog":
         return scope in source_catalogs
     if st == "schema":

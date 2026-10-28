@@ -260,6 +260,13 @@ class MetadataConfig:
             getattr(self, "enable_benchmarking", False)
         )
         self.use_kb_comments = _parse_bool(getattr(self, "use_kb_comments", False))
+        # Coerce here so a string "false" from a job/widget is honored. Without this the raw
+        # string survived and `if self.include_existing_table_comment:` was always truthy --
+        # i.e. an unchecked "Include existing table comment" had no effect (field escalation).
+        # Default True matches variables.yml, so an unset value keeps historical behavior.
+        self.include_existing_table_comment = _parse_bool(
+            getattr(self, "include_existing_table_comment", True)
+        )
         self.allow_manual_override = _parse_bool(
             getattr(self, "allow_manual_override", True)
         )

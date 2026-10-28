@@ -17,6 +17,7 @@ from dbxmetagen.customer_context import (
     merge_acronyms_into_acro_content,
     _acro_scope_matches,
     _acro_source_scopes,
+    _match_rows,
 )
 import dbxmetagen.overrides as overrides
 from dbxmetagen.overrides import (
@@ -110,6 +111,43 @@ def test_acro_scope_matches():
     assert _acro_scope_matches({"scope_type": "schema", "scope": "cat.sch"}, cats, schemas)
     assert not _acro_scope_matches({"scope_type": "schema", "scope": "cat"}, cats, schemas)
     assert not _acro_scope_matches({"scope_type": "pattern", "scope": "x"}, cats, schemas)
+
+
+def test_acro_source_scopes_lowercases_identifiers():
+    # UC identifiers are case-insensitive; source scopes are normalized to lower-case.
+    cats, schemas = _acro_source_scopes(["Cat.Sch.Tbl", "CAT.OTHER.T"])
+    assert cats == {"cat"}
+    assert schemas == {"cat.sch", "cat.other"}
+
+
+def test_acro_scope_matches_is_case_insensitive():
+    # Field report: an acronym whose scope was typed in a different case than the source
+    # table was never expanded. Scope comparison must be case-insensitive now.
+    cats, schemas = _acro_source_scopes(["cat.sch.patients"])
+    assert _acro_scope_matches({"scope_type": "schema", "scope": "CAT.SCH"}, cats, schemas)
+    assert _acro_scope_matches({"scope_type": "catalog", "scope": "CAT"}, cats, schemas)
+
+
+def test_merge_acronyms_scope_case_insensitive_end_to_end():
+    # The whole overlay path must honor a differently-cased scope.
+    rows = [{"scope": "Cat.Sch", "scope_type": "Schema",
+             "abbreviation": "QE", "expansion": "quality event", "notes": ""}]
+    out = merge_acronyms_into_acro_content({}, rows, ["cat.sch.patients"])
+    assert out["QE"] == "quality event"
+
+
+# --- customer context scope matching (case-insensitive, consistent w/ acronyms) ---
+
+def test_match_rows_case_insensitive_across_granularities():
+    cache = [
+        {"scope": "CAT", "scope_type": "catalog", "context_text": "c"},
+        {"scope": "Cat.Sch", "scope_type": "schema", "context_text": "s"},
+        {"scope": "CAT.SCH.PATIENTS", "scope_type": "table", "context_text": "t"},
+        {"scope": "cat.sch.pat*", "scope_type": "pattern", "context_text": "p"},
+        {"scope": "other.schema", "scope_type": "schema", "context_text": "x"},
+    ]
+    matched = {r["context_text"] for r in _match_rows(cache, "cat.sch.patients")}
+    assert matched == {"c", "s", "t", "p"}  # all but the out-of-scope 'other.schema'
 
 
 # --- uploaded description overrides -----------------------------------------
