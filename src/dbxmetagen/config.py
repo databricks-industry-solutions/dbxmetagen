@@ -66,6 +66,12 @@ class MetadataConfig:
             "control_table",
             "apply_ddl",
             "apply_tags",
+            "certified_apply_policy",
+            "skip_certified_assets",
+            "enable_governed_tags",
+            "governed_domain_tag_name",
+            "governed_domain_separator",
+            "governed_tag_max_len",
             "ddl_output_format",
             "allow_data",
             "dry_run",
@@ -121,6 +127,8 @@ class MetadataConfig:
             "include_profiling_context",
             "include_constraint_context",
             "use_customer_context",
+            "customer_context_retrieval",
+            "customer_context_top_k",
             "max_ai_candidates",
             "rule_score_min_for_ai",
             "max_candidates_per_table_pair",
@@ -215,6 +223,32 @@ class MetadataConfig:
         self.allow_data = _parse_bool(getattr(self, "allow_data", True))
         self.apply_ddl = _parse_bool(getattr(self, "apply_ddl", False))
         self.apply_tags = _parse_bool(getattr(self, "apply_tags", getattr(self, "apply_ddl", False)))
+        # Certified-asset apply policy (shared with the app). block|warn|allow; default warn.
+        # skip_certified_assets is the per-run opt-in to skip (only meaningful under warn).
+        from dbxmetagen.certification import normalize_policy as _norm_cert_policy
+        self.certified_apply_policy = _norm_cert_policy(
+            getattr(self, "certified_apply_policy", "warn")
+        )
+        self.skip_certified_assets = _parse_bool(
+            getattr(self, "skip_certified_assets", False)
+        )
+        # Governed UC-Domains tag publishing (UCG-3/4). Opt-in, default-off; the key is blank
+        # until verified in a Domains-enabled workspace. The ungoverned two-key domain path is
+        # unaffected. See governed_tags.py.
+        self.enable_governed_tags = _parse_bool(
+            getattr(self, "enable_governed_tags", False)
+        )
+        from dbxmetagen.governed_tags import normalize_tag_key as _norm_tag_key
+        self.governed_domain_tag_name = _norm_tag_key(
+            getattr(self, "governed_domain_tag_name", "")
+        )
+        self.governed_domain_separator = str(
+            getattr(self, "governed_domain_separator", "/") or "/"
+        )
+        try:
+            self.governed_tag_max_len = int(getattr(self, "governed_tag_max_len", 256))
+        except (TypeError, ValueError):
+            self.governed_tag_max_len = 256
         self.dry_run = _parse_bool(getattr(self, "dry_run", False))
         self.cleanup_control_table = _parse_bool(
             getattr(self, "cleanup_control_table", False)
@@ -226,6 +260,13 @@ class MetadataConfig:
             getattr(self, "enable_benchmarking", False)
         )
         self.use_kb_comments = _parse_bool(getattr(self, "use_kb_comments", False))
+        # Coerce here so a string "false" from a job/widget is honored. Without this the raw
+        # string survived and `if self.include_existing_table_comment:` was always truthy --
+        # i.e. an unchecked "Include existing table comment" had no effect (field escalation).
+        # Default True matches variables.yml, so an unset value keeps historical behavior.
+        self.include_existing_table_comment = _parse_bool(
+            getattr(self, "include_existing_table_comment", True)
+        )
         self.allow_manual_override = _parse_bool(
             getattr(self, "allow_manual_override", True)
         )
@@ -235,6 +276,17 @@ class MetadataConfig:
         self.use_customer_context = _parse_bool(
             getattr(self, "use_customer_context", False)
         )
+        # Customer-context retrieval mode: 'exact' (default, historical), 'ranked' (lexical
+        # relevance within the same scope filter), or 'vector' (opt-in, scalable: per-table
+        # scope-prefiltered HYBRID Vector Search against customer_context_vs_index, no in-memory
+        # load of the whole table; falls back to a bounded SQL read if the index is unavailable).
+        # See customer_context.resolve_customer_context / resolve_customer_context_vector.
+        _cc_retr = str(getattr(self, "customer_context_retrieval", "exact") or "exact").strip().lower()
+        self.customer_context_retrieval = _cc_retr if _cc_retr in ("exact", "ranked", "vector") else "exact"
+        try:
+            self.customer_context_top_k = int(getattr(self, "customer_context_top_k", 8))
+        except (TypeError, ValueError):
+            self.customer_context_top_k = 8
         self.include_lineage = _parse_bool(getattr(self, "include_lineage", True))
         self.include_deterministic_pi = _parse_bool(
             getattr(self, "include_deterministic_pi", True)

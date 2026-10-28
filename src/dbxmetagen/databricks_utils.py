@@ -208,6 +208,20 @@ def setup_widgets(dbutils):
     dbutils.widgets.dropdown(
         "use_customer_context", "false", ["true", "false"], "Use Customer Context"
     )
+    # Blank default = fall through to the variables.yml default (true); an explicit
+    # "true"/"false" (from the app / job parameter) overrides it. A text widget (not a
+    # dropdown with a concrete default) is deliberate so "unset" stays distinguishable
+    # from "false" and get_widgets drops it, letting config.py apply the YAML default.
+    dbutils.widgets.text(
+        "include_existing_table_comment", "", "Include Existing Table Comment"
+    )
+    dbutils.widgets.dropdown(
+        "certified_apply_policy", "", ["", "warn", "block", "allow"],
+        "Certified Apply Policy (blank=variables.yml default)"
+    )
+    dbutils.widgets.dropdown(
+        "skip_certified_assets", "false", ["true", "false"], "Skip Applying to Certified Assets"
+    )
 
 
 def get_widgets(dbutils):
@@ -235,6 +249,9 @@ def get_widgets(dbutils):
     comment_style = dbutils.widgets.get("comment_style")
     use_kb_comments = dbutils.widgets.get("use_kb_comments")
     use_customer_context = dbutils.widgets.get("use_customer_context")
+    include_existing_table_comment = dbutils.widgets.get("include_existing_table_comment")
+    certified_apply_policy = dbutils.widgets.get("certified_apply_policy")
+    skip_certified_assets = dbutils.widgets.get("skip_certified_assets")
     notebook_variables = {
         "cleanup_control_table": cleanup_control_table,
         "mode": mode,
@@ -259,6 +276,9 @@ def get_widgets(dbutils):
         "comment_style": comment_style,
         "use_kb_comments": use_kb_comments,
         "use_customer_context": use_customer_context,
+        "include_existing_table_comment": include_existing_table_comment,
+        "certified_apply_policy": certified_apply_policy,
+        "skip_certified_assets": skip_certified_assets,
     }
     return {k: v for k, v in notebook_variables.items() if v is not None and v != ""}
 

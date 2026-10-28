@@ -419,6 +419,98 @@ def execute_sql(query: str, warehouse_id: Optional[str] = None, timeout: int = 3
 CATALOG = os.environ.get("CATALOG_NAME", "")
 SCHEMA = os.environ.get("SCHEMA_NAME", "metadata_results")
 
+# Certified-asset apply policy (shared with the jobs via certification.py). The deployment
+# default comes from variables.yml -> CERTIFIED_APPLY_POLICY env; block is a HARD gate the
+# per-request certified_policy param cannot loosen. See _filter_stmts_by_policy.
+from dbxmetagen.certification import normalize_policy as _normalize_cert_policy
+_DEPLOY_CERT_POLICY = _normalize_cert_policy(os.environ.get("CERTIFIED_APPLY_POLICY", "warn"))
+
+# Governed UC-Domains tag publishing (UCG-3/4). Opt-in, default-off; the key stays blank until
+# verified in a Domains-enabled workspace. Publishing no-ops unless BOTH are set. See governed_tags.py.
+from dbxmetagen.governed_tags import normalize_tag_key as _normalize_tag_key
+_ENABLE_GOVERNED_TAGS = os.environ.get("ENABLE_GOVERNED_TAGS", "false").strip().lower() == "true"
+_GOVERNED_DOMAIN_TAG = _normalize_tag_key(os.environ.get("GOVERNED_DOMAIN_TAG_NAME", ""))
+_GOVERNED_DOMAIN_SEP = os.environ.get("GOVERNED_DOMAIN_SEPARATOR", "/") or "/"
+try:
+    _GOVERNED_TAG_MAX_LEN = int(os.environ.get("GOVERNED_TAG_MAX_LEN", "256") or 256)
+except ValueError:
+    _GOVERNED_TAG_MAX_LEN = 256
+
+# Customer-context Vector Search index (opt-in, default-off). A Delta-Sync index over the
+# customer_context table for SEMANTIC retrieval. It is ONLY consumed by the app (semantic
+# resolve-preview) and downstream steps (agents/RAG, Genie, future pipeline). Metadata
+# GENERATION never touches it -- the gen path stays on the in-memory exact/ranked cache, so
+# there is zero added latency or new runtime dependency in the generation hot path, and a VS
+# hiccup can never affect a generation run. Index build/sync is an explicit, gated action.
+_ENABLE_CONTEXT_VS = os.environ.get("ENABLE_CONTEXT_VECTOR_INDEX", "false").strip().lower() == "true"
+_CC_VS_INDEX_SUFFIX = os.environ.get("CONTEXT_VECTOR_INDEX", "customer_context_vs_index")
+_CC_VS_EMBED_MODEL = os.environ.get("EMBEDDING_MODEL", "databricks-gte-large-en")
+
+# Upload guardrail: a hard ceiling on any ingested file so an egregiously large upload (a
+# multi-GB dump, a 10M-line text file) can't exhaust the single app container's memory. Chosen
+# generous -- real glossaries / data dictionaries are far smaller -- so it only blocks abuse.
+# Env-overridable for ops. See _read_upload_capped.
+try:
+    _MAX_UPLOAD_MB = max(int(os.environ.get("MAX_UPLOAD_MB", "25") or 25), 1)
+except ValueError:
+    _MAX_UPLOAD_MB = 25
+
+
+def _read_upload_capped(file, max_mb: int = None) -> bytes:
+    """Read an UploadFile with a HARD byte cap, so a huge upload can never be loaded whole into
+    app memory. Reads at most max_mb+1 bytes (never the entirety of a giant file) and rejects
+    413 if it would exceed the cap. A guardrail against egregious/breaking input only -- the
+    limit is generous enough that normal scoped context files pass untouched."""
+    cap = int(max_mb if max_mb is not None else _MAX_UPLOAD_MB)
+    max_bytes = cap * 1024 * 1024
+    try:
+        raw = file.file.read(max_bytes + 1)
+    except Exception as e:
+        raise HTTPException(400, detail=f"Could not read the uploaded file: {e}")
+    if raw is None:
+        return b""
+    if len(raw) > max_bytes:
+        raise HTTPException(413, detail=(
+            f"This file exceeds the {cap} MB upload limit. Split it (for example by schema) or "
+            f"upload a more narrowly-scoped file — context works best as concise, scoped notes."))
+    return raw
+
+
+def _read_from_volume_capped(path: str) -> bytes:
+    """Download a UC Volume file with the SAME hard byte cap as an upload. Uses the EFFECTIVE
+    client — the logged-in user's identity under OBO, otherwise the app service principal — so the
+    file must be one that identity can read. Same 413 ceiling, so a huge volume file can't OOM."""
+    vp = (path or "").strip()
+    if not vp.startswith("/Volumes/"):
+        raise HTTPException(400, detail="volume_path must be a UC Volume path starting with /Volumes/")
+    cap = _MAX_UPLOAD_MB * 1024 * 1024
+    try:
+        resp = _get_effective_client().files.download(vp)
+        data = resp.contents.read(cap + 1)
+    except HTTPException:
+        raise
+    except Exception as e:
+        raise HTTPException(400, detail=(
+            f"Could not read '{vp}' from the volume — does the app"
+            f"{' (or your identity under OBO)' if _OBO_ENABLED else ' service principal'} have "
+            f"READ VOLUME on it? ({e})"))
+    if data is None:
+        return b""
+    if len(data) > cap:
+        raise HTTPException(413, detail=f"This file exceeds the {_MAX_UPLOAD_MB} MB upload limit.")
+    return data
+
+
+def _resolve_ingest_source(file, volume_path) -> tuple[bytes, str]:
+    """Return (raw_bytes, filename) from EITHER a multipart upload or a UC Volume path. Lets every
+    ingestion endpoint accept both without duplicating the capped-read / download logic."""
+    if file is not None and getattr(file, "filename", None):
+        return _read_upload_capped(file), (file.filename or "")
+    vp = (volume_path or "").strip()
+    if vp:
+        return _read_from_volume_capped(vp), vp.rstrip("/").rsplit("/", 1)[-1]
+    raise HTTPException(400, detail="Provide a file to upload or a volume_path to read from.")
+
 # Required-config validation (DP-2). The deploy still succeeds even when a required
 # per-workspace value is missing; instead the frontend renders a blocking banner from
 # /api/config's `config_valid`/`config_errors`, and lifespan logs a prominent error.
@@ -871,8 +963,18 @@ def get_config():
         "obo_enabled": _OBO_ENABLED,
         "mlflow_experiment_id": _get_mlflow_experiment_id(),
         "app_display_name": os.environ.get("APP_DISPLAY_NAME", ""),
+        "default_view_mode": (
+            "simplified"
+            if os.environ.get("DEFAULT_VIEW_MODE", "advanced").strip().lower() == "simplified"
+            else "advanced"
+        ),
         "config_valid": len(_CONFIG_ERRORS) == 0,
         "config_errors": _CONFIG_ERRORS,
+        "certified_apply_policy": _DEPLOY_CERT_POLICY,
+        "enable_governed_tags": _ENABLE_GOVERNED_TAGS and bool(_GOVERNED_DOMAIN_TAG),
+        "governed_domain_tag_name": _GOVERNED_DOMAIN_TAG,
+        "enable_context_vector_index": _ENABLE_CONTEXT_VS,
+        "max_upload_mb": _MAX_UPLOAD_MB,
         "version": pkg_version,
     }
 
@@ -1023,6 +1125,9 @@ class JobRunRequest(BaseModel):
     use_kb_comments: bool = False
     use_customer_context: bool = False
     include_lineage: bool = False
+    # Defaults True to match variables.yml (global default) -- older callers that omit it
+    # keep today's behavior; the field lets the UI turn it OFF explicitly.
+    include_existing_table_comment: bool = True
     federation_mode: bool = False
     # Analytics pipeline params
     catalog_name: Optional[str] = None
@@ -1032,6 +1137,9 @@ class JobRunRequest(BaseModel):
     sweep_stale_docs: bool = False
     sweep_stale_edges: bool = False
     sweep_stale_entities: bool = False
+    # Per-run opt-in to skip applying to certified assets (warn policy). block always skips,
+    # allow never skips -- enforced by the job via certified_apply_policy regardless of this.
+    skip_certified_assets: bool = False
     extra_params: dict = {}
 
 
@@ -1349,6 +1457,9 @@ def run_job(req: JobRunRequest):
         params["use_customer_context"] = "true"
     if req.include_lineage:
         params["include_lineage"] = "true"
+    # Always forwarded (not omit-when-false): the library default is TRUE, so omitting a
+    # false value would silently re-enable it. Explicit string keeps the UI toggle honest.
+    params["include_existing_table_comment"] = "true" if req.include_existing_table_comment else "false"
     if req.sweep_stale_docs:
         params["sweep_stale_docs"] = "true"
     if req.sweep_stale_edges:
@@ -1357,6 +1468,8 @@ def run_job(req: JobRunRequest):
         params["sweep_stale_entities"] = "true"
     if req.federation_mode:
         params["federation_mode"] = "true"
+    if req.skip_certified_assets:
+        params["skip_certified_assets"] = "true"
     if req.catalog_name:
         params["catalog_name"] = req.catalog_name
     if req.schema_name:
@@ -1429,6 +1542,19 @@ def get_run_status(run_id: int):
         "end_time": getattr(run, "end_time", None),
         "tasks": tasks,
     }
+
+
+@app.post("/api/jobs/{run_id}/cancel")
+def cancel_run(run_id: int):
+    """Cancel an in-progress job run (#229.2). Best-effort: a run that is already
+    terminal returns ok with cancelled=False rather than erroring."""
+    ws = get_workspace_client()
+    try:
+        ws.jobs.cancel_run(run_id=run_id)
+    except Exception as e:
+        logger.warning("cancel_run(run_id=%s) failed: %s", run_id, e)
+        raise HTTPException(502, detail=f"Failed to cancel run {run_id}: {e}")
+    return {"ok": True, "run_id": run_id, "cancelled": True}
 
 
 @app.get("/api/jobs/runs")
@@ -1542,7 +1668,16 @@ def get_metadata_log(limit: int = 100, table_name: Optional[str] = None):
     _validate_filter(table_name, "table_name")
     where = f"WHERE table_name LIKE {_safe_sql_str(f'%{table_name}%')}" if table_name else ""
     q = f"SELECT * FROM {fq('metadata_generation_log')} {where} ORDER BY _created_at DESC LIMIT {limit}"
-    return execute_sql(q)
+    # The log table is created on the first generation run. Before then (fresh
+    # install) it does not exist; return an empty list so the UI shows an empty
+    # state instead of a 404 "table not found" error -- same contract as
+    # /api/metadata/has-run below.
+    try:
+        return execute_sql(q)
+    except HTTPException as e:
+        if e.status_code == 404:
+            return []
+        raise
 
 
 @app.get("/api/metadata/has-run")
@@ -2065,19 +2200,149 @@ def _execute_stmts_batched(
     return applied, errors
 
 
+def _parse_ddl_target(stmt: str) -> Optional[dict]:
+    """Map a generated DDL statement to its target object + kind, best-effort.
+
+    Returns {table, column, kind} where table is the plain dotted `cat.sch.tbl`
+    (no backticks) and kind is one of table_comment/column_comment/table_tag/
+    column_tag. Returns None when the statement can't be confidently parsed — the
+    caller then applies it unconditionally (legacy behavior), so the gate only ever
+    *adds* protection and never silently drops a statement it didn't understand.
+    """
+    s = stmt.strip().rstrip(";").strip()
+    up = s.upper()
+    segs = re.findall(r"`([^`]*)`", s)  # backticked identifier parts only
+    tbl = ".".join(segs[:3]) if len(segs) >= 3 else None
+    col = segs[3] if len(segs) >= 4 else None
+    if up.startswith("COMMENT ON TABLE"):
+        return {"table": tbl, "column": None, "kind": "table_comment"} if tbl else None
+    if up.startswith("COMMENT ON COLUMN"):
+        return {"table": tbl, "column": col, "kind": "column_comment"} if tbl and col else None
+    if up.startswith("ALTER TABLE") and "ALTER COLUMN" in up and "SET TAGS" in up:
+        return {"table": tbl, "column": col, "kind": "column_tag"} if tbl and col else None
+    if up.startswith("ALTER TABLE") and "SET TAGS" in up:
+        return {"table": tbl, "column": None, "kind": "table_tag"} if tbl else None
+    return None
+
+
+def _filter_stmts_by_policy(
+    stmts: list[str], conflict_mode: str, certified_policy: str,
+) -> tuple[list[str], list[dict], list[dict]]:
+    """Partition stmts into (to_apply, skipped, blocked) per the apply policies.
+
+    - certified_policy='block' (default): block any statement whose target object is
+      *positively* certified (per the live UC certification tag). Unknown/absent tag
+      -> not certified -> allowed, so workspaces without the tag are unaffected.
+    - conflict_mode='skip_existing': skip COMMENT statements whose target already has
+      a non-empty comment in UC (preserve the human/existing comment, #229.4/#247).
+
+    Fails OPEN: if nothing to gate, or the UC read errors, every statement is applied
+    (exactly the pre-C3 behavior) — a metadata hiccup never regresses a working apply.
+    """
+    skip_existing = (conflict_mode or "overwrite").lower() == "skip_existing"
+    # block is a HARD deploy-level gate: when variables.yml sets certified_apply_policy=block,
+    # certified assets are skipped regardless of the per-request param (the UI hides the opt-in).
+    # Otherwise (warn/allow) the request param governs: the warn-mode "skip certified" checkbox
+    # sends 'block' to skip, 'allow' to apply. A read error still fails OPEN (see below).
+    skip_certified_request = (certified_policy or "").lower() == "block"
+    block_certified = _DEPLOY_CERT_POLICY == "block" or skip_certified_request
+    if not skip_existing and not block_certified:
+        return list(stmts), [], []  # pure back-compat fast path — no UC read
+
+    parsed = [(s, _parse_ddl_target(s)) for s in stmts]
+    tables = sorted({p["table"] for _, p in parsed if p and p.get("table")})
+    try:
+        current = _read_uc_current(tables) if tables else {}
+    except Exception as e:
+        logger.warning("apply policy pre-check skipped (UC read failed): %s", e)
+        return list(stmts), [], []  # fail open
+
+    to_apply: list[str] = []
+    skipped: list[dict] = []
+    blocked: list[dict] = []
+    for s, p in parsed:
+        if not p or not p.get("table"):
+            to_apply.append(s)
+            continue
+        ent = current.get(p["table"]) or {}
+        col = p.get("column")
+        if col:
+            cinfo = (ent.get("columns") or {}).get(col) or {}
+            # A certified TABLE protects its column comments too: certification is a
+            # table-level governed tag, so columns are (almost) never individually tagged
+            # certified. Without the table OR here, a certified table's column comments would
+            # be overwritten while its table comment is correctly blocked. Mirrors the library
+            # gate (certification.partition_ddls_by_certification).
+            cur_comment = cinfo.get("comment")
+            is_certified = bool(cinfo.get("certified")) or bool(ent.get("certified"))
+        else:
+            cur_comment, is_certified = ent.get("comment"), bool(ent.get("certified"))
+        obj = p["table"] + (f".{col}" if col else "")
+        if block_certified and is_certified:
+            blocked.append({"object": obj, "kind": p["kind"], "reason": "certified"})
+            continue
+        if skip_existing and p["kind"] in ("table_comment", "column_comment") and (cur_comment or "").strip():
+            skipped.append({"object": obj, "kind": p["kind"], "reason": "existing_comment"})
+            continue
+        to_apply.append(s)
+    return to_apply, skipped, blocked
+
+
 @app.post("/api/metadata/apply-ddl")
-def apply_ddl(body: GenerateDDLBody, batch: bool = True):
+def apply_ddl(
+    body: GenerateDDLBody, batch: bool = True,
+    conflict_mode: str = "overwrite", certified_policy: str = "block",
+):
+    """Apply generated DDL, honoring conflict/certified policy.
+
+    `conflict_mode` ('overwrite' | 'skip_existing') and `certified_policy`
+    ('block' | 'allow') gate what actually runs (see _filter_stmts_by_policy).
+    Defaults preserve behavior except that a *positively certified* object is now
+    protected from overwrite by default (#221/#247); pass certified_policy=allow to
+    override. Response adds `skipped`/`blocked` lists when the gate acts."""
     out = generate_ddl(body)
     stmts = out.get("statements") or []
     warnings = out.get("warnings") or []
-    applied, errors = _execute_stmts_batched(stmts, batch=batch)
+    to_apply, skipped, blocked = _filter_stmts_by_policy(stmts, conflict_mode, certified_policy)
+    applied, errors = _execute_stmts_batched(to_apply, batch=batch)
     result: dict = {"applied": applied}
+    if skipped:
+        result["skipped"] = skipped
+    if blocked:
+        result["blocked"] = blocked
     if errors:
         result["message"] = "Some DDL statements failed"
         result["errors"] = errors
     if warnings:
         result["warnings"] = warnings
     return result
+
+
+class PublishGovernedTagsBody(BaseModel):
+    # Optional scope: comma-separated table names (bare or fully-qualified); blank = whole schema.
+    table_names: Optional[str] = None
+
+
+@app.post("/api/metadata/publish-governed-tags")
+def publish_governed_tags(body: PublishGovernedTagsBody):
+    """Publish the business domain as ONE native UC governed tag per table (value slash-encodes
+    the subdomain), so tables join UC Domains / the semantic layer. Opt-in, capability-gated,
+    graceful no-op (UCG-3/4). Reads persisted domain/subdomain; never touches the ungoverned
+    domain/subdomain tags. Requires ENABLE_GOVERNED_TAGS + GOVERNED_DOMAIN_TAG_NAME on the app."""
+    from types import SimpleNamespace
+    from dbxmetagen import governed_tags
+    cfg = SimpleNamespace(
+        catalog_name=CATALOG, schema_name=SCHEMA,
+        table_names=(body.table_names or ""),
+        enable_governed_tags=_ENABLE_GOVERNED_TAGS,
+        governed_domain_tag_name=_GOVERNED_DOMAIN_TAG,
+        governed_domain_separator=_GOVERNED_DOMAIN_SEP,
+        governed_tag_max_len=_GOVERNED_TAG_MAX_LEN,
+    )
+    summary = governed_tags.run_sync(execute_sql, lambda s: execute_sql(s), cfg)
+    if summary.get("capability_missing"):
+        summary["hint"] = governed_tags.GOVERNED_TAG_HINT
+    return summary
 
 
 # ---------------------------------------------------------------------------
@@ -2388,17 +2653,25 @@ def _run_bundle_apply(task_id: str, sections: dict[str, list[str]], volume_path:
     total_applied = 0
     total_errors = 0
     try:
+        total_blocked = 0
         for section_name, stmts in sections.items():
             task["current_section"] = section_name
             task["total_applied"] = total_applied
-            sec_applied, sec_errors = _execute_stmts_batched(stmts, batch=True)
-            results[section_name] = {"applied": sec_applied, "errors": len(sec_errors)}
+            # Route through the shared policy gate so a HARD deploy block (certified_apply_policy
+            # =block) also protects certified assets in the advanced bundle. Under warn/allow the
+            # gate is a no-op here (passing 'allow'); only the deploy-level block skips certified.
+            gated, _skipped, blocked = _filter_stmts_by_policy(stmts, "overwrite", "allow")
+            sec_applied, sec_errors = _execute_stmts_batched(gated, batch=True)
+            results[section_name] = {
+                "applied": sec_applied, "errors": len(sec_errors), "blocked_certified": len(blocked),
+            }
             total_applied += sec_applied
             total_errors += len(sec_errors)
+            total_blocked += len(blocked)
         task.update({
             "status": "done", "results": results, "total_applied": total_applied,
-            "total_errors": total_errors, "volume_path": volume_path,
-            "current_section": None,
+            "total_errors": total_errors, "total_blocked_certified": total_blocked,
+            "volume_path": volume_path, "current_section": None,
         })
     except Exception as e:
         task.update({"status": "error", "error": str(e)})
@@ -4383,11 +4656,73 @@ def get_entity_detail(entity_type: str):
     return {"tables": tables, "properties": properties, "entity_uri": entity_uri, "source_ontology": source_ontology}
 
 
+def _volume_domain_config_prefix() -> str:
+    """Volume path prefix for app-GENERATED domain config YAMLs (committed configs stay in
+    the repo's configurations/; generated ones live here so the running wheel can write them)."""
+    volume_name = os.environ.get("VOLUME_NAME", "generated_metadata")
+    return f"/Volumes/{CATALOG}/{SCHEMA}/{volume_name}/domain_configs"
+
+
+def _dc_slug(s: str) -> str:
+    """Bare snake_case slug for a domain/subdomain/config key."""
+    return re.sub(r"[^a-z0-9]+", "_", (s or "").strip().lower()).strip("_")
+
+
+def _slugify_config_key(s: str) -> str:
+    """Config file key; always prefixed so _list_domain_configs_cached picks it up."""
+    base = _dc_slug(s) or "generated"
+    return base if base.startswith("domain_config") else f"domain_config_{base}"
+
+
+def _list_volume_domain_configs() -> list[dict]:
+    """List domain configs the app generated into the UC Volume. Tolerant of a missing dir."""
+    prefix = _volume_domain_config_prefix()
+    items = []
+    try:
+        ws = _get_effective_client()
+        entries = list(ws.files.list_directory_contents(prefix))
+    except Exception as e:
+        logger.debug("No volume domain configs at %s: %s", prefix, e)
+        return items
+    for ent in entries:
+        fname = os.path.basename(getattr(ent, "path", "") or "")
+        if not fname.startswith("domain_config") or not fname.endswith(".yaml"):
+            continue
+        key = fname[:-5]
+        domain_count = 0
+        try:
+            resp = ws.files.download(f"{prefix}/{fname}")
+            raw = yaml.safe_load(resp.contents.read())
+            domain_count = len(raw.get("domains", {})) if raw else 0
+        except Exception:
+            pass
+        items.append({
+            "key": key,
+            "name": key.replace("domain_config_", "").replace("_", " ").title() + " (generated)",
+            "source": "volume",
+            "domain_count": domain_count,
+            "path": f"{prefix}/{fname}",
+        })
+    return items
+
+
+def _save_domain_config_to_volume(key: str, yaml_content: str) -> str:
+    vol_path = f"{_volume_domain_config_prefix()}/{key}.yaml"
+    ws = _get_effective_client()
+    ws.files.upload(vol_path, io.BytesIO(yaml_content.encode("utf-8")), overwrite=True)
+    logger.info("Generated domain config saved to volume: %s", vol_path)
+    return vol_path
+
+
 def _resolve_domain_config_path(key: str) -> str:
     """Resolve a domain config key to a file path for the job parameter."""
     bundles = {b["key"]: b for b in _list_bundles_local()}
     if key in bundles:
         return _resolve_bundle_path_local(key)
+    # Committed file or app-generated volume config (both surfaced by the list, with a path).
+    for item in _list_domain_configs_cached():
+        if item.get("key") == key and item.get("path"):
+            return item["path"]
     cfg_dir = _find_domain_config_dir()
     if cfg_dir:
         path = os.path.join(cfg_dir, f"{key}.yaml")
@@ -4405,8 +4740,9 @@ def _list_domain_configs_cached() -> list[dict]:
             if not fname.startswith("domain_config") or not fname.endswith(".yaml"):
                 continue
             file_key = fname.replace(".yaml", "")
+            fpath = os.path.join(cfg_dir, fname)
             try:
-                with open(os.path.join(cfg_dir, fname), "r") as f:
+                with open(fpath, "r") as f:
                     raw = yaml.safe_load(f)
                 domain_count = len(raw.get("domains", {})) if raw else 0
             except Exception:
@@ -4416,7 +4752,13 @@ def _list_domain_configs_cached() -> list[dict]:
                 "name": file_key.replace("_", " ").replace("domain config ", "").title() + " (standalone)",
                 "source": "file",
                 "domain_count": domain_count,
+                "path": os.path.abspath(fpath),
             })
+    # App-generated configs on the volume (a committed file with the same key wins).
+    file_keys = {i["key"] for i in items}
+    for v in _list_volume_domain_configs():
+        if v["key"] not in file_keys:
+            items.append(v)
     return items
 
 
@@ -4424,6 +4766,133 @@ def _list_domain_configs_cached() -> list[dict]:
 def list_domain_configs():
     """List standalone domain config YAML files. Cached 300s."""
     return _list_domain_configs_cached()
+
+
+# ---------------------------------------------------------------------------
+# Generate a domain taxonomy YAML from a document (doc -> domains/subdomains).
+# Mirrors the customer-context decompose pattern (one grounded ai_query), but AUTHORS a
+# domain config instead of assigning context to tables -- so it needs no table grounding.
+# The result is saved to the Volume (the committed configurations/ is read-only in the wheel)
+# and immediately listed by /api/domain-configs for the Generate domain selector.
+# ---------------------------------------------------------------------------
+_DOMAIN_GEN_STRUCT = (
+    "STRUCT<domains: ARRAY<STRUCT<key:STRING, name:STRING, description:STRING, "
+    "keywords:ARRAY<STRING>, subdomains: ARRAY<STRUCT<key:STRING, name:STRING, "
+    "description:STRING, keywords:ARRAY<STRING>>>>>>"
+)
+_DOMAIN_GEN_MAX_DOMAINS = 60
+_DOMAIN_GEN_MAX_SUBDOMAINS = 40
+
+
+def _normalize_domain_taxonomy(parsed: dict) -> dict:
+    """Turn the model's {domains:[...]} into the canonical ``domains:`` mapping. Pure:
+    slugifies keys, requires name+description, dedupes, caps counts."""
+    out: dict = {}
+    for d in (parsed or {}).get("domains") or []:
+        if not isinstance(d, dict):
+            continue
+        name = (d.get("name") or "").strip()
+        key = _dc_slug(d.get("key") or name)
+        desc = (d.get("description") or "").strip()
+        if not key or not name or not desc or key in out:
+            continue
+        subs: dict = {}
+        for s in (d.get("subdomains") or [])[:_DOMAIN_GEN_MAX_SUBDOMAINS]:
+            if not isinstance(s, dict):
+                continue
+            sname = (s.get("name") or "").strip()
+            skey = _dc_slug(s.get("key") or sname)
+            sdesc = (s.get("description") or "").strip()
+            if not skey or not sname or not sdesc or skey in subs:
+                continue
+            subs[skey] = {
+                "name": sname, "description": sdesc,
+                "keywords": [str(k).strip() for k in (s.get("keywords") or []) if str(k).strip()][:15],
+            }
+        out[key] = {
+            "name": name, "description": desc,
+            "keywords": [str(k).strip() for k in (d.get("keywords") or []) if str(k).strip()][:15],
+            "subdomains": subs,
+        }
+        if len(out) >= _DOMAIN_GEN_MAX_DOMAINS:
+            break
+    return out
+
+
+def _build_domain_gen_prompt(text: str, description: str) -> str:
+    ctx = f"Context from the uploader: {description.strip()}\n" if description.strip() else ""
+    return (
+        "You are authoring a BUSINESS DOMAIN TAXONOMY for data classification from the document "
+        "below. Extract the domains and, under each, its subdomains. For each give a short "
+        "snake_case key, a human-readable name, a one-sentence description, and 4-10 lowercase "
+        "keywords that would plausibly appear in table/column names or comments for that area.\n"
+        f"{ctx}"
+        "Use only domains/subdomains the document actually supports; do not invent unrelated ones. "
+        'Return JSON of the form: {"domains":[{"key":"...","name":"...","description":"...",'
+        '"keywords":["..."],"subdomains":[{"key":"...","name":"...","description":"...",'
+        '"keywords":["..."]}]}]}\n\n'
+        f"DOCUMENT:\n{text}"
+    )
+
+
+@app.post("/api/domain-configs/generate")
+def generate_domain_config(file: UploadFile = File(...), name: str = Form(""),
+                           description: str = Form("")):
+    """Generate a domain taxonomy YAML from a document and save it to the Volume so it appears
+    in the Generate domain selector. Never writes to the committed configurations/ dir."""
+    filename = file.filename or "document"
+    ext = filename.rsplit(".", 1)[-1].lower() if "." in filename else ""
+    if ext not in _CC_TEXT_EXTS and ext not in _CC_BINARY_EXTS:
+        raise HTTPException(400, detail=(
+            f"Use a document (.txt/.md/.pdf/.docx) describing the domains/subdomains. Got '.{ext}'."))
+    raw = _read_upload_capped(file)
+    text = (_cc_parse_binary_to_text(raw, ext, filename) if ext in _CC_BINARY_EXTS
+            else raw.decode("utf-8", errors="replace"))
+    if not text.strip():
+        raise HTTPException(400, detail="No text could be extracted from the document.")
+
+    prompt = _build_domain_gen_prompt(text[:100000], description)
+    endpoint = _safe_model_endpoint(os.environ.get("LLM_MODEL"))
+    # Plain AI_QUERY (NO responseFormat -- not all model endpoints support structured JSON mode);
+    # the prompt asks for JSON and we parse it from the text. failOnError => false returns
+    # STRUCT<result, errorMessage>; read `.result` (the text) and surface `.errorMessage`.
+    sql = (
+        "SELECT q.resp.result AS text, q.resp.errorMessage AS error_message "
+        f"FROM (SELECT AI_QUERY('{endpoint}', :prompt, failOnError => false) AS resp) q"
+    )
+    try:
+        rows = execute_sql(sql, timeout=300,
+                           parameters=[StatementParameterListItem(name="prompt", value=prompt)])
+    except Exception as exc:
+        raise HTTPException(502, detail=f"Domain-taxonomy model call failed: {exc}")
+    row0 = rows[0] if rows else {}
+    if row0.get("error_message"):
+        raise HTTPException(502, detail=f"Domain-taxonomy model call failed: {row0['error_message']}")
+    parsed = _extract_json_object(row0.get("text") or "")
+    domains = _normalize_domain_taxonomy(parsed if isinstance(parsed, dict) else {})
+    if not domains:
+        raise HTTPException(422, detail=(
+            "The model could not extract any domains. Add more detail, or structure the document "
+            "as a list of domains → subdomains with short descriptions."))
+
+    key = _slugify_config_key(name or filename.rsplit(".", 1)[0])
+    doc = {"version": "1.0", "generated_from": filename[:120], "mutually_exclusive": False,
+           "domains": domains}
+    yaml_content = yaml.safe_dump(doc, sort_keys=False, allow_unicode=True)
+    try:
+        vol_path = _save_domain_config_to_volume(key, yaml_content)
+    except Exception as exc:
+        raise HTTPException(500, detail=f"Failed to save domain config to the volume: {exc}")
+    _yaml_cache.clear()   # so the new config shows in the selector immediately
+    sub_total = sum(len(d["subdomains"]) for d in domains.values())
+    return {
+        "key": key,
+        "name": key.replace("domain_config_", "").replace("_", " ").title(),
+        "domain_count": len(domains), "subdomain_count": sub_total,
+        "path": vol_path, "source": "volume",
+        "domains": [{"key": k, "name": v["name"], "subdomains": list(v["subdomains"].keys())}
+                    for k, v in domains.items()],
+    }
 
 
 class OntologyApplyItem(BaseModel):
@@ -5255,6 +5724,28 @@ def _strip_llm_fences(text: str) -> str:
         text = text.split("\n", 1)[1] if "\n" in text else text[3:]
         text = text.rsplit("```", 1)[0]
     return text.strip()
+
+
+def _extract_json_object(text: str) -> dict:
+    """Parse a JSON OBJECT from an LLM text response, tolerating ``` fences and surrounding
+    prose. Used where the model is asked to return JSON but the endpoint doesn't support a
+    structured responseFormat. Returns {} when nothing parseable is found."""
+    if not text:
+        return {}
+    t = _strip_llm_fences(str(text))
+    try:
+        v = json.loads(t)
+        return v if isinstance(v, dict) else {}
+    except Exception:
+        pass
+    start, end = t.find("{"), t.rfind("}")
+    if start != -1 and end > start:
+        try:
+            v = json.loads(t[start : end + 1])
+            return v if isinstance(v, dict) else {}
+        except Exception:
+            return {}
+    return {}
 
 
 def _builder_yaml_to_state(raw: dict) -> dict:
@@ -12757,6 +13248,152 @@ def genie_table_columns(table_identifier: str):
 
 
 # ---------------------------------------------------------------------------
+# Current Unity Catalog state read (C1 — enables review comparison + apply
+# conflict handling). Reads the LIVE comment, tags, and certification status for
+# a batch of tables and their columns, straight from system.information_schema.
+# This is the "current value" the review grid compares against and the apply
+# path consults before overwriting. Deliberately read-only.
+# ---------------------------------------------------------------------------
+
+# The governed tag that marks an object certified/deprecated. In the tag views a
+# governed tag surfaces under its short name; match it loosely so a fully-qualified
+# form (e.g. `system.certification_status`) still resolves.
+_CERT_TAG_NAME = "certification_status"
+
+
+def _is_cert_tag(tag_name: Optional[str]) -> bool:
+    t = (tag_name or "").lower()
+    return t == _CERT_TAG_NAME or t.endswith("." + _CERT_TAG_NAME)
+
+
+def _cert_from_tags(tags: dict) -> bool:
+    """True only when a certification tag is positively 'certified'. Absent/unknown
+    -> False (so the apply gate degrades to allow, never a false block)."""
+    for k, v in (tags or {}).items():
+        if _is_cert_tag(k) and str(v or "").strip().lower() == "certified":
+            return True
+    return False
+
+
+def _read_uc_current(tables: list[str]) -> dict:
+    """Read live UC comment/tags/certification for a batch of fully-qualified tables.
+
+    Returns {table_fqn: {comment, tags, certified, exists, columns: {col: {data_type,
+    comment, tags, certified}}}}. Each information_schema read is isolated in its own
+    try/except: a missing view or absent privilege (e.g. a federated catalog with no
+    tag views) degrades to empty tags / uncertified rather than failing the batch.
+    """
+    # Group by (catalog, schema) so each read is one batched IN-list, not one per table.
+    groups: dict[tuple, list[str]] = {}
+    out: dict[str, dict] = {}
+    for ident in tables:
+        parts = (ident or "").split(".")
+        if len(parts) != 3:
+            raise HTTPException(400, detail=f"table identifier must be catalog.schema.table: {ident!r}")
+        for p in parts:
+            _validate_filter(p, "identifier_part")
+        cat, sch, tbl = parts
+        groups.setdefault((cat, sch), []).append(tbl)
+        out[ident] = {"comment": None, "tags": {}, "certified": False, "exists": False, "columns": {}}
+
+    for (cat, sch), tbls in groups.items():
+        in_list = ", ".join(_safe_sql_str(t) for t in tbls)
+        cat_lit = _safe_sql_str(cat)
+        sch_lit = _safe_sql_str(sch)
+
+        def key(tbl: str, col: Optional[str] = None) -> str:
+            return f"{cat}.{sch}.{tbl}" + (f".{col}" if col else "")
+
+        # Table comments + existence.
+        try:
+            for r in execute_sql(
+                f"SELECT table_name, comment FROM system.information_schema.tables "
+                f"WHERE table_catalog = {cat_lit} AND table_schema = {sch_lit} "
+                f"AND table_name IN ({in_list})"
+            ) or []:
+                ent = out.get(key(r.get("table_name")))
+                if ent is not None:
+                    ent["exists"] = True
+                    ent["comment"] = r.get("comment")
+        except Exception as e:
+            logger.debug("uc-current: table comment read skipped for %s.%s: %s", cat, sch, e)
+
+        # Column comments + types.
+        try:
+            for r in execute_sql(
+                f"SELECT table_name, column_name, data_type, comment "
+                f"FROM system.information_schema.columns "
+                f"WHERE table_catalog = {cat_lit} AND table_schema = {sch_lit} "
+                f"AND table_name IN ({in_list})"
+            ) or []:
+                ent = out.get(key(r.get("table_name")))
+                if ent is not None:
+                    ent["columns"][r.get("column_name")] = {
+                        "data_type": r.get("data_type"),
+                        "comment": r.get("comment"),
+                        "tags": {},
+                        "certified": False,
+                    }
+        except Exception as e:
+            logger.debug("uc-current: column read skipped for %s.%s: %s", cat, sch, e)
+
+        # Table tags (note: tag views use catalog_name/schema_name, not table_catalog).
+        try:
+            for r in execute_sql(
+                f"SELECT table_name, tag_name, tag_value "
+                f"FROM system.information_schema.table_tags "
+                f"WHERE catalog_name = {cat_lit} AND schema_name = {sch_lit} "
+                f"AND table_name IN ({in_list})"
+            ) or []:
+                ent = out.get(key(r.get("table_name")))
+                if ent is not None:
+                    ent["tags"][r.get("tag_name")] = r.get("tag_value")
+        except Exception as e:
+            logger.debug("uc-current: table tag read skipped for %s.%s: %s", cat, sch, e)
+
+        # Column tags.
+        try:
+            for r in execute_sql(
+                f"SELECT table_name, column_name, tag_name, tag_value "
+                f"FROM system.information_schema.column_tags "
+                f"WHERE catalog_name = {cat_lit} AND schema_name = {sch_lit} "
+                f"AND table_name IN ({in_list})"
+            ) or []:
+                ent = out.get(key(r.get("table_name")))
+                if ent is None:
+                    continue
+                col = ent["columns"].setdefault(
+                    r.get("column_name"), {"data_type": None, "comment": None, "tags": {}, "certified": False}
+                )
+                col["tags"][r.get("tag_name")] = r.get("tag_value")
+        except Exception as e:
+            logger.debug("uc-current: column tag read skipped for %s.%s: %s", cat, sch, e)
+
+    # Derive the certified flag from whatever tags we managed to read.
+    for ent in out.values():
+        ent["certified"] = _cert_from_tags(ent["tags"])
+        for col in ent["columns"].values():
+            col["certified"] = _cert_from_tags(col["tags"])
+
+    return out
+
+
+class UcCurrentBody(BaseModel):
+    tables: list[str] = []
+
+
+@app.post("/api/metadata/uc-current")
+def metadata_uc_current(body: UcCurrentBody):
+    """Live UC comment/tags/certification for a batch of tables + their columns.
+
+    Backs the review-step comparison toggle (#248) and the apply conflict/certified
+    gate (#247/#221). Read-only; degrades gracefully when tag views are unavailable."""
+    if not body.tables:
+        return {"objects": {}}
+    return {"objects": _read_uc_current(body.tables)}
+
+
+# ---------------------------------------------------------------------------
 # Genie Space editor: validation, health check, analysis, versions, live sync
 # ---------------------------------------------------------------------------
 
@@ -15991,6 +16628,16 @@ class CustomerContextRequest(BaseModel):
     context_text: str
     context_label: str = ""
     priority: int = 0
+    # How a create reconciles with context already active at this exact scope.
+    # 'append' (default) ALWAYS writes a new row and never overwrites -- a scope that ends up
+    # with >1 active entry is surfaced as "needs disambiguation" in the UI and reconciled via
+    # the resolve panel, which re-POSTs with 'replace' (collapse to one canonical row) or
+    # 'combine' (LLM-merge, retire originals). 'detect' is accepted for backward compatibility
+    # and treated as 'append' (it no longer blocks). See upsert_customer_context.
+    on_conflict: str = "append"
+    # When editing an existing entry, the UI sends its context_id so the row is updated in
+    # place (no conflict check, no new row). A create omits it.
+    context_id: str = ""
 
 
 _CC_TABLE = "customer_context"
@@ -16089,36 +16736,178 @@ def _build_customer_context_upsert(ctx_id, scope, scope_type, context_text,
     return sql, params
 
 
+# Conflict-resolution modes for a scope-keyed context write (manual entry + single-scope
+# document upload). 'detect' never writes on a collision -- it reports it so the UI can ask.
+_CC_CONFLICT_MODES = {"detect", "replace", "append", "combine"}
+
+
+def _cc_scope_id(scope: str) -> str:
+    """Canonical (scope-keyed) context_id. One such row per scope; 'replace'/clean writes use it."""
+    import hashlib
+    return hashlib.sha256(scope.encode()).hexdigest()[:16]
+
+
+def _cc_content_id(scope: str, text: str) -> str:
+    """Content-inclusive context_id (scope + text). Used by 'append'/'combine' and decompose so
+    distinct entries at one scope coexist instead of overwriting each other."""
+    import hashlib
+    return hashlib.sha256(f"{scope}::{text}".encode()).hexdigest()[:16]
+
+
+def _cc_active_at_scope(scope: str, exclude_id: str = "") -> list:
+    """Active context rows at this EXACT scope (string match), optionally excluding one id."""
+    rows = execute_sql(
+        f"SELECT context_id, scope, scope_type, context_text, context_label, priority "
+        f"FROM {fq(_CC_TABLE)} WHERE active = TRUE AND scope = :scope",
+        timeout=30, parameters=[StatementParameterListItem(name="scope", value=scope)],
+    )
+    out = []
+    for r in rows:
+        if exclude_id and r.get("context_id") == exclude_id:
+            continue
+        r["word_count"] = len((r.get("context_text") or "").split())
+        out.append(r)
+    return out
+
+
+def _cc_soft_delete_ids(ids: list, now: str) -> None:
+    """Soft-delete (active=FALSE) the given context_ids so they remain as recoverable history."""
+    for cid in ids:
+        if not cid or not _SAFE_IDENT_RE.match(cid):
+            continue
+        execute_sql(
+            f"UPDATE {fq(_CC_TABLE)} SET active = FALSE, updated_at = CAST(:now AS TIMESTAMP) "
+            f"WHERE context_id = :cid",
+            timeout=30,
+            parameters=[StatementParameterListItem(name="now", value=now),
+                        StatementParameterListItem(name="cid", value=cid)],
+        )
+
+
+def _cc_combine_texts(existing_texts: list, incoming_text: str) -> str:
+    """LLM-merge several context notes for the SAME scope into one coherent, de-duplicated
+    entry. Preserves every distinct fact; invents nothing. Plain AI_QUERY (no responseFormat),
+    reading .result/.errorMessage under failOnError => false (see decompose for the pattern)."""
+    joined = "\n\n---\n\n".join([t for t in existing_texts if (t or "").strip()] + [incoming_text])
+    prompt = (
+        "You are merging several business-context notes that describe the SAME data scope "
+        "(a catalog, schema, or table) into ONE description. Combine them into a single coherent, "
+        "non-redundant description. Preserve every distinct fact, acronym, business rule, and data "
+        "object mentioned in ANY note; drop only exact duplication. Do not invent anything not "
+        f"present in the notes. Keep it under {_CC_MAX_WORDS} words. Return ONLY the merged "
+        f"description as plain prose, with no preamble.\n\nNOTES TO MERGE:\n{joined}"
+    )
+    endpoint = _safe_model_endpoint(os.environ.get("LLM_MODEL"))
+    sql = (
+        "SELECT q.resp.result AS text, q.resp.errorMessage AS error_message "
+        f"FROM (SELECT AI_QUERY('{endpoint}', :prompt, failOnError => false) AS resp) q"
+    )
+    try:
+        rows = execute_sql(sql, timeout=180,
+                           parameters=[StatementParameterListItem(name="prompt", value=prompt[:200000])])
+    except Exception as exc:
+        raise HTTPException(502, detail=f"Combine model call failed: {exc}")
+    row0 = rows[0] if rows else {}
+    if row0.get("error_message"):
+        raise HTTPException(502, detail=f"Combine model call failed: {row0['error_message']}")
+    merged = (row0.get("text") or "").strip()
+    if not merged:
+        raise HTTPException(502, detail="Combine produced no text; try 'append' or 'replace' instead.")
+    # Enforce the per-entry word cap on the merged result (truncate at a word boundary).
+    w = merged.split()
+    if len(w) > _CC_MAX_WORDS:
+        merged = " ".join(w[:_CC_MAX_WORDS])
+    return merged
+
+
+def _cc_write_entry(ctx_id, scope, scope_type, context_text, context_label, priority, now):
+    """Run the bound-parameter MERGE for one entry (shared by every write path)."""
+    sql, params = _build_customer_context_upsert(
+        ctx_id, scope, scope_type, context_text, context_label, priority, now,
+    )
+    # Bound parameters store the value verbatim (stored == sent by construction), so no
+    # per-write round-trip readback guard is needed -- it would just double the warehouse
+    # round-trips for a tripwire that cannot fire. The escaping-regression tripwire lives in
+    # the tests instead: test_29 executes THIS builder against a real warehouse, and test_28
+    # is a negative control that fails if anyone reverts to '' escaping.
+    execute_sql(sql, timeout=30, parameters=params)
+
+
 @app.post("/api/customer-context")
 def upsert_customer_context(req: CustomerContextRequest):
-    """Create or update a customer context entry."""
+    """Create or update a customer context entry, never silently overwriting existing context.
+
+    Editing (req.context_id set) updates that row in place. A create (no context_id) ALWAYS
+    appends and never blocks: every ingest path (manual, structured upload, decompose) writes a
+    row, so a scope that accumulates >1 active entry is derivably "needs disambiguation" and is
+    reconciled later via the resolve panel. The panel re-POSTs with on_conflict set:
+      * append  (default) -- add the new text as its own (content-keyed) row; never overwrites.
+      * replace -- soft-delete all active entries at the scope (kept as history), write one
+                   canonical (scope-keyed) row. The resolve panel's "Save combined".
+      * combine -- LLM-merge existing + incoming into one entry; originals kept as inactive history.
+      * detect  -- legacy alias for append (no longer returns a {conflict: true} payload).
+    """
     _ensure_customer_context_table()
     if req.scope_type not in _CC_VALID_TYPES:
         raise HTTPException(400, detail=f"scope_type must be one of {_CC_VALID_TYPES}")
     if not req.scope.strip():
         raise HTTPException(400, detail="scope must be non-empty")
+    on_conflict = (req.on_conflict or "detect").strip().lower()
+    if on_conflict not in _CC_CONFLICT_MODES:
+        raise HTTPException(400, detail=f"on_conflict must be one of {sorted(_CC_CONFLICT_MODES)}")
     words = req.context_text.split()
     if len(words) > _CC_MAX_WORDS:
         raise HTTPException(400, detail=f"context_text exceeds {_CC_MAX_WORDS} word limit ({len(words)} words)")
     if not words:
         raise HTTPException(400, detail="context_text must be non-empty")
 
-    import hashlib
     from datetime import datetime as _dt
-    ctx_id = hashlib.sha256(req.scope.encode()).hexdigest()[:16]
     now = _dt.utcnow().isoformat()
-    sql, params = _build_customer_context_upsert(
-        ctx_id, req.scope, req.scope_type, req.context_text,
-        req.context_label, req.priority, now,
-    )
-    # Bound parameters store the value verbatim (stored == sent by construction), so no
-    # per-write round-trip readback guard is needed -- it would just double the warehouse
-    # round-trips (2N on the bulk YAML-upload path) for a tripwire that cannot fire. The
-    # escaping-regression tripwire lives in the tests instead: test_29 executes THIS builder
-    # against a real warehouse, and test_28 is a negative control that fails if anyone reverts
-    # to '' escaping.
-    execute_sql(sql, timeout=30, parameters=params)
-    return {"context_id": ctx_id, "scope": req.scope, "word_count": len(words)}
+
+    # --- Edit in place: update exactly the targeted row, no conflict logic. ---
+    if req.context_id:
+        if not _SAFE_IDENT_RE.match(req.context_id):
+            raise HTTPException(400, detail="Invalid context_id")
+        _cc_write_entry(req.context_id, req.scope, req.scope_type, req.context_text,
+                        req.context_label, req.priority, now)
+        return {"context_id": req.context_id, "scope": req.scope,
+                "word_count": len(words), "resolution": "edit"}
+
+    # --- Create: never block, never auto-overwrite. The default is APPEND; a scope that ends up
+    # with >1 active entry is derivably "needs disambiguation" and is reconciled via the resolve
+    # panel (which calls back with replace/combine). This keeps all ingest paths on one rule. ---
+    existing = _cc_active_at_scope(req.scope)
+
+    if on_conflict == "replace":
+        # Resolve action ("Save combined"/"Keep one"): retire everything active at this scope,
+        # write one canonical (scope-keyed) row from the supplied (possibly edited) text.
+        if existing:
+            _cc_soft_delete_ids([e["context_id"] for e in existing], now)
+        ctx_id = _cc_scope_id(req.scope)
+        _cc_write_entry(ctx_id, req.scope, req.scope_type, req.context_text,
+                        req.context_label, req.priority, now)
+        return {"context_id": ctx_id, "scope": req.scope, "word_count": len(words),
+                "resolution": "replace" if existing else "created"}
+
+    if on_conflict == "combine":
+        # Resolve action: LLM-merge existing + incoming into one entry, retire the originals.
+        merged = (_cc_combine_texts([e["context_text"] for e in existing], req.context_text)
+                  if existing else req.context_text)
+        ctx_id = _cc_content_id(req.scope, merged)
+        _cc_write_entry(ctx_id, req.scope, req.scope_type, merged, req.context_label,
+                        req.priority, now)
+        if existing:
+            _cc_soft_delete_ids([e["context_id"] for e in existing], now)
+        return {"context_id": ctx_id, "scope": req.scope, "word_count": len(merged.split()),
+                "resolution": "combine", "merged_from": len(existing)}
+
+    # Default (append / legacy 'detect'): append a content-keyed row. Never blocks, never
+    # overwrites. needs_disambiguation tells the UI this scope now has competing entries.
+    ctx_id = _cc_content_id(req.scope, req.context_text)
+    _cc_write_entry(ctx_id, req.scope, req.scope_type, req.context_text,
+                    req.context_label, req.priority, now)
+    return {"context_id": ctx_id, "scope": req.scope, "word_count": len(words),
+            "resolution": "append", "needs_disambiguation": len(existing) >= 1}
 
 
 @app.delete("/api/customer-context/{context_id}")
@@ -16135,30 +16924,281 @@ def delete_customer_context(context_id: str):
     return {"deleted": True, "context_id": context_id}
 
 
-@app.post("/api/customer-context/upload")
-def upload_customer_context_yaml(file: UploadFile):
-    """Upload a YAML file and insert/update all context entries."""
-    _ensure_customer_context_table()
-    import yaml as _yaml
-    content = file.file.read().decode("utf-8")
-    try:
-        data = _yaml.safe_load(content)
-    except Exception as exc:
-        raise HTTPException(400, detail=f"Invalid YAML: {exc}")
-    if not data or "contexts" not in data:
-        raise HTTPException(400, detail="YAML must contain a 'contexts' list")
+class CombinePreviewRequest(BaseModel):
+    scope: str
+    scope_type: str = ""
 
+
+@app.post("/api/customer-context/combine-preview")
+def combine_preview_customer_context(req: CombinePreviewRequest):
+    """Preview a combined/summarized proposal for all active entries at a scope WITHOUT writing.
+
+    Feeds the resolve panel ("needs disambiguation"): the user sees the originals plus this
+    editable proposal, then applies it via POST /api/customer-context with on_conflict='replace'
+    (the edited text becomes the single canonical row; originals are retired, recoverable). Pure
+    read + one LLM merge; reuses _cc_active_at_scope and _cc_combine_texts verbatim. No DB write.
+    """
+    _ensure_customer_context_table()
+    if not req.scope.strip():
+        raise HTTPException(400, detail="scope must be non-empty")
+    existing = _cc_active_at_scope(req.scope)
+    if not existing:
+        raise HTTPException(404, detail="No active context entries at this scope")
+    sources = [{"context_id": e["context_id"], "context_label": e.get("context_label") or "",
+                "word_count": e["word_count"], "context_text": e["context_text"]}
+               for e in existing]
+    if len(existing) == 1:
+        merged = existing[0]["context_text"]
+    else:
+        # _cc_combine_texts(existing_texts, incoming) merges existing_texts + [incoming] into one;
+        # pass all-but-first as existing and the first as incoming so every note is preserved.
+        merged = _cc_combine_texts([e["context_text"] for e in existing[1:]],
+                                   existing[0]["context_text"])
+    return {"scope": req.scope, "scope_type": req.scope_type, "merged_text": merged,
+            "word_count": len(merged.split()), "entry_count": len(existing), "sources": sources}
+
+
+# ---- Customer-context upload: two-lane ingest (#249) ------------------------
+# Structured lane (.yaml/.yml/.json): a `contexts` list parsed deterministically into
+#   entries -- NO LLM (running already-structured data through an LLM only risks corrupting
+#   clean fields). The existing YAML upload IS this lane; JSON is the same shape.
+# Document lane (.txt/.md/.pdf/.docx): a free-text spec attached to a caller-supplied scope.
+#   Binary docs are parsed server-side via ai_parse_document (no pdf/docx Python dependency);
+#   text files are decoded directly (ai_parse_document is for binary containers, not text).
+#   Long text is distilled with ai_extract. BOTH AI calls degrade gracefully: text always
+#   works (falls back to raw text, caller truncates); binary without ai_parse_document returns
+#   a clear 422 telling the user to enable it or upload text -- never a silent failure.
+_CC_TEXT_EXTS = {"txt", "md", "markdown"}
+_CC_BINARY_EXTS = {"pdf", "docx", "pptx"}
+# Spreadsheets feed the AI context lane (NOT the deterministic structured lane): an .xlsx/.csv
+# often holds free-form business context (a glossary, a data dictionary, SME notes) that should
+# be distilled / decomposed like any other document. Clean structured ENTRIES still go through
+# the .yaml/.json lane. The sheet is serialized to text (_cc_tabular_to_text) before the AI call.
+_CC_TABULAR_EXTS = {"csv", "xlsx", "xls"}
+_CC_SAFE_FILE_RE = re.compile(r"[^A-Za-z0-9._-]+")
+
+
+def _cc_tabular_to_text(raw: bytes, ext: str) -> str:
+    """Render an uploaded spreadsheet (.xlsx/.csv) as readable text so the AI context lane
+    (distill / decompose) can treat it like any other document. One line per row of
+    'header: value' pairs (blanks skipped); a leading column list gives the model the schema."""
+    rows = _parse_structured_rows(raw, ext)
+    if not rows:
+        return ""
+    headers = list(rows[0].keys())
+    lines = []
+    if headers:
+        lines.append("Columns: " + ", ".join(h for h in headers if h))
+    # Stop once we've produced more text than any downstream LLM call will ever read (the
+    # distill/decompose paths truncate at 100-200K chars). Generous, so a normal glossary is
+    # fully included; this only avoids building a multi-MB string from an abnormally wide/tall
+    # spreadsheet. The file itself is already byte-capped on upload.
+    budget, used = 300_000, 0
+    for r in rows:
+        parts = [f"{k}: {r[k]}" for k in headers if (r.get(k) or "").strip()]
+        if not parts:
+            continue
+        line = " | ".join(parts)
+        used += len(line) + 1
+        if used > budget:
+            lines.append("… (remaining rows omitted — file is larger than the context budget)")
+            break
+        lines.append(line)
+    return "\n".join(lines)
+
+
+def _cc_ingest_entries(entries):
+    """Upsert a list of structured context entries (shared by the YAML + JSON lanes)."""
+    if not isinstance(entries, list):
+        raise HTTPException(400, detail="Expected a 'contexts' list of entries")
     results = []
-    for entry in data["contexts"]:
+    for entry in entries:
         try:
             req = CustomerContextRequest(**entry)
-            result = upsert_customer_context(req)
-            results.append(result)
+            # Uniform rule: every ingest APPENDS and never auto-overwrites. A scope that ends up
+            # with >1 active entry is flagged for disambiguation in the UI and reconciled there
+            # (structured files used to silently replace). A per-entry on_conflict still wins.
+            if not (isinstance(entry, dict) and entry.get("on_conflict")):
+                req.on_conflict = "append"
+            results.append(upsert_customer_context(req))
         except HTTPException as exc:
-            results.append({"error": exc.detail, "scope": entry.get("scope", "?")})
+            results.append({"error": exc.detail, "scope": (entry or {}).get("scope", "?") if isinstance(entry, dict) else "?"})
         except Exception as exc:
-            results.append({"error": str(exc), "scope": entry.get("scope", "?")})
-    return {"uploaded": len(results), "results": results}
+            results.append({"error": str(exc), "scope": (entry or {}).get("scope", "?") if isinstance(entry, dict) else "?"})
+    return results
+
+
+def _cc_truncate_words(text, limit):
+    words = (text or "").split()
+    if len(words) <= limit:
+        return text, False
+    return " ".join(words[:limit]), True
+
+
+def _cc_parse_binary_to_text(raw, ext, filename):
+    """Stage an uploaded binary doc to a Volume and parse it to text via ai_parse_document.
+    Raises HTTPException(422) when the function is unavailable so the caller can tell the
+    user to enable it (Pro/Serverless warehouse, supported region) or upload text instead."""
+    from datetime import datetime as _dt
+    ts = _dt.now().strftime("%Y%m%d_%H%M%S")
+    current_date = _dt.now().strftime("%Y%m%d")
+    volume_name = os.environ.get("VOLUME_NAME", "generated_metadata")
+    ws = _get_effective_client()
+    current_user = "app"
+    try:
+        current_user = ws.current_user.me().user_name.split("@")[0]
+    except Exception:
+        pass
+    safe_name = _CC_SAFE_FILE_RE.sub("_", filename or f"upload.{ext}")
+    vol_path = f"/Volumes/{CATALOG}/{SCHEMA}/{volume_name}/{current_user}/customer_context/{current_date}/{ts}_{safe_name}"
+    try:
+        ws.files.upload(vol_path, io.BytesIO(raw), overwrite=True)
+    except Exception as e:
+        raise HTTPException(500, detail=f"Failed to stage document to volume: {e}")
+    # read_files(binaryFile) exposes the staged file as a `content` BINARY column;
+    # ai_parse_document returns a VARIANT -- CAST to STRING (JSON) so ai_extract can read it
+    # without us depending on the exact parsed schema. vol_path is server-constructed from
+    # trusted env/user + a sanitized filename, so interpolation here is safe.
+    sql = (
+        f"SELECT CAST(ai_parse_document(content) AS STRING) AS parsed "
+        f"FROM read_files('{vol_path}', format => 'binaryFile')"
+    )
+    try:
+        rows = execute_sql(sql, timeout=180)
+    except Exception as e:
+        raise HTTPException(
+            422,
+            detail=(f"Could not parse this {ext.upper()} server-side -- ai_parse_document is "
+                    f"unavailable on this SQL warehouse (needs a Pro/Serverless warehouse in a "
+                    f"supported region). Upload .txt/.md/.yaml/.json or paste the text instead."),
+        )
+    return (rows[0].get("parsed") if rows else "") or ""
+
+
+def _cc_distill_text(text):
+    """Best-effort AI distillation of long document text into a concise business-context
+    summary (+ detected data objects) via ai_extract. Short text is kept verbatim (no LLM).
+    Falls back to the raw text (caller enforces the word cap) if ai_extract is unavailable.
+    Returns (context_text, key_objects, method)."""
+    text = (text or "").strip()
+    if not text:
+        return "", "", "empty"
+    if len(text.split()) <= _CC_MAX_WORDS:
+        return text, "", "verbatim"
+    # One ai_extract call via a CTE; fields come back as scalar columns (CAST for safety).
+    sql = (
+        "WITH e AS (SELECT ai_extract(:content, array('business_context','key_data_objects')) AS r) "
+        "SELECT CAST(r.business_context AS STRING) AS business_context, "
+        "CAST(r.key_data_objects AS STRING) AS key_data_objects FROM e"
+    )
+    try:
+        rows = execute_sql(
+            sql, timeout=180,
+            parameters=[StatementParameterListItem(name="content", value=text[:200000])],
+        )
+        if rows and (rows[0].get("business_context") or "").strip():
+            return (rows[0]["business_context"].strip(),
+                    (rows[0].get("key_data_objects") or "").strip(), "ai_extract")
+    except Exception:
+        pass
+    return text, "", "truncated"
+
+
+@app.get("/api/volumes/browse")
+def browse_volume(path: str = None):
+    """List the immediate children (folders + files) of a UC Volume path, for the context file
+    picker. Uses the EFFECTIVE client (the logged-in user under OBO, else the app service
+    principal), so only locations that identity can read are visible. Defaults to this
+    deployment's catalog.schema (which lists its volumes)."""
+    p = (path or "").strip() or f"/Volumes/{CATALOG}/{SCHEMA}"
+    if not p.startswith("/Volumes/"):
+        raise HTTPException(400, detail="path must start with /Volumes/")
+    try:
+        entries = list(_get_effective_client().files.list_directory_contents(p))
+    except Exception as e:
+        raise HTTPException(400, detail=f"Could not list '{p}': {e}")
+    out = []
+    for e in entries:
+        ep = e.path if hasattr(e, "path") else str(e)
+        is_dir = bool(getattr(e, "is_directory", False))
+        out.append({"path": ep, "name": ep.rstrip("/").rsplit("/", 1)[-1],
+                    "is_directory": is_dir, "size": getattr(e, "file_size", None)})
+    out.sort(key=lambda r: (not r["is_directory"], r["name"].lower()))
+    # Allow navigating up, but not above /Volumes/<catalog>/<schema>.
+    segs = [s for s in p.strip("/").split("/") if s]
+    parent = "/" + "/".join(segs[:-1]) if len(segs) > 3 else None
+    return {"path": p, "parent": parent, "entries": out}
+
+
+@app.post("/api/customer-context/upload")
+def upload_customer_context(file: UploadFile = File(None),
+                            scope: str = Form(None),
+                            scope_type: str = Form(None),
+                            on_conflict: str = Form("detect"),
+                            volume_path: str = Form(None)):
+    """Ingest customer context from a file (#249) or a UC Volume path (volume_path). Structured
+    .yaml/.yml/.json is parsed into entries deterministically; a .txt/.md/.pdf/.docx document is
+    attached to the supplied scope (long docs distilled via ai_extract; binary via ai_parse_document)."""
+    _ensure_customer_context_table()
+    raw, filename = _resolve_ingest_source(file, volume_path)
+    ext = filename.rsplit(".", 1)[-1].lower() if "." in filename else ""
+
+    # ---- Structured lane (deterministic, no LLM) ----
+    if ext in ("yaml", "yml"):
+        import yaml as _yaml
+        try:
+            data = _yaml.safe_load(raw.decode("utf-8"))
+        except Exception as exc:
+            raise HTTPException(400, detail=f"Invalid YAML: {exc}")
+        if not data or "contexts" not in data:
+            raise HTTPException(400, detail="YAML must contain a 'contexts' list")
+        results = _cc_ingest_entries(data["contexts"])
+        return {"uploaded": len(results), "results": results, "lane": "structured"}
+    if ext == "json":
+        import json as _json
+        try:
+            data = _json.loads(raw.decode("utf-8"))
+        except Exception as exc:
+            raise HTTPException(400, detail=f"Invalid JSON: {exc}")
+        entries = data.get("contexts") if isinstance(data, dict) else data
+        if entries is None:
+            raise HTTPException(400, detail="JSON must be a list of entries or an object with a 'contexts' list")
+        results = _cc_ingest_entries(entries)
+        return {"uploaded": len(results), "results": results, "lane": "structured"}
+
+    # ---- Document lane (free text attached to a scope) ----
+    if ext in _CC_TEXT_EXTS or ext in _CC_BINARY_EXTS or ext in _CC_TABULAR_EXTS:
+        if not (scope and scope.strip()) or not scope_type:
+            raise HTTPException(400, detail="A document upload needs a target 'scope' and 'scope_type'")
+        if scope_type not in _CC_VALID_TYPES:
+            raise HTTPException(400, detail=f"scope_type must be one of {_CC_VALID_TYPES}")
+        if ext in _CC_BINARY_EXTS:
+            text = _cc_parse_binary_to_text(raw, ext, filename)
+        elif ext in _CC_TABULAR_EXTS:
+            text = _cc_tabular_to_text(raw, ext)
+        else:
+            text = raw.decode("utf-8", errors="replace")
+        context_text, key_objects, method = _cc_distill_text(text)
+        context_text, truncated = _cc_truncate_words(context_text, _CC_MAX_WORDS)
+        if not context_text.strip():
+            raise HTTPException(400, detail="No text could be extracted from the document")
+        req = CustomerContextRequest(scope=scope.strip(), scope_type=scope_type,
+                                     context_text=context_text, context_label=filename[:120],
+                                     on_conflict=(on_conflict or "detect"))
+        result = upsert_customer_context(req)
+        # On a collision the incoming (already-extracted) text travels in the conflict payload,
+        # so the UI resolves via the lightweight JSON endpoint -- no need to re-upload the file.
+        if isinstance(result, dict) and result.get("conflict"):
+            result.update({"lane": "document", "extract_method": method, "truncated": truncated})
+            if key_objects:
+                result["key_objects"] = key_objects
+            return result
+        result.update({"extract_method": method, "truncated": truncated})
+        if key_objects:
+            result["key_objects"] = key_objects
+        return {"uploaded": 1, "results": [result], "lane": "document"}
+
+    raise HTTPException(400, detail=f"Unsupported file type '.{ext}'. Use .yaml/.yml/.json/.txt/.md/.pdf/.docx/.csv/.xlsx")
 
 
 @app.get("/api/customer-context/resolve/{full_table_name:path}")
@@ -16194,6 +17234,955 @@ def resolve_customer_context_preview(full_table_name: str):
         ),
         "matching_scopes": [r.get("scope") for r in matches],
     }
+
+
+# ---- Customer-context DECOMPOSE: unstructured doc -> many scoped entries -----
+# The document lane above attaches a whole (summarized) document to ONE scope the
+# user picks. That is right for a single narrative directive, but wrong for a
+# glossary / data dictionary / spec that actually describes many different tables:
+# summarizing it melts the per-table facts together, and one scope injects the
+# whole blob into every table in that scope (overload + irrelevance).
+#
+# Decompose instead EXTRACTS the document into many small entries and assigns each
+# to a REAL object. The assignment is grounded: we fetch the actual table names in
+# the caller's chosen catalog/schema and the model may only target one of THOSE
+# (validated server-side -- a hallucinated name can never reach the resolver, which
+# matches on exact catalog.schema.table). Pieces that don't clearly belong to one
+# table fall back to the most-specific scope the caller supplied. Entries are
+# auto-committed (editable afterward in the Context table), one row per piece so
+# nothing is lost to a scope-keyed overwrite.
+_CC_DECOMPOSE_MAX_TABLES = 500     # grounding-list cap; past this, make the user narrow
+_CC_DECOMPOSE_MAX_ENTRIES = 200    # defensive cap on what one document can produce
+_CC_DECOMPOSE_WORDS = 150          # per-entry word cap for decomposed pieces (tighter than 500)
+
+
+def _cc_ground_tables(catalog: str, schema: Optional[str], table: Optional[str] = None) -> list[str]:
+    """Fetch real fully-qualified table names under catalog[.schema] -- the ONLY
+    scopes a decomposed entry may target at table level. Capped; an over-cap result
+    signals the caller to narrow to a schema (raised as 422 by the endpoint).
+
+    When ``table`` is given, this is CONSTRAINED to exactly that table -- the user made an
+    explicit choice, so the grounding list (and therefore every table the model may target)
+    is just that one table. An empty result then means the table does not exist."""
+    params = [StatementParameterListItem(name="cat", value=catalog)]
+    where = "table_catalog = :cat AND table_schema NOT IN ('information_schema')"
+    if schema:
+        where += " AND table_schema = :sch"
+        params.append(StatementParameterListItem(name="sch", value=schema))
+    if table:
+        # Case-insensitive: UC stores identifiers lowercased, so an exact match on a
+        # user-typed 'Patients' would spuriously miss and 422 as "table not found".
+        where += " AND LOWER(table_name) = LOWER(:tbl)"
+        params.append(StatementParameterListItem(name="tbl", value=table))
+    rows = execute_sql(
+        f"SELECT table_catalog, table_schema, table_name "
+        f"FROM system.information_schema.tables WHERE {where} "
+        f"ORDER BY table_schema, table_name LIMIT {_CC_DECOMPOSE_MAX_TABLES + 1}",
+        timeout=60, parameters=params,
+    )
+    return [f"{r['table_catalog']}.{r['table_schema']}.{r['table_name']}" for r in rows]
+
+
+def _cc_build_decompose_prompt(text, scope_description, allowed_tables, catalog,
+                               schema, has_embedded_scope, table=None):
+    """Pure builder for the decomposition prompt. Grounds the model in the real
+    table list and the caller's scope description; forbids inventing names.
+
+    When ``table`` is set, the caller explicitly scoped this document to ONE table, so the
+    prompt pins every piece to that table -- the model must not place anything on a sibling
+    table, the schema, or the catalog."""
+    allowed_block = "\n".join(f"  - {t}" for t in allowed_tables) or "  (none listed)"
+    schema_scope = f"{catalog}.{schema}" if schema else "(schema not fixed)"
+    embedded = ("The document itself references specific catalogs/schemas/tables/columns -- "
+                "use those references to place each piece."
+                if has_embedded_scope else
+                "The document does NOT clearly name its target objects -- rely on the "
+                "caller's scope description and the term/table names to place each piece.")
+
+    if table:
+        target = f"{catalog}.{schema}.{table}"
+        return (
+            "You are organizing a customer's business glossary / data documentation into "
+            "scoped metadata-generation context. The caller has EXPLICITLY scoped this entire "
+            f"document to a single table: {target}.\n\n"
+            f"Caller's scope description of this document:\n{scope_description}\n\n"
+            "Split the DOCUMENT into small, self-contained context entries. "
+            "RULES:\n"
+            f"1. EVERY entry MUST use scope_type 'table' and target_scope '{target}'. Do NOT "
+            "assign any piece to a different table, to the schema, or to the catalog -- the user "
+            "chose this table deliberately.\n"
+            "2. Omit any piece that is clearly not relevant to this table rather than retargeting it.\n"
+            "3. Keep each context_text concise (< 120 words), factual, and standalone.\n"
+            "4. Set confidence 0.0-1.0 for how well the piece applies to this table.\n\n"
+            "Return JSON of the form: "
+            '{"entries":[{"context_text":"...","target_scope":"' + target + '","scope_type":"table",'
+            '"confidence":0.0,"reason":"..."}]}\n\n'
+            f"DOCUMENT:\n{text}"
+        )
+
+    return (
+        "You are organizing a customer's business glossary / data documentation into "
+        "scoped metadata-generation context. Split the DOCUMENT into small, self-contained "
+        "context entries and assign each to the most specific REAL object it describes.\n\n"
+        f"Caller's scope description of this document:\n{scope_description}\n\n"
+        f"{embedded}\n\n"
+        "RULES:\n"
+        "1. target_scope for a table MUST be copied EXACTLY from the ALLOWED TABLES list "
+        "below. Never invent, abbreviate, or guess a table name.\n"
+        f"2. Cross-cutting context that applies to the whole schema -> scope_type 'schema', "
+        f"target_scope '{schema_scope}'. Whole-catalog -> scope_type 'catalog', target_scope "
+        f"'{catalog}'.\n"
+        "3. If a piece cannot be confidently tied to a listed table or to the schema/catalog, "
+        "OMIT it rather than guessing.\n"
+        "4. Keep each context_text concise (< 120 words), factual, and standalone.\n"
+        "5. Set confidence 0.0-1.0 for the scope assignment.\n\n"
+        f"ALLOWED TABLES (fully qualified):\n{allowed_block}\n\n"
+        "Return JSON of the form: "
+        '{"entries":[{"context_text":"...","target_scope":"cat.sch.tbl","scope_type":"table",'
+        '"confidence":0.0,"reason":"..."}]}\n\n'
+        f"DOCUMENT:\n{text}"
+    )
+
+
+def _cc_validate_decomposed(entries, allowed_tables, catalog, schema, table):
+    """Pure validation/normalization of model-proposed entries. Snaps every entry to a
+    real scope: a table target must be in allowed_tables (case-insensitive); schema/catalog
+    targets must match the caller's; anything else is coerced to the most-specific scope the
+    caller supplied (table > schema > catalog). Returns normalized dicts with a `coerced` flag.
+
+    EXPLICIT-TABLE OVERRIDE: when the caller chose a specific ``table``, that choice is
+    authoritative -- EVERY entry is pinned to that table regardless of what the model proposed
+    (a piece the model tried to place elsewhere is flagged ``coerced``). This prevents the
+    decomposition from wandering to a sibling table or to the schema/catalog when the user
+    deliberately scoped the document to one table.
+    """
+    def _clip(ctext):
+        words = ctext.split()
+        return " ".join(words[:_CC_DECOMPOSE_WORDS]) if len(words) > _CC_DECOMPOSE_WORDS else ctext
+
+    def _conf(e):
+        try:
+            return float(e.get("confidence")) if e.get("confidence") is not None else None
+        except (TypeError, ValueError):
+            return None
+
+    # --- explicit table chosen: pin everything to it ---
+    if schema and table:
+        # Prefer the REAL grounded FQN (correct casing from information_schema) over the
+        # user-typed name, so the stored scope matches what generation compares against.
+        explicit = allowed_tables[0] if allowed_tables else f"{catalog}.{schema}.{table}"
+        out = []
+        for e in entries or []:
+            if not isinstance(e, dict):
+                continue
+            ctext = (e.get("context_text") or "").strip()
+            if not ctext:
+                continue
+            tgt = (e.get("target_scope") or "").strip()
+            coerced = bool(tgt) and tgt.lower() != explicit.lower()
+            out.append({"context_text": _clip(ctext), "scope": explicit, "scope_type": "table",
+                        "confidence": _conf(e), "coerced": coerced,
+                        "reason": (e.get("reason") or "")[:200]})
+        return out[:_CC_DECOMPOSE_MAX_ENTRIES]
+
+    # --- no explicit table: snap to allowed table / schema / catalog, else coerce to fallback ---
+    allowed_lc = {t.lower(): t for t in allowed_tables}
+    fallback_scope, fallback_type = (
+        (f"{catalog}.{schema}", "schema") if schema
+        else (catalog, "catalog")
+    )
+    schema_scope = f"{catalog}.{schema}" if schema else None
+    out = []
+    for e in entries or []:
+        if not isinstance(e, dict):
+            continue
+        ctext = (e.get("context_text") or "").strip()
+        if not ctext:
+            continue
+        stype = (e.get("scope_type") or "").strip().lower()
+        tgt = (e.get("target_scope") or "").strip()
+        coerced = False
+        if stype == "table" and tgt.lower() in allowed_lc:
+            scope, scope_type = allowed_lc[tgt.lower()], "table"
+        elif stype == "catalog" and tgt == catalog:
+            scope, scope_type = catalog, "catalog"
+        elif stype == "schema" and schema_scope and tgt == schema_scope:
+            scope, scope_type = schema_scope, "schema"
+        else:
+            scope, scope_type, coerced = fallback_scope, fallback_type, True
+        out.append({"context_text": _clip(ctext), "scope": scope, "scope_type": scope_type,
+                    "confidence": _conf(e), "coerced": coerced,
+                    "reason": (e.get("reason") or "")[:200]})
+    return out[:_CC_DECOMPOSE_MAX_ENTRIES]
+
+
+@app.post("/api/customer-context/decompose")
+def decompose_customer_context(file: UploadFile = File(None),
+                               catalog: str = Form(...),
+                               schema: str = Form(None),
+                               table: str = Form(None),
+                               scope_description: str = Form(...),
+                               has_embedded_scope: bool = Form(False),
+                               volume_path: str = Form(None)):
+    """Extract an unstructured document (uploaded or from a UC Volume path) into many
+    scope-assigned context entries, grounded against the real tables under catalog[.schema].
+    Auto-commits; entries are editable afterward in the Context table."""
+    _ensure_customer_context_table()
+    # --- validate inputs (scope_description is FORCED -- the model needs a steer) ---
+    catalog = (catalog or "").strip()
+    schema = (schema or "").strip() or None
+    table = (table or "").strip() or None
+    scope_description = (scope_description or "").strip()
+    for label, val in (("catalog", catalog), ("schema", schema), ("table", table)):
+        if val and not _SAFE_IDENT_RE.match(val):
+            raise HTTPException(400, detail=f"Invalid {label}: {val!r}")
+    if not catalog:
+        raise HTTPException(400, detail="catalog is required")
+    if not scope_description or len(scope_description.split()) < 5:
+        raise HTTPException(400, detail=(
+            "A scope description is required (at least a sentence): say what this document "
+            "covers and which catalog/schema/tables it is about, so each piece can be placed."))
+    if table and not schema:
+        raise HTTPException(400, detail="Specifying a table also requires its schema")
+
+    raw, filename = _resolve_ingest_source(file, volume_path)
+    ext = filename.rsplit(".", 1)[-1].lower() if "." in filename else ""
+    if ext not in _CC_TEXT_EXTS and ext not in _CC_BINARY_EXTS and ext not in _CC_TABULAR_EXTS:
+        raise HTTPException(400, detail=(
+            f"Decompose accepts documents (.txt/.md/.pdf/.docx) and spreadsheets (.csv/.xlsx). "
+            f"For already-structured context entries use the YAML/JSON upload. Got '.{ext}'."))
+    text = (_cc_parse_binary_to_text(raw, ext, filename) if ext in _CC_BINARY_EXTS
+            else _cc_tabular_to_text(raw, ext) if ext in _CC_TABULAR_EXTS
+            else raw.decode("utf-8", errors="replace"))
+    if not text.strip():
+        raise HTTPException(400, detail="No text could be extracted from the document")
+
+    # --- ground against real tables; force narrowing if the surface is too large ---
+    # When the caller chose a table, grounding is constrained to exactly that table, so the
+    # decomposition can never wander to a sibling table (the user's explicit choice wins).
+    allowed = _cc_ground_tables(catalog, schema, table)
+    if table and not allowed:
+        raise HTTPException(422, detail=(
+            f"Table '{catalog}.{schema}.{table}' was not found. Check the name, or scope to the "
+            f"schema (leave Table blank) to let the document be split across its tables."))
+    if len(allowed) > _CC_DECOMPOSE_MAX_TABLES:
+        raise HTTPException(422, detail=(
+            f"{catalog}{'.' + schema if schema else ''} has more than "
+            f"{_CC_DECOMPOSE_MAX_TABLES} tables. Narrow to a schema (or a table), or split "
+            f"the document, so each piece can be placed against a bounded object list."))
+
+    # --- one grounded ai_query decomposition; robust to per-call failure ---
+    prompt = _cc_build_decompose_prompt(text[:100000], scope_description, allowed,
+                                        catalog, schema, has_embedded_scope, table)
+    endpoint = _safe_model_endpoint(os.environ.get("LLM_MODEL"))
+    # Plain AI_QUERY (NO responseFormat -- not all model endpoints support structured JSON mode);
+    # the prompt asks for JSON and we parse it from the text. failOnError => false returns
+    # STRUCT<result, errorMessage>; read `.result` (the text) and surface `.errorMessage`.
+    sql = (
+        "SELECT q.resp.result AS text, q.resp.errorMessage AS error_message "
+        f"FROM (SELECT AI_QUERY('{endpoint}', :prompt, failOnError => false) AS resp) q"
+    )
+    try:
+        rows = execute_sql(sql, timeout=300,
+                           parameters=[StatementParameterListItem(name="prompt", value=prompt)])
+    except Exception as exc:
+        raise HTTPException(502, detail=f"Decomposition model call failed: {exc}")
+    row0 = rows[0] if rows else {}
+    if row0.get("error_message"):
+        raise HTTPException(502, detail=f"Decomposition model call failed: {row0['error_message']}")
+    parsed = _extract_json_object(row0.get("text") or "")
+    raw_entries = parsed.get("entries") if isinstance(parsed, dict) else None
+    entries = _cc_validate_decomposed(raw_entries, allowed, catalog, schema, table)
+    if not entries:
+        raise HTTPException(422, detail=(
+            "The model could not tie any part of this document to a listed table or to the "
+            "schema/catalog. Add more scope detail, use scope headers, or split the file."))
+
+    # --- auto-commit: one row per piece (content-inclusive id => no scope collision) ---
+    import hashlib
+    from datetime import datetime as _dt
+    now = _dt.utcnow().isoformat()
+    label = f"decomposed:{filename[:100]}"
+    committed = []
+    for e in entries:
+        ctx_id = hashlib.sha256(f"{e['scope']}::{e['context_text']}".encode()).hexdigest()[:16]
+        sql_up, params = _build_customer_context_upsert(
+            ctx_id, e["scope"], e["scope_type"], e["context_text"], label, 0, now)
+        try:
+            execute_sql(sql_up, timeout=30, parameters=params)
+            committed.append({"scope": e["scope"], "scope_type": e["scope_type"],
+                              "confidence": e["confidence"], "coerced": e["coerced"],
+                              "word_count": len(e["context_text"].split())})
+        except Exception as exc:
+            committed.append({"scope": e["scope"], "error": str(exc)})
+    coerced_n = sum(1 for c in committed if c.get("coerced"))
+    return {"uploaded": len([c for c in committed if "error" not in c]),
+            "lane": "decompose", "model": endpoint, "grounded_tables": len(allowed),
+            "coerced": coerced_n, "entries": committed}
+
+
+# ---------------------------------------------------------------------------
+# Customer acronyms + column-description overrides (app-managed inputs)
+#
+# Two scope-aware Delta tables that feed metadata generation directly:
+#   customer_acronyms  -> overlaid onto variables.yml acro_content at run time (the global
+#                         baseline ships untouched; schema scope beats catalog scope).
+#   customer_overrides -> column descriptions layered UNDER metadata_overrides.csv by the
+#                         override loader (verbatim comment; the LLM is skipped for that
+#                         column, same as a file override). The file wins on conflict.
+# Both sit under the app's "Customer Context" section. Upserts bind every user value as a
+# server-side parameter (quote-safe, injection-safe) -- same contract as customer_context.
+# ---------------------------------------------------------------------------
+
+_ACRO_TABLE = "customer_acronyms"
+_OVR_TABLE = "customer_overrides"
+_ACRO_SCOPE_TYPES = {"catalog", "schema"}
+
+
+class AcronymRequest(BaseModel):
+    scope: str
+    scope_type: str
+    abbreviation: str
+    expansion: str
+    notes: str = ""
+    # When editing, the UI sends the row's original acronym_id. The canonical id is
+    # sha256(scope::abbreviation); if the edit changes the abbreviation/scope (or the original
+    # row predates canonical ids, e.g. seeded data), the upsert writes the canonical row and the
+    # ORIGINAL is retired -- so an edit is a move/in-place update, never a duplicate. Blank = add.
+    acronym_id: str = ""
+
+
+class OverrideRequest(BaseModel):
+    catalog_name: str
+    schema_name: str
+    table_name: str = ""   # blank = schema-wide (applies to every table in the schema)
+    column_name: str
+    comment: str
+
+
+def _ensure_customer_acronyms_table():
+    execute_sql(f"""
+        CREATE TABLE IF NOT EXISTS {fq(_ACRO_TABLE)} (
+            acronym_id   STRING NOT NULL,
+            scope        STRING NOT NULL,
+            scope_type   STRING NOT NULL,
+            abbreviation STRING NOT NULL,
+            expansion    STRING NOT NULL,
+            notes        STRING,
+            active       BOOLEAN,
+            created_by   STRING,
+            created_at   TIMESTAMP,
+            updated_at   TIMESTAMP
+        ) USING DELTA
+    """, timeout=30)
+
+
+def _ensure_customer_overrides_table():
+    execute_sql(f"""
+        CREATE TABLE IF NOT EXISTS {fq(_OVR_TABLE)} (
+            override_id  STRING NOT NULL,
+            catalog_name STRING NOT NULL,
+            schema_name  STRING NOT NULL,
+            table_name   STRING,
+            column_name  STRING NOT NULL,
+            comment      STRING NOT NULL,
+            active       BOOLEAN,
+            created_by   STRING,
+            created_at   TIMESTAMP,
+            updated_at   TIMESTAMP
+        ) USING DELTA
+    """, timeout=30)
+
+
+# Wrapper keys a structured .json/.yaml may nest its row list under (first match wins).
+_STRUCT_LIST_KEYS = ("rows", "data", "items", "records", "entries",
+                     "acronyms", "overrides", "descriptions", "contexts")
+
+
+def _normalize_struct_rows(data):
+    """Coerce parsed JSON/YAML into a list of dicts keyed by lowercased header, matching the
+    xlsx/csv row shape so the tolerant column mapping (_pick) is identical for every format.
+    Accepts a bare list, an object nesting a list under a common key, or a single record."""
+    if isinstance(data, dict):
+        for k in _STRUCT_LIST_KEYS:
+            if isinstance(data.get(k), list):
+                data = data[k]
+                break
+        else:
+            data = [data] if data else []
+    if not isinstance(data, list):
+        raise HTTPException(400, detail="Expected a list of objects (or an object containing one).")
+    out = []
+    for item in data:
+        if not isinstance(item, dict):
+            continue
+        out.append({str(k).strip().lower(): ("" if v is None else str(v).strip())
+                    for k, v in item.items()})
+    return out
+
+
+def _parse_structured_rows(raw: bytes, ext: str):
+    """Parse an uploaded .xlsx/.csv/.json/.yaml into a list of dicts keyed by lowercased header.
+    Shared by the acronym and description uploads so the column-mapping lane is identical across
+    every structured format (the data just has to be tabular/record-shaped)."""
+    ext = ext.lower()
+    if ext in ("xlsx", "xls"):
+        import openpyxl
+        wb = openpyxl.load_workbook(io.BytesIO(raw), read_only=True, data_only=True)
+        ws = wb.active
+        it = ws.iter_rows(values_only=True)
+        try:
+            header = next(it)
+        except StopIteration:
+            wb.close()
+            return []
+        headers = [str(h).strip().lower() if h is not None else "" for h in header]
+        rows = []
+        for r in it:
+            if r is None or all(c is None for c in r):
+                continue
+            d = {}
+            for i, h in enumerate(headers):
+                if not h:
+                    continue
+                v = r[i] if i < len(r) else None
+                d[h] = "" if v is None else str(v).strip()
+            rows.append(d)
+        wb.close()
+        return rows
+    if ext == "csv":
+        import csv as _csv
+        text = raw.decode("utf-8", errors="replace")
+        reader = _csv.DictReader(io.StringIO(text))
+        return [
+            {(k or "").strip().lower(): ("" if v is None else str(v).strip()) for k, v in r.items()}
+            for r in reader
+        ]
+    if ext == "json":
+        import json as _json
+        try:
+            data = _json.loads(raw.decode("utf-8"))
+        except Exception as exc:
+            raise HTTPException(400, detail=f"Invalid JSON: {exc}")
+        return _normalize_struct_rows(data)
+    if ext in ("yaml", "yml"):
+        import yaml as _yaml
+        try:
+            data = _yaml.safe_load(raw.decode("utf-8"))
+        except Exception as exc:
+            raise HTTPException(400, detail=f"Invalid YAML: {exc}")
+        return _normalize_struct_rows(data)
+    raise HTTPException(400, detail=f"Unsupported file type '.{ext}'. Use .xlsx, .csv, .json, or .yaml")
+
+
+def _pick(row: dict, names) -> str:
+    """First non-blank value among candidate (lowercased) header names."""
+    for n in names:
+        v = row.get(n)
+        if v is not None and str(v).strip():
+            return str(v).strip()
+    return ""
+
+
+# Tolerant header candidates (lowercased), single-sourced so header validation and row
+# mapping can never diverge.
+_ACRO_ABBR_COLS = ["abbreviation", "current abbreviation", "acronym", "abbr"]
+_ACRO_EXP_COLS = ["expansion", "stands for", "expands to", "meaning", "definition", "full form"]
+_ACRO_NOTES_COLS = ["notes", "what does it do?", "description", "type of entity", "comment"]
+_OVR_COL_COLS = ["column", "column_name", "column name"]
+_OVR_COMMENT_COLS = ["comment", "description", "comment_without_abbr_sttm", "comment_with_abbr_sttm", "desc"]
+_OVR_TABLE_COLS = ["table", "table_name", "table name"]
+
+# Guards. One MERGE round-trip per row, so cap the batch; comment becomes a UC column
+# comment, so bound its length. Both chosen generous -- they stop runaway/garbage input,
+# not legitimate use. Split larger files into multiple uploads.
+_CC_UPLOAD_MAX_ROWS = 1000
+_OVR_COMMENT_MAX_CHARS = 4000
+
+
+def _require_columns(rows: list, required_groups: list, kind: str):
+    """Fail fast with a clear 400 when an uploaded file has no recognizable columns, instead
+    of silently skipping every row and returning uploaded=0. Each group in required_groups is
+    a candidate list; at least one of its names must appear as a header. Also enforces the row
+    cap. Returns the set of found headers (for messaging)."""
+    if not rows:
+        raise HTTPException(400, detail=f"No data rows found in the uploaded {kind} file.")
+    if len(rows) > _CC_UPLOAD_MAX_ROWS:
+        raise HTTPException(400, detail=(
+            f"Uploaded {kind} file has {len(rows)} rows, over the {_CC_UPLOAD_MAX_ROWS}-row "
+            f"per-upload limit. Split it into smaller files and upload them separately."
+        ))
+    found = set()
+    for r in rows:
+        found.update(k for k in r.keys() if k)
+        break
+    for group in required_groups:
+        if not any(g in found for g in group):
+            raise HTTPException(400, detail=(
+                f"Uploaded {kind} file is missing a required column. Expected one named: "
+                f"{' / '.join(group)}. Found: {sorted(found) or '(none)'}."
+            ))
+    return found
+
+
+def _validate_acro_scope(scope: str, scope_type: str):
+    """A 'schema' scope must look like catalog.schema; a 'catalog' scope must be a bare name."""
+    s = (scope or "").strip()
+    if scope_type == "schema" and s.count(".") != 1:
+        raise HTTPException(400, detail=f"A 'schema' scope must be 'catalog.schema' (got '{s}').")
+    if scope_type == "catalog" and "." in s:
+        raise HTTPException(400, detail=f"A 'catalog' scope must be a bare catalog name (got '{s}').")
+
+
+def _validate_identifier(value: str, field: str):
+    """Catalog/schema must be single identifiers -- a dot usually means the user pasted a
+    qualified name into one box, which would never match at run time."""
+    if "." in (value or ""):
+        raise HTTPException(400, detail=f"{field} must be a single name without a dot (got '{value}').")
+
+
+# ---- Acronyms --------------------------------------------------------------
+
+@app.get("/api/customer-acronyms")
+def list_customer_acronyms():
+    _ensure_customer_acronyms_table()
+    return execute_sql(
+        f"SELECT acronym_id, scope, scope_type, abbreviation, expansion, notes, "
+        f"active, created_by, created_at, updated_at FROM {fq(_ACRO_TABLE)} "
+        f"WHERE active = TRUE ORDER BY scope_type, scope, abbreviation"
+    )
+
+
+def _upsert_acronym(req: AcronymRequest):
+    if req.scope_type not in _ACRO_SCOPE_TYPES:
+        raise HTTPException(400, detail=f"scope_type must be one of {_ACRO_SCOPE_TYPES}")
+    if not req.scope.strip() or not req.abbreviation.strip() or not req.expansion.strip():
+        raise HTTPException(400, detail="scope, abbreviation and expansion are required")
+    _validate_acro_scope(req.scope, req.scope_type)
+    import hashlib
+    from datetime import datetime as _dt
+    acr_id = hashlib.sha256(f"{req.scope}::{req.abbreviation}".encode()).hexdigest()[:16]
+    now = _dt.utcnow().isoformat()
+    params = [
+        StatementParameterListItem(name="id", value=acr_id),
+        StatementParameterListItem(name="scope", value=req.scope),
+        StatementParameterListItem(name="scope_type", value=req.scope_type),
+        StatementParameterListItem(name="abbreviation", value=req.abbreviation),
+        StatementParameterListItem(name="expansion", value=req.expansion),
+        StatementParameterListItem(name="notes", value=req.notes or ""),
+        StatementParameterListItem(name="now", value=now),
+    ]
+    execute_sql(f"""
+        MERGE INTO {fq(_ACRO_TABLE)} AS tgt
+        USING (SELECT :id AS acronym_id) AS src
+        ON tgt.acronym_id = src.acronym_id
+        WHEN MATCHED THEN UPDATE SET
+            scope = :scope, scope_type = :scope_type, abbreviation = :abbreviation,
+            expansion = :expansion, notes = :notes, active = TRUE, updated_at = CAST(:now AS TIMESTAMP)
+        WHEN NOT MATCHED THEN INSERT (
+            acronym_id, scope, scope_type, abbreviation, expansion, notes,
+            active, created_by, created_at, updated_at
+        ) VALUES (
+            :id, :scope, :scope_type, :abbreviation, :expansion, :notes,
+            TRUE, 'app', CAST(:now AS TIMESTAMP), CAST(:now AS TIMESTAMP)
+        )
+    """, timeout=30, parameters=params)
+    # Edit that changed the key (or a row with a non-canonical id, e.g. seeded data): the MERGE
+    # above wrote/updated the CANONICAL id, so retire the original row to avoid a duplicate at the
+    # same (scope, abbreviation). When the original already was canonical, acr_id == acronym_id
+    # and this is a no-op (the MERGE updated it in place).
+    if req.acronym_id and req.acronym_id != acr_id:
+        if not _SAFE_IDENT_RE.match(req.acronym_id):
+            raise HTTPException(400, detail="Invalid acronym_id")
+        execute_sql(
+            f"UPDATE {fq(_ACRO_TABLE)} SET active = FALSE, updated_at = CAST(:now AS TIMESTAMP) "
+            f"WHERE acronym_id = :old_id",
+            timeout=30,
+            parameters=[StatementParameterListItem(name="now", value=now),
+                        StatementParameterListItem(name="old_id", value=req.acronym_id)],
+        )
+    return {"acronym_id": acr_id, "abbreviation": req.abbreviation}
+
+
+@app.post("/api/customer-acronyms")
+def upsert_customer_acronym(req: AcronymRequest):
+    _ensure_customer_acronyms_table()
+    return _upsert_acronym(req)
+
+
+@app.delete("/api/customer-acronyms/{acronym_id}")
+def delete_customer_acronym(acronym_id: str):
+    if not _SAFE_IDENT_RE.match(acronym_id):
+        raise HTTPException(400, detail="Invalid acronym_id")
+    from datetime import datetime as _dt
+    execute_sql(
+        f"UPDATE {fq(_ACRO_TABLE)} SET active = FALSE, updated_at = '{_dt.utcnow().isoformat()}' "
+        f"WHERE acronym_id = '{acronym_id}'"
+    )
+    return {"deleted": True, "acronym_id": acronym_id}
+
+
+@app.post("/api/customer-acronyms/upload")
+def upload_customer_acronyms(file: UploadFile = File(None),
+                             scope: str = Form(None),
+                             scope_type: str = Form("schema"),
+                             volume_path: str = Form(None)):
+    """Ingest acronyms from .xlsx/.csv/.json/.yaml (uploaded or a UC Volume path). Tolerant
+    column mapping (Abbreviation/Current Abbreviation/Acronym; Expansion/Stands For/Meaning;
+    Notes/What does it do?/Type of Entity). scope defaults to this app's catalog or schema per
+    scope_type."""
+    _ensure_customer_acronyms_table()
+    raw, filename = _resolve_ingest_source(file, volume_path)
+    ext = filename.rsplit(".", 1)[-1].lower() if "." in filename else ""
+    if scope_type not in _ACRO_SCOPE_TYPES:
+        raise HTTPException(400, detail=f"scope_type must be one of {_ACRO_SCOPE_TYPES}")
+    eff_scope = (scope or "").strip() or (CATALOG if scope_type == "catalog" else f"{CATALOG}.{SCHEMA}")
+    _validate_acro_scope(eff_scope, scope_type)
+    rows = _parse_structured_rows(raw, ext)
+    _require_columns(rows, [_ACRO_ABBR_COLS, _ACRO_EXP_COLS], "acronyms")
+    results, errors, skipped = [], [], []
+    for r in rows:
+        abbr = _pick(r, _ACRO_ABBR_COLS)
+        expansion = _pick(r, _ACRO_EXP_COLS)
+        notes = _pick(r, _ACRO_NOTES_COLS)
+        if not abbr or not expansion:
+            skipped.append({"row": r, "reason": "missing abbreviation or expansion"})
+            continue
+        try:
+            results.append(_upsert_acronym(AcronymRequest(
+                scope=eff_scope, scope_type=scope_type,
+                abbreviation=abbr, expansion=expansion, notes=notes)))
+        except Exception as exc:
+            errors.append({"abbreviation": abbr, "error": str(exc)})
+    return {"uploaded": len(results), "scope": eff_scope, "scope_type": scope_type,
+            "results": results, "errors": errors,
+            "skipped": len(skipped), "skipped_reasons": [s["reason"] for s in skipped[:3]]}
+
+
+# ---- Column-description overrides ------------------------------------------
+
+@app.get("/api/customer-overrides")
+def list_customer_overrides():
+    _ensure_customer_overrides_table()
+    return execute_sql(
+        f"SELECT override_id, catalog_name, schema_name, table_name, column_name, comment, "
+        f"active, created_by, created_at, updated_at FROM {fq(_OVR_TABLE)} "
+        f"WHERE active = TRUE ORDER BY catalog_name, schema_name, table_name, column_name"
+    )
+
+
+def _upsert_override(req: OverrideRequest):
+    if not req.catalog_name.strip() or not req.schema_name.strip():
+        raise HTTPException(400, detail="catalog_name and schema_name are required")
+    if not req.column_name.strip() or not req.comment.strip():
+        raise HTTPException(400, detail="column_name and comment are required")
+    _validate_identifier(req.catalog_name, "catalog_name")
+    _validate_identifier(req.schema_name, "schema_name")
+    if len(req.comment) > _OVR_COMMENT_MAX_CHARS:
+        raise HTTPException(400, detail=(
+            f"comment is {len(req.comment)} chars, over the {_OVR_COMMENT_MAX_CHARS}-char limit."))
+    import hashlib
+    from datetime import datetime as _dt
+    key = f"{req.catalog_name}.{req.schema_name}.{req.table_name}::{req.column_name}"
+    ovr_id = hashlib.sha256(key.encode()).hexdigest()[:16]
+    now = _dt.utcnow().isoformat()
+    params = [
+        StatementParameterListItem(name="id", value=ovr_id),
+        StatementParameterListItem(name="catalog_name", value=req.catalog_name),
+        StatementParameterListItem(name="schema_name", value=req.schema_name),
+        StatementParameterListItem(name="table_name", value=req.table_name or ""),
+        StatementParameterListItem(name="column_name", value=req.column_name),
+        StatementParameterListItem(name="comment", value=req.comment),
+        StatementParameterListItem(name="now", value=now),
+    ]
+    execute_sql(f"""
+        MERGE INTO {fq(_OVR_TABLE)} AS tgt
+        USING (SELECT :id AS override_id) AS src
+        ON tgt.override_id = src.override_id
+        WHEN MATCHED THEN UPDATE SET
+            catalog_name = :catalog_name, schema_name = :schema_name, table_name = :table_name,
+            column_name = :column_name, comment = :comment, active = TRUE,
+            updated_at = CAST(:now AS TIMESTAMP)
+        WHEN NOT MATCHED THEN INSERT (
+            override_id, catalog_name, schema_name, table_name, column_name, comment,
+            active, created_by, created_at, updated_at
+        ) VALUES (
+            :id, :catalog_name, :schema_name, :table_name, :column_name, :comment,
+            TRUE, 'app', CAST(:now AS TIMESTAMP), CAST(:now AS TIMESTAMP)
+        )
+    """, timeout=30, parameters=params)
+    return {"override_id": ovr_id, "column_name": req.column_name}
+
+
+@app.post("/api/customer-overrides")
+def upsert_customer_override(req: OverrideRequest):
+    _ensure_customer_overrides_table()
+    return _upsert_override(req)
+
+
+@app.delete("/api/customer-overrides/{override_id}")
+def delete_customer_override(override_id: str):
+    if not _SAFE_IDENT_RE.match(override_id):
+        raise HTTPException(400, detail="Invalid override_id")
+    from datetime import datetime as _dt
+    execute_sql(
+        f"UPDATE {fq(_OVR_TABLE)} SET active = FALSE, updated_at = '{_dt.utcnow().isoformat()}' "
+        f"WHERE override_id = '{override_id}'"
+    )
+    return {"deleted": True, "override_id": override_id}
+
+
+@app.post("/api/customer-overrides/upload")
+def upload_customer_overrides(file: UploadFile = File(None),
+                              catalog_name: str = Form(None),
+                              schema_name: str = Form(None),
+                              table_name: str = Form(""),
+                              volume_path: str = Form(None)):
+    """Ingest column descriptions from .xlsx/.csv/.json/.yaml (uploaded or a UC Volume path) as
+    verbatim comment overrides. Tolerant column mapping (Table/Table_Name; Column/Column_Name;
+    Comment/Description). catalog/schema default to this app's; per-row Table_Name wins over the
+    form default (blank = schema-wide)."""
+    _ensure_customer_overrides_table()
+    raw, filename = _resolve_ingest_source(file, volume_path)
+    ext = filename.rsplit(".", 1)[-1].lower() if "." in filename else ""
+    cat = (catalog_name or "").strip() or CATALOG
+    sch = (schema_name or "").strip() or SCHEMA
+    _validate_identifier(cat, "catalog")
+    _validate_identifier(sch, "schema")
+    rows = _parse_structured_rows(raw, ext)
+    _require_columns(rows, [_OVR_COL_COLS, _OVR_COMMENT_COLS], "descriptions")
+    results, errors, skipped = [], [], []
+    for r in rows:
+        col = _pick(r, _OVR_COL_COLS)
+        comment = _pick(r, _OVR_COMMENT_COLS)
+        tbl = _pick(r, _OVR_TABLE_COLS) or (table_name or "").strip()
+        # A "Column" row of "NA"/"table"-level markers (e.g. the sample files' table rows) has
+        # no column to override -- skip anything without a real column + comment.
+        if not col or col.lower() in ("na", "n/a", "none") or not comment:
+            skipped.append({"reason": "table-level or missing column/description row"})
+            continue
+        if len(comment) > _OVR_COMMENT_MAX_CHARS:
+            skipped.append({"reason": f"description over {_OVR_COMMENT_MAX_CHARS} chars"})
+            continue
+        try:
+            results.append(_upsert_override(OverrideRequest(
+                catalog_name=cat, schema_name=sch, table_name=tbl,
+                column_name=col, comment=comment)))
+        except Exception as exc:
+            errors.append({"column_name": col, "error": str(exc)})
+    return {"uploaded": len(results), "catalog_name": cat, "schema_name": sch,
+            "results": results, "errors": errors,
+            "skipped": len(skipped), "skipped_reasons": [s["reason"] for s in skipped[:3]]}
+
+
+# ---------------------------------------------------------------------------
+# Customer-context Vector Search index (opt-in, default-off).
+#
+# A Delta-Sync index over the customer_context table with managed embeddings on the
+# context_text column, provisioned on the existing dbxmetagen-vs endpoint. It enables
+# SEMANTIC retrieval of context -- "find the context most meaningfully related to this
+# table", beyond the scope-hierarchy filter and the lexical 'ranked' thinning.
+#
+# INVARIANTS (match the stated constraints):
+#   * OPT-IN: every endpoint 503s unless ENABLE_CONTEXT_VECTOR_INDEX=true.
+#   * GENERATION IS UNTOUCHED: the batch metadata pipeline never calls these endpoints or
+#     the index; it keeps resolving context from the in-memory exact/ranked cache. Nothing
+#     here is on the generation hot path, so it cannot add latency or break a gen run.
+#   * NON-BLOCKING: sync kicks off create+sync and returns immediately ("provisioning" until
+#     the index is ONLINE); it never waits for readiness in-request. Poll the status endpoint.
+#   * BEST-EFFORT: a VS/endpoint hiccup returns a clear status, never a 500 cascade.
+# ---------------------------------------------------------------------------
+
+_cc_cdf_ready = False
+
+
+def _cc_vs_index_name() -> str:
+    return f"{CATALOG}.{SCHEMA}.{_CC_VS_INDEX_SUFFIX}"
+
+
+def _ensure_cc_cdf():
+    """Enable Change Data Feed on customer_context (required for a Delta-Sync index).
+
+    Idempotent + cached; only called from the gated sync endpoint, never from the context
+    write path, so the common upsert/upload flow is unaffected. Enabling CDF is a metadata-
+    only tblproperty change that starts recording the change feed going forward.
+    """
+    global _cc_cdf_ready
+    if _cc_cdf_ready:
+        return
+    _ensure_customer_context_table()
+    try:
+        execute_sql(
+            f"ALTER TABLE {fq(_CC_TABLE)} SET TBLPROPERTIES "
+            f"('delta.enableChangeDataFeed' = 'true')",
+            timeout=30,
+        )
+        _cc_cdf_ready = True
+    except Exception as e:
+        logger.warning("Could not enable CDF on customer_context: %s", e)
+
+
+@app.get("/api/customer-context/vector/status")
+def customer_context_vector_status():
+    """Endpoint + index state and active-row count for the customer-context VS index."""
+    if not _ENABLE_CONTEXT_VS:
+        return {"enabled": False}
+    idx_name = _cc_vs_index_name()
+    result: dict = {"enabled": True, "endpoint_name": VS_ENDPOINT, "index_name": idx_name,
+                    "embedding_model": _CC_VS_EMBED_MODEL}
+    try:
+        ws = get_workspace_client()
+        ep = ws.vector_search_endpoints.get_endpoint(VS_ENDPOINT)
+        result["endpoint_state"] = ep.endpoint_status.state.value if ep.endpoint_status else "UNKNOWN"
+    except Exception as e:
+        err = str(e)
+        result["endpoint_state"] = "NOT_FOUND" if ("does not exist" in err.lower() or "not found" in err.lower()) else "ERROR"
+    try:
+        ws = get_workspace_client()
+        idx = ws.vector_search_indexes.get_index(idx_name)
+        st = idx.status
+        result["index_ready"] = bool(st and st.ready)
+        result["index_status"] = str(st) if st else "UNKNOWN"
+        result["indexed_rows"] = getattr(st, "indexed_row_count", None) if st else None
+    except Exception as e:
+        err = str(e)
+        result["index_ready"] = False
+        result["index_status"] = "NOT_FOUND" if ("does not exist" in err.lower() or "not found" in err.lower()) else "ERROR"
+    try:
+        rows = execute_sql(f"SELECT COUNT(*) AS c FROM {fq(_CC_TABLE)} WHERE active = TRUE")
+        result["active_entries"] = int(rows[0]["c"]) if rows else 0
+    except Exception:
+        result["active_entries"] = None
+    return result
+
+
+@app.post("/api/customer-context/vector/sync")
+def customer_context_vector_sync():
+    """Provision (if needed) and trigger a sync of the customer-context VS index.
+
+    Opt-in. Non-blocking: creates the endpoint/index if missing and triggers a sync, then
+    returns right away with a status. The index provisions asynchronously; poll
+    GET /api/customer-context/vector/status until index_ready is true. Fully best-effort.
+    """
+    if not _ENABLE_CONTEXT_VS:
+        raise HTTPException(503, detail=(
+            "The customer-context vector index is disabled. Set enable_context_vector_index=true "
+            "(variables.yml / ENABLE_CONTEXT_VECTOR_INDEX) and redeploy to turn it on."))
+    from databricks.sdk.service.vectorsearch import (
+        DeltaSyncVectorIndexSpecRequest, EmbeddingSourceColumn, EndpointType,
+        PipelineType, VectorIndexType,
+    )
+    _ensure_cc_cdf()
+    idx_name = _cc_vs_index_name()
+    ws = get_workspace_client()
+    steps: list[str] = []
+
+    # 1. Endpoint (create if missing; do NOT wait for ONLINE -- that can take minutes).
+    try:
+        ws.vector_search_endpoints.get_endpoint(VS_ENDPOINT)
+        steps.append("endpoint_exists")
+    except Exception:
+        try:
+            ws.vector_search_endpoints.create_endpoint(name=VS_ENDPOINT, endpoint_type=EndpointType.STANDARD)
+            steps.append("endpoint_creating")
+        except Exception as e:
+            logger.warning("context VS endpoint create deferred: %s", e)
+            return {"status": "endpoint_provisioning", "index": idx_name, "steps": steps,
+                    "detail": f"Endpoint '{VS_ENDPOINT}' is still provisioning; retry sync shortly."}
+
+    # 2. Index (create if missing; returns quickly, provisions async).
+    created = False
+    try:
+        ws.vector_search_indexes.get_index(idx_name)
+        steps.append("index_exists")
+    except Exception:
+        try:
+            ws.vector_search_indexes.create_index(
+                name=idx_name,
+                endpoint_name=VS_ENDPOINT,
+                primary_key="context_id",
+                index_type=VectorIndexType.DELTA_SYNC,
+                delta_sync_index_spec=DeltaSyncVectorIndexSpecRequest(
+                    source_table=fq(_CC_TABLE),
+                    embedding_source_columns=[EmbeddingSourceColumn(
+                        name="context_text", embedding_model_endpoint_name=_CC_VS_EMBED_MODEL)],
+                    pipeline_type=PipelineType.TRIGGERED,
+                    columns_to_sync=["context_id", "context_text", "scope", "scope_type",
+                                     "context_label", "priority", "active"],
+                ),
+            )
+            created = True
+            steps.append("index_creating")
+        except Exception as e:
+            err = str(e)
+            if "not ready" in err.lower() or "provision" in err.lower():
+                return {"status": "endpoint_provisioning", "index": idx_name, "steps": steps,
+                        "detail": "Endpoint not ready yet; retry sync once it is ONLINE."}
+            logger.error("context VS index create failed: %s", e)
+            raise HTTPException(502, detail=f"Could not create the context vector index: {err}")
+
+    # 3. Sync (a freshly-created index auto-syncs; an existing one we trigger -- tolerate not-ready).
+    if not created:
+        try:
+            ws.vector_search_indexes.sync_index(index_name=idx_name)
+            steps.append("sync_triggered")
+        except Exception as e:
+            err = str(e)
+            if "not ready" in err.lower():
+                steps.append("sync_deferred_not_ready")
+            else:
+                logger.warning("context VS sync_index failed: %s", e)
+                steps.append("sync_error")
+
+    return {"status": "provisioning" if created else "sync_triggered",
+            "index": idx_name, "endpoint": VS_ENDPOINT, "steps": steps,
+            "detail": ("Index is provisioning; first build can take several minutes. "
+                       "Poll the status endpoint until index_ready is true.") if created
+                      else "Sync triggered; new/changed entries will be embedded shortly."}
+
+
+class ContextVectorSearchRequest(BaseModel):
+    query: str
+    scope_type: Optional[str] = None
+    num_results: int = 5
+
+
+@app.post("/api/customer-context/vector/search")
+def customer_context_vector_search(req: ContextVectorSearchRequest):
+    """Semantic search over active customer-context entries (app + downstream use).
+
+    This is NOT used by metadata generation; it backs the app's semantic resolve-preview and
+    is available to downstream consumers (agents/RAG, Genie). Always filters to active rows.
+    """
+    if not _ENABLE_CONTEXT_VS:
+        raise HTTPException(503, detail="The customer-context vector index is disabled.")
+    if not (req.query or "").strip():
+        raise HTTPException(400, detail="query must be non-empty")
+    idx_name = _cc_vs_index_name()
+    try:
+        index = _get_api_vs_index(idx_name)
+        filters = {"active": True}
+        if req.scope_type and req.scope_type in _CC_VALID_TYPES:
+            filters["scope_type"] = req.scope_type
+        results = index.similarity_search(
+            query_text=req.query,
+            columns=["context_id", "scope", "scope_type", "context_label", "context_text", "priority"],
+            filters=filters,
+            num_results=min(max(req.num_results, 1), 20),
+        )
+        cols = results.get("manifest", {}).get("columns", [])
+        col_names = [c.get("name", f"col{i}") for i, c in enumerate(cols)] if cols else []
+        matches = []
+        for row in results.get("result", {}).get("data_array", []):
+            matches.append(dict(zip(col_names, row)) if col_names else {"data": row})
+        return {"matches": matches, "count": len(matches)}
+    except Exception as e:
+        err = str(e)
+        if "does not exist" in err.lower() or "not found" in err.lower():
+            raise HTTPException(409, detail=(
+                "The context vector index has not been built yet. Click 'Sync to vector index' "
+                "first, then wait until it is ready."))
+        raise HTTPException(500, detail=f"Context vector search failed: {err}")
 
 
 # ---------------------------------------------------------------------------

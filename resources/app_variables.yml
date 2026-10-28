@@ -42,6 +42,16 @@ variables:
       is stripped by the DAB SDK (omitempty) and the Apps deploy then rejects it.
       Defaults to the app name.
     default: "dbxmetagen"
+  default_view_mode:
+    description: >-
+      Default UI view mode for new users: "advanced" (default -- the full app) or
+      "simplified" (hides advanced tools such as the Semantic Layer, Ontology, Entity
+      Browser, and Sync, and strips the Generate form to comment-mode essentials --
+      aimed at non-technical data stewards). This is only the DEFAULT; each user can
+      flip it from the Settings widget (gear, top-right), and their choice is remembered
+      per browser. It is a display preference, not an access control. Keep "advanced"
+      unless most of your users only review/apply comments.
+    default: "advanced"
   user_api_scopes:
     description: >-
       OAuth scopes the app DECLARES for On-Behalf-Of user auth. Declared on EVERY

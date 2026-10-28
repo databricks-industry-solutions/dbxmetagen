@@ -41,6 +41,8 @@ resources:
           default: "{{job.run_id}}"
         - name: include_previously_failed_tables
           default: "false"
+        - name: include_existing_table_comment
+          default: "true"
         - name: ontology_bundle
           default: ""
         - name: domain_config_path
@@ -119,7 +121,7 @@ resources:
               run_id: "{{job.parameters.run_id}}"
               cleanup_control_table: "false"
               include_previously_failed_tables: "{{job.parameters.include_previously_failed_tables}}"
-              include_existing_table_comment: "true"
+              include_existing_table_comment: "{{job.parameters.include_existing_table_comment}}"
               use_kb_comments: "true"
               use_customer_context: "{{job.parameters.use_customer_context}}"
               ontology_bundle: "{{job.parameters.ontology_bundle}}"
@@ -152,7 +154,7 @@ resources:
               run_id: "{{job.parameters.run_id}}"
               cleanup_control_table: "false"
               include_previously_failed_tables: "{{job.parameters.include_previously_failed_tables}}"
-              include_existing_table_comment: "true"
+              include_existing_table_comment: "{{job.parameters.include_existing_table_comment}}"
               use_kb_comments: "true"
               use_customer_context: "{{job.parameters.use_customer_context}}"
               ontology_bundle: "{{job.parameters.ontology_bundle}}"

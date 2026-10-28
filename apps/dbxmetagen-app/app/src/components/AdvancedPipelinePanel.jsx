@@ -1,7 +1,8 @@
 import React, { useState, useEffect, useRef } from 'react'
 import { InfoTip } from './ui'
 import { cachedFetchObj, TTL } from '../apiCache'
-import { TERMINAL_STATES } from '../hooks/useJobRunner'
+import { TERMINAL_STATES, classifyRun } from '../hooks/useJobRunner'
+import RunEntry from './RunEntry'
 import TableScopePicker, { scopeToTableNames } from './TableScopePicker'
 
 const BUNDLE_LS_KEY = 'dbxmetagen_ontologyBundle'
@@ -34,6 +35,7 @@ export default function AdvancedPipelinePanel({
   runningAction,
   runError,
   runHistory = [],
+  cancelRun,
   pipelineStats,
   useServerless = true,
   onServerlessChange,
@@ -317,6 +319,25 @@ export default function AdvancedPipelinePanel({
       <p className="text-[11px] text-slate-400 dark:text-slate-500 italic">
         Runs the full analytics pipeline (knowledge bases, knowledge graph, embeddings, ontology, profiling, FK prediction, clustering, vector index). No row-level data is sent to LLMs — only metadata.
       </p>
+
+      {/* Advanced pipeline runs — collapsible so it doesn't crowd the gate.
+          Open by default while a run is active. (#229.2 cancel lives here.) */}
+      {(() => {
+        const advRuns = runHistory.filter(r => classifyRun(r) === 'advanced')
+        if (advRuns.length === 0) return null
+        const anyActive = advRuns.some(r => !TERMINAL_STATES.has(r.state))
+        return (
+          <details open={anyActive} className="rounded-lg border border-slate-200 dark:border-dbx-navy-400/30">
+            <summary className="cursor-pointer select-none px-3 py-2 text-xs font-semibold text-slate-600 dark:text-slate-300 flex items-center gap-2">
+              Pipeline runs ({advRuns.length})
+              {anyActive && <span className="inline-block w-2 h-2 bg-blue-500 rounded-full animate-pulse" title="A run is active" />}
+            </summary>
+            <div className="border-t border-slate-200 dark:border-dbx-navy-400/30 max-h-80 overflow-y-auto">
+              {advRuns.slice(0, 20).map(r => <RunEntry key={r.run_id} run={r} onCancel={cancelRun} />)}
+            </div>
+          </details>
+        )
+      })()}
     </div>
   )
 }
