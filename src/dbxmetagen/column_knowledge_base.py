@@ -143,54 +143,88 @@ class ColumnKnowledgeBaseBuilder:
             )
         )
     
-    def get_column_metadata_from_information_schema(self) -> DataFrame:
-        """Fetch column data types and nullable info from information_schema."""
+    def get_column_metadata_from_information_schema(self, source_df: DataFrame) -> DataFrame:
+        r"""Fetch column data types and nullable info from information_schema.
+
+        Scoped to only the ``catalog.schema`` pairs present in *source_df*, which
+        is already filtered to the corpus (table_names + ``ddl_type='column'``).
+        This bounds the scan to the schemas actually in scope instead of scanning
+        every table in each catalog -- the previous behavior scaled with catalog
+        size (and could trigger remote metadata RPCs on federated catalogs),
+        which is the dominant cost on large/shared workspaces.
+
+        The returned ``table_name`` is lowercased to match ``source_df`` (whose
+        ``table_name`` is ``LOWER(\`table\`)``); the old code concatenated raw-case
+        names, so the downstream left-join silently dropped data_type/nullable
+        whenever the UC name case differed.
+        """
+        empty_schema = "table_name STRING, column_name STRING, data_type STRING, nullable BOOLEAN"
         try:
-            # Get list of catalogs from our source data
-            catalogs_df = self.spark.sql(f"""
-                SELECT DISTINCT SPLIT(`table`, '\\\\.')[0] as catalog_name
-                FROM {self.config.fully_qualified_source}
-                WHERE `table` IS NOT NULL
-            """)
-            catalogs = [row.catalog_name for row in catalogs_df.collect()]
-            
-            if not catalogs:
-                return self.spark.createDataFrame([], "table_name STRING, column_name STRING, data_type STRING, nullable BOOLEAN")
-            
-            # Query information_schema for each catalog
+            # catalog/schema pairs actually in scope. source_df.table_name is
+            # already LOWER(`table`), so these come out lowercased.
+            pairs_df = (
+                source_df
+                .select(
+                    F.split(F.col("table_name"), "\\.").getItem(0).alias("cat"),
+                    F.split(F.col("table_name"), "\\.").getItem(1).alias("sch"),
+                )
+                .where(F.col("cat").isNotNull() & F.col("sch").isNotNull())
+                .distinct()
+            )
+            pairs = [(r.cat, r.sch) for r in pairs_df.collect() if r.cat and r.sch]
+
+            if not pairs:
+                return self.spark.createDataFrame([], empty_schema)
+
             dfs = []
-            for catalog in catalogs:
+            for cat, sch in pairs:
+                # cat/sch are already lowercased (derived from LOWER(`table`)), and
+                # UC normalizes identifiers to lowercase on storage, so a BARE
+                # predicate against a lowercase literal both matches and -- unlike
+                # LOWER(table_catalog)=... -- pushes down to the metastore. Wrapping
+                # the predicate column in LOWER() defeats pushdown and forces a scan
+                # of every catalog (measured 10x SLOWER than the whole-catalog scan
+                # it was meant to replace). LOWER() stays only in the SELECT
+                # projection, where it is post-scan and free.
+                cat_esc = cat.replace("'", "''")
+                sch_esc = sch.replace("'", "''")
                 try:
                     df = self.spark.sql(f"""
-                        SELECT 
-                            CONCAT(table_catalog, '.', table_schema, '.', table_name) as table_name,
+                        SELECT
+                            LOWER(CONCAT(table_catalog, '.', table_schema, '.', table_name)) as table_name,
                             column_name,
                             data_type,
                             CASE WHEN is_nullable = 'YES' THEN true ELSE false END as nullable
                         FROM system.information_schema.columns
-                        WHERE table_catalog = '{catalog}'
+                        WHERE table_catalog = '{cat_esc}'
+                          AND table_schema = '{sch_esc}'
                     """)
                     dfs.append(df)
                 except Exception as e:
-                    logger.warning(f"Could not query information_schema for catalog {catalog}: {e}")
-            
+                    logger.warning(f"Could not query information_schema for {cat}.{sch}: {e}")
+
             if dfs:
                 from functools import reduce
                 return reduce(lambda a, b: a.union(b), dfs)
             else:
-                return self.spark.createDataFrame([], "table_name STRING, column_name STRING, data_type STRING, nullable BOOLEAN")
+                return self.spark.createDataFrame([], empty_schema)
         except Exception as e:
             logger.warning(f"Could not fetch column metadata from information_schema: {e}")
-            return self.spark.createDataFrame([], "table_name STRING, column_name STRING, data_type STRING, nullable BOOLEAN")
+            return self.spark.createDataFrame([], empty_schema)
     
-    def build_staged_updates(self) -> DataFrame:
-        """Build the staged updates DataFrame by joining all metadata types."""
-        source_df = self.read_source_data()
-        
+    def build_staged_updates(self, source_df: DataFrame | None = None) -> DataFrame:
+        """Build the staged updates DataFrame by joining all metadata types.
+
+        *source_df* should be a materialized, corpus-filtered view of the log
+        (see ``run()``). When omitted, falls back to reading the log directly.
+        """
+        if source_df is None:
+            source_df = self.read_source_data()
+
         all_columns = self.get_all_columns_with_timestamps(source_df)
         column_comments = self.extract_column_comments(source_df)
         pi_data = self.extract_pi_data(source_df)
-        column_metadata = self.get_column_metadata_from_information_schema()
+        column_metadata = self.get_column_metadata_from_information_schema(source_df)
         
         # Join all data together
         result = (
@@ -297,17 +331,49 @@ class ColumnKnowledgeBaseBuilder:
         return {"total_records": count}
     
     def run(self) -> Dict[str, Any]:
-        """Execute the full ETL pipeline."""
+        """Execute the full ETL pipeline.
+
+        The source log (``metadata_generation_log``) is unclustered and
+        append-only, so every read is a full scan and it grows with history, not
+        corpus size. We therefore read it exactly once -- filtered to the corpus
+        -- into a short-lived temp table, then derive comments/PI/columns and
+        MERGE from that small materialization. This replaces the previous flow
+        (DAG re-executed by both ``.count()`` and the MERGE, re-scanning the log
+        ~6x), and works on serverless where ``.cache()`` is unavailable.
+        """
+        import uuid
+
         logger.info(f"Starting column knowledge base build: {self.config.fully_qualified_target}")
-        
+
         self.create_target_table()
-        staged_df = self.build_staged_updates()
-        staged_count = staged_df.count()
-        logger.info(f"Staged {staged_count} column records for merge")
-        
-        merge_stats = self.merge_to_target(staged_df)
+
+        src_tmp = (
+            f"{self.config.catalog_name}.{self.config.schema_name}"
+            f".temp_ckb_src_{uuid.uuid4().hex[:12]}"
+        )
+        try:
+            # Single full scan of the log -> small corpus-scoped temp table.
+            (
+                self.read_source_data()
+                .write.mode("overwrite")
+                .option("overwriteSchema", "true")
+                .saveAsTable(src_tmp)
+            )
+            source_df = self.spark.table(src_tmp)
+
+            staged_df = self.build_staged_updates(source_df)
+            staged_count = staged_df.count()
+            logger.info(f"Staged {staged_count} column records for merge")
+
+            merge_stats = self.merge_to_target(staged_df)
+        finally:
+            try:
+                self.spark.sql(f"DROP TABLE IF EXISTS {src_tmp}")
+            except Exception as e:
+                logger.warning("Could not drop temp table %s: %s", src_tmp, e)
+
         logger.info(f"Column knowledge base build complete. Total records: {merge_stats['total_records']}")
-        
+
         return {
             "staged_count": staged_count,
             "total_records": merge_stats["total_records"]

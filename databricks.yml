@@ -109,22 +109,20 @@ targets:
       # /Users/... path deploys jobs fine but the APP deploy rejects it with
       # "Source code path must be a valid workspace path".
       root_path: ${var.current_working_directory}
-    # No target-level run_as (here or in dev/demo): a target run_as applies to EVERY
-    # resource, and DAB rejects an app whose run_as differs from the deploying
-    # identity ("apps do not support a setting a run_as user that is different from
-    # the owner"). Instead each job sets `run_as: ${var.run_as}` itself
-    # (resources/jobs/*.yml), so the app stays owned by the deployer while jobs can
-    # run as a service principal.
+    # No run_as anywhere -- not at the target level, and not on the jobs
+    # (resources/jobs/*.yml). A target run_as would apply to EVERY resource, and DAB
+    # rejects an app whose run_as differs from the deploying identity ("apps do not
+    # support a setting a run_as user that is different from the owner"). Omitting
+    # run_as on the jobs too lets DAB type the deploying identity automatically --
+    # correctly for a user OR a service principal. A hardcoded user_name: <sp-app-id>
+    # made an SP-deployed prod bundle fail with "cannot be set as run_as", and an
+    # empty run_as object fails with "run_as object must have user_name or
+    # service_principal_name fields filled", so only omission is safe (#264).
     #
-    # Omitting run_as here also lets DAB default it to the deploying identity, typed
-    # correctly for a user OR a service principal -- a hardcoded user_name: <sp-app-id>
-    # made an SP-deployed prod bundle fail with "cannot be set as run_as" (#264).
-    #
-    # Default: jobs run as the deploying user (unchanged behavior). To run them as an
-    # EXISTING service principal from the first deploy, set in variable-overrides.json
-    # (CLI) or the UI's "Configure variable overrides" editor:
-    #   {"run_as": {"service_principal_name": "<sp-application-id>"}}
-    # The deploying identity must be able to act as that SP. See variables.yml.
+    # So: jobs run as the deploying identity. To run jobs as a service principal,
+    # deploy as that SP (jobs follow automatically). For the advanced "deploy as X,
+    # run jobs as a different SP Y" pattern, add `run_as: ${var.run_as}` back to the
+    # job(s) and set var.run_as to Y -- see variables.yml.
     permissions:
       - user_name: ${var.current_user}
         level: CAN_MANAGE

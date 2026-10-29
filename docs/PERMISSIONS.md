@@ -9,11 +9,17 @@ dbxmetagen uses two separate identities at runtime: the **app service principal*
 | Identity | Created by | Used for |
 |----------|-----------|----------|
 | **App Service Principal** | Auto-created by Databricks Apps on first deploy | Dashboard UI: browsing metadata, triggering jobs, SQL queries, Vector Search, agent chat |
-| **Job run identity** | `var.run_as`: the deploying user by default, or a service principal you supply | Job execution: metadata generation, DDL writes, `ALTER TABLE`, `SET TAGS`, `AI_QUERY` calls |
+| **Job run identity** | The **deploying identity** (auto-typed), or a different service principal via the advanced path | Job execution: metadata generation, DDL writes, `ALTER TABLE`, `SET TAGS`, `AI_QUERY` calls |
 
 The app SPN is a **read-heavy** identity -- it needs `SELECT` to browse and `MODIFY` / `CREATE TABLE` only because the UI writes to control tables (metric view definitions, agent state, semantic layer questions). The deployer identity is a **write-heavy** identity that creates and modifies tables in the target catalog during job runs.
 
-Every job sets `run_as: ${var.run_as}` in its own `resources/jobs/*.yml` (not at the target level in `databricks.yml` -- a target-level `run_as` also applies to the app, and DAB rejects an app whose `run_as` differs from the deploying identity). The `run_as` variable defaults to the deploying user. To run jobs as an **existing** service principal from the first deploy, set `{"run_as": {"service_principal_name": "<sp-application-id>"}}` in `variable-overrides.json` (CLI) or the UI's **Configure variable overrides** editor. The deploying identity must hold the **Service Principal: User** role on that SP **before** the deploy -- workspace admins are not exempt, and without it the Jobs API rejects every job with `PERMISSION_DENIED ... must have 'servicePrincipal.user' role`. `scripts/grant_app_permissions.sh` detects an SP `run_as`, grants the deployer that role (if the caller is the SP's manager or an admin), gives the jobs SP the same output-schema and Vector Search permissions as the app SP plus the create privileges only the jobs need (`CREATE VOLUME`, `CREATE FUNCTION`, `CREATE MATERIALIZED VIEW`), and grants it `CAN_READ` on the bundle's workspace folder (`root_path`) -- the job notebooks and wheel live in the deployer's folder, so without it every task fails with `Unable to access the notebook ... lacks the required permissions`. Because the role must exist before the deploy, run the script once **before** the first deploy as well as after (`deploy.sh` does both; before the app exists it grants the jobs SP only). Source-table access is not granted by the script for either SP. Prefer a dedicated SP over the app's own SP: the app SP is recreated (new id) if the app is deleted and recreated.
+Jobs **omit** `run_as` entirely -- it is set neither per job (`resources/jobs/*.yml`) nor at the target level (`databricks.yml`). A target-level `run_as` would also apply to the app, and DAB rejects an app whose `run_as` differs from the deploying identity. With `run_as` omitted, DAB types the **deploying identity** automatically -- correctly whether you deploy as a user *or* a service principal. (This is deliberate: a static `user_name` default broke SP deploys with `cannot be set as run_as`, and an empty `{}` fails with `run_as object must have user_name or service_principal_name fields filled` -- only omission auto-types both.)
+
+**To run jobs as a service principal, there are two ways:**
+
+1. **Deploy as that SP (recommended).** The jobs run as it automatically -- no `run_as` config at all. The SP needs the output-schema privileges below; if it is the catalog/schema owner (e.g. it created them) that is automatic, otherwise grant them explicitly (the same grants `grant_app_permissions.sh` applies to the app SP).
+
+2. **Advanced -- deploy as X, run jobs as a different SP Y** (e.g. deploy as a user but run jobs as the app SP). Add `run_as: ${var.run_as}` back to the job resource(s) you want, then set `{"run_as": {"service_principal_name": "<Y-application-id>"}}` in `variable-overrides.json` (CLI) or the UI's **Configure variable overrides** editor (only the jobs you added the line to run as Y; the rest stay as the deployer). X must hold the **Service Principal: User** role on Y **before** the deploy -- workspace admins are not exempt, and without it the Jobs API rejects the job with `PERMISSION_DENIED ... must have 'servicePrincipal.user' role`. `scripts/grant_app_permissions.sh` detects an SP `run_as`, grants X that role (if X is Y's manager or an admin), gives Y the same output-schema and Vector Search permissions as the app SP plus the create privileges only jobs need (`CREATE VOLUME`, `CREATE FUNCTION`, `CREATE MATERIALIZED VIEW`), and grants Y `CAN_READ` on the bundle's workspace folder (`root_path`) -- the job notebooks and wheel live in the deployer's folder, so without it the job fails with `Unable to access the notebook ... lacks the required permissions`. Because the role must exist before the deploy, run the script once **before** the first advanced deploy as well as after (`deploy.sh` does both). Source-table access is not granted by the script. Prefer a dedicated SP over the app's own SP: the app SP is recreated (new id) if the app is deleted and recreated.
 
 ---
 
@@ -96,13 +102,17 @@ In most setups the deployer is a catalog admin on the metadata catalog, which co
 
 | Target | Job identity |
 |--------|-------------|
-| `dev` / `demo` / `prod` | Per-job `run_as: ${var.run_as}` (defaults to the deploying user; override to an existing SP) |
+| `dev` / `demo` / `prod` | The **deploying identity** -- jobs omit `run_as`, so DAB auto-types the user or SP you deploy as. (Advanced: add `run_as` back to a job + set `var.run_as` to run it as a *different* SP.) |
 
 ### Running jobs as a service principal (checklist)
 
-With the default (`run_as` = deploying user) none of this applies: the deployer
-owns the bundle folder, the notebook MLflow experiments and the tables. With a
-`run_as` service principal, the job identity is no longer the deployer, so:
+When jobs run as the **deploying identity** (the default -- including when you
+deploy *as* a service principal) the deployer already owns the bundle folder, the
+notebook MLflow experiments and the tables, so most of this is automatic; the one
+thing to check is that a deploying SP can write to the output schema (it is, if the
+SP owns/created it -- otherwise grant the output-schema privileges below). The
+checklist applies in full to the **advanced path**, where the job identity (Y) is a
+service principal **different from the deployer** (X):
 
 | Item | Handled by | Notes |
 |------|-----------|-------|
