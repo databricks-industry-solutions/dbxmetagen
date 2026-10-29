@@ -165,6 +165,11 @@ class TestInformationSchemaScoping:
             assert "table_catalog" in q
             # join key must be lowercased to match source_df.table_name = LOWER(`table`)
             assert "LOWER(CONCAT" in q
+            # CRITICAL: predicate columns must NOT be wrapped in LOWER() -- that
+            # defeats information_schema predicate pushdown and is 10x slower than
+            # the whole-catalog scan it replaces (measured on DMVM). Verified fix.
+            assert "LOWER(table_catalog)" not in q, "LOWER() on predicate defeats pushdown"
+            assert "LOWER(table_schema)" not in q, "LOWER() on predicate defeats pushdown"
 
     def test_no_whole_catalog_discovery_query(self):
         """Must not derive catalogs from an unfiltered scan of the whole log."""

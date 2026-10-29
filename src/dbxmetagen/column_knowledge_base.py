@@ -178,6 +178,14 @@ class ColumnKnowledgeBaseBuilder:
 
             dfs = []
             for cat, sch in pairs:
+                # cat/sch are already lowercased (derived from LOWER(`table`)), and
+                # UC normalizes identifiers to lowercase on storage, so a BARE
+                # predicate against a lowercase literal both matches and -- unlike
+                # LOWER(table_catalog)=... -- pushes down to the metastore. Wrapping
+                # the predicate column in LOWER() defeats pushdown and forces a scan
+                # of every catalog (measured 10x SLOWER than the whole-catalog scan
+                # it was meant to replace). LOWER() stays only in the SELECT
+                # projection, where it is post-scan and free.
                 cat_esc = cat.replace("'", "''")
                 sch_esc = sch.replace("'", "''")
                 try:
@@ -188,8 +196,8 @@ class ColumnKnowledgeBaseBuilder:
                             data_type,
                             CASE WHEN is_nullable = 'YES' THEN true ELSE false END as nullable
                         FROM system.information_schema.columns
-                        WHERE LOWER(table_catalog) = '{cat_esc}'
-                          AND LOWER(table_schema) = '{sch_esc}'
+                        WHERE table_catalog = '{cat_esc}'
+                          AND table_schema = '{sch_esc}'
                     """)
                     dfs.append(df)
                 except Exception as e:
