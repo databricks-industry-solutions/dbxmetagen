@@ -197,29 +197,37 @@ def test_every_job_name_is_keyword_discoverable():
     )
 
 
-def test_run_as_is_per_job_not_per_target():
-    """run_as must be set on each job, never at the target level.
+def test_run_as_is_omitted_everywhere():
+    """run_as must be omitted on every target AND every job.
 
     A target-level run_as applies to every resource, including the app, and DAB
     rejects an app whose run_as differs from the deploying identity ("apps do not
-    support a setting a run_as user that is different from the owner"). Setting it
-    per job keeps the app owned by the deployer while a run_as SP override in
-    variable-overrides.json still applies to every job.
+    support a setting a run_as user that is different from the owner"). Omitting
+    run_as on the jobs too lets DAB type the deploying identity automatically --
+    correctly for a user OR a service principal. A hardcoded user_name: <sp-app-id>
+    made an SP-deployed prod bundle fail with "cannot be set as run_as", and an
+    empty run_as fails with "run_as object must have user_name or
+    service_principal_name fields filled", so only omission is safe. To run jobs as
+    a service principal, deploy as that SP; the advanced "jobs as a different SP"
+    path adds run_as back to a job explicitly (see variables.yml run_as).
     """
     bundle = yaml.safe_load((ROOT / "databricks.yml").read_text())
     with_target_run_as = [t for t, cfg in (bundle.get("targets") or {}).items()
                           if "run_as" in (cfg or {})]
     assert not with_target_run_as, (
-        f"targets {with_target_run_as} set run_as; move it to the job resources"
+        f"targets {with_target_run_as} set run_as; omit it (DAB auto-types the deployer)"
     )
 
-    missing = []
+    with_job_run_as = []
     for f in JOBS_DIR.glob("*.job.yml"):
         doc = yaml.safe_load(f.read_text()) or {}
         for key, job in (doc.get("resources", {}).get("jobs") or {}).items():
-            if job.get("run_as") != "${var.run_as}":
-                missing.append(f"{f.name}:{key}")
-    assert not missing, f"jobs without run_as: ${{var.run_as}}: {missing}"
+            if "run_as" in (job or {}):
+                with_job_run_as.append(f"{f.name}:{key}")
+    assert not with_job_run_as, (
+        f"jobs set run_as: {with_job_run_as}; omit it so DAB auto-types the deployer "
+        f"(a static default breaks SP deploys)"
+    )
 
 
 def test_job_failure_alerts_use_alert_email():
