@@ -34,7 +34,7 @@ INFRASTRUCTURE_TABLE_NAMES: frozenset[str] = frozenset({
 })
 
 _INFRASTRUCTURE_DYNAMIC_RE = re.compile(
-    r"^(metadata_control_|temp_metadata_generation_log_)"
+    r"^(metadata_control_|temp_metadata_generation_log_|temp_ckb_src_)"
 )
 
 
@@ -60,7 +60,7 @@ def infrastructure_exclude_sql(column: str = "table_name") -> str:
     bare_expr = f"substring_index({column}, '.', -1)"
     return (
         f"AND {bare_expr} NOT IN ({quoted}) "
-        f"AND NOT {bare_expr} RLIKE '^(metadata_control_|temp_metadata_generation_log_)'"
+        f"AND NOT {bare_expr} RLIKE '^(metadata_control_|temp_metadata_generation_log_|temp_ckb_src_)'"
     )
 
 

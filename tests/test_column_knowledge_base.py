@@ -132,6 +132,59 @@ class TestColumnMergeSQLGeneration:
         assert "THEN target.confidence" in merge_sql
 
 
+class TestInformationSchemaScoping:
+    """information_schema reads must be scoped to the corpus, not whole-catalog."""
+
+    def setup_method(self):
+        self.mock_spark = MagicMock()
+        self.config = ColumnKnowledgeBaseConfig(
+            catalog_name="test_cat", schema_name="test_sch"
+        )
+        self.builder = ColumnKnowledgeBaseBuilder(self.mock_spark, self.config)
+
+    def test_info_schema_query_is_schema_scoped(self):
+        """Each information_schema query must filter by BOTH catalog and schema
+        (the old code filtered by catalog only, scanning every schema)."""
+        # source_df.select(...).where(...).distinct().collect() -> one (cat, sch) pair
+        pair_row = MagicMock(cat="cat_a", sch="sch_a")
+        chained = MagicMock()
+        chained.select.return_value = chained
+        chained.where.return_value = chained
+        chained.distinct.return_value = chained
+        chained.collect.return_value = [pair_row]
+
+        self.builder.get_column_metadata_from_information_schema(chained)
+
+        info_queries = [
+            c[0][0] for c in self.mock_spark.sql.call_args_list
+            if "information_schema.columns" in c[0][0]
+        ]
+        assert info_queries, "expected an information_schema query"
+        for q in info_queries:
+            assert "table_schema" in q, "query must be scoped by schema, not catalog-only"
+            assert "table_catalog" in q
+            # join key must be lowercased to match source_df.table_name = LOWER(`table`)
+            assert "LOWER(CONCAT" in q
+
+    def test_no_whole_catalog_discovery_query(self):
+        """Must not derive catalogs from an unfiltered scan of the whole log."""
+        pair_row = MagicMock(cat="cat_a", sch="sch_a")
+        chained = MagicMock()
+        chained.select.return_value = chained
+        chained.where.return_value = chained
+        chained.distinct.return_value = chained
+        chained.collect.return_value = [pair_row]
+
+        self.builder.get_column_metadata_from_information_schema(chained)
+
+        # scope comes from the passed-in (already-filtered) source_df, not a
+        # SELECT DISTINCT ... FROM metadata_generation_log
+        for c in self.mock_spark.sql.call_args_list:
+            sql = c[0][0]
+            if "metadata_generation_log" in sql:
+                assert "SELECT DISTINCT" not in sql.upper() or "information_schema" in sql
+
+
 class TestBuildColumnKnowledgeBase:
     """Tests for build_column_knowledge_base function."""
     
