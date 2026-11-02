@@ -66,156 +66,81 @@ class TestColumnKnowledgeBaseBuilder:
         assert "column_knowledge_base" in call_arg
         assert "column_id STRING NOT NULL" in call_arg
     
-    def test_extract_column_comments_filters_correctly(self, builder, mock_spark):
-        # Create mock DataFrame
-        mock_df = MagicMock()
-        mock_df.filter.return_value = mock_df
-        mock_df.withColumn.return_value = mock_df
-        mock_df.select.return_value = mock_df
-        
-        result = builder.extract_column_comments(mock_df)
-        
-        # Verify filter was called
-        mock_df.filter.assert_called()
-    
-    def test_extract_pi_data_filters_correctly(self, builder, mock_spark):
-        mock_df = MagicMock()
-        mock_df.filter.return_value = mock_df
-        mock_df.withColumn.return_value = mock_df
-        mock_df.select.return_value = mock_df
-        
-        result = builder.extract_pi_data(mock_df)
-        
-        mock_df.filter.assert_called()
-
-
 class TestColumnMergeSQLGeneration:
-    """Test that column KB MERGE respects review_updated_at."""
+    """The single build_merge_sql statement must preserve steward-win semantics."""
 
     def setup_method(self):
-        self.mock_spark = MagicMock()
-        self.mock_spark.sql.return_value.collect.return_value = [{"cnt": 0}]
         self.config = ColumnKnowledgeBaseConfig(
             catalog_name="test_cat", schema_name="test_sch"
         )
+        self.builder = ColumnKnowledgeBaseBuilder(MagicMock(), self.config)
+        self.merge_sql = self.builder.build_merge_sql([("cat_a", "sch_a")])
 
-    def _get_merge_sql(self):
-        builder = ColumnKnowledgeBaseBuilder(self.mock_spark, self.config)
-        mock_df = MagicMock()
-        builder.merge_to_target(mock_df)
-        for c in self.mock_spark.sql.call_args_list:
-            sql = c[0][0]
-            if "MERGE INTO" in sql:
-                return sql
-        return None
+    def test_is_single_merge_statement(self):
+        # One declarative MERGE -- not a multi-step pipeline. Exactly one MERGE
+        # and exactly one read of the (slow) system info_schema view.
+        assert self.merge_sql.count("MERGE INTO") == 1
+        assert self.merge_sql.count("system.information_schema.columns") == 1
+        # no temp-table materialization machinery
+        assert "temp_ckb" not in self.merge_sql
+
+    def test_latest_wins_via_row_number(self):
+        # comment + PI are "most recent per column" via ROW_NUMBER windows
+        assert "ROW_NUMBER() OVER" in self.merge_sql
+        assert "metadata_type = 'comment'" in self.merge_sql
+        assert "metadata_type = 'pi'" in self.merge_sql
 
     def test_merge_preserves_reviewed_comment(self):
-        merge_sql = self._get_merge_sql()
-        assert merge_sql is not None
-        assert "target.review_updated_at IS NOT NULL" in merge_sql
-        assert "target.review_updated_at > source.updated_at" in merge_sql
-        assert "THEN target.comment" in merge_sql
+        assert "target.review_updated_at IS NOT NULL" in self.merge_sql
+        assert "target.review_updated_at > source.updated_at" in self.merge_sql
+        assert "THEN target.comment" in self.merge_sql
 
     def test_merge_preserves_reviewed_classification(self):
-        merge_sql = self._get_merge_sql()
-        assert merge_sql is not None
-        assert "THEN target.classification" in merge_sql
+        assert "THEN target.classification" in self.merge_sql
 
     def test_merge_preserves_reviewed_classification_type(self):
-        merge_sql = self._get_merge_sql()
-        assert merge_sql is not None
-        assert "THEN target.classification_type" in merge_sql
+        assert "THEN target.classification_type" in self.merge_sql
 
     def test_merge_preserves_reviewed_confidence(self):
-        merge_sql = self._get_merge_sql()
-        assert merge_sql is not None
-        assert "THEN target.confidence" in merge_sql
+        assert "THEN target.confidence" in self.merge_sql
 
 
 class TestInformationSchemaScoping:
     """information_schema reads must be scoped to the corpus, not whole-catalog."""
 
     def setup_method(self):
-        self.mock_spark = MagicMock()
         self.config = ColumnKnowledgeBaseConfig(
             catalog_name="test_cat", schema_name="test_sch"
         )
-        self.builder = ColumnKnowledgeBaseBuilder(self.mock_spark, self.config)
+        self.builder = ColumnKnowledgeBaseBuilder(MagicMock(), self.config)
 
-    def test_info_schema_query_is_schema_scoped(self):
-        """Each information_schema query must filter by BOTH catalog and schema
-        (the old code filtered by catalog only, scanning every schema)."""
-        # source_df.select(...).where(...).distinct().collect() -> one (cat, sch) pair
-        pair_row = MagicMock(cat="cat_a", sch="sch_a")
-        chained = MagicMock()
-        chained.select.return_value = chained
-        chained.where.return_value = chained
-        chained.distinct.return_value = chained
-        chained.collect.return_value = [pair_row]
+    def test_info_schema_is_schema_scoped_and_pushdown_safe(self):
+        """The info_schema read must filter by BOTH catalog and schema, join on a
+        lowercased key, and keep predicate columns BARE (LOWER() on a predicate
+        column defeats pushdown -- measured 10x slower on DMVM)."""
+        q = self.builder.build_merge_sql([("cat_a", "sch_a")])
+        assert "table_schema IN (" in q, "must scope by schema, not catalog-only"
+        assert "table_catalog = 'cat_a'" in q
+        assert "LOWER(CONCAT" in q, "join key lowercased to match LOWER(`table`)"
+        assert "LOWER(table_catalog)" not in q, "LOWER() on predicate defeats pushdown"
+        assert "LOWER(table_schema)" not in q, "LOWER() on predicate defeats pushdown"
 
-        self.builder.get_column_metadata_from_information_schema(chained)
-
-        info_queries = [
-            c[0][0] for c in self.mock_spark.sql.call_args_list
-            if "information_schema.columns" in c[0][0]
-        ]
-        assert info_queries, "expected an information_schema query"
-        for q in info_queries:
-            assert "table_schema" in q, "query must be scoped by schema, not catalog-only"
-            assert "table_catalog" in q
-            # join key must be lowercased to match source_df.table_name = LOWER(`table`)
-            assert "LOWER(CONCAT" in q
-            # CRITICAL: predicate columns must NOT be wrapped in LOWER() -- that
-            # defeats information_schema predicate pushdown and is 10x slower than
-            # the whole-catalog scan it replaces (measured on DMVM). Verified fix.
-            assert "LOWER(table_catalog)" not in q, "LOWER() on predicate defeats pushdown"
-            assert "LOWER(table_schema)" not in q, "LOWER() on predicate defeats pushdown"
-
-    def test_no_whole_catalog_discovery_query(self):
-        """Must not derive catalogs from an unfiltered scan of the whole log."""
-        pair_row = MagicMock(cat="cat_a", sch="sch_a")
-        chained = MagicMock()
-        chained.select.return_value = chained
-        chained.where.return_value = chained
-        chained.distinct.return_value = chained
-        chained.collect.return_value = [pair_row]
-
-        self.builder.get_column_metadata_from_information_schema(chained)
-
-        # scope comes from the passed-in (already-filtered) source_df, not a
-        # SELECT DISTINCT ... FROM metadata_generation_log
-        for c in self.mock_spark.sql.call_args_list:
-            sql = c[0][0]
-            if "metadata_generation_log" in sql:
-                assert "SELECT DISTINCT" not in sql.upper() or "information_schema" in sql
+    def test_empty_corpus_yields_no_unbounded_scan(self):
+        """No pairs -> a false predicate, never an unfiltered info_schema scan."""
+        q = self.builder.build_merge_sql([])
+        assert "1=0" in q
 
     def test_schemas_batched_into_one_query_per_catalog(self):
         """Many schemas in one catalog must become ONE `table_schema IN (...)`
-        query, not one query per schema. system.information_schema.columns has a
+        group, not one query per schema. system.information_schema.columns has a
         large fixed per-query cost, so per-schema queries multiply runtime
         (measured: 11 schemas = ~52s vs ~6s for a single IN-list query)."""
-        rows = [
-            MagicMock(cat="cat_a", sch="sch_a"),
-            MagicMock(cat="cat_a", sch="sch_b"),
-            MagicMock(cat="cat_a", sch="sch_c"),
-        ]
-        chained = MagicMock()
-        chained.select.return_value = chained
-        chained.where.return_value = chained
-        chained.distinct.return_value = chained
-        chained.collect.return_value = rows
-
-        self.builder.get_column_metadata_from_information_schema(chained)
-
-        info_queries = [
-            c[0][0] for c in self.mock_spark.sql.call_args_list
-            if "information_schema.columns" in c[0][0]
-        ]
-        assert len(info_queries) == 1, (
-            f"3 schemas in 1 catalog must be ONE query, got {len(info_queries)}"
-        )
-        q = info_queries[0]
-        assert "table_schema IN (" in q
+        q = self.builder.build_merge_sql([
+            ("cat_a", "sch_a"), ("cat_a", "sch_b"), ("cat_a", "sch_c"),
+        ])
+        # exactly one info_schema read, one IN-list, all three schemas present
+        assert q.count("system.information_schema.columns") == 1
+        assert q.count("table_schema IN (") == 1
         for s in ("sch_a", "sch_b", "sch_c"):
             assert f"'{s}'" in q
 
