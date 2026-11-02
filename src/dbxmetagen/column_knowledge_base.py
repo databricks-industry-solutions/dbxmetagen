@@ -176,18 +176,27 @@ class ColumnKnowledgeBaseBuilder:
             if not pairs:
                 return self.spark.createDataFrame([], empty_schema)
 
-            dfs = []
+            # Group schemas by catalog and issue ONE query per catalog with a
+            # `table_schema IN (...)` list. system.information_schema.columns has a
+            # large FIXED per-query cost (~5-13s on serverless) that does NOT shrink
+            # with a narrower predicate, so one query per (catalog, schema) pair
+            # multiplied that fixed cost by the number of schemas (measured: 11
+            # schemas = ~52s vs ~13s for a single whole-catalog query, and ~6s for
+            # this single IN-list query). The predicates stay BARE against lowercase
+            # literals: cat/sch are derived from LOWER(`table`) and UC normalizes
+            # identifiers to lowercase on storage, so a bare predicate both matches
+            # and pushes down; wrapping a predicate column in LOWER() defeats
+            # pushdown. LOWER() stays only in the SELECT projection (post-scan, free).
+            by_catalog: Dict[str, List[str]] = {}
             for cat, sch in pairs:
-                # cat/sch are already lowercased (derived from LOWER(`table`)), and
-                # UC normalizes identifiers to lowercase on storage, so a BARE
-                # predicate against a lowercase literal both matches and -- unlike
-                # LOWER(table_catalog)=... -- pushes down to the metastore. Wrapping
-                # the predicate column in LOWER() defeats pushdown and forces a scan
-                # of every catalog (measured 10x SLOWER than the whole-catalog scan
-                # it was meant to replace). LOWER() stays only in the SELECT
-                # projection, where it is post-scan and free.
+                by_catalog.setdefault(cat, []).append(sch)
+
+            dfs = []
+            for cat, schemas in by_catalog.items():
                 cat_esc = cat.replace("'", "''")
-                sch_esc = sch.replace("'", "''")
+                in_list = ", ".join(
+                    "'" + s.replace("'", "''") + "'" for s in sorted(set(schemas))
+                )
                 try:
                     df = self.spark.sql(f"""
                         SELECT
@@ -197,11 +206,11 @@ class ColumnKnowledgeBaseBuilder:
                             CASE WHEN is_nullable = 'YES' THEN true ELSE false END as nullable
                         FROM system.information_schema.columns
                         WHERE table_catalog = '{cat_esc}'
-                          AND table_schema = '{sch_esc}'
+                          AND table_schema IN ({in_list})
                     """)
                     dfs.append(df)
                 except Exception as e:
-                    logger.warning(f"Could not query information_schema for {cat}.{sch}: {e}")
+                    logger.warning(f"Could not query information_schema for {cat}: {e}")
 
             if dfs:
                 from functools import reduce
@@ -333,13 +342,14 @@ class ColumnKnowledgeBaseBuilder:
     def run(self) -> Dict[str, Any]:
         """Execute the full ETL pipeline.
 
-        The source log (``metadata_generation_log``) is unclustered and
-        append-only, so every read is a full scan and it grows with history, not
-        corpus size. We therefore read it exactly once -- filtered to the corpus
-        -- into a short-lived temp table, then derive comments/PI/columns and
-        MERGE from that small materialization. This replaces the previous flow
-        (DAG re-executed by both ``.count()`` and the MERGE, re-scanning the log
-        ~6x), and works on serverless where ``.cache()`` is unavailable.
+        The staged result is materialized exactly once into a short-lived temp
+        table, then both the row-count log line and the MERGE read from that
+        small concrete table. This is the critical performance property: the
+        staged DAG includes the ``system.information_schema.columns`` queries,
+        which dominate runtime (a large fixed per-query cost). Without
+        materialization that DAG is recomputed by BOTH ``staged_df.count()`` and
+        the MERGE's ``USING`` view, running information_schema twice. Serverless
+        has no ``.cache()``, so a temp table is how we materialize.
         """
         import uuid
 
@@ -347,30 +357,31 @@ class ColumnKnowledgeBaseBuilder:
 
         self.create_target_table()
 
-        src_tmp = (
+        staged_tmp = (
             f"{self.config.catalog_name}.{self.config.schema_name}"
-            f".temp_ckb_src_{uuid.uuid4().hex[:12]}"
+            f".temp_ckb_staged_{uuid.uuid4().hex[:12]}"
         )
         try:
-            # Single full scan of the log -> small corpus-scoped temp table.
+            # Build + materialize the staged result ONCE (captures the
+            # information_schema queries). count() and MERGE then read this small
+            # concrete table instead of re-executing the staged DAG.
             (
-                self.read_source_data()
+                self.build_staged_updates()
                 .write.mode("overwrite")
                 .option("overwriteSchema", "true")
-                .saveAsTable(src_tmp)
+                .saveAsTable(staged_tmp)
             )
-            source_df = self.spark.table(src_tmp)
+            staged_df = self.spark.table(staged_tmp)
 
-            staged_df = self.build_staged_updates(source_df)
             staged_count = staged_df.count()
             logger.info(f"Staged {staged_count} column records for merge")
 
             merge_stats = self.merge_to_target(staged_df)
         finally:
             try:
-                self.spark.sql(f"DROP TABLE IF EXISTS {src_tmp}")
+                self.spark.sql(f"DROP TABLE IF EXISTS {staged_tmp}")
             except Exception as e:
-                logger.warning("Could not drop temp table %s: %s", src_tmp, e)
+                logger.warning("Could not drop temp table %s: %s", staged_tmp, e)
 
         logger.info(f"Column knowledge base build complete. Total records: {merge_stats['total_records']}")
 
