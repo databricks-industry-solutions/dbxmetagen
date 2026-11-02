@@ -189,6 +189,36 @@ class TestInformationSchemaScoping:
             if "metadata_generation_log" in sql:
                 assert "SELECT DISTINCT" not in sql.upper() or "information_schema" in sql
 
+    def test_schemas_batched_into_one_query_per_catalog(self):
+        """Many schemas in one catalog must become ONE `table_schema IN (...)`
+        query, not one query per schema. system.information_schema.columns has a
+        large fixed per-query cost, so per-schema queries multiply runtime
+        (measured: 11 schemas = ~52s vs ~6s for a single IN-list query)."""
+        rows = [
+            MagicMock(cat="cat_a", sch="sch_a"),
+            MagicMock(cat="cat_a", sch="sch_b"),
+            MagicMock(cat="cat_a", sch="sch_c"),
+        ]
+        chained = MagicMock()
+        chained.select.return_value = chained
+        chained.where.return_value = chained
+        chained.distinct.return_value = chained
+        chained.collect.return_value = rows
+
+        self.builder.get_column_metadata_from_information_schema(chained)
+
+        info_queries = [
+            c[0][0] for c in self.mock_spark.sql.call_args_list
+            if "information_schema.columns" in c[0][0]
+        ]
+        assert len(info_queries) == 1, (
+            f"3 schemas in 1 catalog must be ONE query, got {len(info_queries)}"
+        )
+        q = info_queries[0]
+        assert "table_schema IN (" in q
+        for s in ("sch_a", "sch_b", "sch_c"):
+            assert f"'{s}'" in q
+
 
 class TestBuildColumnKnowledgeBase:
     """Tests for build_column_knowledge_base function."""
