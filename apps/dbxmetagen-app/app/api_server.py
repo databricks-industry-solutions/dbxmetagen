@@ -6916,12 +6916,15 @@ def list_kb_tables(catalog: str, schema: str):
 # Semantic Layer endpoints
 # ---------------------------------------------------------------------------
 
-_sl_tables_ensured = False
+# Keyed by the active catalog.schema rather than a single process-wide bool, so a
+# schema change (SCHEMA_NAME override + redeploy) still ensures the tables in the
+# new scope instead of short-circuiting on a stale "already ensured" flag.
+_sl_tables_ensured: set[str] = set()
 
 
 def _ensure_semantic_layer_tables():
-    global _sl_tables_ensured
-    if _sl_tables_ensured:
+    scope = f"{CATALOG}.{SCHEMA}"
+    if scope in _sl_tables_ensured:
         return
     _TABLE_DDLS = [
         f"""CREATE TABLE IF NOT EXISTS {fq('semantic_layer_questions')} (
@@ -6978,8 +6981,8 @@ def _ensure_semantic_layer_tables():
         execute_sql(f"ALTER TABLE {fq('semantic_layer_profiles')} ADD COLUMNS (business_context STRING)")
     except Exception:
         pass
-    _sl_tables_ensured = True
-    logger.info("Semantic layer tables ensured")
+    _sl_tables_ensured.add(scope)
+    logger.info("Semantic layer tables ensured for %s", scope)
 
 
 @app.get("/api/semantic-layer/questions")
