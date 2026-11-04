@@ -1,6 +1,8 @@
 import React, { useState, useEffect, useRef, useCallback, useMemo } from 'react'
 import { ErrorBanner } from '../App'
+import { useLanguage } from '../contexts/LanguageContext'
 import { PageHeader } from './ui'
+import { formatDateTime } from '../utils/datetime'
 import { spacesEqual, summarizeSpaceDiff } from './genieDrift'
 
 function uuid() { return crypto.randomUUID?.() || Math.random().toString(36).slice(2) }
@@ -50,6 +52,7 @@ function SectionHeader({ title, count, defaultOpen = true, forceOpen, actions, c
 }
 
 function AIAssistButton({ section, tableIds, existingItems, onResult }) {
+  const { t } = useLanguage()
   const [loading, setLoading] = useState(false)
   const [prompt, setPrompt] = useState('')
   const [open, setOpen] = useState(false)
@@ -73,19 +76,19 @@ function AIAssistButton({ section, tableIds, existingItems, onResult }) {
   return (
     <div className="inline-block">
       <button onClick={() => setOpen(!open)} className="text-xs px-2.5 py-1 rounded border border-blue-300 dark:border-blue-700 text-blue-600 dark:text-blue-400 hover:bg-blue-50 dark:hover:bg-blue-900/30 transition-colors">
-        AI Assist
+        {t('gu.aiAssist')}
       </button>
       {open && (
         <div className="mt-2 p-3 border border-blue-200 dark:border-blue-800 rounded-lg bg-blue-50/50 dark:bg-blue-950/30 space-y-2">
-          <input value={prompt} onChange={e => setPrompt(e.target.value)} placeholder="Optional: describe what to generate..."
+          <input value={prompt} onChange={e => setPrompt(e.target.value)} placeholder={t('gu.aiAssistPh')}
             className="w-full text-xs border border-slate-200 dark:border-slate-600 rounded px-2 py-1.5 bg-white dark:bg-slate-800 text-slate-800 dark:text-slate-200" />
           <div className="flex gap-2">
             <button onClick={run} disabled={loading}
               className="text-xs px-3 py-1 bg-blue-600 text-white rounded hover:bg-blue-700 disabled:opacity-50 flex items-center gap-1">
               {loading && <span className="w-3 h-3 border-2 border-white border-t-transparent rounded-full animate-spin" />}
-              {loading ? 'Generating...' : 'Generate'}
+              {loading ? t('gu.generating') : t('gu.generate')}
             </button>
-            <button onClick={() => setOpen(false)} className="text-xs px-2 py-1 text-slate-500 hover:text-slate-700">Cancel</button>
+            <button onClick={() => setOpen(false)} className="text-xs px-2 py-1 text-slate-500 hover:text-slate-700">{t('common.cancel')}</button>
           </div>
           {errorMsg && <p className="text-xs text-red-600 dark:text-red-400">{errorMsg}</p>}
         </div>
@@ -95,6 +98,7 @@ function AIAssistButton({ section, tableIds, existingItems, onResult }) {
 }
 
 function EditableList({ items, setItems, renderItem, emptyLabel, addLabel, newItem }) {
+  const { t } = useLanguage()
   return (
     <div className="space-y-2">
       {items.length === 0 && <p className="text-xs text-slate-400 italic">{emptyLabel}</p>}
@@ -102,7 +106,7 @@ function EditableList({ items, setItems, renderItem, emptyLabel, addLabel, newIt
         <div key={item._key || i} className="flex items-start gap-2 group">
           <div className="flex-1">{renderItem(item, i, val => { const next = [...items]; next[i] = val; setItems(next) })}</div>
           <button onClick={() => setItems(items.filter((_, j) => j !== i))}
-            className="mt-1 text-xs text-red-400 hover:text-red-600 opacity-0 group-hover:opacity-100 transition-opacity">Remove</button>
+            className="mt-1 text-xs text-red-400 hover:text-red-600 opacity-0 group-hover:opacity-100 transition-opacity">{t('common.remove')}</button>
         </div>
       ))}
       <button onClick={() => setItems([...items, { ...newItem(), _key: uuid() }])}
@@ -123,6 +127,7 @@ function SmallInput({ value, onChange, placeholder, className = '' }) {
 // ---------------------------------------------------------------------------
 
 function SqlTestButton({ sql }) {
+  const { t } = useLanguage()
   const [state, setState] = useState(null) // null | 'loading' | 'pass' | 'fail'
   const [error, setError] = useState(null)
 
@@ -144,9 +149,9 @@ function SqlTestButton({ sql }) {
 
   return (
     <span className="inline-flex items-center gap-1">
-      <button onClick={test} disabled={state === 'loading' || !sql?.trim()} title="Test SQL"
+      <button onClick={test} disabled={state === 'loading' || !sql?.trim()} title={t('gu.testSql')}
         className="text-xs px-1.5 py-0.5 rounded border border-slate-300 dark:border-slate-600 text-slate-500 hover:text-slate-700 hover:border-slate-400 disabled:opacity-40 transition-colors">
-        {state === 'loading' ? <span className="w-3 h-3 border-2 border-slate-400 border-t-transparent rounded-full animate-spin inline-block" /> : 'Test'}
+        {state === 'loading' ? <span className="w-3 h-3 border-2 border-slate-400 border-t-transparent rounded-full animate-spin inline-block" /> : t('gu.test')}
       </button>
       {icon && <span className={`text-xs font-bold ${color}`} title={error || ''}>{icon}</span>}
       {state === 'fail' && error && <span className="text-xs text-red-500 truncate max-w-xs" title={error}>{error.slice(0, 60)}</span>}
@@ -159,6 +164,7 @@ function SqlTestButton({ sql }) {
 // ---------------------------------------------------------------------------
 
 function TestAllSqlButton({ sqls }) {
+  const { t } = useLanguage()
   const [state, setState] = useState(null) // null | 'loading' | {pass: n, fail: n, errors: []}
   const test = async () => {
     if (!sqls?.length) return
@@ -167,7 +173,7 @@ function TestAllSqlButton({ sqls }) {
       fetch('/api/genie/validate-sql', {
         method: 'POST', headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ sql }),
-      }).then(r => r.json()).catch(() => ({ valid: false, error: 'Request failed' }))
+      }).then(r => r.json()).catch(() => ({ valid: false, error: t('gu.requestFailed') }))
     ))
     const pass = results.filter(r => r.valid).length
     const fail = results.length - pass
@@ -176,14 +182,14 @@ function TestAllSqlButton({ sqls }) {
   }
   return (
     <span className="inline-flex items-center gap-1.5" onClick={e => e.stopPropagation()}>
-      <button onClick={test} disabled={state === 'loading' || !sqls?.length} title="Test all SQL queries"
+      <button onClick={test} disabled={state === 'loading' || !sqls?.length} title={t('gu.testAllSql')}
         className="text-xs px-2 py-0.5 rounded border border-slate-300 dark:border-slate-600 text-slate-500 hover:text-slate-700 hover:border-slate-400 disabled:opacity-40 transition-colors">
-        {state === 'loading' ? <span className="w-3 h-3 border-2 border-slate-400 border-t-transparent rounded-full animate-spin inline-block" /> : `Test All (${sqls.length})`}
+        {state === 'loading' ? <span className="w-3 h-3 border-2 border-slate-400 border-t-transparent rounded-full animate-spin inline-block" /> : t('gu.testAllN', { n: sqls.length })}
       </button>
       {state && state !== 'loading' && (
         <span className="text-xs">
-          <span className="text-emerald-600 font-bold">{state.pass} pass</span>
-          {state.fail > 0 && <span className="text-red-500 font-bold ml-1">{state.fail} fail</span>}
+          <span className="text-emerald-600 font-bold">{t('gu.nPass', { n: state.pass })}</span>
+          {state.fail > 0 && <span className="text-red-500 font-bold ml-1">{t('gu.nFail', { n: state.fail })}</span>}
         </span>
       )}
     </span>
@@ -268,6 +274,7 @@ function SqlInputWithAutocomplete({ value, onChange, placeholder, columnsMap, cl
 // ---------------------------------------------------------------------------
 
 function TableDescButtons({ identifier, currentDesc, onDescription }) {
+  const { t } = useLanguage()
   const [enriching, setEnriching] = useState(false)
   const [pulling, setPulling] = useState(false)
   const [errorMsg, setErrorMsg] = useState(null)
@@ -307,11 +314,11 @@ function TableDescButtons({ identifier, currentDesc, onDescription }) {
       <div className="flex gap-1.5">
         <button onClick={enrich} disabled={enriching || !identifier}
           className={`${btnClass} border-purple-300 dark:border-purple-700 text-purple-600 dark:text-purple-400 hover:bg-purple-50 dark:hover:bg-purple-900/30`}>
-          {enriching ? spinner : null}{enriching ? 'Enriching...' : 'Enrich from KB'}
+          {enriching ? spinner : null}{enriching ? t('gu.enriching') : t('gu.enrichFromKb')}
         </button>
         <button onClick={pullUC} disabled={pulling || !identifier}
           className={`${btnClass} border-amber-300 dark:border-amber-700 text-amber-600 dark:text-amber-400 hover:bg-amber-50 dark:hover:bg-amber-900/30`}>
-          {pulling ? spinner : null}{pulling ? 'Fetching...' : 'Pull from UC'}
+          {pulling ? spinner : null}{pulling ? t('gu.fetching') : t('gu.pullFromUc')}
         </button>
       </div>
       {errorMsg && <p className="text-xs text-red-600 dark:text-red-400">{errorMsg}</p>}
@@ -320,6 +327,7 @@ function TableDescButtons({ identifier, currentDesc, onDescription }) {
 }
 
 function TableColumns({ identifier, columns, onColumns }) {
+  const { t } = useLanguage()
   const [open, setOpen] = useState(false)
   const [loading, setLoading] = useState(false)
   const [errorMsg, setErrorMsg] = useState(null)
@@ -353,21 +361,21 @@ function TableColumns({ identifier, columns, onColumns }) {
           <button onClick={() => setOpen(!open)}
             className="text-xs text-slate-500 hover:text-slate-700 dark:hover:text-slate-300 flex items-center gap-1">
             <span className={`transition-transform ${open ? 'rotate-90' : ''}`}>&#9654;</span>
-            Columns ({columns.length})
+            {t('gu.columnsN', { n: columns.length })}
           </button>
         )}
         <button onClick={loadFromKB} disabled={loading || !identifier}
           className={`${btnClass} border-teal-300 dark:border-teal-700 text-teal-600 dark:text-teal-400 hover:bg-teal-50 dark:hover:bg-teal-900/30`}>
-          {loading ? spinner : null}{loading ? 'Loading...' : columns.length ? 'Refresh Columns' : 'Load Columns from KB'}
+          {loading ? spinner : null}{loading ? t('common.loading') : columns.length ? t('gu.refreshColumns') : t('gu.loadColumnsKb')}
         </button>
         {errorMsg && <span className="text-xs text-red-600 dark:text-red-400">{errorMsg}</span>}
       </div>
       {open && columns.length > 0 && (
         <div className="mt-2 border border-slate-200 dark:border-slate-700 rounded-lg overflow-hidden">
           <div className="grid grid-cols-[minmax(120px,1fr)_80px_2fr] gap-px bg-slate-200 dark:bg-slate-700 text-xs font-medium text-slate-600 dark:text-slate-400">
-            <div className="bg-slate-50 dark:bg-slate-800 px-2 py-1">Column</div>
-            <div className="bg-slate-50 dark:bg-slate-800 px-2 py-1">Type</div>
-            <div className="bg-slate-50 dark:bg-slate-800 px-2 py-1">Description</div>
+            <div className="bg-slate-50 dark:bg-slate-800 px-2 py-1">{t('common.column')}</div>
+            <div className="bg-slate-50 dark:bg-slate-800 px-2 py-1">{t('common.type')}</div>
+            <div className="bg-slate-50 dark:bg-slate-800 px-2 py-1">{t('gu.hdrDescription')}</div>
           </div>
           <div className="max-h-60 overflow-y-auto">
             {columns.map((c, idx) => (
@@ -417,24 +425,26 @@ function computeImproveGuidance(health, preHealth, improveRound) {
 }
 
 function HealthBadge({ score, max, onClick }) {
+  const { t } = useLanguage()
   const pct = max > 0 ? score / max : 0
   const tier = pct >= 0.8 ? 'good' : pct >= 0.5 ? 'ok' : 'bad'
   return (
-    <button onClick={onClick} title="Click for details"
+    <button onClick={onClick} title={t('gu.clickDetails')}
       className={`inline-flex items-center gap-1.5 px-2.5 py-1 rounded-full text-xs font-medium border transition-colors ${_healthStyles[tier]}`}>
-      Health: {score}/{max}
+      {t('gu.healthScore', { score, max })}
     </button>
   )
 }
 
 function HealthDetails({ health, onClose }) {
+  const { t } = useLanguage()
   if (!health) return null
   const evalScore = Object.values(health.dimensions || {}).reduce((s, d) => s + (d.score ?? 0), 0)
   return (
     <div className="card p-4 space-y-2 border-l-4 border-blue-400">
       <div className="flex items-center justify-between">
-        <span className="text-sm font-medium text-slate-700 dark:text-slate-300">Space Health: {evalScore}/{health.max}</span>
-        <button onClick={onClose} className="text-xs text-slate-400 hover:text-slate-600">Close</button>
+        <span className="text-sm font-medium text-slate-700 dark:text-slate-300">{t('gu.spaceHealth', { score: evalScore, max: health.max })}</span>
+        <button onClick={onClose} className="text-xs text-slate-400 hover:text-slate-600">{t('common.close')}</button>
       </div>
       {Object.entries(health.dimensions || {}).map(([key, dim]) => (
         <div key={key} className="flex items-center gap-2 text-xs">
@@ -466,13 +476,14 @@ const _verdictStyles = {
 }
 
 function QuestionVerdicts({ verdicts, onClose }) {
+  const { t } = useLanguage()
   if (!verdicts || verdicts.length === 0) return null
-  const labels = { 2: 'answerable', 1: 'partial', 0: 'unanswerable' }
+  const labels = { 2: t('gu.answerable'), 1: t('gu.partial'), 0: t('gu.unanswerable') }
   return (
     <div className="card p-4 space-y-2 border-l-4 border-cyan-400">
       <div className="flex items-center justify-between">
-        <span className="text-sm font-medium text-slate-700 dark:text-slate-300">Question Answerability ({verdicts.length})</span>
-        <button onClick={onClose} className="text-xs text-slate-400 hover:text-slate-600">Close</button>
+        <span className="text-sm font-medium text-slate-700 dark:text-slate-300">{t('gu.questionAnswerability', { n: verdicts.length })}</span>
+        <button onClick={onClose} className="text-xs text-slate-400 hover:text-slate-600">{t('common.close')}</button>
       </div>
       {verdicts.map((v, i) => (
         <div key={i} className="flex items-start gap-2 text-xs py-1.5">
@@ -494,6 +505,7 @@ function QuestionVerdicts({ verdicts, onClose }) {
 // ---------------------------------------------------------------------------
 
 function VersionHistory({ spaceId, onRestore, onClose }) {
+  const { t } = useLanguage()
   const [versions, setVersions] = useState([])
   const [loading, setLoading] = useState(true)
   const [selectedVer, setSelectedVer] = useState(null)
@@ -521,26 +533,26 @@ function VersionHistory({ spaceId, onRestore, onClose }) {
   return (
     <div className="card p-4 space-y-3 border-l-4 border-indigo-400">
       <div className="flex items-center justify-between">
-        <span className="text-sm font-medium text-slate-700 dark:text-slate-300">Version History</span>
-        <button onClick={onClose} className="text-xs text-slate-400 hover:text-slate-600">Close</button>
+        <span className="text-sm font-medium text-slate-700 dark:text-slate-300">{t('gu.versionHistory')}</span>
+        <button onClick={onClose} className="text-xs text-slate-400 hover:text-slate-600">{t('common.close')}</button>
       </div>
-      {loading && <p className="text-xs text-slate-400">Loading...</p>}
-      {!loading && versions.length === 0 && <p className="text-xs text-slate-400 italic">No version history yet. History is saved on each update.</p>}
+      {loading && <p className="text-xs text-slate-400">{t('common.loading')}</p>}
+      {!loading && versions.length === 0 && <p className="text-xs text-slate-400 italic">{t('gu.noVersionHistory')}</p>}
       {versions.map(v => (
         <div key={v.version} className={`flex items-center gap-3 text-xs px-3 py-2 rounded cursor-pointer transition-colors ${selectedVer === v.version ? 'bg-indigo-50 dark:bg-indigo-900/30 border border-indigo-200 dark:border-indigo-700' : 'hover:bg-slate-50 dark:hover:bg-slate-800'}`}
           onClick={() => loadVersion(v.version)}>
           <span className="font-medium text-slate-700 dark:text-slate-300">v{v.version}</span>
           <span className="text-slate-400">{v.title}</span>
-          <span className="text-slate-400 ml-auto">{v.updated_at}</span>
+          <span className="text-slate-400 ml-auto">{formatDateTime(v.updated_at)}</span>
         </div>
       ))}
       {selectedData && (
         <div className="space-y-2 mt-2 pt-2 border-t border-slate-200 dark:border-slate-700">
           <div className="flex items-center justify-between">
-            <span className="text-xs font-medium text-slate-600 dark:text-slate-400">Version {selectedData.version} snapshot</span>
+            <span className="text-xs font-medium text-slate-600 dark:text-slate-400">{t('gu.versionSnapshot', { v: selectedData.version })}</span>
             <button onClick={() => onRestore(selectedData.serialized_space, selectedData.title)}
               className="text-xs px-3 py-1 bg-indigo-600 text-white rounded hover:bg-indigo-700 transition-colors">
-              Restore This Version
+              {t('gu.restoreVersion')}
             </button>
           </div>
           <pre className="text-xs font-mono bg-slate-50 dark:bg-slate-900 border border-slate-200 dark:border-slate-700 rounded p-3 overflow-auto max-h-48 text-slate-600 dark:text-slate-400">
@@ -564,8 +576,9 @@ function _truncate(s, n = 120) {
 }
 
 function SpaceDiffView({ diff }) {
+  const { t } = useLanguage()
   if (!diff || diff.length === 0) {
-    return <p className="text-xs text-slate-500 dark:text-slate-400">No field-level differences detected (only volatile fields changed).</p>
+    return <p className="text-xs text-slate-500 dark:text-slate-400">{t('gu.noFieldDiffs')}</p>
   }
   return (
     <div className="space-y-2 text-xs">
@@ -609,6 +622,7 @@ function SpaceDiffView({ diff }) {
 // compare against the user's local edits -- those are expected to differ. The
 // effect waits for `baseline` to be set, then fetches live once and compares.
 function DriftBanner({ spaceId, baseline, onPullRemote }) {
+  const { t } = useLanguage()
   const [drift, setDrift] = useState(null) // null | 'checking' | 'clean' | 'drifted'
   const [liveSs, setLiveSs] = useState(null)
   const [showDiff, setShowDiff] = useState(false)
@@ -631,22 +645,22 @@ function DriftBanner({ spaceId, baseline, onPullRemote }) {
   return (
     <div className="bg-amber-50 dark:bg-amber-900/20 border border-amber-300 dark:border-amber-700 rounded-lg px-4 py-3 space-y-2">
       <div className="flex items-center gap-3 text-sm text-amber-800 dark:text-amber-300">
-        <span className="font-medium">This space was modified outside dbxmetagen.</span>
+        <span className="font-medium">{t('gu.modifiedOutside')}</span>
         <button onClick={() => {
-            if (!window.confirm('Pull the remote version? This replaces your current (unsaved) edits in this editor with the live space from Databricks.')) return
+            if (!window.confirm(t('gu.pullRemoteConfirm'))) return
             onPullRemote(liveSs); setDrift('clean')
           }}
           className="text-xs px-2.5 py-1 rounded border border-amber-400 text-amber-700 hover:bg-amber-100 dark:hover:bg-amber-800/30 transition-colors">
-          Pull Remote Changes
+          {t('gu.pullRemoteChanges')}
         </button>
         <button onClick={() => setDrift('clean')}
-          className="text-xs px-2.5 py-1 text-amber-600 hover:text-amber-800">Dismiss</button>
+          className="text-xs px-2.5 py-1 text-amber-600 hover:text-amber-800">{t('common.dismiss')}</button>
         <button onClick={() => setShowDiff(!showDiff)}
-          className="text-xs px-2.5 py-1 text-amber-600 hover:text-amber-800">{showDiff ? 'Hide' : 'Show'} Changes</button>
+          className="text-xs px-2.5 py-1 text-amber-600 hover:text-amber-800">{showDiff ? t('gu.hideChanges') : t('gu.showChanges')}</button>
       </div>
       {showDiff && liveSs && (
         <div className="bg-white dark:bg-slate-900 border border-slate-200 dark:border-slate-700 rounded p-3 overflow-auto max-h-72">
-          <p className="text-[10px] text-slate-400 dark:text-slate-500 mb-2 uppercase tracking-wide">What changed remotely since you loaded (− loaded, + live)</p>
+          <p className="text-[10px] text-slate-400 dark:text-slate-500 mb-2 uppercase tracking-wide">{t('gu.whatChangedRemotely')}</p>
           <SpaceDiffView diff={summarizeSpaceDiff(baseline, liveSs)} />
         </div>
       )}
@@ -665,6 +679,7 @@ const _sevStyles = {
 }
 
 function SuggestionsPanel({ suggestions, onClose, onImproveSelected, improving }) {
+  const { t } = useLanguage()
   const [checked, setChecked] = useState(() =>
     new Set((suggestions || []).map((s, i) => s.severity !== 'low' ? i : null).filter(v => v !== null))
   )
@@ -677,17 +692,17 @@ function SuggestionsPanel({ suggestions, onClose, onImproveSelected, improving }
   return (
     <div className="card p-4 space-y-2 border-l-4 border-violet-400">
       <div className="flex items-center justify-between">
-        <span className="text-sm font-medium text-slate-700 dark:text-slate-300">Analysis Suggestions ({suggestions.length})</span>
+        <span className="text-sm font-medium text-slate-700 dark:text-slate-300">{t('gu.analysisSuggestions', { n: suggestions.length })}</span>
         <div className="flex items-center gap-2">
           {onImproveSelected && checked.size > 0 && (
             <button onClick={() => onImproveSelected([...checked])} disabled={improving}
               className="text-xs px-2 py-1 rounded bg-emerald-600 text-white hover:bg-emerald-700 disabled:opacity-50 flex items-center gap-1">
               {improving && <span className="w-3 h-3 border-2 border-white border-t-transparent rounded-full animate-spin" />}
-              {improving ? 'Improving...' : `Improve Selected (${checked.size})`}
+              {improving ? t('gu.improving') : t('gu.improveSelected', { n: checked.size })}
             </button>
           )}
-          <button onClick={toggleAll} className="text-xs text-violet-500 hover:text-violet-700">{checked.size === suggestions.length ? 'Deselect all' : 'Select all'}</button>
-          <button onClick={onClose} className="text-xs text-slate-400 hover:text-slate-600">Close</button>
+          <button onClick={toggleAll} className="text-xs text-violet-500 hover:text-violet-700">{checked.size === suggestions.length ? t('gu.deselectAll') : t('gu.selectAll')}</button>
+          <button onClick={onClose} className="text-xs text-slate-400 hover:text-slate-600">{t('common.close')}</button>
         </div>
       </div>
       {suggestions.map((s, i) => (
@@ -709,15 +724,25 @@ function SuggestionsPanel({ suggestions, onClose, onImproveSelected, improving }
 // Dry-run validation panel
 // ---------------------------------------------------------------------------
 
-function DryRunPanel({ results, onClose }) {
+function DryRunPanel({ results, onClose, onFix, fixing }) {
+  const { t } = useLanguage()
   if (!results) return null
   return (
     <div className={`card p-4 space-y-2 border-l-4 ${results.passed ? 'border-emerald-400' : 'border-red-400'}`}>
       <div className="flex items-center justify-between">
         <span className={`text-sm font-medium ${results.passed ? 'text-emerald-700 dark:text-emerald-400' : 'text-red-700 dark:text-red-400'}`}>
-          {results.passed ? 'All checks passed' : 'Validation issues found'}
+          {results.passed ? t('gu.allChecksPassed') : t('gu.validationIssues')}
         </span>
-        <button onClick={onClose} className="text-xs text-slate-400 hover:text-slate-600">Close</button>
+        <div className="flex items-center gap-3">
+          {!results.passed && onFix && (
+            <button onClick={onFix} disabled={fixing}
+              className="text-xs px-3 py-1 rounded bg-amber-600 text-white hover:bg-amber-700 transition-colors disabled:opacity-50 flex items-center gap-1">
+              {fixing && <span className="w-3 h-3 border-2 border-white border-t-transparent rounded-full animate-spin" />}
+              {fixing ? t('gu.fixingValidation') : t('gu.fixValidation')}
+            </button>
+          )}
+          <button onClick={onClose} className="text-xs text-slate-400 hover:text-slate-600">{t('common.close')}</button>
+        </div>
       </div>
       {(results.checks || []).map((check, i) => (
         <div key={i} className="text-xs space-y-0.5">
@@ -738,6 +763,8 @@ function DryRunPanel({ results, onClose }) {
 // ===========================================================================
 
 export default function GenieUpdater({ spaceId, onBack }) {
+  // `tr` alias -- main body declares/uses `t` as a local (table list) variable.
+  const { t: tr } = useLanguage()
   const [loading, setLoading] = useState(true)
   const [error, setError] = useState(null)
   const [tracked, setTracked] = useState(false)
@@ -775,6 +802,8 @@ export default function GenieUpdater({ spaceId, onBack }) {
   // Dry-run
   const [dryRunResults, setDryRunResults] = useState(null)
   const [dryRunning, setDryRunning] = useState(false)
+  const [fixingValidation, setFixingValidation] = useState(false)
+  const [fixReport, setFixReport] = useState(null)
 
   // Analysis
   const [analysisSuggestions, setAnalysisSuggestions] = useState(null)
@@ -1024,6 +1053,26 @@ export default function GenieUpdater({ spaceId, onBack }) {
     finally { setDryRunning(false) }
   }
 
+  // Fix validation issues: LLM rewrites failing example SQL (back-quoting
+  // identifiers, balancing parens) against real schema, re-validates, and
+  // loads the patched space into the editor. User reviews, then Update Space.
+  const runFixValidation = async () => {
+    setFixingValidation(true); setFixReport(null)
+    try {
+      const res = await fetch('/api/genie/fix-validation', {
+        method: 'POST', headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ serialized_space: assemble(), table_identifiers: tableIds }),
+      })
+      const data = await res.json()
+      if (data.changed && data.serialized_space) {
+        loadSpaceIntoState(data.serialized_space, title, description)
+        setDryRunResults(null)
+      }
+      setFixReport(data)
+    } catch (e) { setFixReport({ changed: false, message: e.message, unfixed: [] }) }
+    finally { setFixingValidation(false) }
+  }
+
   // ---------------------------------------------------------------------------
   // Analyze
   // ---------------------------------------------------------------------------
@@ -1157,7 +1206,7 @@ export default function GenieUpdater({ spaceId, onBack }) {
 
   if (loading) return (
     <div className="space-y-6">
-      <PageHeader title="Loading Space..." />
+      <PageHeader title={tr('gu.loadingSpace')} />
       <div className="flex items-center gap-2 text-sm text-slate-500">
         <span className="w-4 h-4 border-2 border-slate-400 border-t-transparent rounded-full animate-spin" />
         Fetching definition...
@@ -1167,9 +1216,9 @@ export default function GenieUpdater({ spaceId, onBack }) {
 
   return (
     <div className="space-y-4">
-      <PageHeader title="Edit Genie Space"
+      <PageHeader title={tr('gu.editGenieSpace')}
         subtitle={`Space ID: ${spaceId}`}
-        badge={tracked ? 'Tracked' : 'Untracked'}
+        badge={tracked ? tr('gu.tracked') : tr('gu.untracked')}
         actions={
           <div className="flex items-center gap-2">
             {health && <HealthBadge score={health.score} max={health.max} dimensions={health.dimensions} onClick={() => setShowHealth(!showHealth)} />}
@@ -1180,15 +1229,15 @@ export default function GenieUpdater({ spaceId, onBack }) {
             <button onClick={runAnalysis} disabled={analyzing || improving}
               className="text-xs px-3 py-1.5 rounded border border-violet-300 dark:border-violet-700 text-violet-600 dark:text-violet-400 hover:bg-violet-50 dark:hover:bg-violet-900/30 transition-colors disabled:opacity-50 flex items-center gap-1">
               {analyzing && <span className="w-3 h-3 border-2 border-violet-400 border-t-transparent rounded-full animate-spin" />}
-              {analyzing ? 'Analyzing...' : 'Analyze Space'}
+              {analyzing ? tr('common.analyzing') : tr('gu.analyzeSpace')}
             </button>
             <button onClick={() => runImprove()} disabled={improving || analyzing}
               className="text-xs px-3 py-1.5 rounded border border-emerald-300 dark:border-emerald-700 text-emerald-600 dark:text-emerald-400 hover:bg-emerald-50 dark:hover:bg-emerald-900/30 transition-colors disabled:opacity-50 flex items-center gap-1"
-              title={improveRound >= 3 ? 'Multiple rounds run -- consider manual edits for remaining issues' : undefined}>
+              title={improveRound >= 3 ? tr('gu.multiRoundTip') : undefined}>
               {improving && <span className="w-3 h-3 border-2 border-emerald-400 border-t-transparent rounded-full animate-spin" />}
               {improving ? `Improving (${improveStage})...` : `Improve Space${improveRound > 0 ? ` (round ${improveRound + 1})` : ''}`}
             </button>
-            <button onClick={onBack} className="text-xs px-3 py-1.5 rounded border border-slate-300 dark:border-slate-600 text-slate-600 dark:text-slate-300 hover:bg-dbx-oat dark:hover:bg-slate-700">Back to Builder</button>
+            <button onClick={onBack} className="text-xs px-3 py-1.5 rounded border border-slate-300 dark:border-slate-600 text-slate-600 dark:text-slate-300 hover:bg-dbx-oat dark:hover:bg-slate-700">{tr('gu.backToBuilder')}</button>
           </div>
         }
       />
@@ -1203,15 +1252,15 @@ export default function GenieUpdater({ spaceId, onBack }) {
       {/* Health delta banner */}
       {preHealth && health && preHealth.score !== health.score && (
         <div className="card p-3 border-l-4 border-emerald-400 flex items-center gap-2 text-sm">
-          <span className="font-medium text-slate-700 dark:text-slate-300">Health:</span>
+          <span className="font-medium text-slate-700 dark:text-slate-300">{tr('gu.health')}</span>
           <span className="text-slate-500">{preHealth.score}/{preHealth.max}</span>
           <span className="text-slate-400">-&gt;</span>
           <span className="font-semibold text-emerald-600 dark:text-emerald-400">{health.score}/{health.max}</span>
           <span className={`text-xs font-medium ${health.score > preHealth.score ? 'text-emerald-600' : 'text-red-500'}`}>
             ({health.score > preHealth.score ? '+' : ''}{health.score - preHealth.score})
           </span>
-          {computeImproveGuidance(health, preHealth, improveRound)?.plateaued && <span className="ml-auto text-xs text-amber-600 dark:text-amber-400">Diminishing returns -- see recommendation below</span>}
-          <button onClick={() => setPreHealth(null)} className="ml-auto text-xs text-slate-400 hover:text-slate-600">Dismiss</button>
+          {computeImproveGuidance(health, preHealth, improveRound)?.plateaued && <span className="ml-auto text-xs text-amber-600 dark:text-amber-400">{tr('gu.diminishingReturns')}</span>}
+          <button onClick={() => setPreHealth(null)} className="ml-auto text-xs text-slate-400 hover:text-slate-600">{tr('common.dismiss')}</button>
         </div>
       )}
 
@@ -1222,42 +1271,38 @@ export default function GenieUpdater({ spaceId, onBack }) {
         if (!g?.plateaued) {
           return (
             <div className="card p-3 border-l-4 border-slate-300 dark:border-slate-600 text-xs text-slate-600 dark:text-slate-400">
-              dbxmetagen accelerates you to a solid starting space; it isn't a deep Genie optimizer.
-              For further tuning, see Genie best practices
-              (<a href="https://docs.databricks.com/aws/en/genie/best-practices" target="_blank" rel="noopener noreferrer"
-                 className="text-indigo-600 dark:text-indigo-400 hover:underline">curate an effective Genie space</a>
+              {tr('gu.accelHandoffPre')}
+              <a href="https://docs.databricks.com/aws/en/genie/best-practices" target="_blank" rel="noopener noreferrer"
+                 className="text-indigo-600 dark:text-indigo-400 hover:underline">{tr('gu.accelHandoffCurate')}</a>
               {' '}&middot;{' '}
               <a href="https://docs.databricks.com/aws/en/genie/" target="_blank" rel="noopener noreferrer"
-                 className="text-indigo-600 dark:text-indigo-400 hover:underline">Genie docs</a>)
-              or continue in the Genie workbench.
+                 className="text-indigo-600 dark:text-indigo-400 hover:underline">{tr('gu.genieDocs')}</a>
+              {tr('gu.accelHandoffMid')}
             </div>
           )
         }
         return (
           <div className="card p-3 border-l-4 border-amber-400 dark:border-amber-600 text-sm text-slate-700 dark:text-slate-300 space-y-2">
             <div className="font-medium text-amber-700 dark:text-amber-400">
-              The improver has plateaued{g.gainedThisRound !== null && g.gainedThisRound <= 0 ? ' (no health gain in the last round)' : ''} — further automated rounds are unlikely to help.
+              {g.gainedThisRound !== null && g.gainedThisRound <= 0 ? tr('gu.plateauTitleNoGain') : tr('gu.plateauTitle')}
             </div>
             {g.recommendBenchmarks && (
               <p>
-                <span className="font-medium">Add benchmark questions.</span> The main remaining gap is
-                semantic coverage, which the improver can't close on its own — add real sample/benchmark
-                questions that reflect how users will actually ask, then re-analyze.
+                <span className="font-medium">{tr('gu.addBenchmark')}</span> {tr('gu.plateauBenchmark')}
               </p>
             )}
             {g.residual.length > 0 && (
               <p className="text-xs text-slate-500 dark:text-slate-400">
-                Remaining gaps: {g.residual.map(r => `${r.label} ${r.score}/${r.max}`).join(', ')}.
+                {tr('gu.plateauResidual')} {g.residual.map(r => `${r.label} ${r.score}/${r.max}`).join(', ')}.
               </p>
             )}
             <p className="text-xs">
-              Best next steps: refine <span className="font-medium">manually</span> in the editor above,
-              add benchmark questions, or continue in the{' '}
+              {tr('gu.plateauNextPre')}<span className="font-medium">{tr('gu.plateauNextManual')}</span>{tr('gu.plateauNextMid')}
               <a href="https://docs.databricks.com/aws/en/genie/" target="_blank" rel="noopener noreferrer"
-                 className="text-indigo-600 dark:text-indigo-400 hover:underline">Genie workbench</a>
+                 className="text-indigo-600 dark:text-indigo-400 hover:underline">{tr('gu.genieWorkbench')}</a>
               {' '}(<a href="https://docs.databricks.com/aws/en/genie/best-practices" target="_blank" rel="noopener noreferrer"
-                 className="text-indigo-600 dark:text-indigo-400 hover:underline">best practices</a>).
-              dbxmetagen gets you to a solid starting space; it isn't a deep Genie optimizer.
+                 className="text-indigo-600 dark:text-indigo-400 hover:underline">{tr('gu.plateauBestPractices')}</a>
+              {tr('gu.plateauNextPost')}
             </p>
           </div>
         )
@@ -1276,21 +1321,41 @@ export default function GenieUpdater({ spaceId, onBack }) {
       {showHistory && <VersionHistory spaceId={spaceId} onRestore={restoreVersion} onClose={() => setShowHistory(false)} />}
 
       {/* Dry-run results */}
-      {dryRunResults && <DryRunPanel results={dryRunResults} onClose={() => setDryRunResults(null)} />}
+      {dryRunResults && <DryRunPanel results={dryRunResults} onClose={() => setDryRunResults(null)}
+        onFix={runFixValidation} fixing={fixingValidation} />}
+
+      {/* Fix-validation report */}
+      {fixReport && (
+        <div className={`card p-3 space-y-1 border-l-4 ${fixReport.changed ? 'border-emerald-400' : 'border-slate-300 dark:border-slate-600'}`}>
+          <div className="flex items-center justify-between">
+            <span className="text-xs font-medium text-slate-700 dark:text-slate-300">{tr('gu.fixValidationResult')}</span>
+            <button onClick={() => setFixReport(null)} className="text-xs text-slate-400 hover:text-slate-600">{tr('common.close')}</button>
+          </div>
+          <p className="text-xs text-slate-500">{fixReport.message}</p>
+          {Array.isArray(fixReport.unfixed) && fixReport.unfixed.length > 0 && (
+            <p className="text-xs text-amber-600 dark:text-amber-400">
+              {tr('gu.fixValidationUnfixed')} {fixReport.unfixed.map(u => `#${(u.index ?? 0) + 1}`).join(', ')}
+            </p>
+          )}
+          {Array.isArray(fixReport.remaining_checks) && fixReport.remaining_checks.length > 0 && (
+            <p className="text-xs text-slate-400">{tr('gu.fixValidationRemaining')} {fixReport.remaining_checks.join(', ')}</p>
+          )}
+        </div>
+      )}
 
       {/* Space summary */}
       {parseInfo && (
         <div className="card p-3 text-xs">
           <div className="flex flex-wrap gap-3 text-slate-600 dark:text-slate-400">
-            <span>Tables: <b>{parseInfo.tables ?? '-'}</b></span>
-            <span>Metric views: <b>{parseInfo.metricViews ?? '-'}</b></span>
-            <span>Example SQL: <b>{parseInfo.exampleSqls ?? '-'}</b></span>
-            <span>Joins: <b>{parseInfo.joinSpecs ?? '-'}</b></span>
-            <span>Snippets: <b>{(parseInfo.measures ?? 0) + (parseInfo.filters ?? 0) + (parseInfo.expressions ?? 0)}</b></span>
-            <span>Sample Qs: <b>{parseInfo.sampleQuestions ?? '-'}</b></span>
+            <span>{tr('gu.statTables')} <b>{parseInfo.tables ?? '-'}</b></span>
+            <span>{tr('gu.statMetricViews')} <b>{parseInfo.metricViews ?? '-'}</b></span>
+            <span>{tr('gu.statExampleSql')} <b>{parseInfo.exampleSqls ?? '-'}</b></span>
+            <span>{tr('gu.statJoins')} <b>{parseInfo.joinSpecs ?? '-'}</b></span>
+            <span>{tr('gu.statSnippets')} <b>{(parseInfo.measures ?? 0) + (parseInfo.filters ?? 0) + (parseInfo.expressions ?? 0)}</b></span>
+            <span>{tr('gu.statSampleQs')} <b>{parseInfo.sampleQuestions ?? '-'}</b></span>
           </div>
           {Object.entries(parseInfo).filter(([k]) => k.endsWith('Err')).length > 0 && (
-            <p className="text-amber-600 dark:text-amber-400 mt-1">Some sections could not be parsed from the Genie API response. You can still edit and deploy.</p>
+            <p className="text-amber-600 dark:text-amber-400 mt-1">{tr('gu.parseWarning')}</p>
           )}
         </div>
       )}
@@ -1298,23 +1363,23 @@ export default function GenieUpdater({ spaceId, onBack }) {
       {/* Title / Description */}
       <div className="card p-5 space-y-3">
         <div>
-          <label className="block text-xs font-medium text-slate-600 dark:text-slate-400 mb-1">Title</label>
+          <label className="block text-xs font-medium text-slate-600 dark:text-slate-400 mb-1">{tr('common.title')}</label>
           <input value={title} onChange={e => setTitle(e.target.value)}
             className="w-full border border-slate-200 dark:border-slate-600 rounded-md px-3 py-2 text-sm bg-white dark:bg-slate-800 text-slate-800 dark:text-slate-200" />
         </div>
         <div>
-          <label className="block text-xs font-medium text-slate-600 dark:text-slate-400 mb-1">Description</label>
+          <label className="block text-xs font-medium text-slate-600 dark:text-slate-400 mb-1">{tr('common.description')}</label>
           <textarea value={description} onChange={e => setDescription(e.target.value)} rows={2}
             className="w-full border border-slate-200 dark:border-slate-600 rounded-md px-3 py-2 text-sm bg-white dark:bg-slate-800 text-slate-800 dark:text-slate-200" />
         </div>
         <div className="flex gap-4 text-xs text-slate-400">
-          <span>Version: {version}</span>
-          <span>{tracked ? 'Tracked in Delta' : 'Fetched from Databricks API'}</span>
+          <span>{tr('gu.versionLabel', { v: version })}</span>
+          <span>{tracked ? tr('gu.trackedInDelta') : tr('gu.fetchedFromApi')}</span>
         </div>
       </div>
 
       {/* Raw JSON (Phase 6: editable toggle) */}
-      <SectionHeader title="Raw Space JSON" count={null} defaultOpen={false} forceOpen={rawJsonEditing}
+      <SectionHeader title={tr('gu.rawSpaceJson')} count={null} defaultOpen={false} forceOpen={rawJsonEditing}
         actions={
           <label className="flex items-center gap-1.5 text-xs text-slate-500 cursor-pointer" onClick={e => e.stopPropagation()}>
             <input type="checkbox" checked={rawJsonEditing} onChange={e => { setRawJsonEditing(e.target.checked); if (e.target.checked) setRawJsonText(JSON.stringify(assemble(), null, 2)) }}
@@ -1324,7 +1389,7 @@ export default function GenieUpdater({ spaceId, onBack }) {
         }>
         {rawJsonEditing ? (
           <div className="space-y-2">
-            <p className="text-xs text-amber-600 dark:text-amber-400">Raw JSON mode: deploy will use this JSON directly instead of structured fields above.</p>
+            <p className="text-xs text-amber-600 dark:text-amber-400">{tr('gu.rawJsonMode')}</p>
             <textarea value={rawJsonText} onChange={e => setRawJsonText(e.target.value)} rows={20}
               className="w-full font-mono text-xs border border-slate-200 dark:border-slate-600 rounded-lg p-4 bg-white dark:bg-slate-900 text-slate-700 dark:text-slate-300" />
           </div>
@@ -1332,19 +1397,19 @@ export default function GenieUpdater({ spaceId, onBack }) {
           <pre className="text-xs font-mono bg-slate-50 dark:bg-slate-900 border border-slate-200 dark:border-slate-700 rounded-lg p-4 overflow-auto max-h-96 text-slate-700 dark:text-slate-300 whitespace-pre-wrap break-words">
             {JSON.stringify(rawJson, null, 2)}
           </pre>
-        ) : <p className="text-xs text-slate-400 italic">No data loaded</p>}
+        ) : <p className="text-xs text-slate-400 italic">{tr('gu.noDataLoaded')}</p>}
       </SectionHeader>
 
       {/* Data Sources: Tables */}
-      <SectionHeader title="Tables" count={tables.length}>
+      <SectionHeader title={tr('gu.secTables')} count={tables.length}>
         <EditableList items={tables} setItems={setTables}
-          emptyLabel="No tables" addLabel="Add Table"
+          emptyLabel={tr('gu.noTables')} addLabel={tr('gu.addTable')}
           newItem={() => ({ identifier: '', description: null, columns: [] })}
           renderItem={(t, i, update) => (
             <div className="space-y-1.5">
-              <SmallInput value={t.identifier} onChange={v => update({ ...t, identifier: v })} placeholder="catalog.schema.table" className="w-full" />
+              <SmallInput value={t.identifier} onChange={v => update({ ...t, identifier: v })} placeholder={tr('gu.tablePh')} className="w-full" />
               <textarea value={descToStr(t.description)} onChange={e => update({ ...t, description: strToDesc(e.target.value) })}
-                placeholder="Table description (optional)" rows={3}
+                placeholder={tr('gu.tableDescPh')} rows={3}
                 className="w-full text-xs border border-slate-200 dark:border-slate-600 rounded px-2 py-1.5 bg-white dark:bg-slate-800 text-slate-800 dark:text-slate-200" />
               <TableDescButtons identifier={t.identifier} currentDesc={descToStr(t.description)}
                 onDescription={desc => update({ ...t, description: strToDesc(desc) })} />
@@ -1356,39 +1421,39 @@ export default function GenieUpdater({ spaceId, onBack }) {
       </SectionHeader>
 
       {/* Data Sources: Metric Views */}
-      <SectionHeader title="Metric Views" count={metricViews.length}>
+      <SectionHeader title={tr('gu.secMetricViews')} count={metricViews.length}>
         <EditableList items={metricViews} setItems={setMetricViews}
-          emptyLabel="No metric views" addLabel="Add Metric View"
+          emptyLabel={tr('gu.noMetricViews')} addLabel={tr('gu.addMetricView')}
           newItem={() => ({ identifier: '', description: null })}
           renderItem={(m, i, update) => (
             <div className="flex gap-2">
-              <SmallInput value={m.identifier} onChange={v => update({ ...m, identifier: v })} placeholder="catalog.schema.metric_view" className="flex-1" />
-              <SmallInput value={descToStr(m.description)} onChange={v => update({ ...m, description: strToDesc(v) })} placeholder="Description (optional)" className="flex-1" />
+              <SmallInput value={m.identifier} onChange={v => update({ ...m, identifier: v })} placeholder={tr('gu.metricViewPh')} className="flex-1" />
+              <SmallInput value={descToStr(m.description)} onChange={v => update({ ...m, description: strToDesc(v) })} placeholder={tr('gu.mvDescPh')} className="flex-1" />
             </div>
           )}
         />
       </SectionHeader>
 
       {/* Text Instructions */}
-      <SectionHeader title="Text Instructions" count={textInstructions ? 1 : 0}>
+      <SectionHeader title={tr('gu.secTextInstructions')} count={textInstructions ? 1 : 0}>
         <textarea value={textInstructions} onChange={e => setTextInstructions(e.target.value)} rows={6}
-          placeholder="Markdown instructions describing data, relationships, business rules..."
+          placeholder={tr('gu.textInstructionsPh')}
           className="w-full font-mono text-xs border border-slate-200 dark:border-slate-600 rounded-md p-3 bg-white dark:bg-slate-900 text-slate-800 dark:text-slate-200" />
         <AIAssistButton section="instructions" tableIds={tableIds} existingItems={textInstructions ? { text: textInstructions } : null}
           onResult={data => { if (data.text_instructions) setTextInstructions(prev => prev ? prev + '\n\n' + data.text_instructions : data.text_instructions) }} />
       </SectionHeader>
 
       {/* Example SQL */}
-      <SectionHeader title="Example SQL" count={exampleSqls.length}
+      <SectionHeader title={tr('gu.secExampleSql')} count={exampleSqls.length}
         actions={exampleSqls.length > 0 && <TestAllSqlButton sqls={exampleSqls.map(e => e.sql).filter(Boolean)} />}>
         <EditableList items={exampleSqls} setItems={setExampleSqls}
-          emptyLabel="No example SQL pairs" addLabel="Add Example"
+          emptyLabel={tr('gu.noExampleSql')} addLabel={tr('gu.addExample')}
           newItem={() => ({ question: '', sql: '' })}
           renderItem={(e, i, update) => (
             <div className="space-y-1">
-              <SmallInput value={e.question} onChange={v => update({ ...e, question: v })} placeholder="Question" className="w-full" />
+              <SmallInput value={e.question} onChange={v => update({ ...e, question: v })} placeholder={tr('gu.questionPh')} className="w-full" />
               <div className="flex items-start gap-2">
-                <textarea value={e.sql} onChange={ev => update({ ...e, sql: ev.target.value })} rows={2} placeholder="SELECT ..."
+                <textarea value={e.sql} onChange={ev => update({ ...e, sql: ev.target.value })} rows={2} placeholder={tr('gu.selectPh')}
                   className="flex-1 font-mono text-xs border border-slate-200 dark:border-slate-600 rounded px-2 py-1.5 bg-white dark:bg-slate-800 text-slate-800 dark:text-slate-200" />
                 <SqlTestButton sql={e.sql} />
               </div>
@@ -1407,16 +1472,16 @@ export default function GenieUpdater({ spaceId, onBack }) {
       </SectionHeader>
 
       {/* Join Specs */}
-      <SectionHeader title="Join Specs" count={joinSpecs.length}>
+      <SectionHeader title={tr('gu.secJoinSpecs')} count={joinSpecs.length}>
         <EditableList items={joinSpecs} setItems={setJoinSpecs}
-          emptyLabel="No join specs" addLabel="Add Join"
+          emptyLabel={tr('gu.noJoinSpecs')} addLabel={tr('gu.addJoin')}
           newItem={() => ({ left: '', right: '', sql: '' })}
           renderItem={(j, i, update) => (
             <div className="grid grid-cols-3 gap-2">
-              <SmallInput value={j.left} onChange={v => update({ ...j, left: v })} placeholder="Left table" />
-              <SmallInput value={j.right} onChange={v => update({ ...j, right: v })} placeholder="Right table" />
+              <SmallInput value={j.left} onChange={v => update({ ...j, left: v })} placeholder={tr('gu.leftTablePh')} />
+              <SmallInput value={j.right} onChange={v => update({ ...j, right: v })} placeholder={tr('gu.rightTablePh')} />
               <div className="flex items-center gap-1">
-                <SqlInputWithAutocomplete value={j.sql} onChange={v => update({ ...j, sql: v })} placeholder="left.col = right.col" columnsMap={columnsMap} className="flex-1 w-full" />
+                <SqlInputWithAutocomplete value={j.sql} onChange={v => update({ ...j, sql: v })} placeholder={tr('gu.joinOnPh')} columnsMap={columnsMap} className="flex-1 w-full" />
                 <SqlTestButton sql={j.left && j.right && j.sql ? `SELECT 1 FROM ${j.left} JOIN ${j.right} ON ${j.sql} LIMIT 0` : ''} />
               </div>
             </div>
@@ -1435,20 +1500,20 @@ export default function GenieUpdater({ spaceId, onBack }) {
       </SectionHeader>
 
       {/* SQL Snippets: Measures */}
-      <SectionHeader title="Measures" count={measures.length}>
+      <SectionHeader title={tr('gu.secMeasures')} count={measures.length}>
         <EditableList items={measures} setItems={setMeasures}
-          emptyLabel="No measures" addLabel="Add Measure"
+          emptyLabel={tr('gu.noMeasures')} addLabel={tr('gu.addMeasure')}
           newItem={() => ({ alias: '', display_name: '', sql: '', synonyms: '', description: '' })}
           renderItem={(m, i, update) => (
             <div className="space-y-1">
               <div className="grid grid-cols-2 gap-2">
-                <SmallInput value={m.alias} onChange={v => update({ ...m, alias: v })} placeholder="Alias" />
-                <SmallInput value={m.display_name} onChange={v => update({ ...m, display_name: v })} placeholder="Display name" />
+                <SmallInput value={m.alias} onChange={v => update({ ...m, alias: v })} placeholder={tr('gu.aliasPh')} />
+                <SmallInput value={m.display_name} onChange={v => update({ ...m, display_name: v })} placeholder={tr('gu.displayNamePh')} />
               </div>
-              <SqlInputWithAutocomplete value={m.sql} onChange={v => update({ ...m, sql: v })} placeholder="SQL expression (fragment)" columnsMap={columnsMap} className="w-full" />
+              <SqlInputWithAutocomplete value={m.sql} onChange={v => update({ ...m, sql: v })} placeholder={tr('gu.sqlExprFragmentPh')} columnsMap={columnsMap} className="w-full" />
               <div className="grid grid-cols-2 gap-2">
-                <SmallInput value={m.synonyms} onChange={v => update({ ...m, synonyms: v })} placeholder="Synonyms (comma-separated)" className="w-full" />
-                <SmallInput value={m.description} onChange={v => update({ ...m, description: v })} placeholder="Description" className="w-full" />
+                <SmallInput value={m.synonyms} onChange={v => update({ ...m, synonyms: v })} placeholder={tr('gu.synonymsPh')} className="w-full" />
+                <SmallInput value={m.description} onChange={v => update({ ...m, description: v })} placeholder={tr('gu.descriptionPh')} className="w-full" />
               </div>
             </div>
           )}
@@ -1465,15 +1530,15 @@ export default function GenieUpdater({ spaceId, onBack }) {
       </SectionHeader>
 
       {/* SQL Snippets: Filters */}
-      <SectionHeader title="Filters" count={filters.length}>
+      <SectionHeader title={tr('gu.secFilters')} count={filters.length}>
         <EditableList items={filters} setItems={setFilters}
-          emptyLabel="No filters" addLabel="Add Filter"
+          emptyLabel={tr('gu.noFilters')} addLabel={tr('gu.addFilter')}
           newItem={() => ({ display_name: '', sql: '' })}
           renderItem={(f, i, update) => (
             <div className="grid grid-cols-2 gap-2">
-              <SmallInput value={f.display_name} onChange={v => update({ ...f, display_name: v })} placeholder="Display name" />
+              <SmallInput value={f.display_name} onChange={v => update({ ...f, display_name: v })} placeholder={tr('gu.displayNamePh')} />
               <div className="flex items-center gap-1">
-                <SqlInputWithAutocomplete value={f.sql} onChange={v => update({ ...f, sql: v })} placeholder="SQL WHERE clause" columnsMap={columnsMap} className="flex-1 w-full" />
+                <SqlInputWithAutocomplete value={f.sql} onChange={v => update({ ...f, sql: v })} placeholder={tr('gu.sqlWherePh')} columnsMap={columnsMap} className="flex-1 w-full" />
               </div>
             </div>
           )}
@@ -1488,20 +1553,20 @@ export default function GenieUpdater({ spaceId, onBack }) {
       </SectionHeader>
 
       {/* SQL Snippets: Expressions */}
-      <SectionHeader title="Expressions" count={expressions.length}>
+      <SectionHeader title={tr('gu.secExpressions')} count={expressions.length}>
         <EditableList items={expressions} setItems={setExpressions}
-          emptyLabel="No expressions" addLabel="Add Expression"
+          emptyLabel={tr('gu.noExpressions')} addLabel={tr('gu.addExpression')}
           newItem={() => ({ alias: '', display_name: '', sql: '', synonyms: '' })}
           renderItem={(x, i, update) => (
             <div className="space-y-1">
               <div className="grid grid-cols-2 gap-2">
-                <SmallInput value={x.alias} onChange={v => update({ ...x, alias: v })} placeholder="Alias" />
-                <SmallInput value={x.display_name} onChange={v => update({ ...x, display_name: v })} placeholder="Display name" />
+                <SmallInput value={x.alias} onChange={v => update({ ...x, alias: v })} placeholder={tr('gu.aliasPh')} />
+                <SmallInput value={x.display_name} onChange={v => update({ ...x, display_name: v })} placeholder={tr('gu.displayNamePh')} />
               </div>
               <div className="flex items-center gap-1">
-                <SqlInputWithAutocomplete value={x.sql} onChange={v => update({ ...x, sql: v })} placeholder="SQL expression" columnsMap={columnsMap} className="flex-1 w-full" />
+                <SqlInputWithAutocomplete value={x.sql} onChange={v => update({ ...x, sql: v })} placeholder={tr('gu.sqlExprPh')} columnsMap={columnsMap} className="flex-1 w-full" />
               </div>
-              <SmallInput value={x.synonyms} onChange={v => update({ ...x, synonyms: v })} placeholder="Synonyms (comma-separated)" className="w-full" />
+              <SmallInput value={x.synonyms} onChange={v => update({ ...x, synonyms: v })} placeholder={tr('gu.synonymsPh')} className="w-full" />
             </div>
           )}
         />
@@ -1517,12 +1582,12 @@ export default function GenieUpdater({ spaceId, onBack }) {
       </SectionHeader>
 
       {/* Sample Questions */}
-      <SectionHeader title="Sample Questions" count={sampleQuestions.length}>
+      <SectionHeader title={tr('gu.secSampleQuestions')} count={sampleQuestions.length}>
         <EditableList items={sampleQuestions} setItems={setSampleQuestions}
-          emptyLabel="No sample questions" addLabel="Add Question"
+          emptyLabel={tr('gu.noSampleQuestions')} addLabel={tr('gu.addQuestion')}
           newItem={() => ({ text: '' })}
           renderItem={(q, i, update) => (
-            <SmallInput value={q.text} onChange={v => update({ ...q, text: v })} placeholder="Business question..." className="w-full" />
+            <SmallInput value={q.text} onChange={v => update({ ...q, text: v })} placeholder={tr('gu.businessQuestionPh')} className="w-full" />
           )}
         />
         <AIAssistButton section="questions" tableIds={tableIds} existingItems={sampleQuestions.map(q => q.text).filter(Boolean)}
@@ -1538,7 +1603,7 @@ export default function GenieUpdater({ spaceId, onBack }) {
           <button onClick={runDryRun} disabled={dryRunning}
             className="px-4 py-2.5 border border-blue-300 dark:border-blue-700 text-blue-600 dark:text-blue-400 text-sm font-medium rounded-lg hover:bg-blue-50 dark:hover:bg-blue-900/30 disabled:opacity-50 transition-colors flex items-center gap-1.5">
             {dryRunning && <span className="w-3 h-3 border-2 border-blue-400 border-t-transparent rounded-full animate-spin" />}
-            {dryRunning ? 'Validating...' : 'Validate'}
+            {dryRunning ? tr('gu.validating') : tr('gu.validate')}
           </button>
           <button onClick={() => deploy(false)} disabled={deploying || !title.trim()}
             className="px-5 py-2.5 bg-emerald-600 text-white text-sm font-medium rounded-lg hover:bg-emerald-700 disabled:opacity-50 transition-colors flex items-center gap-1.5">
@@ -1549,14 +1614,14 @@ export default function GenieUpdater({ spaceId, onBack }) {
             className="px-5 py-2.5 bg-dbx-navy text-white text-sm font-medium rounded-lg hover:bg-slate-700 disabled:opacity-50 transition-colors">
             Create as New Space
           </button>
-          {rawJsonEditing && <span className="text-xs text-amber-600">Deploying from raw JSON</span>}
+          {rawJsonEditing && <span className="text-xs text-amber-600">{tr('gu.deployingFromJson')}</span>}
         </div>
         {conflictWarning && (
           <div className="bg-amber-50 dark:bg-amber-900/20 border border-amber-300 dark:border-amber-700 rounded-lg px-4 py-2.5 text-sm text-amber-700 dark:text-amber-300 space-y-2">
             <div>{conflictWarning}</div>
             {conflictDiff && conflictDiff.length > 0 && (
               <div className="bg-white dark:bg-slate-900 border border-slate-200 dark:border-slate-700 rounded p-2.5 overflow-auto max-h-60">
-                <p className="text-[10px] text-slate-400 dark:text-slate-500 mb-2 uppercase tracking-wide">Remote changes you'd overwrite (− your loaded copy, + live)</p>
+                <p className="text-[10px] text-slate-400 dark:text-slate-500 mb-2 uppercase tracking-wide">{tr('gu.conflictDiffLabel')}</p>
                 <SpaceDiffView diff={conflictDiff} />
               </div>
             )}
@@ -1581,7 +1646,7 @@ export default function GenieUpdater({ spaceId, onBack }) {
           if (!warns.length) return null
           return (
             <div className="bg-amber-50 dark:bg-amber-900/20 border border-amber-300 dark:border-amber-700 rounded-lg px-4 py-2.5 text-sm text-amber-800 dark:text-amber-300 space-y-1">
-              <div className="font-medium">Some content was adjusted or dropped during deploy:</div>
+              <div className="font-medium">{tr('gu.contentAdjusted')}</div>
               <ul className="list-disc list-inside space-y-0.5">
                 {warns.map((w, i) => <li key={i}>{w}</li>)}
               </ul>

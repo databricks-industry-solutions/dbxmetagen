@@ -7,6 +7,7 @@ import {
 import '@xyflow/react/dist/style.css'
 import dagre from 'dagre'
 import { InfoTip } from './ui'
+import { useLanguage } from '../contexts/LanguageContext'
 
 /**
  * Visual ERD designer for the semantic layer's Model step.
@@ -25,19 +26,16 @@ import { InfoTip } from './ui'
  * Props: tables, projectId, profileId, businessContext, onSaved()
  */
 
+// Role display labels resolved via t(`erd.role.<role>`); only bg color lives here.
 const ROLE_STYLES = {
-  fact:      { bg: '#FF3621', label: 'Fact' },
-  source:    { bg: '#b45309', label: 'Source' },
-  dimension: { bg: '#2563eb', label: 'Dimension' },
-  bridge:    { bg: '#7c3aed', label: 'Bridge' },
+  fact:      { bg: '#FF3621' },
+  source:    { bg: '#b45309' },
+  dimension: { bg: '#2563eb' },
+  bridge:    { bg: '#7c3aed' },
 }
+const ROLE_KEYS = ['fact', 'source', 'dimension', 'bridge']
 
-const SCHEMA_NOTES = {
-  STAR: 'Star: a central fact joins dimension lookups. One broad view per fact is the default.',
-  SNOWFLAKE: 'Snowflake: dimensions chain into further dimensions. Views nest joins along the chain.',
-  DATA_MART: 'Data mart: tables are pre-joined/aggregated — usually one view each, few or no joins.',
-  SIMPLE: 'Simple: few or no foreign keys found — expect single-table views, no fabricated joins.',
-}
+// Schema-note display text resolved via t(`erd.schemaNote.<type>`).
 
 // A true foreign-key constraint needs a (near-)unique parent key and (near-)full
 // referential integrity. Below these floors we only let the user save a join key,
@@ -98,7 +96,9 @@ function _nodeHeight(keyCount, hasMeta) {
 // participate in a confirmed join) are highlighted. `data._keyCols` = [{col, chosen}]
 // is derived from the current edge set (see the key-derivation effect).
 function TableNode({ data }) {
+  const { t: tr } = useLanguage()
   const style = ROLE_STYLES[data.role] || ROLE_STYLES.source
+  const roleLabel = tr(`erd.role.${data.role in ROLE_STYLES ? data.role : 'source'}`)
   const keyCols = data._keyCols || []
   return (
     <div className={`rounded-md border shadow-sm bg-white dark:bg-dbx-navy-500 min-w-[160px] max-w-[240px] ${data._selected ? 'ring-2 ring-dbx-lava border-dbx-lava' : 'dark:border-slate-600'}`}>
@@ -119,7 +119,7 @@ function TableNode({ data }) {
       <div className="rounded-t-md text-white text-xs font-semibold flex items-center justify-between gap-1 px-2"
         style={{ background: style.bg, height: NODE_HEADER_H }}>
         <span className="truncate" title={data.table}>{_short(data.table)}</span>
-        <span className="text-[9px] uppercase tracking-wide opacity-90">{style.label}</span>
+        <span className="text-[9px] uppercase tracking-wide opacity-90">{roleLabel}</span>
       </div>
       {keyCols.length > 0 && (
         <div className="border-t border-slate-100 dark:border-slate-600">
@@ -131,7 +131,7 @@ function TableNode({ data }) {
                   : 'text-slate-500 dark:text-slate-400'
               }`}
               style={{ height: NODE_KEYROW_H }}
-              title={`${k.col}${k.chosen ? ' (chosen join key)' : ' (candidate join key)'}`}>
+              title={`${k.col}${k.chosen ? tr('erd.node.chosenJoinKey') : tr('erd.node.candidateJoinKey')}`}>
               <span className="w-2 text-center">{k.chosen ? '◈' : '○'}</span>
               <span className="truncate">{k.col}</span>
             </div>
@@ -142,7 +142,7 @@ function TableNode({ data }) {
         <div className="px-2 text-[10px] text-slate-400 dark:text-slate-500 truncate border-t border-slate-100 dark:border-slate-600"
           style={{ height: NODE_META_H, lineHeight: `${NODE_META_H}px` }}
           title={data.measurable_columns.join(', ')}>
-          {data.measurable_columns.length} measure{data.measurable_columns.length === 1 ? '' : 's'}
+          {tr('erd.node.measures', { count: data.measurable_columns.length, plural: data.measurable_columns.length === 1 ? '' : 's' })}
         </div>
       )}
     </div>
@@ -257,6 +257,8 @@ function _erdHash(nodes, edges) {
 }
 
 export default function ErdDesigner({ tables, projectId, profileId, businessContext, onSaved }) {
+  // Aliased to `tr` -- line 261 uses `t` as a `.map(t => ...)` param.
+  const { t: tr } = useLanguage()
   const tableList = useMemo(
     () => (Array.isArray(tables) ? tables : String(tables || '').split(',').map(t => t.trim()).filter(Boolean)),
     [tables]
@@ -332,7 +334,7 @@ export default function ErdDesigner({ tables, projectId, profileId, businessCont
     fetch(`/api/semantic-layer/erd-recommendation?${params}`)
       .then(r => r.ok ? r.json() : Promise.reject(new Error(`HTTP ${r.status}`)))
       .then(rec => buildGraph(rec))
-      .catch(e => setError(`Could not load ERD recommendation: ${e.message}`))
+      .catch(e => setError(tr('erd.error.loadRecommendation', { msg: e.message })))
       .finally(() => setLoading(false))
   }, [tableList, projectId, profileId, buildGraph])
 
@@ -533,7 +535,7 @@ export default function ErdDesigner({ tables, projectId, profileId, businessCont
   }, [edgeColSig])
 
   const save = useCallback(async () => {
-    if (!projectId) { setError('Select a project to save the model.'); return }
+    if (!projectId) { setError(tr('erd.error.selectProjectToSave')); return }
     setSaving(true); setError(null)
     try {
       const erdPayload = {
@@ -587,7 +589,7 @@ export default function ErdDesigner({ tables, projectId, profileId, businessCont
       // The ERD itself saved (PATCH above); surface a partial-save warning rather
       // than silently reporting full success when some relationships did not persist.
       if (joinFailures > 0) {
-        setError(`Model saved, but ${joinFailures} of ${confirmedJoins.length} join${confirmedJoins.length === 1 ? '' : 's'} could not be persisted — try Save again.`)
+        setError(tr('erd.error.partialSave', { failures: joinFailures, total: confirmedJoins.length }))
       }
       onSaved?.()
     } catch (e) {
@@ -610,7 +612,7 @@ export default function ErdDesigner({ tables, projectId, profileId, businessCont
     })
       .then(r => r.ok ? r.json() : Promise.reject(new Error(`HTTP ${r.status}`)))
       .then(res => { _explainCache.set(key, res); setExplain(res) })
-      .catch(e => setError(`Explain failed: ${e.message}`))
+      .catch(e => setError(tr('erd.error.explainFailed', { msg: e.message })))
       .finally(() => setExplaining(false))
   }, [projectId, nodes, edges, sufficiency, businessContext])
 
@@ -620,7 +622,7 @@ export default function ErdDesigner({ tables, projectId, profileId, businessCont
   if (!tableList.length) {
     return (
       <p className="text-xs text-amber-600 dark:text-amber-400">
-        Select tables in Setup to see a recommended data model.
+        {tr('erd.emptyState.selectTables')}
       </p>
     )
   }
@@ -631,36 +633,36 @@ export default function ErdDesigner({ tables, projectId, profileId, businessCont
     <div className="space-y-3">
       {/* Guided stepper */}
       <div className="flex items-center gap-2 text-xs text-slate-500 dark:text-slate-400 flex-wrap">
-        <span className="font-semibold text-slate-600 dark:text-slate-300">Steps:</span>
-        <span><strong className="text-dbx-lava">1.</strong> Understand (Explain)</span><span className="text-slate-300">→</span>
-        <span><strong className="text-dbx-lava">2.</strong> Review &amp; adjust facts + joins</span><span className="text-slate-300">→</span>
-        <span><strong className="text-dbx-lava">3.</strong> Save — seeds metric-view generation</span>
-        <span className="text-slate-400 italic ml-1">This model is pre-filled from your metadata; you just confirm and tweak it.</span>
+        <span className="font-semibold text-slate-600 dark:text-slate-300">{tr('erd.steps.label')}</span>
+        <span><strong className="text-dbx-lava">1.</strong> {tr('erd.steps.understand')}</span><span className="text-slate-300">→</span>
+        <span><strong className="text-dbx-lava">2.</strong> {tr('erd.steps.review')}</span><span className="text-slate-300">→</span>
+        <span><strong className="text-dbx-lava">3.</strong> {tr('erd.steps.save')}</span>
+        <span className="text-slate-400 italic ml-1">{tr('erd.steps.hint')}</span>
       </div>
 
       {/* Schema type + sufficiency + Explain (step 1) */}
       {sufficiency && (
         <div className="px-3 py-2 rounded-md bg-slate-50 dark:bg-dbx-navy-600 text-xs space-y-1.5">
           <div className="flex flex-wrap items-center gap-x-3 gap-y-1">
-            <span className="font-semibold text-slate-700 dark:text-slate-200">{schemaType} schema</span>
+            <span className="font-semibold text-slate-700 dark:text-slate-200">{tr('erd.schemaLabel', { schemaType })}</span>
             <span className="text-slate-600 dark:text-slate-300">
-              Recommended <strong>{sufficiency.metric_views_recommended}</strong> metric view{sufficiency.metric_views_recommended === 1 ? '' : 's'}
-              {sufficiency.metric_views_current > 0 && <> ({sufficiency.metric_views_current} exist)</>}
+              {tr('erd.sufficiency.recommended')} <strong>{sufficiency.metric_views_recommended}</strong> {tr('erd.sufficiency.metricViews', { plural: sufficiency.metric_views_recommended === 1 ? '' : 's' })}
+              {sufficiency.metric_views_current > 0 && <> {tr('erd.sufficiency.exist', { count: sufficiency.metric_views_current })}</>}
             </span>
             {sufficiency.reasons?.length > 0 && <InfoTip text={sufficiency.reasons.join(' · ')} />}
             {(sufficiency.missing_kpis?.length > 0) && (
-              <span className="text-amber-600 dark:text-amber-400">{sufficiency.missing_kpis.length} KPI{sufficiency.missing_kpis.length === 1 ? '' : 's'} uncovered</span>
+              <span className="text-amber-600 dark:text-amber-400">{tr('erd.sufficiency.kpisUncovered', { count: sufficiency.missing_kpis.length, plural: sufficiency.missing_kpis.length === 1 ? '' : 's' })}</span>
             )}
             <div className="flex-1" />
             <button onClick={() => runExplain(false)} disabled={explaining || !nodes.length}
               className="px-2.5 py-1 text-xs rounded border border-slate-300 dark:border-slate-600 hover:bg-white dark:hover:bg-dbx-navy-500 disabled:opacity-50">
-              {explaining ? 'Explaining…' : (explain ? 'Re-explain' : 'Explain this model (AI)')}
+              {explaining ? tr('erd.explain.explaining') : (explain ? tr('erd.explain.reExplain') : tr('erd.explain.explainModel'))}
             </button>
           </div>
-          <p className="text-[11px] text-slate-400 dark:text-slate-500">{SCHEMA_NOTES[schemaType]}</p>
+          <p className="text-[11px] text-slate-400 dark:text-slate-500">{tr(`erd.schemaNote.${schemaType}`)}</p>
           {sufficiency.fanout_warnings?.length > 0 && (
             <div className="mt-1 px-2 py-1.5 rounded bg-rose-50 dark:bg-rose-900/20 border border-rose-200 dark:border-rose-700/50 text-[11px] text-rose-800 dark:text-rose-300">
-              <span className="font-semibold">Fan-out risk ({sufficiency.fanout_warnings.length}):</span>
+              <span className="font-semibold">{tr('erd.fanout.title', { count: sufficiency.fanout_warnings.length })}</span>
               <ul className="list-disc ml-4 mt-0.5 space-y-0.5">
                 {sufficiency.fanout_warnings.map((w, i) => <li key={i}>{w}</li>)}
               </ul>
@@ -673,7 +675,7 @@ export default function ErdDesigner({ tables, projectId, profileId, businessCont
         <div className="px-3 py-2 rounded-md bg-amber-50 dark:bg-amber-900/20 border border-amber-200 dark:border-amber-700/50 text-xs text-amber-800 dark:text-amber-300 leading-relaxed space-y-1">
           <div>{explain.explanation}</div>
           {explain.suggested_view_themes?.length > 0 && (
-            <div><span className="font-semibold">Suggested views:</span> {explain.suggested_view_themes.join(' · ')}</div>
+            <div><span className="font-semibold">{tr('erd.explain.suggestedViews')}</span> {explain.suggested_view_themes.join(' · ')}</div>
           )}
         </div>
       )}
@@ -686,7 +688,7 @@ export default function ErdDesigner({ tables, projectId, profileId, businessCont
       <div className="h-[460px] rounded-lg border border-slate-200 dark:border-slate-700 bg-slate-50 dark:bg-dbx-navy-700 relative">
         {loading && (
           <div className="absolute inset-0 z-10 flex items-center justify-center text-xs text-slate-500 bg-white/60 dark:bg-black/40">
-            Building recommended model…
+            {tr('erd.loading.buildingModel')}
           </div>
         )}
         <ReactFlow
@@ -698,7 +700,7 @@ export default function ErdDesigner({ tables, projectId, profileId, businessCont
             setSelectedEdgeId(e.id); setSelectedNodeId(null)
             ensureColumns(e.source); ensureColumns(e.target); ensureCandidates(e.source, e.target)
           }}
-          onEdgeMouseEnter={(evt, e) => setHoverEdge({ id: e.id, label: e.data?.on ? `${e.data.src_column || '?'} = ${e.data.dst_column || '?'}` : 'click to set join columns', x: evt.clientX, y: evt.clientY })}
+          onEdgeMouseEnter={(evt, e) => setHoverEdge({ id: e.id, label: e.data?.on ? `${e.data.src_column || '?'} = ${e.data.dst_column || '?'}` : tr('erd.edge.clickToSetColumns'), x: evt.clientX, y: evt.clientY })}
           onEdgeMouseLeave={() => setHoverEdge(null)}
           onPaneClick={() => { setSelectedNodeId(null); setSelectedEdgeId(null) }}
           nodeTypes={nodeTypes}
@@ -725,23 +727,23 @@ export default function ErdDesigner({ tables, projectId, profileId, businessCont
           <div className="flex items-center gap-2">
             <span className="font-semibold text-slate-700 dark:text-slate-200">{_short(selectedNode.id)}</span>
             <span className="font-medium" style={{ color: (ROLE_STYLES[roleOf(selectedNode)] || {}).bg }}>
-              {(ROLE_STYLES[roleOf(selectedNode)] || {}).label}
+              {tr(`erd.role.${roleOf(selectedNode) in ROLE_STYLES ? roleOf(selectedNode) : 'source'}`)}
             </span>
             <div className="flex-1" />
-            <span className="text-slate-400">Set role:</span>
+            <span className="text-slate-400">{tr('erd.node.setRole')}</span>
             {['fact', 'dimension', 'source'].map(r => (
               <button key={r} onClick={() => setRole(selectedNode.id, r)}
                 className={`px-2 py-0.5 rounded border ${roleOf(selectedNode) === r ? 'text-white border-transparent' : 'border-slate-300 dark:border-slate-600 hover:bg-slate-100 dark:hover:bg-dbx-navy-500'}`}
                 style={roleOf(selectedNode) === r ? { background: ROLE_STYLES[r].bg } : {}}>
-                {ROLE_STYLES[r].label}
+                {tr(`erd.role.${r}`)}
               </button>
             ))}
           </div>
           {selectedNode.data.reasons?.length > 0 && (
-            <p className="text-[11px] text-slate-500 dark:text-slate-400">Why: {selectedNode.data.reasons.join(' · ')}</p>
+            <p className="text-[11px] text-slate-500 dark:text-slate-400">{tr('erd.node.why')} {selectedNode.data.reasons.join(' · ')}</p>
           )}
           {selectedNode.data.grain && (
-            <p className="text-[11px] text-slate-500 dark:text-slate-400">Grain key: <span className="font-mono">{selectedNode.data.grain}</span></p>
+            <p className="text-[11px] text-slate-500 dark:text-slate-400">{tr('erd.node.grainKey')} <span className="font-mono">{selectedNode.data.grain}</span></p>
           )}
         </div>
       ) : selectedEdge ? (
@@ -761,16 +763,16 @@ export default function ErdDesigner({ tables, projectId, profileId, businessCont
         />
       ) : (
         <p className="text-[11px] text-slate-400">
-          Click a <strong>table</strong> to set its role · drag between the dots on two tables to add a join · click a <strong>join line</strong> to choose its columns.
+          {tr('erd.hint.canvas')}
         </p>
       )}
 
       {/* Commit */}
       <div className="flex items-center gap-3">
         <div className="flex-1" />
-        <button onClick={save} disabled={saving || !projectId} title={!projectId ? 'Select a project to save' : ''}
+        <button onClick={save} disabled={saving || !projectId} title={!projectId ? tr('erd.save.selectProjectTooltip') : ''}
           className="btn-primary btn-md">
-          {saving ? 'Saving…' : 'Save model'}
+          {saving ? tr('erd.save.saving') : tr('erd.save.saveModel')}
         </button>
       </div>
     </div>
@@ -794,6 +796,7 @@ function EvidenceChip({ label, value, title, tone }) {
 
 // --- Join column editor -------------------------------------------------------
 function JoinEditor({ edge, srcCols, dstCols, candidates, onPick, onKind, onFlip, onAddPair, onSetPair, onRemovePair, onRemove, onClose }) {
+  const { t: tr } = useLanguage()
   const src = edge.source, dst = edge.target
   const cur = { src_column: edge.data?.src_column || '', dst_column: edge.data?.dst_column || '' }
   const extraPairs = edge.data?.extra_pairs || []
@@ -812,31 +815,31 @@ function JoinEditor({ edge, srcCols, dstCols, candidates, onPick, onKind, onFlip
   return (
     <div className="px-3 py-2 rounded-md border border-slate-200 dark:border-slate-700 bg-white dark:bg-dbx-navy-600 text-xs space-y-2">
       <div className="flex items-center gap-2">
-        <span className="font-semibold text-slate-700 dark:text-slate-200">Join: {_short(src)} → {_short(dst)}</span>
-        <button onClick={onFlip} title="Swap which table is the foreign-key (child) side vs the referenced (parent) side"
-          className="text-slate-400 hover:text-dbx-lava" aria-label="Flip join direction">⇄ flip</button>
+        <span className="font-semibold text-slate-700 dark:text-slate-200">{tr('erd.join.title')} {_short(src)} → {_short(dst)}</span>
+        <button onClick={onFlip} title={tr('erd.join.flipTooltip')}
+          className="text-slate-400 hover:text-dbx-lava" aria-label={tr('erd.join.flipAria')}>{tr('erd.join.flip')}</button>
         <div className="flex-1" />
-        <button onClick={onRemove} className="text-red-600 dark:text-red-400 hover:underline">Remove join</button>
+        <button onClick={onRemove} className="text-red-600 dark:text-red-400 hover:underline">{tr('erd.join.removeJoin')}</button>
         <button onClick={onClose} className="text-slate-400 hover:text-slate-600">✕</button>
       </div>
 
       {/* Suggestions */}
       {candidates === null ? (
-        <p className="text-[11px] text-slate-400">Loading suggestions…</p>
+        <p className="text-[11px] text-slate-400">{tr('erd.join.loadingSuggestions')}</p>
       ) : candidates.length > 0 ? (
         <div className="flex flex-wrap gap-1.5 items-center">
-          <span className="text-[11px] text-slate-400">Suggested:</span>
+          <span className="text-[11px] text-slate-400">{tr('erd.join.suggested')}</span>
           {candidates.map((c, i) => {
             const active = c.src_column === cur.src_column && c.dst_column === cur.dst_column
             const evid = [
-              c.ri_score != null && `RI ${_pct(c.ri_score)}`,
-              c.join_rate != null && `join ${_pct(c.join_rate)}`,
-              c.pk_uniqueness != null && `PK-uniq ${_pct(c.pk_uniqueness)}`,
+              c.ri_score != null && `${tr('erd.evidence.ri')} ${_pct(c.ri_score)}`,
+              c.join_rate != null && `${tr('erd.evidence.join')} ${_pct(c.join_rate)}`,
+              c.pk_uniqueness != null && `${tr('erd.evidence.pkUniq')} ${_pct(c.pk_uniqueness)}`,
             ].filter(Boolean).join(' · ')
             return (
               <button key={i} onClick={() => onPick(c.src_column, c.dst_column)}
                 className={`px-2 py-0.5 rounded border font-mono ${active ? 'bg-dbx-lava text-white border-transparent' : 'border-slate-300 dark:border-slate-600 hover:bg-slate-100 dark:hover:bg-dbx-navy-500'}`}
-                title={[`confidence ${(c.confidence * 100).toFixed(0)}%`, evid, c.reasoning].filter(Boolean).join('\n')}>
+                title={[tr('erd.join.confidenceTooltip', { pct: (c.confidence * 100).toFixed(0) }), evid, c.reasoning].filter(Boolean).join('\n')}>
                 {c.src_column} = {c.dst_column}
                 <span className="ml-1 opacity-70">{(c.confidence * 100).toFixed(0)}%</span>
               </button>
@@ -844,26 +847,26 @@ function JoinEditor({ edge, srcCols, dstCols, candidates, onPick, onKind, onFlip
           })}
         </div>
       ) : (
-        <p className="text-[11px] text-slate-400">No FK suggestions for this pair — pick columns below.</p>
+        <p className="text-[11px] text-slate-400">{tr('erd.join.noSuggestions')}</p>
       )}
 
       {/* Full dropdowns */}
       <div className="flex items-center gap-2 flex-wrap">
-        <span className="text-slate-500 dark:text-slate-400">source</span>
+        <span className="text-slate-500 dark:text-slate-400">{tr('erd.join.sourceLabel')}</span>
         <select value={cur.src_column} onChange={e => onPick(e.target.value, cur.dst_column)}
           className="input-base !text-xs !py-1 max-w-[180px]">
-          <option value="">{srcCols === null ? 'loading…' : 'select column…'}</option>
+          <option value="">{srcCols === null ? tr('erd.join.loadingColumns') : tr('erd.join.selectColumn')}</option>
           {(srcCols || []).map(c => <option key={colName(c)} value={colName(c)}>{colName(c)}</option>)}
         </select>
         <span className="text-slate-400 font-mono">=</span>
         <select value={cur.dst_column} onChange={e => onPick(cur.src_column, e.target.value)}
           className="input-base !text-xs !py-1 max-w-[180px]">
-          <option value="">{dstCols === null ? 'loading…' : 'select column…'}</option>
+          <option value="">{dstCols === null ? tr('erd.join.loadingColumns') : tr('erd.join.selectColumn')}</option>
           {(dstCols || []).map(c => <option key={colName(c)} value={colName(c)}>{colName(c)}</option>)}
         </select>
       </div>
       {!bothCols && (
-        <p className="text-[11px] text-amber-600 dark:text-amber-400">Pick both columns to confirm this join (unconfirmed joins are not saved).</p>
+        <p className="text-[11px] text-amber-600 dark:text-amber-400">{tr('erd.join.pickBothColumns')}</p>
       )}
 
       {/* Composite (multi-column) key: additional column pairs ANDed onto the
@@ -873,26 +876,26 @@ function JoinEditor({ edge, srcCols, dstCols, candidates, onPick, onKind, onFlip
         <div className="space-y-1">
           {extraPairs.map((p, i) => (
             <div key={i} className="flex items-center gap-2 flex-wrap">
-              <span className="text-slate-400 font-mono">AND</span>
+              <span className="text-slate-400 font-mono">{tr('erd.join.and')}</span>
               <select value={p.src} onChange={e => onSetPair(i, e.target.value, p.dst)}
                 className="input-base !text-xs !py-1 max-w-[160px]">
-                <option value="">column…</option>
+                <option value="">{tr('erd.join.columnPlaceholder')}</option>
                 {(srcCols || []).map(c => <option key={colName(c)} value={colName(c)}>{colName(c)}</option>)}
               </select>
               <span className="text-slate-400 font-mono">=</span>
               <select value={p.dst} onChange={e => onSetPair(i, p.src, e.target.value)}
                 className="input-base !text-xs !py-1 max-w-[160px]">
-                <option value="">column…</option>
+                <option value="">{tr('erd.join.columnPlaceholder')}</option>
                 {(dstCols || []).map(c => <option key={colName(c)} value={colName(c)}>{colName(c)}</option>)}
               </select>
-              <button onClick={() => onRemovePair(i)} className="text-red-400 hover:text-red-600" aria-label="Remove column pair">✕</button>
+              <button onClick={() => onRemovePair(i)} className="text-red-400 hover:text-red-600" aria-label={tr('erd.join.removePairAria')}>✕</button>
             </div>
           ))}
           <button onClick={onAddPair} className="text-[11px] text-dbx-lava hover:underline">
-            + Add column pair (composite key)
+            {tr('erd.join.addColumnPair')}
           </button>
           {edge.data?.is_composite && (
-            <p className="text-[10px] text-slate-400 font-mono break-all">on: {edge.data.on}</p>
+            <p className="text-[10px] text-slate-400 font-mono break-all">{tr('erd.join.onLabel')} {edge.data.on}</p>
           )}
         </div>
       )}
@@ -901,19 +904,19 @@ function JoinEditor({ edge, srcCols, dstCols, candidates, onPick, onKind, onFlip
           measured, so the reviewer verifies rather than trusts one number. */}
       {bothCols && chosen && (
         <div className="flex flex-wrap gap-1.5 items-center">
-          <span className="text-[10px] uppercase tracking-wide text-slate-400">Evidence:</span>
-          <EvidenceChip label="RI" value={_pct(ri)} tone={tone(ri)}
-            title="Referential integrity: fraction of child rows whose key exists in the parent (join-and-count probe). Low = orphan rows." />
-          <EvidenceChip label="join" value={_pct(jr)} tone={tone(jr)}
-            title={`Actual join hit rate on sampled rows${chosen.join_matched != null ? ` (${chosen.join_matched} matched)` : ''}.`} />
-          <EvidenceChip label="PK-uniq" value={_pct(pk)} tone={tone(pk)}
-            title="Parent-side key uniqueness. A true FK needs a (near-)unique parent key." />
+          <span className="text-[10px] uppercase tracking-wide text-slate-400">{tr('erd.join.evidence')}</span>
+          <EvidenceChip label={tr('erd.evidence.ri')} value={_pct(ri)} tone={tone(ri)}
+            title={tr('erd.evidence.riTooltip')} />
+          <EvidenceChip label={tr('erd.evidence.join')} value={_pct(jr)} tone={tone(jr)}
+            title={tr('erd.evidence.joinTooltip', { matchedSuffix: chosen.join_matched != null ? tr('erd.evidence.matchedSuffix', { matched: chosen.join_matched }) : '' })} />
+          <EvidenceChip label={tr('erd.evidence.pkUniq')} value={_pct(pk)} tone={tone(pk)}
+            title={tr('erd.evidence.pkUniqTooltip')} />
           {chosen.col_similarity != null && (
-            <EvidenceChip label="sim" value={_pct(chosen.col_similarity)}
-              title="Column-name/embedding similarity between the two columns." />
+            <EvidenceChip label={tr('erd.evidence.sim')} value={_pct(chosen.col_similarity)}
+              title={tr('erd.evidence.simTooltip')} />
           )}
           {chosen.stored_reversed && (
-            <span className="text-[10px] text-slate-400" title="This pair is stored parent→child in the predictions table; RI / PK-uniqueness describe that stored orientation.">(stored reversed)</span>
+            <span className="text-[10px] text-slate-400" title={tr('erd.evidence.storedReversedTooltip')}>{tr('erd.evidence.storedReversed')}</span>
           )}
         </div>
       )}
@@ -930,15 +933,15 @@ function JoinEditor({ edge, srcCols, dstCols, candidates, onPick, onKind, onFlip
           <input type="checkbox" className="mt-0.5" checked={isFk} disabled={!fkEligible}
             onChange={e => onKind?.(e.target.checked ? 'foreign_key' : 'join_key')} />
           <span>
-            This join is a <strong>true foreign key</strong> (referential constraint)
+            {tr('erd.join.trueForeignKey')}
             <span className="block text-slate-400">
               {!fkEligible
                 ? (chosen
-                    ? `Evidence too weak to assert an FK (needs PK-uniqueness ≥ ${Math.round(FK_PK_UNIQUENESS_FLOOR * 100)}% and RI ≥ ${Math.round(FK_RI_SCORE_FLOOR * 100)}%). Saved as a join key.`
-                    : 'Run FK prediction to get referential-integrity evidence before asserting an FK. Saved as a join key.')
+                    ? tr('erd.join.fkEvidenceTooWeak', { pk: Math.round(FK_PK_UNIQUENESS_FLOOR * 100), ri: Math.round(FK_RI_SCORE_FLOOR * 100) })
+                    : tr('erd.join.fkRunPrediction'))
                 : isFk
-                  ? 'Eligible for an ALTER TABLE ADD CONSTRAINT. Requires a unique parent key + no orphan rows.'
-                  : 'Saved as a join key: used for metric-view & Genie joins, but never emitted as a DDL constraint.'}
+                  ? tr('erd.join.fkEligible')
+                  : tr('erd.join.fkSavedAsJoinKey')}
             </span>
           </span>
         </label>

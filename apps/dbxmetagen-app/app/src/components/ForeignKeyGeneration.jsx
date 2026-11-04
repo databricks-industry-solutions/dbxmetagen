@@ -1,6 +1,7 @@
 import React, { useState, useEffect, useRef, useCallback, useMemo } from 'react'
 import ForceGraph2D from 'react-force-graph-2d'
 import { safeFetch, safeFetchObj, ErrorBanner } from '../App'
+import { useLanguage } from '../contexts/LanguageContext'
 import { PageHeader, EmptyState } from './ui'
 
 const CLUSTER_PALETTE = [
@@ -10,6 +11,7 @@ const CLUSTER_PALETTE = [
 const shortName = id => (id || '').split('.').pop()
 
 export function FKApplyResult({ result, onSwitchToTags }) {
+  const { t } = useLanguage()
   const [showDetails, setShowDetails] = useState(false)
   if (!result) return null
   if (result.error) return <div className="text-sm text-red-600">{String(result.error)}</div>
@@ -19,18 +21,18 @@ export function FKApplyResult({ result, onSwitchToTags }) {
   return (
     <div className="text-sm space-y-1">
       <div className={failed.length ? 'text-amber-700' : 'text-green-600'}>
-        Applied: {ok.length} succeeded, {failed.length} failed.
+        {t('fk.appliedResult', { ok: ok.length, failed: failed.length })}
         {failed.length > 0 && (
           <button onClick={() => setShowDetails(d => !d)} className="ml-2 text-xs text-blue-600 hover:underline">
-            {showDetails ? 'Hide errors' : 'Show errors'}
+            {showDetails ? t('fk.hideErrors') : t('fk.showErrors')}
           </button>
         )}
       </div>
       {hasPermError && (
         <div className="border border-amber-200 rounded-lg bg-amber-50 p-3 text-xs text-amber-800">
-          <strong>Permission issue:</strong> Adding FK constraints requires MANAGE permission on the table.
+          <strong>{t('fk.permissionIssue')}</strong> {t('fk.permManageHint')}
           {onSwitchToTags
-            ? <> Try <button onClick={onSwitchToTags} className="text-blue-600 hover:underline font-medium">Apply as Tags</button> instead &mdash; it only requires APPLY_TAG permission and stores the same relationship metadata.</>
+            ? <> Try <button onClick={onSwitchToTags} className="text-blue-600 hover:underline font-medium">{t('fk.applyAsTagsBtn')}</button> instead &mdash; it only requires APPLY_TAG permission and stores the same relationship metadata.</>
             : <> Switch to "Apply as Tags" mode, which only requires APPLY_TAG permission.</>
           }
         </div>
@@ -51,6 +53,7 @@ export function FKApplyResult({ result, onSwitchToTags }) {
 const tableColumn = id => { const parts = (id || '').split('.'); return parts.length >= 2 ? `${parts[parts.length - 2]}.${parts[parts.length - 1]}` : id }
 
 export function FKMapViz() {
+  const { t: tr } = useLanguage()
   const [data, setData] = useState(null)
   const [error, setError] = useState(null)
   const [strength, setStrength] = useState(0.3)
@@ -142,20 +145,20 @@ export function FKMapViz() {
     })
   }, [graphData])
 
-  if (!data) return <p className="text-sm text-slate-400">Loading FK Map...</p>
+  if (!data) return <p className="text-sm text-slate-400">{tr('fk.loadingFkMap')}</p>
 
   return (
     <div className="space-y-3">
       <ErrorBanner error={error} />
       <div className="flex items-center gap-3 text-xs text-slate-500">
-        <label>Cluster grouping</label>
+        <label>{tr('fk.clusterGrouping')}</label>
         <input type="range" min="0" max="1" step="0.05" value={strength}
-          onChange={e => setStrength(Number(e.target.value))} className="w-32" title="Adjust how strongly tables are grouped by cluster (0=loose, 1=tight)" />
+          onChange={e => setStrength(Number(e.target.value))} className="w-32" title={tr('fk.clusterTip')} />
         <span>{strength.toFixed(2)}</span>
-        <button type="button" onClick={load} className="text-dbx-lava hover:underline" title="Reload FK map data">Refresh</button>
+        <button type="button" onClick={load} className="text-dbx-lava hover:underline" title={tr('fk.reloadFkMap')}>{tr('fk.refresh')}</button>
       </div>
       {graphData.nodes.length === 0
-        ? <p className="text-sm text-slate-400">No table nodes or FK predictions available.</p>
+        ? <p className="text-sm text-slate-400">{tr('fk.noNodes')}</p>
         : <div className="bg-dbx-oat-light border border-slate-200 rounded-xl shadow-sm overflow-hidden" style={{ height: 500 }}>
           <ForceGraph2D
             ref={graphRef} graphData={graphData} width={900} height={500}
@@ -198,6 +201,7 @@ export function FKMapViz() {
 }
 
 export function FKPredictionsTable({ onRefresh }) {
+  const { t } = useLanguage()
   const [predictions, setPredictions] = useState([])
   const [error, setError] = useState(null)
   const [selected, setSelected] = useState(new Set())
@@ -242,35 +246,30 @@ export function FKPredictionsTable({ onRefresh }) {
   return (
     <div className="bg-dbx-oat-light rounded-xl border border-slate-200 p-6 shadow-sm">
       <div className="flex items-center justify-between mb-4">
-        <h2 className="text-lg font-semibold text-slate-800">Predicted Foreign Keys</h2>
+        <h2 className="text-lg font-semibold text-slate-800">{t('fk.predictedFks')}</h2>
         <div className="flex items-center gap-2">
-          <button type="button" onClick={load} className="text-sm text-dbx-lava hover:underline" title="Reload FK predictions">Refresh</button>
+          <button type="button" onClick={load} className="text-sm text-dbx-lava hover:underline" title={t('fk.reloadFkPreds')}>{t('fk.refresh')}</button>
           {selected.size > 0 && (
             <button type="button" onClick={() => deletePreds([...selected].map(i => predictions[i]).filter(Boolean))}
               disabled={deleting}
               className="px-3 py-1.5 bg-red-600 text-white rounded-lg text-sm font-medium hover:bg-red-700 disabled:opacity-50">
-              {deleting ? 'Removing...' : `Remove (${selected.size})`}
+              {deleting ? t('fk.removing') : t('fk.removeN', { n: selected.size })}
             </button>
           )}
         </div>
       </div>
       <ErrorBanner error={error} />
       {predictions.length === 0
-        ? <p className="text-sm text-slate-400">No FK predictions available. Run the FK prediction job first.</p>
+        ? <p className="text-sm text-slate-400">{t('fk.noFkPreds')}</p>
         : <div className="overflow-x-auto max-h-96">
           <table className="min-w-full text-sm">
             <thead><tr>
               <th className="w-10 px-2 py-2.5 bg-dbx-oat border-b border-slate-200"></th>
-              {['Source Column', 'Target Column', 'Col Sim', 'Rule', 'AI Conf', 'Final', 'Reasoning'].map(h =>
-                <th key={h} className="text-left px-3 py-2.5 bg-dbx-oat font-semibold text-slate-600 border-b border-slate-200 text-xs uppercase tracking-wider" title={
-                  h === 'Source Column' ? 'Source table.column (referencing table)' :
-                  h === 'Target Column' ? 'Target table.column (referenced table)' :
-                  h === 'Col Sim' ? 'Column embedding similarity score (0-1)' :
-                  h === 'Rule' ? 'Rule-based heuristic score' :
-                  h === 'AI Conf' ? 'AI model confidence score' :
-                  h === 'Final' ? 'Combined final confidence score' :
-                  'AI explanation for the prediction'
-                }>{h}</th>)}
+              {[
+                { k: 'sourceColumn' }, { k: 'targetColumn' }, { k: 'colSim' },
+                { k: 'rule' }, { k: 'aiConf' }, { k: 'final' }, { k: 'reasoning' },
+              ].map(h =>
+                <th key={h.k} className="text-left px-3 py-2.5 bg-dbx-oat font-semibold text-slate-600 border-b border-slate-200 text-xs uppercase tracking-wider" title={t(`fk.tip.${h.k}`)}>{t(`fk.hdr.${h.k}`)}</th>)}
               <th className="w-10 px-2 py-2.5 bg-dbx-oat border-b border-slate-200"></th>
             </tr></thead>
             <tbody>
@@ -287,7 +286,7 @@ export function FKPredictionsTable({ onRefresh }) {
                   <td className="px-3 py-2 font-bold text-slate-800">{Number(p.final_confidence).toFixed(2)}</td>
                   <td className="px-3 py-2 text-slate-500 text-xs max-w-xs truncate" title={p.ai_reasoning}>{p.ai_reasoning}</td>
                   <td className="px-2 py-2">
-                    <button onClick={() => deletePreds([p])} disabled={deleting} title="Remove this FK prediction"
+                    <button onClick={() => deletePreds([p])} disabled={deleting} title={t('fk.removeFkPred')}
                       className="text-red-400 hover:text-red-600 disabled:opacity-50 text-sm">&#x2715;</button>
                   </td>
                 </tr>
@@ -301,9 +300,10 @@ export function FKPredictionsTable({ onRefresh }) {
 }
 
 function ApplyModeToggle({ mode, setMode }) {
+  const { t } = useLanguage()
   return (
-    <div className="inline-flex rounded-md border border-slate-300 text-xs overflow-hidden" title="Constraint requires MANAGE permission. Tags only requires APPLY_TAG.">
-      {[['constraint', 'Constraint'], ['tags', 'Tags']].map(([v, label]) => (
+    <div className="inline-flex rounded-md border border-slate-300 text-xs overflow-hidden" title={t('fk.applyModeTip')}>
+      {[['constraint', t('fk.constraint')], ['tags', t('fk.tags')]].map(([v, label]) => (
         <button key={v} onClick={() => setMode(v)}
           className={`px-2.5 py-1 ${mode === v ? 'bg-dbx-lava text-white' : 'bg-white text-slate-600 hover:bg-slate-50'}`}>
           {label}
@@ -331,6 +331,7 @@ async function applyRowsAsTags(rows) {
 }
 
 export function FKDDLTable({ onRefresh }) {
+  const { t } = useLanguage()
   const [ddlRows, setDdlRows] = useState([])
   const [error, setError] = useState(null)
   const [selected, setSelected] = useState(new Set())
@@ -381,34 +382,39 @@ export function FKDDLTable({ onRefresh }) {
     <div className="bg-dbx-oat-light rounded-xl border border-slate-200 p-6 shadow-sm">
       <div className="flex items-center justify-between mb-4">
         <div className="flex items-center gap-3">
-          <h2 className="text-lg font-semibold text-slate-800">FK DDL Statements</h2>
+          <h2 className="text-lg font-semibold text-slate-800">{t('fk.ddlStatements')}</h2>
           <ApplyModeToggle mode={applyMode} setMode={setApplyMode} />
         </div>
         <div className="flex items-center gap-2">
-          <button type="button" onClick={load} className="text-sm text-dbx-lava hover:underline">Refresh</button>
+          <button type="button" onClick={load} className="text-sm text-dbx-lava hover:underline">{t('fk.refresh')}</button>
           {selected.size > 0 && (
             <button type="button" onClick={applySelected} disabled={applying}
               className="px-3 py-1.5 bg-dbx-lava text-white rounded-lg text-sm font-medium hover:bg-red-700 disabled:opacity-50">
-              {applying ? 'Applying...' : `Apply ${applyMode === 'tags' ? 'as tags' : 'as constraints'} (${selected.size})`}
+              {applying ? t('common.applying') : t('fk.applyAs', { mode: applyMode === 'tags' ? t('fk.applyAsTags') : t('fk.applyAsConstraints'), n: selected.size })}
             </button>
           )}
         </div>
       </div>
       {applyMode === 'tags' && (
         <p className="text-xs text-slate-500 mb-3 bg-blue-50 border border-blue-200 rounded px-3 py-1.5">
-          Tags mode sets <code className="font-mono">fk_references</code> column tags. Only requires <strong>APPLY_TAG</strong> permission (not MANAGE).
+          {t('fk.tagsModePre')}<code className="font-mono">fk_references</code>{t('fk.tagsModeMid')}<strong>APPLY_TAG</strong>{t('fk.tagsModePost')}
         </p>
       )}
       {applyResult && <div className="mb-4"><FKApplyResult result={applyResult} onSwitchToTags={applyMode === 'constraint' ? () => setApplyMode('tags') : undefined} /></div>}
       <ErrorBanner error={error} />
       {ddlRows.length === 0
-        ? <p className="text-sm text-slate-400">No FK DDL statements. Run the FK prediction job first to populate this table.</p>
+        ? <p className="text-sm text-slate-400">{t('fk.noDdl')}</p>
         : <div className="overflow-x-auto max-h-96">
           <table className="min-w-full text-sm">
             <thead><tr>
               <th className="w-10 px-2 py-2.5 bg-dbx-oat border-b border-slate-200"></th>
-              {['Source Column', 'Target Column', 'Confidence', 'DDL'].map(h =>
-                <th key={h} className="text-left px-3 py-2.5 bg-dbx-oat font-semibold text-slate-600 border-b border-slate-200 text-xs uppercase tracking-wider">{h}</th>)}
+              {[
+                { k: 'sourceColumn', label: t('fk.hdr.sourceColumn') },
+                { k: 'targetColumn', label: t('fk.hdr.targetColumn') },
+                { k: 'confidence', label: t('fk.hdr.confidence') },
+                { k: 'ddl', label: 'DDL' },
+              ].map(h =>
+                <th key={h.k} className="text-left px-3 py-2.5 bg-dbx-oat font-semibold text-slate-600 border-b border-slate-200 text-xs uppercase tracking-wider">{h.label}</th>)}
             </tr></thead>
             <tbody>
               {ddlRows.map((row, i) => (
@@ -431,6 +437,7 @@ export function FKDDLTable({ onRefresh }) {
 }
 
 export function FKApplyPanel() {
+  const { t } = useLanguage()
   const [ddlCount, setDdlCount] = useState(null)
   const [applyingAll, setApplyingAll] = useState(false)
   const [applyAllResult, setApplyAllResult] = useState(null)
@@ -447,7 +454,7 @@ export function FKApplyPanel() {
       const ddlRes = await safeFetch('/api/analytics/fk-ddl')
       const ddlRows = Array.isArray(ddlRes.data) ? ddlRes.data : []
       const highConf = ddlRows.filter(r => Number(r.confidence) >= 0.8)
-      if (highConf.length === 0) { setApplyAllResult({ error: 'No DDL statements with confidence >= 0.8' }); setApplyingAll(false); return }
+      if (highConf.length === 0) { setApplyAllResult({ error: t('fk.noHighConf') }); setApplyingAll(false); return }
       let j
       if (applyMode === 'tags') {
         j = await applyRowsAsTags(highConf)
@@ -466,21 +473,21 @@ export function FKApplyPanel() {
     <div className="space-y-6">
       <section className="bg-dbx-oat-light rounded-lg border p-6">
         <div className="flex items-center gap-3 mb-2">
-          <h2 className="text-lg font-semibold">DDL Quick Actions</h2>
+          <h2 className="text-lg font-semibold">{t('fk.ddlQuickActions')}</h2>
           <ApplyModeToggle mode={applyMode} setMode={setApplyMode} />
         </div>
         <p className="text-xs text-slate-500 mb-3">
-          {ddlCount != null ? `${ddlCount} DDL statements available` : 'Loading DDL count...'}.
+          {ddlCount != null ? t('fk.ddlCountAvailable', { n: ddlCount }) : t('fk.loadingDdlCount')}.
           {applyMode === 'tags'
-            ? ' Tags mode sets fk_references column tags (requires APPLY_TAG permission).'
-            : ' Constraint mode adds ALTER TABLE FOREIGN KEY (requires MANAGE permission).'}
+            ? t('fk.tagsModeHint')
+            : t('fk.constraintModeHint')}
         </p>
         <div className="flex gap-2 mb-3">
           <button onClick={() => { loadDdlCount(); if (refreshDdlRef.current) refreshDdlRef.current() }}
-            className="px-3 py-2 bg-slate-600 text-white rounded-md text-sm hover:bg-slate-700">Refresh DDL</button>
+            className="px-3 py-2 bg-slate-600 text-white rounded-md text-sm hover:bg-slate-700">{t('fk.refreshDdl')}</button>
           <button onClick={applyAllHighConfidence} disabled={applyingAll || ddlCount === 0}
             className="px-3 py-2 bg-dbx-lava text-white rounded-md text-sm hover:bg-red-700 disabled:opacity-50">
-            {applyingAll ? 'Applying...' : `Apply All ${applyMode === 'tags' ? 'as Tags' : 'as Constraints'} (conf >= 0.8)`}
+            {applyingAll ? t('common.applying') : t('fk.applyAllAs', { mode: applyMode === 'tags' ? t('fk.applyAllAsTags') : t('fk.applyAllAsConstraints') })}
           </button>
         </div>
         {applyAllResult && <FKApplyResult result={applyAllResult} onSwitchToTags={applyMode === 'constraint' ? () => setApplyMode('tags') : undefined} />}
@@ -492,6 +499,7 @@ export function FKApplyPanel() {
 }
 
 export default function ForeignKeyGeneration() {
+  const { t } = useLanguage()
   const [ddlCount, setDdlCount] = useState(null)
   const [applyingAll, setApplyingAll] = useState(false)
   const [applyAllResult, setApplyAllResult] = useState(null)
@@ -514,7 +522,7 @@ export default function ForeignKeyGeneration() {
       const ddlRows = Array.isArray(ddlRes.data) ? ddlRes.data : []
       const highConf = ddlRows.filter(r => Number(r.confidence) >= 0.8)
       if (highConf.length === 0) {
-        setApplyAllResult({ error: 'No DDL statements with confidence >= 0.8' })
+        setApplyAllResult({ error: t('fk.noHighConf') })
         setApplyingAll(false)
         return
       }
@@ -540,33 +548,33 @@ export default function ForeignKeyGeneration() {
 
   return (
     <div className="space-y-6">
-      <PageHeader title="Foreign Key Predictions" subtitle="Discover and apply FK relationships" />
+      <PageHeader title={t('fk.foreignKeyPredictions')} subtitle={t('fk.pageSubtitle')} />
       <section className="card p-6">
         <div className="flex items-center gap-3 mb-2">
-          <h2 className="heading-section">DDL Quick Actions</h2>
+          <h2 className="heading-section">{t('fk.ddlQuickActions')}</h2>
           <ApplyModeToggle mode={applyMode} setMode={setApplyMode} />
         </div>
         <p className="text-xs text-slate-500 mb-3">
-          {ddlCount != null ? `${ddlCount} DDL statements available` : 'Loading DDL count...'}.
+          {ddlCount != null ? t('fk.ddlCountAvailable', { n: ddlCount }) : t('fk.loadingDdlCount')}.
           {applyMode === 'tags'
-            ? ' Tags mode sets fk_references column tags (requires APPLY_TAG permission).'
-            : ' Constraint mode adds ALTER TABLE FOREIGN KEY (requires MANAGE permission).'}
+            ? t('fk.tagsModeHint')
+            : t('fk.constraintModeHint')}
         </p>
         <div className="flex gap-2 mb-3">
           <button onClick={() => { loadDdlCount(); if (refreshDdlRef.current) refreshDdlRef.current() }}
             className="btn-secondary btn-sm">
-            Refresh DDL
+            {t('fk.refreshDdl')}
           </button>
           <button onClick={applyAllHighConfidence} disabled={applyingAll || ddlCount === 0}
             className="btn-primary btn-sm">
-            {applyingAll ? 'Applying...' : `Apply All ${applyMode === 'tags' ? 'as Tags' : 'as Constraints'} (conf >= 0.8)`}
+            {applyingAll ? t('fk.applying') : (applyMode === 'tags' ? t('fk.applyAllTags') : t('fk.applyAllConstraints'))}
           </button>
         </div>
         {applyAllResult && <FKApplyResult result={applyAllResult} onSwitchToTags={applyMode === 'constraint' ? () => setApplyMode('tags') : undefined} />}
       </section>
 
       <section>
-        <h2 className="heading-section text-slate-800 mb-3">FK Map</h2>
+        <h2 className="heading-section text-slate-800 mb-3">{t('fk.fkMap')}</h2>
         <FKMapViz />
       </section>
 

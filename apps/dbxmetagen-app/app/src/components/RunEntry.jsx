@@ -1,13 +1,17 @@
 import React, { useState } from 'react'
 import { TERMINAL_STATES } from '../hooks/useJobRunner'
+import { useLanguage } from '../contexts/LanguageContext'
 
 // Shared job-run row used by both the Generate Metadata page (core runs) and the
 // Semantic Layer advanced section (pipeline runs). Includes a Stop control for
 // in-progress runs (#229.2); pass onCancel to enable it.
 
-const STATUS_LABELS = {
-  'RUNNING': 'Running', 'PENDING': 'Queued', 'SKIPPED': 'Skipped', 'INTERNAL_ERROR': 'Internal Error',
-  'SUCCESS': 'Succeeded', 'FAILED': 'Failed', 'TIMEDOUT': 'Timed Out', 'CANCELLED': 'Cancelled',
+// Status label via i18n key `status.<CODE>`; unknown codes render as the raw code.
+function StatusLabel({ code }) {
+  const { t } = useLanguage()
+  const key = `status.${code}`
+  const label = t(key)
+  return label === key ? code : label
 }
 
 export function stateBadge(state, result) {
@@ -20,8 +24,7 @@ export function stateBadge(state, result) {
   if (state === 'TERMINATED' && result === 'CANCELLED') color = 'bg-slate-100 text-slate-500 dark:bg-slate-800 dark:text-slate-400'
   if (state === 'SKIPPED') color = 'bg-slate-100 text-slate-500 dark:bg-slate-800 dark:text-slate-400'
   if (state === 'INTERNAL_ERROR') color = 'bg-red-100 text-red-800 dark:bg-red-900/40 dark:text-red-300'
-  const label = result ? (STATUS_LABELS[result] || result) : (STATUS_LABELS[state] || state)
-  return <span className={`badge ${color}`}>{label}</span>
+  return <span className={`badge ${color}`}><StatusLabel code={result || state} /></span>
 }
 
 function runAccentColor(run) {
@@ -32,14 +35,16 @@ function runAccentColor(run) {
 }
 
 function TaskProgress({ tasks }) {
+  // Aliased to `tr` -- `t` is the task arrow-fn param below.
+  const { t: tr } = useLanguage()
   if (!tasks || tasks.length === 0) return null
   const done = tasks.filter(t => TERMINAL_STATES.has(t.state)).length
   const failed = tasks.filter(t => t.result === 'FAILED').length
   return (
     <div className="mt-2.5">
       <div className="flex items-center gap-2 mb-1.5">
-        <span className="text-xs text-slate-500 dark:text-slate-400">Tasks: {done}/{tasks.length}</span>
-        {failed > 0 && <span className="text-xs text-red-600 dark:text-red-400 font-medium">{failed} failed</span>}
+        <span className="text-xs text-slate-500 dark:text-slate-400">{tr('jobs.tasks')}: {done}/{tasks.length}</span>
+        {failed > 0 && <span className="text-xs text-red-600 dark:text-red-400 font-medium">{failed} {tr('jobs.tasksFailed')}</span>}
       </div>
       <div className="flex gap-1">
         {tasks.map(t => {
@@ -56,6 +61,7 @@ function TaskProgress({ tasks }) {
 }
 
 export default function RunEntry({ run, onCancel }) {
+  const { t } = useLanguage()
   const [expanded, setExpanded] = useState(false)
   const hasTasks = run.tasks && run.tasks.length > 0
   const cancellable = onCancel && !TERMINAL_STATES.has(run.state)
@@ -63,28 +69,28 @@ export default function RunEntry({ run, onCancel }) {
     <div className={`py-3 px-4 border-l-4 ${runAccentColor(run)} border-b border-dbx-oat-dark/30 dark:border-dbx-navy-400/20 last:border-b-0`}>
       <div className="flex items-center justify-between gap-2">
         <div className="flex items-center gap-2.5 min-w-0">
-          <span className="text-sm font-medium truncate text-slate-800 dark:text-slate-200">{run.job_name || 'Unnamed Job'}</span>
+          <span className="text-sm font-medium truncate text-slate-800 dark:text-slate-200">{run.job_name || t('jobs.unnamedJob')}</span>
           {stateBadge(run.state, run.result)}
           {!TERMINAL_STATES.has(run.state) && (
-            <span className="inline-block w-2 h-2 bg-blue-500 rounded-full animate-pulse" title="Checking status..." />
+            <span className="inline-block w-2 h-2 bg-blue-500 rounded-full animate-pulse" title={t('jobs.checkingStatus')} />
           )}
         </div>
         <div className="flex items-center gap-3 shrink-0">
           {cancellable && (
-            <button onClick={() => { if (confirm(`Stop run #${run.run_id}? Work already applied is not rolled back.`)) onCancel(run.run_id) }}
+            <button onClick={() => { if (confirm(t('jobs.stopConfirm', { id: run.run_id }))) onCancel(run.run_id) }}
               disabled={run._cancelling}
               className="text-xs font-medium text-red-600 hover:text-red-700 dark:text-red-400 dark:hover:text-red-300 disabled:opacity-50"
-              aria-label={`Stop run ${run.run_id}`}>
-              {run._cancelling ? 'Stopping…' : 'Stop'}
+              aria-label={t('jobs.stopAria', { id: run.run_id })}>
+              {run._cancelling ? t('jobs.stopping') : t('jobs.stop')}
             </button>
           )}
           {run.run_page_url && (
             <a href={run.run_page_url} target="_blank" rel="noopener noreferrer"
-              className="text-xs text-dbx-teal hover:text-dbx-teal/80 font-medium">View in Databricks</a>
+              className="text-xs text-dbx-teal hover:text-dbx-teal/80 font-medium">{t('jobs.viewInDatabricks')}</a>
           )}
           {hasTasks && (
-            <button onClick={() => setExpanded(prev => !prev)} className="text-xs text-slate-500 hover:text-slate-700 dark:hover:text-slate-300 font-medium" aria-label={expanded ? 'Hide tasks' : 'Show tasks'}>
-              {expanded ? 'Hide tasks' : `${run.tasks.length} tasks`}
+            <button onClick={() => setExpanded(prev => !prev)} className="text-xs text-slate-500 hover:text-slate-700 dark:hover:text-slate-300 font-medium" aria-label={expanded ? t('jobs.hideTasks') : t('jobs.showTasks')}>
+              {expanded ? t('jobs.hideTasks') : t('jobs.nTasks', { n: run.tasks.length })}
             </button>
           )}
           <span className="text-xs text-slate-400 font-mono">#{run.run_id}</span>
@@ -98,10 +104,10 @@ export default function RunEntry({ run, onCancel }) {
       {hasTasks && !expanded && <TaskProgress tasks={run.tasks} />}
       {hasTasks && expanded && (
         <div className="mt-2.5 space-y-1 animate-slide-up">
-          {run.tasks.map(t => (
-            <div key={t.task_key} className="flex items-center justify-between text-xs px-3 py-1.5 bg-dbx-oat-light dark:bg-dbx-navy-500/50 rounded-lg">
-              <span className="font-mono text-slate-600 dark:text-slate-300">{t.task_key}</span>
-              {stateBadge(t.state, t.result)}
+          {run.tasks.map(task => (
+            <div key={task.task_key} className="flex items-center justify-between text-xs px-3 py-1.5 bg-dbx-oat-light dark:bg-dbx-navy-500/50 rounded-lg">
+              <span className="font-mono text-slate-600 dark:text-slate-300">{task.task_key}</span>
+              {stateBadge(task.state, task.result)}
             </div>
           ))}
         </div>

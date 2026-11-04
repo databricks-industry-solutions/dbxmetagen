@@ -2,6 +2,7 @@ import React, { useState, useEffect } from 'react'
 import { ErrorBanner } from '../App'
 import { cachedFetchObj, TTL } from '../apiCache'
 import { PageHeader, InfoTip } from './ui'
+import { useLanguage } from '../contexts/LanguageContext'
 import { useSharedJobRunner } from '../hooks/useJobRunner'
 import TableScopePicker, { scopeToTableNames } from './TableScopePicker'
 
@@ -14,6 +15,7 @@ import TableScopePicker, { scopeToTableNames } from './TableScopePicker'
  *   - MCP setup: expose the metadata as MCP tools.
  */
 export default function SyncOps({ onNavigate }) {
+  const { t } = useLanguage()
   const { runningAction, runError, runJob, waitForRun } = useSharedJobRunner()
   const [catalogName, setCatalogName] = useState('')
   const [schemaName, setSchemaName] = useState('')
@@ -89,7 +91,7 @@ export default function SyncOps({ onNavigate }) {
 
   return (
     <div className="space-y-5">
-      <PageHeader title="Sync & Ops" subtitle="Post-generation maintenance: refresh the graph and index, sync to Lakebase, and set up MCP access"
+      <PageHeader title={t('so.pageTitle')} subtitle={t('so.pageSubtitle')}
         badge={catalogName && schemaName ? `${catalogName}.${schemaName}` : undefined} />
       <ErrorBanner error={error} />
       <ErrorBanner error={runError} />
@@ -103,25 +105,25 @@ export default function SyncOps({ onNavigate }) {
       {/* Post-Review Sync — three actions after reviewing FKs / editing metadata */}
       <section className={cardCls}>
         <div className="flex items-center gap-2">
-          <h3 className="text-sm font-semibold text-slate-700 dark:text-slate-200">Post-Review Sync</h3>
+          <h3 className="text-sm font-semibold text-slate-700 dark:text-slate-200">{t('so.postReviewSync')}</h3>
           <InfoTip text="After reviewing foreign keys or editing metadata in Review & Apply, propagate those changes and expose the metadata — without re-running the full pipeline." />
         </div>
         <div>
-          <label className="text-xs text-slate-500 dark:text-slate-400 mb-1 block">Tables (knowledge-graph rebuild scope)</label>
+          <label className="text-xs text-slate-500 dark:text-slate-400 mb-1 block">{t('so.kgScopeLabel')}</label>
           <TableScopePicker value={kgScope} onChange={setKgScope} kbOnly />
         </div>
         <div className="grid grid-cols-1 sm:grid-cols-3 gap-3">
           {/* Generate MCPs */}
           <div>
             <button onClick={setupMcpServers} disabled={!!runningAction || !ready} className="btn-secondary btn-md w-full">
-              {runningAction === 'mcp_setup' ? 'Starting…' : 'Generate MCPs'}
+              {runningAction === 'mcp_setup' ? t('so.starting') : t('so.generateMcps')}
             </button>
             <label className="flex items-center gap-1.5 text-[11px] text-slate-500 dark:text-slate-400 cursor-pointer select-none mt-1.5">
               <input type="checkbox" checked={mcpDropExisting} onChange={e => setMcpDropExisting(e.target.checked)} className="rounded" />
-              Recreate existing functions
+              {t('so.recreateFns')}
             </label>
             <p className="text-[11px] text-slate-400 mt-1 flex items-center gap-1">
-              Expose metadata as MCP tools
+              {t('so.exposeMcp')}
               <InfoTip text="Creates UC functions and validates the Vector Search index so the knowledge base, graph, FKs, and ontology entities are exposed as MCP tools for Cursor, Claude Code, AI Playground, and custom agents." />
             </p>
             {mcpError && <div className="text-[11px] text-red-600 dark:text-red-400 mt-1">{mcpError}</div>}
@@ -129,10 +131,10 @@ export default function SyncOps({ onNavigate }) {
           {/* Refresh KG/Index */}
           <div>
             <button onClick={refreshKgIndex} disabled={!!runningAction || !ready} className="btn-secondary btn-md w-full">
-              {runningAction === 'refresh_kgi' ? 'Refreshing…' : 'Refresh KG/Index'}
+              {runningAction === 'refresh_kgi' ? t('so.refreshing') : t('so.refreshKgi')}
             </button>
             <p className="text-[11px] text-slate-400 mt-1 flex items-center gap-1">
-              Rebuild knowledge graph + vector index
+              {t('so.rebuildKgVi')}
               <InfoTip text="Rebuilds graph nodes/edges from the knowledge base (applying approved/rejected FKs and sweeping orphaned edges), then regenerates and re-indexes metadata documents in Vector Search — which powers the agent's semantic search." />
             </p>
             {kgiError && <div className="text-[11px] text-red-600 dark:text-red-400 mt-1">{kgiError}</div>}
@@ -142,18 +144,18 @@ export default function SyncOps({ onNavigate }) {
               does NOT create the instance, so clicking blind would just fail the job. */}
           <div>
             <button onClick={syncLakebase} disabled={!!runningAction || !ready || !lakebaseConfigured}
-              title={!lakebaseConfigured ? 'Lakebase is not configured. Provision a Lakebase instance and attach it as an app database resource to enable — it is not created by deploy.' : undefined}
+              title={!lakebaseConfigured ? t('so.lakebaseNotConfigured') : undefined}
               className="btn-secondary btn-md w-full">
-              {runningAction === 'lakebase' ? 'Syncing…' : 'Lakebase Sync'}
+              {runningAction === 'lakebase' ? t('so.syncing') : t('so.lakebaseSync')}
             </button>
             <div className="flex items-center gap-1.5 mt-1.5">
               <span className="badge bg-amber-100 text-amber-700 dark:bg-amber-900/40 dark:text-amber-300 text-[10px]">Beta</span>
               {lakebaseConfigured
-                ? <span className="badge bg-emerald-50 text-emerald-700 dark:bg-emerald-900/40 dark:text-emerald-300 text-[10px]">Configured</span>
-                : <span className="badge bg-slate-100 text-slate-500 dark:bg-slate-800 dark:text-slate-400 text-[10px]" title="Not configured — the graph uses Delta tables instead.">Using Delta Tables</span>}
+                ? <span className="badge bg-emerald-50 text-emerald-700 dark:bg-emerald-900/40 dark:text-emerald-300 text-[10px]">{t('so.configured')}</span>
+                : <span className="badge bg-slate-100 text-slate-500 dark:bg-slate-800 dark:text-slate-400 text-[10px]" title="Not configured — the graph uses Delta tables instead.">{t('so.usingDelta')}</span>}
               <InfoTip text="Syncs the graph (nodes, edges, entities, relationships) to Lakebase (Postgres) for low-latency queries by the exploration agents. Opt-in: deploy does NOT create the Lakebase instance — you must provision it, attach it as an app database resource, and run the analytics pipeline first. The graph works on Delta tables without it." />
             </div>
-            <input value={lakebaseCatalog} onChange={e => setLakebaseCatalog(e.target.value)} disabled={!lakebaseConfigured} placeholder="Target catalog (optional)" className="input-base !text-xs mt-1.5" />
+            <input value={lakebaseCatalog} onChange={e => setLakebaseCatalog(e.target.value)} disabled={!lakebaseConfigured} placeholder={t('so.lakebaseTargetCatalog')} className="input-base !text-xs mt-1.5" />
             {!lakebaseConfigured && (
               <p className="text-[11px] text-slate-400 mt-1">
                 Opt-in — not provisioned by deploy. Provision a Lakebase instance and attach it as an app database resource to enable.

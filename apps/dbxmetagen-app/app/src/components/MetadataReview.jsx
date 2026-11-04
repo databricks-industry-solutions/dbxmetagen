@@ -6,9 +6,11 @@ import { PageHeader, EmptyState, SkeletonTable } from './ui'
 import { useCatalogSchemaTables } from '../hooks/useCatalogSchemaTables'
 import { useViewMode } from '../hooks/useViewMode'
 import { useCertifiedApplyPolicy } from '../hooks/useCertifiedApplyPolicy'
+import { useLanguage } from '../contexts/LanguageContext'
 
 function DataTable({ data, maxRows = 100 }) {
-  if (!data || data.length === 0) return <p className="text-sm text-slate-400 py-4">No data available.</p>
+  const { t } = useLanguage()
+  if (!data || data.length === 0) return <p className="text-sm text-slate-400 py-4">{t('mr.re.noData')}</p>
   const cols = Object.keys(data[0])
   return (
     <div className="overflow-x-auto rounded-xl shadow-card border border-slate-300 dark:border-slate-600">
@@ -91,7 +93,7 @@ function UcCompare({ current, proposed, certified, onKeep }) {
 // score (referential integrity · actual join hit rate · parent-key uniqueness),
 // each colored by strength so a reviewer can verify rather than trust the number.
 // Renders "—" for a signal that was never computed (e.g. sampling disabled).
-function fkEvidence(fk) {
+function fkEvidence(fk, tr) {
   const pct = (v) => (v == null || v === '' || Number.isNaN(Number(v)))
     ? null : `${Math.round(Number(v) * 100)}%`
   const cls = (v) => v == null ? 'text-slate-300 dark:text-slate-600'
@@ -99,9 +101,9 @@ function fkEvidence(fk) {
     : Number(v) >= 0.7 ? 'text-amber-600 dark:text-amber-400'
     : 'text-red-600 dark:text-red-400'
   const parts = [
-    { k: 'ri_score', label: 'RI', title: 'Referential integrity: fraction of child rows whose key exists in the parent' },
-    { k: 'join_rate', label: 'join', title: 'Actual join hit rate on sampled rows' },
-    { k: 'pk_uniqueness', label: 'PK', title: 'Parent-side key uniqueness (a true FK needs a near-unique parent key)' },
+    { k: 'ri_score', label: 'RI', title: tr('mr.re.fkTipRi') },
+    { k: 'join_rate', label: 'join', title: tr('mr.re.fkTipJoin') },
+    { k: 'pk_uniqueness', label: 'PK', title: tr('mr.re.fkTipPk') },
   ]
   return (
     <span className="inline-flex gap-1.5">
@@ -129,20 +131,20 @@ const Tip = ({ text }) => (
 // Review Editor -- scope picker, metadata type filter, inline edit, export
 // ---------------------------------------------------------------------------
 const META_TYPES = [
-  { key: 'comments', label: 'Comments' },
-  { key: 'pii', label: 'PII / PHI' },
-  { key: 'domain', label: 'Domain' },
-  { key: 'ontology', label: 'Ontology' },
-  { key: 'fk', label: 'Foreign Keys' },
+  { key: 'comments', label: 'mr.re.mtComments' },
+  { key: 'pii', label: 'mr.re.mtPii' },
+  { key: 'domain', label: 'mr.re.mtDomain' },
+  { key: 'ontology', label: 'mr.re.mtOntology' },
+  { key: 'fk', label: 'mr.re.mtFk' },
 ]
 
 const PROPERTY_ROLE_GROUPS = [
-  { label: 'Identifiers', roles: ['primary_key', 'business_key'] },
-  { label: 'Measures', roles: ['measure', 'derived'] },
-  { label: 'Dimensions', roles: ['dimension', 'temporal', 'geographic', 'label'] },
-  { label: 'Relationships', roles: ['object_property', 'composite_component'] },
-  { label: 'Governance', roles: ['pii', 'audit'] },
-  { label: 'Other', roles: ['attribute'] },
+  { label: 'mr.re.roleIdentifiers', roles: ['primary_key', 'business_key'] },
+  { label: 'mr.re.roleMeasures', roles: ['measure', 'derived'] },
+  { label: 'mr.re.roleDimensions', roles: ['dimension', 'temporal', 'geographic', 'label'] },
+  { label: 'mr.re.roleRelationships', roles: ['object_property', 'composite_component'] },
+  { label: 'mr.re.roleGovernance', roles: ['pii', 'audit'] },
+  { label: 'mr.re.roleOther', roles: ['attribute'] },
 ]
 
 const LEGACY_ROLE_MAP = {
@@ -159,6 +161,7 @@ const LEGACY_ROLE_MAP = {
 }
 
 function ReviewEditor() {
+  const { t: tr } = useLanguage()
   // kbOnly: the Pick Tables list must offer only tables that already have
   // generated metadata in the knowledge base. information_schema lists every
   // table in the schema, but review-combined only returns KB rows -- picking an
@@ -437,8 +440,8 @@ function ReviewEditor() {
       }
       else if (tables.length === 0) setInfo(
         scopeMode === 'table'
-          ? 'No generated metadata found for the selected tables. Only tables that have been processed by metadata generation appear here -- run the metadata generator on these tables first.'
-          : 'No generated metadata found for this schema. Run the metadata generator on it first, then reload.'
+          ? tr('mr.re.noMetaTables')
+          : tr('mr.re.noMetaSchema')
       )
       else setInfo(null)
     } catch (e) { setError(e.message) }
@@ -698,7 +701,7 @@ function ReviewEditor() {
       const j = await res.json().catch(() => ({}))
       if (!res.ok) { setBundleApplyResult({ ok: false, detail: errMsg(j.detail || `Request failed (${res.status})`) }); return }
       const taskId = j.task_id
-      if (!taskId) { setBundleApplyResult({ ok: false, detail: 'No task_id returned' }); return }
+      if (!taskId) { setBundleApplyResult({ ok: false, detail: tr('mr.re.noTaskId') }); return }
       const poll = async () => {
         for (let i = 0; i < 300; i++) {
           await new Promise(r => setTimeout(r, 1500))
@@ -717,7 +720,7 @@ function ReviewEditor() {
             }
           } catch { /* retry */ }
         }
-        setBundleApplyResult({ ok: false, detail: 'Apply timed out' })
+        setBundleApplyResult({ ok: false, detail: tr('mr.re.applyTimedOut') })
       }
       await poll()
     } catch (e) { setBundleApplyResult({ ok: false, detail: e.message || 'Network error' }) }
@@ -767,7 +770,7 @@ function ReviewEditor() {
     e.target.value = ''
     const ext = file.name.split('.').pop()?.toLowerCase()
     if (!['tsv', 'xlsx', 'xls'].includes(ext)) {
-      setImportResult({ ok: false, detail: 'Only .tsv, .xlsx, and .xls files are supported' }); return
+      setImportResult({ ok: false, detail: tr('mr.re.unsupportedFile') }); return
     }
     setImportLoading(true); setImportResult(null)
     try {
@@ -782,7 +785,7 @@ function ReviewEditor() {
     setImportLoading(false)
   }
 
-  const errMsg = d => typeof d === 'string' ? d : (d ? JSON.stringify(d) : 'Unknown error')
+  const errMsg = d => typeof d === 'string' ? d : (d ? JSON.stringify(d) : tr('mr.re.unknownError'))
   const show = k => activeType === k
   const chip = 'px-3 py-1.5 rounded-lg text-xs font-medium border cursor-pointer select-none transition-all duration-200'
   const chipOn = 'bg-dbx-lava text-white border-dbx-lava shadow-sm'
@@ -791,8 +794,8 @@ function ReviewEditor() {
 
   const classLabel = (val) => {
     const v = (val ?? '').trim().toLowerCase()
-    if (!v) return { text: 'Unclassified', cls: 'bg-slate-100 text-slate-500' }
-    if (v === 'none') return { text: 'Public', cls: 'bg-green-100 text-green-700' }
+    if (!v) return { text: tr('mr.re.classUnclassified'), cls: 'bg-slate-100 text-slate-500' }
+    if (v === 'none') return { text: tr('mr.re.classPublic'), cls: 'bg-green-100 text-green-700' }
     return { text: val, cls: 'bg-red-100 text-red-700' }
   }
 
@@ -816,7 +819,7 @@ function ReviewEditor() {
       {info && (
         <div className="card border-l-4 border-l-amber-400 px-4 py-3 text-sm animate-slide-up flex justify-between items-start">
           <div>
-            <span className="font-medium text-amber-600 dark:text-amber-400">Note:</span>{' '}
+            <span className="font-medium text-amber-600 dark:text-amber-400">{tr('common.note')}</span>{' '}
             <span className="text-slate-600 dark:text-slate-300">{info}</span>
           </div>
           <button onClick={() => setInfo(null)} className="text-slate-400 hover:text-slate-600 ml-2">&times;</button>
@@ -830,35 +833,35 @@ function ReviewEditor() {
       {/* Workflow guide -- shown when no data is loaded yet */}
       {reviewData.length === 0 && !loading && (
         <div className="card p-5 border-l-4 border-l-dbx-teal space-y-3">
-          <h3 className="text-sm font-semibold text-slate-700 dark:text-slate-200">How to use this page</h3>
+          <h3 className="text-sm font-semibold text-slate-700 dark:text-slate-200">{tr('mr.re.howToUse')}</h3>
           <ol className="text-xs text-slate-600 dark:text-slate-300 space-y-2 list-decimal list-inside">
-            <li><strong>Select scope</strong> -- pick a catalog and schema below, then click <strong>Load</strong> to pull in generated metadata.</li>
-            <li><strong>Review</strong> -- switch between <em>Comments</em>, <em>PII/PHI</em>, <em>Domain</em>, <em>Ontology</em>, and <em>Foreign Keys</em> tabs to inspect and edit each metadata type. Set review status per table.</li>
-            <li><strong>Save changes</strong> -- edits to comments and classifications are saved back to the knowledge base tables when you click <em>Save Changes</em>. Review status and property roles save instantly.</li>
-            <li><strong>Apply to catalog</strong> -- scroll to <em>DDL Bundle</em> to generate and execute SQL that writes comments, tags, and constraints to your Unity Catalog tables.</li>
+            <li>{tr('mr.re.howToStep1')}</li>
+            <li>{tr('mr.re.howToStep2')}</li>
+            <li>{tr('mr.re.howToStep3')}</li>
+            <li>{tr('mr.re.howToStep4')}</li>
           </ol>
-          <p className="text-[10px] text-slate-400 dark:text-slate-500">You can also <strong>Export</strong> metadata as TSV/Excel for offline review, then <strong>Import</strong> the edited file back.</p>
+          <p className="text-[10px] text-slate-400 dark:text-slate-500">{tr('mr.re.exportImportHint')}</p>
         </div>
       )}
 
       {/* Scope Picker */}
       <div className="card p-5 space-y-3">
-        <h3 className="text-sm font-semibold text-slate-700 dark:text-slate-200">Scope</h3>
+        <h3 className="text-sm font-semibold text-slate-700 dark:text-slate-200">{tr('mr.re.scope')}</h3>
         <div className="grid grid-cols-1 md:grid-cols-4 gap-3">
           <div>
-            <label className="block text-xs font-medium text-slate-500 mb-1">Catalog</label>
+            <label className="block text-xs font-medium text-slate-500 mb-1">{tr('mr.re.catalog')}</label>
             <select value={selectedCatalog} onChange={e => { setSelectedCatalog(e.target.value); setSelectedSchema(''); setSelectedTables([]) }}
-              className={inp}><option value="">-- select --</option>{catalogs.map(c => <option key={c}>{c}</option>)}</select>
+              className={inp}><option value="">{tr('mr.re.selectPlaceholder')}</option>{catalogs.map(c => <option key={c}>{c}</option>)}</select>
           </div>
           <div>
-            <label className="block text-xs font-medium text-slate-500 mb-1">Schema</label>
+            <label className="block text-xs font-medium text-slate-500 mb-1">{tr('mr.re.schema')}</label>
             <select value={selectedSchema} onChange={e => { setSelectedSchema(e.target.value); setSelectedTables([]) }}
-              className={inp} disabled={!selectedCatalog}><option value="">-- select --</option>{schemas.map(s => <option key={s}>{s}</option>)}</select>
+              className={inp} disabled={!selectedCatalog}><option value="">{tr('mr.re.selectPlaceholder')}</option>{schemas.map(s => <option key={s}>{s}</option>)}</select>
           </div>
           <div>
-            <label className="block text-xs font-medium text-slate-500 mb-1">Mode</label>
+            <label className="block text-xs font-medium text-slate-500 mb-1">{tr('mr.re.mode')}</label>
             <div className="flex gap-2 mt-1">
-              {[['schema', 'Entire Schema'], ['table', 'Pick Tables']].map(([k, l]) =>
+              {[['schema', tr('mr.re.entireSchema')], ['table', tr('mr.re.pickTables')]].map(([k, l]) =>
                 <label key={k} className="inline-flex items-center gap-1 text-xs">
                   <input type="radio" name="scopeMode" checked={scopeMode === k} onChange={() => setScopeMode(k)} className="rounded" />{l}
                 </label>)}
@@ -867,28 +870,28 @@ function ReviewEditor() {
           <div className="flex items-end">
             <button onClick={() => loadData()} disabled={loading || !selectedCatalog || !selectedSchema || (scopeMode === 'table' && (!selectedTables.length || selectedTables.length > MAX_REVIEW_SELECTION))}
               className="px-5 py-1.5 bg-dbx-lava text-white rounded-lg text-sm font-medium hover:bg-red-700 disabled:opacity-50 shadow-sm w-full">
-              {loading ? 'Loading...' : 'Load'}
+              {loading ? tr('mr.re.loading') : tr('mr.re.load')}
             </button>
           </div>
         </div>
         {scopeMode === 'table' && (
           <div className="pt-1">
             <button type="button" onClick={() => setPasteOpen(o => !o)} className="text-xs text-blue-600 hover:underline">
-              {pasteOpen ? '− Hide paste box' : '+ Paste table names'}
+              {pasteOpen ? tr('mr.re.hidePasteBox') : tr('mr.re.showPasteBox')}
             </button>
             {pasteOpen && (
               <div className="mt-2 space-y-2">
                 <textarea value={pasteText} onChange={e => setPasteText(e.target.value)} rows={3}
                   className={inp + ' font-mono text-xs'}
-                  placeholder={'catalog.schema.table1, catalog.schema.table2\ncatalog.schema.table3   (comma- or newline-separated, fully-scoped)'}
-                  aria-label="Paste comma-delimited fully-scoped table names" />
+                  placeholder={tr('mr.re.pastePlaceholder')}
+                  aria-label={tr('mr.re.pasteAria')} />
                 <div className="flex flex-wrap items-center gap-2">
                   <button type="button" onClick={addPastedTables} disabled={!pasteText.trim()}
                     className="px-3 py-1 bg-slate-700 text-white rounded-md text-xs font-medium hover:bg-slate-800 disabled:opacity-50">
-                    Add tables
+                    {tr('mr.re.addTables')}
                   </button>
                   <span className="text-xs text-slate-400">
-                    All tables must be in one schema; the Catalog/Schema selectors follow the pasted names. Added to the selection below (cap {MAX_REVIEW_SELECTION}).
+                    {tr('mr.re.pasteHint', { n: MAX_REVIEW_SELECTION })}
                   </span>
                 </div>
               </div>
@@ -897,7 +900,7 @@ function ReviewEditor() {
         )}
         {scopeMode === 'table' && selectedSchema && (
           <div>
-            <input value={tableFilter} onChange={e => setTableFilter(e.target.value)} placeholder="Filter tables..." className={inp + ' mb-2 max-w-xs'} aria-label="Filter tables" />
+            <input value={tableFilter} onChange={e => setTableFilter(e.target.value)} placeholder={tr('common.filterTables')} className={inp + ' mb-2 max-w-xs'} aria-label="Filter tables" />
             {filteredTables.length > 0 ? (
               <>
                 <div className="flex gap-2 mb-1 text-xs">
@@ -910,11 +913,11 @@ function ReviewEditor() {
                       return [...prev, ...add]
                     })}
                     className="text-blue-600 hover:underline">
-                    Select first {MAX_REVIEW_SELECTION}
+                    {tr('mr.re.selectFirstN', { n: MAX_REVIEW_SELECTION })}
                   </button>
-                  <button onClick={() => setSelectedTables([])} className="text-blue-600 hover:underline">Clear</button>
+                  <button onClick={() => setSelectedTables([])} className="text-blue-600 hover:underline">{tr('common.clear')}</button>
                   <span className={`ml-auto ${atSelectionCap ? 'text-amber-600 dark:text-amber-400 font-medium' : 'text-slate-400'}`}>
-                    {selectedTables.length} / {MAX_REVIEW_SELECTION} selected
+                    {tr('mr.re.nSelected', { sel: selectedTables.length, cap: MAX_REVIEW_SELECTION })}
                     {allSchemaTableCount > cst.tables.length && ` · ${cst.tables.length} of ${allSchemaTableCount} tables have generated metadata`}
                   </span>
                 </div>
@@ -931,22 +934,22 @@ function ReviewEditor() {
                 </div>
                 {filteredTables.length > PICK_RENDER_CAP && (
                   <p className="text-xs text-slate-400 mt-1">
-                    Showing first {PICK_RENDER_CAP} of {filteredTables.length} — type in the filter to find a specific table.
+                    {tr('mr.re.showingFirst', { cap: PICK_RENDER_CAP, total: filteredTables.length })}
                   </p>
                 )}
                 {atSelectionCap && (
                   <p className="text-xs text-amber-600 dark:text-amber-400 mt-1">
-                    Selection is capped at {MAX_REVIEW_SELECTION} tables. Deselect some, or use <strong>Entire Schema</strong> mode to review a whole large schema.
+                    {tr('mr.re.selectionCapped', { n: MAX_REVIEW_SELECTION })}
                   </p>
                 )}
               </>
             ) : (
               <p className="text-xs text-slate-500 dark:text-slate-400 py-1">
                 {tableFilter
-                  ? 'No tables match the filter.'
+                  ? tr('mr.re.noTablesMatch')
                   : allSchemaTableCount > 0
-                    ? `None of the ${allSchemaTableCount} tables in this schema have generated metadata yet. Run the metadata generator on them first, then reload.`
-                    : 'No tables with generated metadata in this schema yet.'}
+                    ? tr('mr.re.noneHaveMeta', { n: allSchemaTableCount })
+                    : tr('mr.re.noTablesMeta')}
               </p>
             )}
           </div>
@@ -957,26 +960,26 @@ function ReviewEditor() {
       {reviewData.length > 0 && (
         <>
           <div className="text-[10px] text-slate-400 dark:text-slate-500 flex items-center gap-3 px-1">
-            <span className="flex items-center gap-1"><span className="inline-block w-2 h-2 rounded-full bg-green-400" /> Review status &amp; property roles save instantly</span>
-            <span className="flex items-center gap-1"><span className="inline-block w-2 h-2 rounded-full bg-amber-400" /> Comments &amp; classifications require Save Changes</span>
+            <span className="flex items-center gap-1"><span className="inline-block w-2 h-2 rounded-full bg-green-400" /> {tr('mr.re.instantSave')}</span>
+            <span className="flex items-center gap-1"><span className="inline-block w-2 h-2 rounded-full bg-amber-400" /> {tr('mr.re.batchSave')}</span>
           </div>
           <div className="flex flex-wrap items-center gap-2">
-            <span className="text-xs font-medium text-slate-500">Show:</span>
+            <span className="text-xs font-medium text-slate-500">{tr('mr.re.show')}</span>
             {visibleMetaTypes.map(({ key, label }) => (
-              <span key={key} onClick={() => setActiveType(key)} className={`${chip} ${activeType === key ? chipOn : chipOff}`}>{label}</span>
+              <span key={key} onClick={() => setActiveType(key)} className={`${chip} ${activeType === key ? chipOn : chipOff}`}>{tr(label)}</span>
             ))}
             <span className="border-l border-slate-300 h-5 mx-1" />
-            <span className="text-xs font-medium text-slate-500">Status:</span>
+            <span className="text-xs font-medium text-slate-500">{tr('mr.re.statusLabel')}</span>
             {['all', 'unreviewed', 'in_review', 'approved'].map(s => (
               <span key={s} onClick={() => setStatusFilter(s)} className={`${chip} ${statusFilter === s ? chipOn : chipOff}`}>
-                {s === 'all' ? 'All' : s === 'in_review' ? 'In Review' : s.charAt(0).toUpperCase() + s.slice(1)}
+                {s === 'all' ? tr('mr.re.statusAll') : s === 'unreviewed' ? tr('mr.re.statusUnreviewed') : s === 'in_review' ? tr('mr.re.statusInReview') : tr('mr.re.statusApproved')}
               </span>
             ))}
             {totalDirty > 0 && (
               <button onClick={saveChanges} disabled={saving}
-                title="Batch-saves all edited table comments/domains and column comments/classifications to the knowledge bases."
+                title={tr('mr.re.saveAllTip')}
                 className="ml-auto px-4 py-1.5 bg-dbx-lava text-white rounded-lg text-sm font-medium hover:bg-red-700 shadow-sm disabled:opacity-50">
-                {saving ? 'Saving...' : `Save Changes (${totalDirty})`}
+                {saving ? tr('mr.re.saving') : tr('mr.re.saveChangesN', { n: totalDirty })}
               </button>
             )}
           </div>
@@ -986,9 +989,9 @@ function ReviewEditor() {
       {/* Ontology context guide */}
       {show('ontology') && reviewData.length > 0 && (
         <div className="card px-4 py-3 text-xs text-slate-500 dark:text-slate-400 space-y-1 max-w-4xl">
-          <p className="font-medium text-slate-600 dark:text-slate-300">What you see when Ontology is selected</p>
-          <p>Each table shows three sections: <strong>Table Entity</strong> assigns the primary entity type (e.g. Patient, Order) as a UC tag on the table. <strong>Business Concepts</strong> lists all entity mappings for the table's columns, with per-entity confidence and an apply button. <strong>Column Properties</strong> classifies each column's role (identifier, measure, dimension, link, etc.) using a two-tier system: formal bundle definitions first, then heuristic fallback.</p>
-          <p>Property roles and review status save instantly. Tag application writes <code className="text-[10px]">entity_type</code>, <code className="text-[10px]">property_role</code>, and <code className="text-[10px]">linked_entity_type</code> as Unity Catalog tags.</p>
+          <p className="font-medium text-slate-600 dark:text-slate-300">{tr('mr.re.ontologySelectedTitle')}</p>
+          <p>{tr('mr.re.ontologyGuideP1')}</p>
+          <p>{tr('mr.re.ontologyGuideP2')}</p>
         </div>
       )}
 
@@ -1005,9 +1008,9 @@ function ReviewEditor() {
         )
         return allSelections.length > 0 ? (
           <div className="card p-4 flex flex-wrap items-center gap-3">
-            <span className="text-sm font-semibold text-slate-700 dark:text-slate-200">Ontology Tags</span>
+            <span className="text-sm font-semibold text-slate-700 dark:text-slate-200">{tr('mr.re.ontologyTags')}</span>
             <label className="text-xs text-slate-500 flex items-center gap-1">
-              Min Confidence:
+              {tr('mr.re.minConfidence')}
               <input type="number" min="0" max="1" step="0.05" value={ontoConfThreshold}
                 onChange={ev => setOntoConfThreshold(Number(ev.target.value))}
                 className="text-xs border border-slate-300 rounded px-1.5 py-0.5 bg-white dark:bg-dbx-navy/60 dark:text-slate-200 w-16" />
@@ -1022,7 +1025,7 @@ function ReviewEditor() {
               setGlobalOntoApplying(false)
             }} disabled={globalOntoApplying}
               className="px-4 py-1.5 bg-purple-600 text-white rounded-lg text-sm font-medium hover:bg-purple-700 disabled:opacity-50 shadow-sm">
-              {globalOntoApplying ? 'Applying...' : `Apply All Ontology Tags (${allSelections.length} entities, conf \u2265 ${ontoConfThreshold})`}
+              {globalOntoApplying ? tr('mr.re.applying') : tr('mr.re.applyAllOntology', { n: allSelections.length, c: ontoConfThreshold })}
             </button>
             {globalOntoResult && (
               <span className={`text-xs ${globalOntoResult.error ? 'text-red-600' : 'text-green-600'}`}>
@@ -1048,9 +1051,9 @@ function ReviewEditor() {
         return allFkPreds.length > 0 ? (
           <>
             <div className="card p-4 flex flex-wrap items-center gap-3">
-              <span className="text-sm font-semibold text-slate-700 dark:text-slate-200">FK Tags</span>
+              <span className="text-sm font-semibold text-slate-700 dark:text-slate-200">{tr('mr.re.fkTags')}</span>
               <label className="text-xs text-slate-500 flex items-center gap-1">
-                Min Confidence:
+                {tr('mr.re.minConfidence')}
                 <input type="number" min="0" max="1" step="0.05" value={fkConfThreshold}
                   onChange={ev => setFkConfThreshold(Number(ev.target.value))}
                   className="text-xs border border-slate-300 rounded px-1.5 py-0.5 bg-white dark:bg-dbx-navy/60 dark:text-slate-200 w-16" />
@@ -1065,8 +1068,8 @@ function ReviewEditor() {
                 setGlobalFkTagApplying(false)
               }} disabled={globalFkTagApplying}
                 className="px-4 py-1.5 bg-indigo-600 text-white rounded-lg text-sm font-medium hover:bg-indigo-700 disabled:opacity-50 shadow-sm"
-                title="Only requires APPLY_TAG permission">
-                {globalFkTagApplying ? 'Tagging...' : `Tag All (${allFkPreds.length} pairs, conf \u2265 ${fkConfThreshold})`}
+                title={tr('mr.re.applyTagTip')}>
+                {globalFkTagApplying ? tr('mr.re.tagging') : tr('mr.re.tagAll', { n: allFkPreds.length, c: fkConfThreshold })}
               </button>
               <button onClick={async () => {
                 try {
@@ -1075,8 +1078,8 @@ function ReviewEditor() {
                   setFkGenSql(r.ok ? (j.sql || '') : `-- Error: ${j.detail || 'Server error'}`)
                 } catch (err) { setFkGenSql(`-- Error: ${err.message}`) }
               }} className="px-4 py-1.5 bg-slate-600 text-white rounded-lg text-sm font-medium hover:bg-slate-700 shadow-sm"
-                title="Generate ALTER TABLE ADD CONSTRAINT DDL (requires MANAGE to execute)">
-                Generate SQL ({allFkPreds.length})
+                title={tr('mr.re.alterTableTip')}>
+                {tr('mr.re.generateSqlN', { n: allFkPreds.length })}
               </button>
               {globalFkTagResult && (
                 <span className={`text-xs ${globalFkTagResult.error ? 'text-red-600' : 'text-green-600'}`}>
@@ -1091,9 +1094,9 @@ function ReviewEditor() {
                 <pre className="text-[11px] bg-slate-800 dark:bg-slate-900 text-green-300 dark:text-green-400 rounded p-3 overflow-x-auto whitespace-pre-wrap max-h-60 font-mono">{fkGenSql}</pre>
                 <div className="absolute top-2 right-2 flex gap-1">
                   <button onClick={() => { navigator.clipboard.writeText(fkGenSql) }}
-                    className="text-[10px] px-2 py-0.5 bg-slate-700 border border-slate-600 rounded hover:bg-slate-600 text-slate-200">Copy</button>
+                    className="text-[10px] px-2 py-0.5 bg-slate-700 border border-slate-600 rounded hover:bg-slate-600 text-slate-200">{tr('common.copy')}</button>
                   <button onClick={() => setFkGenSql(null)}
-                    className="text-[10px] px-2 py-0.5 bg-slate-700 border border-slate-600 rounded hover:bg-slate-600 text-slate-200">Close</button>
+                    className="text-[10px] px-2 py-0.5 bg-slate-700 border border-slate-600 rounded hover:bg-slate-600 text-slate-200">{tr('common.close')}</button>
                 </div>
               </div>
             )}
@@ -1105,25 +1108,25 @@ function ReviewEditor() {
       {reviewData.length > 0 && (
         <div className="card p-3 flex flex-wrap items-center gap-3">
           <input value={resultFilter} onChange={e => setResultFilter(e.target.value)}
-            placeholder="Search tables..." className={inp + ' !w-56 !py-1.5 !text-xs'} aria-label="Filter loaded tables by name" />
+            placeholder={tr('common.searchTables')} className={inp + ' !w-56 !py-1.5 !text-xs'} aria-label="Filter loaded tables by name" />
           {resultSchemas.length > 1 && (
             <select value={resultSchemaFilter} onChange={e => setResultSchemaFilter(e.target.value)}
               className={inp + ' !w-auto !py-1.5 !text-xs'}>
-              <option value="">All schemas ({resultSchemas.length})</option>
+              <option value="">{tr('mr.re.allSchemasN', { n: resultSchemas.length })}</option>
               {resultSchemas.map(s => <option key={s} value={s}>{s}</option>)}
             </select>
           )}
           <span className="text-xs text-slate-400 ml-auto">
             {visibleReview.length === reviewData.length
-              ? `${reviewData.length} tables`
-              : `${visibleReview.length} of ${reviewData.length} tables`}
+              ? tr('mr.re.nTables', { n: reviewData.length })
+              : tr('mr.re.nOfMTables', { n: visibleReview.length, m: reviewData.length })}
           </span>
           <button onClick={() => {
             const allExpanded = visibleReview.every(t => expanded[t.table_name])
             if (allExpanded) { setExpanded({}) }
             else { const exp = { ...expanded }; visibleReview.forEach(t => { exp[t.table_name] = true }); setExpanded(exp) }
           }} className="text-xs text-blue-600 dark:text-blue-400 hover:underline">
-            {visibleReview.every(t => expanded[t.table_name]) ? 'Collapse All' : 'Expand All'}
+            {visibleReview.every(t => expanded[t.table_name]) ? tr('mr.re.collapseAll') : tr('mr.re.expandAll')}
           </button>
           {show('comments') && (
             <label className="flex items-center gap-1.5 text-xs text-slate-500 dark:text-slate-400 cursor-pointer select-none"
@@ -1134,18 +1137,18 @@ function ReviewEditor() {
           )}
           {(resultFilter || resultSchemaFilter) && (
             <button onClick={() => { setResultFilter(''); setResultSchemaFilter('') }}
-              className="text-xs text-blue-600 dark:text-blue-400 hover:underline">Clear filters</button>
+              className="text-xs text-blue-600 dark:text-blue-400 hover:underline">{tr('mr.re.clearFilters')}</button>
           )}
           {/* Server-side pagination: only when the scope has more than one page. */}
           {reviewTotal > REVIEW_PAGE_SIZE && (
             <div className="flex items-center gap-2 text-xs">
               <button onClick={() => loadData(Math.max(0, reviewOffset - REVIEW_PAGE_SIZE))}
                 disabled={reviewOffset === 0 || loading}
-                className="px-2 py-0.5 rounded border border-slate-300 dark:border-dbx-navy-400/40 disabled:opacity-40 hover:bg-slate-50 dark:hover:bg-dbx-navy-500">Prev</button>
-              <span className="text-slate-400">{reviewOffset + 1}–{reviewOffset + reviewData.length} of {reviewTotal}</span>
+                className="px-2 py-0.5 rounded border border-slate-300 dark:border-dbx-navy-400/40 disabled:opacity-40 hover:bg-slate-50 dark:hover:bg-dbx-navy-500">{tr('common.prev')}</button>
+              <span className="text-slate-400">{tr('mr.re.rangeOf', { from: reviewOffset + 1, to: reviewOffset + reviewData.length, total: reviewTotal })}</span>
               <button onClick={() => loadData(reviewOffset + REVIEW_PAGE_SIZE)}
                 disabled={!reviewHasMore || loading}
-                className="px-2 py-0.5 rounded border border-slate-300 dark:border-dbx-navy-400/40 disabled:opacity-40 hover:bg-slate-50 dark:hover:bg-dbx-navy-500">Next</button>
+                className="px-2 py-0.5 rounded border border-slate-300 dark:border-dbx-navy-400/40 disabled:opacity-40 hover:bg-slate-50 dark:hover:bg-dbx-navy-500">{tr('common.next')}</button>
             </div>
           )}
         </div>
@@ -1157,17 +1160,17 @@ function ReviewEditor() {
           {visibleReview.length > pageSize && pageSize > 0 && (
             <div className="flex items-center justify-between gap-3 text-xs text-slate-500 dark:text-slate-400">
               <div className="flex items-center gap-2">
-                <span>Show</span>
+                <span>{tr('mr.re.showN')}</span>
                 <select value={pageSize} onChange={e => setPageSize(Number(e.target.value))} className="border border-slate-300 dark:border-dbx-navy-400/40 rounded px-1.5 py-0.5 text-xs bg-white dark:bg-dbx-navy/60 dark:text-slate-200">
                   {[10, 25, 50].map(n => <option key={n} value={n}>{n}</option>)}
-                  <option value={0}>All</option>
+                  <option value={0}>{tr('common.all')}</option>
                 </select>
-                <span>per page</span>
+                <span>{tr('mr.re.perPage')}</span>
               </div>
               <div className="flex items-center gap-2">
-                <button disabled={page === 0} onClick={() => setPage(p => p - 1)} className="px-2 py-0.5 rounded border border-slate-300 dark:border-dbx-navy-400/40 disabled:opacity-40 hover:bg-slate-100 dark:hover:bg-dbx-navy-500/50">&lsaquo; Prev</button>
-                <span>Page {page + 1} of {totalPages}</span>
-                <button disabled={page >= totalPages - 1} onClick={() => setPage(p => p + 1)} className="px-2 py-0.5 rounded border border-slate-300 dark:border-dbx-navy-400/40 disabled:opacity-40 hover:bg-slate-100 dark:hover:bg-dbx-navy-500/50">Next &rsaquo;</button>
+                <button disabled={page === 0} onClick={() => setPage(p => p - 1)} className="px-2 py-0.5 rounded border border-slate-300 dark:border-dbx-navy-400/40 disabled:opacity-40 hover:bg-slate-100 dark:hover:bg-dbx-navy-500/50">{tr('mr.re.prevArrow')}</button>
+                <span>{tr('mr.re.pageXofY', { page: page + 1, total: totalPages })}</span>
+                <button disabled={page >= totalPages - 1} onClick={() => setPage(p => p + 1)} className="px-2 py-0.5 rounded border border-slate-300 dark:border-dbx-navy-400/40 disabled:opacity-40 hover:bg-slate-100 dark:hover:bg-dbx-navy-500/50">{tr('mr.re.nextArrow')}</button>
               </div>
             </div>
           )}
@@ -1191,7 +1194,7 @@ function ReviewEditor() {
                   const rs = tbl.review_status || 'unreviewed'
                   const rsCls = rs === 'approved' ? 'bg-green-100 text-green-700 dark:bg-green-900/40 dark:text-green-300' : rs === 'in_review' ? 'bg-yellow-100 text-yellow-700 dark:bg-yellow-900/40 dark:text-yellow-300' : 'bg-slate-100 text-slate-500 dark:bg-slate-800/40 dark:text-slate-400'
                   return (
-                    <select value={rs} title="Saves immediately to table_knowledge_base. Tracks whether a human has reviewed this table's ontology metadata." onClick={ev => ev.stopPropagation()} onChange={ev => {
+                    <select value={rs} title={tr('mr.re.reviewStatusTip')} onClick={ev => ev.stopPropagation()} onChange={ev => {
                       ev.stopPropagation()
                       const newStatus = ev.target.value
                       const sel = ev.target
@@ -1201,13 +1204,13 @@ function ReviewEditor() {
                         .then(r => { sel.style.outline = r.ok ? '2px solid #22c55e' : '2px solid #ef4444'; setTimeout(() => { sel.style.outline = '' }, 1200) })
                         .catch(() => { sel.style.outline = '2px solid #ef4444'; setTimeout(() => { sel.style.outline = '' }, 1200) })
                     }} className={`text-[10px] px-1.5 py-0.5 rounded-full font-medium border-0 cursor-pointer ${rsCls}`}>
-                      <option value="unreviewed">unreviewed</option>
-                      <option value="in_review">in review</option>
-                      <option value="approved">approved</option>
+                      <option value="unreviewed">{tr('mr.re.optUnreviewed')}</option>
+                      <option value="in_review">{tr('mr.re.optInReview')}</option>
+                      <option value="approved">{tr('mr.re.optApproved')}</option>
                     </select>
                   )
                 })()}
-                <span className="text-xs text-slate-400 ml-auto">{tbl.columns?.length || 0} columns</span>
+                <span className="text-xs text-slate-400 ml-auto">{tr('mr.re.nColumns', { n: tbl.columns?.length || 0 })}</span>
               </div>
 
               {expanded[tbl.table_name] && (
@@ -1215,12 +1218,12 @@ function ReviewEditor() {
                   {/* Table-level fields */}
                   <details open className="group/tbl">
                     <summary className="text-xs font-semibold text-slate-500 dark:text-slate-400 uppercase tracking-wide cursor-pointer select-none py-2 hover:text-slate-700 dark:hover:text-slate-200">
-                      Table Properties
+                      {tr('mr.re.tableProperties')}
                     </summary>
                   <div className="grid grid-cols-2 md:grid-cols-4 gap-3 pt-1 pb-2">
                     {show('comments') && (
                       <div className="col-span-4">
-                        <label className="block text-xs font-medium text-slate-500 mb-1">Table Comment</label>
+                        <label className="block text-xs font-medium text-slate-500 mb-1">{tr('mr.re.tableComment')}</label>
                         <AutoTextarea value={tbl.comment ?? ''} onChange={e => onTableChange(tblIdx, 'comment', e.target.value)}
                           className={inp + ' resize-y min-h-[3rem] overflow-hidden'} />
                         {compareUc && <UcCompare current={ucCurrent[tbl.table_name]?.comment}
@@ -1230,18 +1233,18 @@ function ReviewEditor() {
                     )}
                     {show('domain') && (
                       <>
-                        <div className="col-span-2"><label className="block text-xs font-medium text-slate-500 mb-1">Domain</label>
+                        <div className="col-span-2"><label className="block text-xs font-medium text-slate-500 mb-1">{tr('mr.re.domain')}</label>
                           <input value={tbl.domain ?? ''} onChange={e => onTableChange(tblIdx, 'domain', e.target.value)} className={inp} /></div>
-                        <div className="col-span-2"><label className="block text-xs font-medium text-slate-500 mb-1">Subdomain</label>
+                        <div className="col-span-2"><label className="block text-xs font-medium text-slate-500 mb-1">{tr('mr.re.subdomain')}</label>
                           <input value={tbl.subdomain ?? ''} onChange={e => onTableChange(tblIdx, 'subdomain', e.target.value)} className={inp} /></div>
                       </>
                     )}
                     {show('pii') && (
                       <>
                         <div className="flex items-center gap-2"><input type="checkbox" checked={tbl.has_pii === true} onChange={() => onTableCheckbox(tblIdx, 'has_pii')} className="rounded" aria-label="Mark table as having PII" />
-                          <span className="text-xs text-slate-600">Has PII</span></div>
+                          <span className="text-xs text-slate-600">{tr('mr.re.hasPii')}</span></div>
                         <div className="flex items-center gap-2"><input type="checkbox" checked={tbl.has_phi === true} onChange={() => onTableCheckbox(tblIdx, 'has_phi')} className="rounded" aria-label="Mark table as having PHI" />
-                          <span className="text-xs text-slate-600">Has PHI</span></div>
+                          <span className="text-xs text-slate-600">{tr('mr.re.hasPhi')}</span></div>
                       </>
                     )}
                   </div>
@@ -1251,18 +1254,18 @@ function ReviewEditor() {
                   {(show('comments') || show('pii') || show('ontology')) && tbl.columns?.length > 0 && (
                   <details open className="group/cols">
                     <summary className="text-xs font-semibold text-slate-500 dark:text-slate-400 uppercase tracking-wide cursor-pointer select-none py-2 hover:text-slate-700 dark:hover:text-slate-200">
-                      Columns ({tbl.columns.length})
+                      {tr('mr.re.columnsN', { n: tbl.columns.length })}
                     </summary>
                     <div className="overflow-x-auto">
                       <table className="min-w-full text-sm table-fixed">
                         <thead><tr className="bg-dbx-oat/50 dark:bg-dbx-navy-500/50">
-                          <th className="text-left px-3 py-2 text-xs font-semibold text-slate-500 dark:text-slate-400 uppercase w-40">Column</th>
-                          <th className="text-left px-3 py-2 text-xs font-semibold text-slate-500 dark:text-slate-400 uppercase w-24">Type</th>
-                          {show('comments') && <th title="Edits saved in batch via Save Changes to column_knowledge_base" className="text-left px-3 py-2 text-xs font-semibold text-slate-500 dark:text-slate-400 uppercase">Comment</th>}
-                          {show('pii') && <th title="Edits saved in batch via Save Changes to column_knowledge_base" className="text-left px-3 py-2 text-xs font-semibold text-slate-500 dark:text-slate-400 uppercase">Classification</th>}
-                          {show('pii') && <th title="Edits saved in batch via Save Changes to column_knowledge_base" className="text-left px-3 py-2 text-xs font-semibold text-slate-500 dark:text-slate-400 uppercase">Class. Type</th>}
-                          {show('ontology') && <th className="text-left px-3 py-2 text-xs font-semibold text-slate-500 dark:text-slate-400 uppercase">Entity Types</th>}
-                          {show('ontology') && <th title="Saves immediately to ontology_column_properties" className="text-left px-3 py-2 text-xs font-semibold text-slate-500 dark:text-slate-400 uppercase">Property Role</th>}
+                          <th className="text-left px-3 py-2 text-xs font-semibold text-slate-500 dark:text-slate-400 uppercase w-40">{tr('common.column')}</th>
+                          <th className="text-left px-3 py-2 text-xs font-semibold text-slate-500 dark:text-slate-400 uppercase w-24">{tr('common.type')}</th>
+                          {show('comments') && <th title={tr('mr.re.colCommentTip')} className="text-left px-3 py-2 text-xs font-semibold text-slate-500 dark:text-slate-400 uppercase">{tr('common.comment')}</th>}
+                          {show('pii') && <th title={tr('mr.re.colCommentTip')} className="text-left px-3 py-2 text-xs font-semibold text-slate-500 dark:text-slate-400 uppercase">{tr('mr.re.classification')}</th>}
+                          {show('pii') && <th title={tr('mr.re.colCommentTip')} className="text-left px-3 py-2 text-xs font-semibold text-slate-500 dark:text-slate-400 uppercase">{tr('mr.re.classType')}</th>}
+                          {show('ontology') && <th className="text-left px-3 py-2 text-xs font-semibold text-slate-500 dark:text-slate-400 uppercase">{tr('mr.re.entityTypes')}</th>}
+                          {show('ontology') && <th title={tr('mr.re.propertyRoleTip')} className="text-left px-3 py-2 text-xs font-semibold text-slate-500 dark:text-slate-400 uppercase">{tr('mr.re.propertyRole')}</th>}
                         </tr></thead>
                         <tbody>
                           {(() => {
@@ -1291,7 +1294,7 @@ function ReviewEditor() {
                                   onKeep={v => onColChange(tblIdx, ci, 'comment', v)} />}</td>}
                               {show('pii') && <td className="px-2 py-1">
                                 <div className="flex items-center gap-1.5">
-                                  <input value={col.classification ?? ''} onChange={e => onColChange(tblIdx, ci, 'classification', e.target.value)} className={inp} placeholder="Unclassified" />
+                                  <input value={col.classification ?? ''} onChange={e => onColChange(tblIdx, ci, 'classification', e.target.value)} className={inp} placeholder={tr('mr.re.unclassified')} />
                                   {(() => { const b = classLabel(col.classification); return <span className={`whitespace-nowrap text-[10px] px-1.5 py-0.5 rounded-full font-medium ${b.cls}`}>{b.text}</span> })()}
                                 </div>
                               </td>}
@@ -1317,7 +1320,7 @@ function ReviewEditor() {
                                 const curLinked = colPropOverrides[cpKey]?.linked_entity_type ?? colProp.linked_entity_type ?? ''
                                 return (
                                   <div className="flex items-center gap-1">
-                                    <select value={curRole ?? ''} title="Saves immediately to ontology_column_properties. Defines how this column is used (grouping, aggregation, joining, etc.)." onChange={ev => {
+                                    <select value={curRole ?? ''} title={tr('mr.re.roleTip')} onChange={ev => {
                                       const nr = ev.target.value
                                       setColPropOverrides(p => ({ ...p, [cpKey]: { ...(p[cpKey] || {}), property_role: nr } }))
                                       fetch('/api/ontology/update-column-property', { method: 'POST', headers: { 'Content-Type': 'application/json' },
@@ -1325,9 +1328,9 @@ function ReviewEditor() {
                                         .then(r => { if (!r.ok) setError('Failed to save property role') })
                                         .catch(() => setError('Failed to save property role — check connection'))
                                     }} className="text-[10px] border border-slate-300 dark:border-dbx-navy-400/40 rounded px-1 py-0.5 bg-white dark:bg-dbx-navy/60 dark:text-slate-200">
-                                      <option value="">Select role...</option>
+                                      <option value="">{tr('mr.re.selectRole')}</option>
                                       {PROPERTY_ROLE_GROUPS.map(group => (
-                                        <optgroup key={group.label} label={group.label}>
+                                        <optgroup key={group.label} label={tr(group.label)}>
                                           {group.roles.map(role => (
                                             <option key={role} value={role}>{role.replace(/_/g, ' ')}</option>
                                           ))}
@@ -1335,7 +1338,7 @@ function ReviewEditor() {
                                       ))}
                                     </select>
                                     {curRole === 'object_property' && (
-                                      <input value={curLinked} placeholder="linked entity"
+                                      <input value={curLinked} placeholder={tr('mr.re.linkedEntity')}
                                         onChange={ev => setColPropOverrides(p => ({ ...p, [cpKey]: { ...(p[cpKey] || {}), linked_entity_type: ev.target.value } }))}
                                         onBlur={ev => {
                                           fetch('/api/ontology/update-column-property', { method: 'POST', headers: { 'Content-Type': 'application/json' },
@@ -1384,19 +1387,19 @@ function ReviewEditor() {
                             setTableTagApplying(p => ({ ...p, [tbl.table_name]: false }))
                           }} disabled={tableTagApplying[tbl.table_name]}
                             className="text-[10px] px-2.5 py-1 bg-purple-600 text-white rounded hover:bg-purple-700 disabled:opacity-50 font-medium">
-                            {tableTagApplying[tbl.table_name] ? 'Applying...' : 'Apply Table Entity Tag'}
+                            {tableTagApplying[tbl.table_name] ? tr('common.applying') : tr('mr.re.applyTableTag')}
                           </button>
                         )}
                       </div>
                       {tbl.primary_entity && (
                         <div className="flex items-center gap-2 px-3 py-2 bg-purple-100 dark:bg-purple-900/30 border border-purple-300 dark:border-purple-700/50 rounded-lg">
-                          <span className="text-[10px] font-bold uppercase tracking-wider text-purple-500 dark:text-purple-400">Primary Entity</span>
+                          <span className="text-[10px] font-bold uppercase tracking-wider text-purple-500 dark:text-purple-400">{tr('mr.re.primaryEntity')}</span>
                           <span className="text-sm font-semibold text-purple-800 dark:text-purple-200">{tbl.primary_entity.entity_type}</span>
                           <span className={`text-[10px] px-1.5 py-0.5 rounded-full font-medium ${Number(tbl.primary_entity.confidence ?? 0) > 0 ? 'bg-green-100 text-green-700' : 'bg-red-100 text-red-700'}`}>
                             {Number(tbl.primary_entity.confidence ?? 0).toFixed(2)}
                           </span>
                           {(tbl.primary_entity.validated === true || tbl.primary_entity.validated === 'true') && (
-                            <span className="text-[10px] px-1.5 py-0.5 rounded-full font-medium bg-blue-100 text-blue-700">validated</span>
+                            <span className="text-[10px] px-1.5 py-0.5 rounded-full font-medium bg-blue-100 text-blue-700">{tr('mr.re.validated')}</span>
                           )}
                         </div>
                       )}
@@ -1413,8 +1416,8 @@ function ReviewEditor() {
                         )
                       })()}
                       <div className="flex items-center gap-2 flex-wrap">
-                        <span className="text-[10px] font-semibold text-slate-500 dark:text-slate-400 uppercase tracking-wider">Override Primary:</span>
-                        <input value={recommendedEntity[tbl.table_name] || ''} placeholder="e.g. OrderLineItem"
+                        <span className="text-[10px] font-semibold text-slate-500 dark:text-slate-400 uppercase tracking-wider">{tr('mr.re.overridePrimary')}</span>
+                        <input value={recommendedEntity[tbl.table_name] || ''} placeholder={tr('mr.re.overridePrimaryPh')}
                           onChange={ev => setRecommendedEntity(p => ({ ...p, [tbl.table_name]: ev.target.value }))}
                           className="text-xs border border-purple-300 dark:border-purple-700/50 rounded px-2 py-0.5 bg-white dark:bg-dbx-navy/60 dark:text-slate-200 w-40" />
                         <button onClick={async () => {
@@ -1429,7 +1432,7 @@ function ReviewEditor() {
                           setRecEntLoading(p => ({ ...p, [tbl.table_name]: false }))
                         }} disabled={recEntLoading[tbl.table_name] || !(recommendedEntity[tbl.table_name] || '').trim()}
                           className="text-[10px] px-2 py-0.5 bg-purple-600 text-white rounded hover:bg-purple-700 disabled:opacity-50">
-                          {recEntLoading[tbl.table_name] ? '...' : 'Set as Primary'}
+                          {recEntLoading[tbl.table_name] ? '...' : tr('mr.re.setAsPrimary')}
                         </button>
                       </div>
                     </div>
@@ -1440,16 +1443,16 @@ function ReviewEditor() {
                     <div className="border-t border-slate-200 dark:border-dbx-navy-400/30 pt-3 mt-3 space-y-2">
                       <div className="flex items-center justify-between flex-wrap gap-2">
                         <h4 className="text-xs font-semibold text-slate-600 dark:text-slate-300 uppercase tracking-wider flex items-center">
-                          Business Concepts
+                          {tr('mr.re.businessConcepts')}
                           {Array.isArray(tbl.ontology_entities) && (() => {
                             const total = tbl.ontology_entities.length
                             const above = tbl.ontology_entities.filter(e => Number(e.confidence ?? 0) >= ontoConfThreshold).length
-                            return total > 0 ? <span className="ml-1.5 text-slate-400 font-normal normal-case">{total} entities ({above} above threshold)</span> : null
+                            return total > 0 ? <span className="ml-1.5 text-slate-400 font-normal normal-case">{tr('mr.re.entitiesAbove', { total, above })}</span> : null
                           })()}
-                          <Tip text="Applies entity_type tags to the specific columns listed in each entity's source_columns. Individual Apply buttons bypass the confidence threshold." />
+                          <Tip text={tr('mr.re.bcTip')} />
                         </h4>
                         <div className="flex items-center gap-2">
-                          <label className="text-[10px] text-slate-500">Min Confidence:</label>
+                          <label className="text-[10px] text-slate-500">{tr('mr.re.minConfidence')}</label>
                           <input type="number" min="0" max="1" step="0.05" value={ontoConfThreshold}
                             onChange={ev => setOntoConfThreshold(Number(ev.target.value))}
                             className="text-[10px] border border-slate-300 rounded px-1.5 py-0.5 bg-white w-16" />
@@ -1469,7 +1472,7 @@ function ReviewEditor() {
                               setOntoApplying(p => ({ ...p, [tbl.table_name]: false }))
                             }} disabled={ontoApplying[tbl.table_name]}
                               className="text-[10px] px-2.5 py-1 bg-purple-600 text-white rounded hover:bg-purple-700 disabled:opacity-50 font-medium">
-                              {ontoApplying[tbl.table_name] ? 'Applying...' : `Apply All (conf \u2265 ${ontoConfThreshold})`}
+                              {ontoApplying[tbl.table_name] ? tr('mr.re.applying') : tr('mr.re.applyAllConf', { c: ontoConfThreshold })}
                             </button>
                           )}
                         </div>
@@ -1491,7 +1494,7 @@ function ReviewEditor() {
                               <div key={ri} className="text-red-600">{r.column ? `${r.table}.${r.column}` : r.table}: {r.error || 'unknown error'}</div>
                             ))}
                             {allSql.length > 0 && (
-                              <details className="text-slate-500"><summary className="cursor-pointer">SQL details</summary>
+                              <details className="text-slate-500"><summary className="cursor-pointer">{tr('mr.re.sqlDetails')}</summary>
                                 <pre className="mt-1 text-[10px] bg-slate-100 p-1 rounded overflow-x-auto whitespace-pre-wrap">{allSql.join('\n')}</pre>
                               </details>
                             )}
@@ -1502,10 +1505,10 @@ function ReviewEditor() {
                         )
                       })()}
                       <details className="text-xs">
-                        <summary className="cursor-pointer text-purple-600 hover:text-purple-800 font-medium">+ Add Entity Mapping</summary>
+                        <summary className="cursor-pointer text-purple-600 hover:text-purple-800 font-medium">{tr('mr.re.addEntityMapping')}</summary>
                         <div className="mt-1 flex items-center gap-2 flex-wrap p-2 bg-purple-50 dark:bg-purple-900/20 rounded border border-purple-200 dark:border-purple-700/40">
-                          <input placeholder="Entity type" id={`add-ent-type-${tblIdx}`} className="text-xs border border-purple-300 rounded px-2 py-0.5 w-32 dark:bg-dbx-navy/60 dark:text-slate-200" />
-                          <input placeholder="Source columns (comma-sep)" id={`add-ent-cols-${tblIdx}`} className="text-xs border border-purple-300 rounded px-2 py-0.5 w-48 dark:bg-dbx-navy/60 dark:text-slate-200" />
+                          <input placeholder={tr('mr.re.entityTypePh')} id={`add-ent-type-${tblIdx}`} className="text-xs border border-purple-300 rounded px-2 py-0.5 w-32 dark:bg-dbx-navy/60 dark:text-slate-200" />
+                          <input placeholder={tr('mr.re.sourceColumnsPh')} id={`add-ent-cols-${tblIdx}`} className="text-xs border border-purple-300 rounded px-2 py-0.5 w-48 dark:bg-dbx-navy/60 dark:text-slate-200" />
                           <button onClick={async () => {
                             const etEl = document.getElementById(`add-ent-type-${tblIdx}`)
                             const colsEl = document.getElementById(`add-ent-cols-${tblIdx}`)
@@ -1518,13 +1521,13 @@ function ReviewEditor() {
                               etEl.value = ''; colsEl.value = ''
                               loadData()
                             } catch {}
-                          }} className="text-[10px] px-2 py-0.5 bg-purple-600 text-white rounded hover:bg-purple-700">Add</button>
+                          }} className="text-[10px] px-2 py-0.5 bg-purple-600 text-white rounded hover:bg-purple-700">{tr('mr.re.add')}</button>
                         </div>
                       </details>
                       {!Array.isArray(tbl.ontology_entities) ? (
-                        <p className="text-xs text-slate-400 italic">Ontology data not available for this table.</p>
+                        <p className="text-xs text-slate-400 italic">{tr('mr.re.ontologyNotAvailable')}</p>
                       ) : tbl.ontology_entities.length === 0 ? (
-                        <p className="text-xs text-slate-400 italic">No ontology entities mapped to this table.</p>
+                        <p className="text-xs text-slate-400 italic">{tr('mr.re.noOntologyEntities')}</p>
                       ) : (
                         <div className="space-y-2">
                           {tbl.ontology_entities.map((e, i) => {
@@ -1567,14 +1570,14 @@ function ReviewEditor() {
                                     <span className="text-xs font-medium text-purple-700">{e.entity_type}</span>
                                   )}
                                   <span className={`text-[10px] px-1.5 py-0.5 rounded-full font-medium ${confCls}`}
-                                    title="Negative confidence means the AI validator rejected this entity mapping.">
+                                    title={tr('mr.re.negConfidenceTip')}>
                                     {conf.toFixed(2)}
                                   </span>
                                   {e.validated !== undefined && (() => {
                                     const isValidated = e.validated === true || e.validated === 'true'
                                     const isRejected = isValidated && (e.validation_notes || '').startsWith('REJECTED')
                                     const cls = isRejected ? 'bg-red-100 text-red-700' : isValidated ? 'bg-blue-100 text-blue-700' : 'bg-slate-100 text-slate-500'
-                                    const label = isRejected ? 'rejected' : isValidated ? 'approved' : 'unreviewed'
+                                    const label = isRejected ? tr('mr.re.lblRejected') : isValidated ? tr('mr.re.lblApproved') : tr('mr.re.lblUnreviewed')
                                     return <span className={`text-[10px] px-1.5 py-0.5 rounded-full font-medium ${cls}`}>{label}</span>
                                   })()}
                                   {srcCols.length > 0 && (
@@ -1592,7 +1595,7 @@ function ReviewEditor() {
                                               body: JSON.stringify({ entity_id: e.entity_id, validated: true, validation_notes: 'Approved' }) })
                                             loadData()
                                           } catch {}
-                                        }} title="Approve this mapping" className="text-[10px] px-1.5 py-0.5 bg-green-600 text-white rounded hover:bg-green-700">Approve</button>
+                                        }} title={tr('mr.re.approveTip')} className="text-[10px] px-1.5 py-0.5 bg-green-600 text-white rounded hover:bg-green-700">{tr('common.approve')}</button>
                                         <button onClick={async (ev) => {
                                           ev.stopPropagation()
                                           try {
@@ -1600,15 +1603,15 @@ function ReviewEditor() {
                                               body: JSON.stringify({ entity_id: e.entity_id, validated: false, validation_notes: 'REJECTED: User rejected' }) })
                                             loadData()
                                           } catch {}
-                                        }} title="Reject this mapping (prevents re-discovery)" className="text-[10px] px-1.5 py-0.5 bg-orange-500 text-white rounded hover:bg-orange-600">Reject</button>
+                                        }} title={tr('mr.re.rejectTip')} className="text-[10px] px-1.5 py-0.5 bg-orange-500 text-white rounded hover:bg-orange-600">{tr('common.reject')}</button>
                                         <button onClick={async (ev) => {
                                           ev.stopPropagation()
-                                          if (!confirm('Delete this entity mapping?')) return
+                                          if (!confirm(tr('mr.re.confirmDelMapping'))) return
                                           try {
                                             await fetch(`/api/ontology/entity/${encodeURIComponent(e.entity_id)}`, { method: 'DELETE' })
                                             loadData()
                                           } catch {}
-                                        }} title="Delete this entity mapping" className="text-[10px] px-1.5 py-0.5 bg-red-500 text-white rounded hover:bg-red-600">Del</button>
+                                        }} title={tr('mr.re.delTip')} className="text-[10px] px-1.5 py-0.5 bg-red-500 text-white rounded hover:bg-red-600">{tr('mr.re.del')}</button>
                                       </>
                                     )}
                                     <button onClick={async (ev) => {
@@ -1621,15 +1624,15 @@ function ReviewEditor() {
                                         setOntoApplyResults(p => ({ ...p, [tbl.table_name]: j }))
                                       } catch (err) { setOntoApplyResults(p => ({ ...p, [tbl.table_name]: { error: err.message } })) }
                                     }} className="text-[10px] px-1.5 py-0.5 bg-purple-600 text-white rounded hover:bg-purple-700"
-                                      title={isPrimary ? 'Apply entity_type tag to table and columns (ignores threshold)' : 'Apply entity_type tag to columns only (ignores threshold)'}>
-                                      Apply Tag
+                                      title={isPrimary ? tr('mr.re.applyTagPrimaryTip') : tr('mr.re.applyTagColsTip')}>
+                                      {tr('mr.re.applyTag')}
                                     </button>
                                   </span>
                                 </div>
                                 {isOpen && e.validation_notes && (
                                   <div className="px-3 pb-2 border-t border-purple-200 dark:border-purple-700/30 mt-0">
                                     <div className="mt-1.5">
-                                      <span className="text-[10px] font-semibold text-slate-500 dark:text-slate-400">Validation Notes:</span>
+                                      <span className="text-[10px] font-semibold text-slate-500 dark:text-slate-400">{tr('mr.re.validationNotes')}</span>
                                       <p className="text-xs text-slate-600 dark:text-slate-300 italic bg-white/60 dark:bg-dbx-navy/40 rounded p-1.5 mt-0.5">{e.validation_notes}</p>
                                     </div>
                                   </div>
@@ -1668,7 +1671,7 @@ function ReviewEditor() {
                             setPropTagApplying(p => ({ ...p, [tbl.table_name]: false }))
                           }} disabled={propTagApplying[tbl.table_name]}
                             className="text-[10px] px-2.5 py-1 bg-emerald-600 text-white rounded hover:bg-emerald-700 disabled:opacity-50 font-medium">
-                            {propTagApplying[tbl.table_name] ? 'Applying...' : 'Apply Property Role Tags'}
+                            {propTagApplying[tbl.table_name] ? tr('common.applying') : tr('mr.re.applyPropTags')}
                           </button>
                         </div>
                       </div>
@@ -1686,7 +1689,7 @@ function ReviewEditor() {
                   {show('fk') && (
                     <div className="space-y-2">
                       <div className="flex items-center justify-between flex-wrap gap-2">
-                        <h4 className="text-xs font-semibold text-slate-500 dark:text-slate-400">Foreign Key Predictions</h4>
+                        <h4 className="text-xs font-semibold text-slate-500 dark:text-slate-400">{tr('mr.re.fkPredictions')}</h4>
                         {Array.isArray(tbl.fk_predictions) && tbl.fk_predictions.length > 0 && (() => {
                           const tblKey = tbl.table_name
                           const selSet = selectedFKs[tblKey] || new Set()
@@ -1710,8 +1713,8 @@ function ReviewEditor() {
                                 } catch (err) { setFkApplyResult({ error: err.message }) }
                                 setFkApplying(false)
                               }} disabled={fkApplying} className="text-xs px-2 py-0.5 bg-indigo-600 text-white rounded hover:bg-indigo-700 disabled:opacity-50"
-                                title="Requires MANAGE on source tables">
-                                {fkApplying ? 'Applying...' : `Apply FK Constraints (${selCount})`}
+                                title={tr('mr.re.manageSourceTip')}>
+                                {fkApplying ? tr('mr.re.applying') : tr('mr.re.applyFkConstraints', { n: selCount })}
                               </button>
                               <button onClick={async () => {
                                 try {
@@ -1720,26 +1723,26 @@ function ReviewEditor() {
                                   setFkGenSql(r.ok ? (j.sql || '') : `-- Error: ${j.detail || 'Server error'}`)
                                 } catch (err) { setFkGenSql(`-- Error: ${err.message}`) }
                               }} className="text-xs px-2 py-0.5 bg-slate-600 text-white rounded hover:bg-slate-700">
-                                Generate SQL ({selCount})
+                                {tr('mr.re.generateSqlN', { n: selCount })}
                               </button>
                               <button onClick={() => deleteFkPredictions(selPreds())}
                                 disabled={fkDeleting}
                                 className="text-xs px-2 py-0.5 bg-red-600 text-white rounded hover:bg-red-700 disabled:opacity-50">
-                                {fkDeleting ? 'Removing...' : `Remove (${selCount})`}
+                                {fkDeleting ? tr('mr.re.removing') : tr('mr.re.removeN', { n: selCount })}
                               </button>
                             </div>
                           ) : null
                         })()}
                       </div>
                       <p className="text-[10px] text-slate-400 dark:text-slate-500 italic">
-                        Applying FK constraints requires MANAGE on the source table. If dbxmetagen only has APPLY_TAG, use "Tag All" above instead -- it sets <code className="text-[10px]">fk_references</code> column tags which only require APPLY_TAG.
+                        {tr('mr.re.fkManageHint')}
                       </p>
                       <details className="text-xs">
-                        <summary className="cursor-pointer text-indigo-600 hover:text-indigo-800 font-medium">+ Add FK Relationship</summary>
+                        <summary className="cursor-pointer text-indigo-600 hover:text-indigo-800 font-medium">{tr('mr.re.addFkRelationship')}</summary>
                         <div className="mt-1 flex items-center gap-2 flex-wrap p-2 bg-indigo-50 dark:bg-indigo-900/20 rounded border border-indigo-200 dark:border-indigo-700/40">
-                          <input placeholder="Source column" id={`add-fk-src-col-${tblIdx}`} className="text-xs border border-indigo-300 rounded px-2 py-0.5 w-28 dark:bg-dbx-navy/60 dark:text-slate-200" />
-                          <input placeholder="Dest table" id={`add-fk-dst-tbl-${tblIdx}`} className="text-xs border border-indigo-300 rounded px-2 py-0.5 w-32 dark:bg-dbx-navy/60 dark:text-slate-200" />
-                          <input placeholder="Dest column" id={`add-fk-dst-col-${tblIdx}`} className="text-xs border border-indigo-300 rounded px-2 py-0.5 w-28 dark:bg-dbx-navy/60 dark:text-slate-200" />
+                          <input placeholder={tr('mr.re.sourceColumnPh')} id={`add-fk-src-col-${tblIdx}`} className="text-xs border border-indigo-300 rounded px-2 py-0.5 w-28 dark:bg-dbx-navy/60 dark:text-slate-200" />
+                          <input placeholder={tr('mr.re.destTablePh')} id={`add-fk-dst-tbl-${tblIdx}`} className="text-xs border border-indigo-300 rounded px-2 py-0.5 w-32 dark:bg-dbx-navy/60 dark:text-slate-200" />
+                          <input placeholder={tr('mr.re.destColumnPh')} id={`add-fk-dst-col-${tblIdx}`} className="text-xs border border-indigo-300 rounded px-2 py-0.5 w-28 dark:bg-dbx-navy/60 dark:text-slate-200" />
                           <button onClick={async () => {
                             const srcCol = document.getElementById(`add-fk-src-col-${tblIdx}`)?.value?.trim()
                             const dstTbl = document.getElementById(`add-fk-dst-tbl-${tblIdx}`)?.value?.trim()
@@ -1753,7 +1756,7 @@ function ReviewEditor() {
                               document.getElementById(`add-fk-dst-col-${tblIdx}`).value = ''
                               loadData()
                             } catch {}
-                          }} className="text-[10px] px-2 py-0.5 bg-indigo-600 text-white rounded hover:bg-indigo-700">Add</button>
+                          }} className="text-[10px] px-2 py-0.5 bg-indigo-600 text-white rounded hover:bg-indigo-700">{tr('mr.re.add')}</button>
                         </div>
                       </details>
                       {fkGenSql != null && (
@@ -1761,9 +1764,9 @@ function ReviewEditor() {
                           <pre className="text-[10px] bg-slate-800 dark:bg-slate-900 text-green-300 dark:text-green-400 rounded p-2 overflow-x-auto whitespace-pre-wrap max-h-40 font-mono">{fkGenSql}</pre>
                           <div className="absolute top-1 right-1 flex gap-1">
                             <button onClick={() => { navigator.clipboard.writeText(fkGenSql) }}
-                              className="text-[9px] px-1.5 py-0.5 bg-slate-700 border border-slate-600 rounded hover:bg-slate-600 text-slate-200">Copy</button>
+                              className="text-[9px] px-1.5 py-0.5 bg-slate-700 border border-slate-600 rounded hover:bg-slate-600 text-slate-200">{tr('common.copy')}</button>
                             <button onClick={() => setFkGenSql(null)}
-                              className="text-[9px] px-1.5 py-0.5 bg-slate-700 border border-slate-600 rounded hover:bg-slate-600 text-slate-200">Close</button>
+                              className="text-[9px] px-1.5 py-0.5 bg-slate-700 border border-slate-600 rounded hover:bg-slate-600 text-slate-200">{tr('common.close')}</button>
                           </div>
                         </div>
                       )}
@@ -1776,9 +1779,9 @@ function ReviewEditor() {
                         </div>
                       )}
                       {!Array.isArray(tbl.fk_predictions) ? (
-                        <p className="text-xs text-slate-400 italic">FK prediction data not available for this table.</p>
+                        <p className="text-xs text-slate-400 italic">{tr('mr.re.fkNotAvailable')}</p>
                       ) : tbl.fk_predictions.length === 0 ? (
-                        <p className="text-xs text-slate-400 italic">No foreign key predictions for this table.</p>
+                        <p className="text-xs text-slate-400 italic">{tr('mr.re.noFkPredictions')}</p>
                       ) : (() => {
                         const shortTbl = (name) => (name || '').split('.').pop()
                         const tblKey = tbl.table_name
@@ -1808,13 +1811,13 @@ function ReviewEditor() {
                                 <td className="px-2 py-1"><span className={`text-[10px] px-1.5 py-0.5 rounded-full font-medium ${confCls}`}>{fconf.toFixed(2)}</span></td>
                                 <td className="px-1 py-1">{fk.review_updated_at ? (
                                   <span className={`text-[9px] px-1 py-0.5 rounded-full font-medium ${fk.is_fk === true || fk.is_fk === 'true' ? 'bg-green-100 text-green-700' : 'bg-red-100 text-red-700'}`}>
-                                    {fk.is_fk === true || fk.is_fk === 'true' ? 'approved' : 'rejected'}
+                                    {fk.is_fk === true || fk.is_fk === 'true' ? tr('mr.re.lblApproved') : tr('mr.re.lblRejected')}
                                   </span>
                                 ) : null}</td>
                                 <td className="px-2 py-1 text-slate-500 dark:text-slate-400">{Number(fk.ai_confidence ?? 0).toFixed(2)}</td>
                                 <td className="px-2 py-1 text-slate-500 dark:text-slate-400">{Number(fk.col_similarity ?? 0).toFixed(2)}</td>
-                                <td className="px-2 py-1 font-mono text-[10px] whitespace-nowrap">{fkEvidence(fk)}</td>
-                                <td className="px-2 py-1 text-slate-500 dark:text-slate-400 max-w-xs truncate cursor-pointer" title="Click to expand"
+                                <td className="px-2 py-1 font-mono text-[10px] whitespace-nowrap">{fkEvidence(fk, tr)}</td>
+                                <td className="px-2 py-1 text-slate-500 dark:text-slate-400 max-w-xs truncate cursor-pointer" title={tr('mr.re.clickExpand')}
                                   onClick={() => setExpandedFKs(p => ({ ...p, [fkKey]: !p[fkKey] }))}>
                                   {fk.ai_reasoning || '--'}
                                 </td>
@@ -1825,18 +1828,18 @@ function ReviewEditor() {
                                         body: JSON.stringify({ src_column: fk.src_column, dst_column: fk.dst_column, src_table: fk.src_table, dst_table: fk.dst_table, is_fk: true }) })
                                       loadData()
                                     } catch {}
-                                  }} title="Approve this FK" className="text-green-500 hover:text-green-700 text-xs font-bold">&#x2713;</button>
+                                  }} title={tr('mr.re.approveFkTip')} className="text-green-500 hover:text-green-700 text-xs font-bold">&#x2713;</button>
                                   <button onClick={async () => {
                                     try {
                                       await fetch('/api/analytics/fk-review', { method: 'POST', headers: { 'Content-Type': 'application/json' },
                                         body: JSON.stringify({ src_column: fk.src_column, dst_column: fk.dst_column, src_table: fk.src_table, dst_table: fk.dst_table, is_fk: false }) })
                                       loadData()
                                     } catch {}
-                                  }} title="Reject this FK" className="text-orange-500 hover:text-orange-700 text-xs font-bold">&#x2717;</button>
+                                  }} title={tr('mr.re.rejectFkTip')} className="text-orange-500 hover:text-orange-700 text-xs font-bold">&#x2717;</button>
                                   <button onClick={() => deleteFkPredictions([{
                                     src_table: fk.src_table, src_column: fk.src_column,
                                     dst_table: fk.dst_table, dst_column: fk.dst_column,
-                                  }])} disabled={fkDeleting} title="Delete this FK prediction"
+                                  }])} disabled={fkDeleting} title={tr('mr.re.deleteFkTip')}
                                     className="text-red-400 hover:text-red-600 disabled:opacity-50 text-xs">
                                     &#x2715;
                                   </button>
@@ -1853,18 +1856,18 @@ function ReviewEditor() {
                           <div className="space-y-3">
                             {outgoing.length > 0 && (
                               <div className="overflow-x-auto">
-                                <p className="text-[10px] font-semibold text-indigo-500 dark:text-indigo-400 uppercase tracking-wider mb-1">&#8594; Outgoing (this table references)</p>
+                                <p className="text-[10px] font-semibold text-indigo-500 dark:text-indigo-400 uppercase tracking-wider mb-1">{tr('mr.re.outgoing')}</p>
                                 <table className="min-w-full text-xs">
                                   <thead><tr className="bg-dbx-oat/50 dark:bg-dbx-navy-500/50">
                                     <th className="w-8 px-1 py-1"></th>
-                                    <th className="text-left px-2 py-1 font-semibold text-slate-500 dark:text-slate-400">Column</th>
-                                    <th className="text-left px-2 py-1 font-semibold text-slate-500 dark:text-slate-400">References</th>
-                                    <th className="text-left px-2 py-1 font-semibold text-slate-500 dark:text-slate-400" title="Combined final confidence">Final</th>
-                                    <th className="text-left px-1 py-1 font-semibold text-slate-500 dark:text-slate-400">Status</th>
-                                    <th className="text-left px-2 py-1 font-semibold text-slate-500 dark:text-slate-400" title="AI model confidence">AI</th>
-                                    <th className="text-left px-2 py-1 font-semibold text-slate-500 dark:text-slate-400" title="Column embedding similarity">Sim</th>
-                                    <th className="text-left px-2 py-1 font-semibold text-slate-500 dark:text-slate-400" title="Referential integrity · actual join hit rate · parent-key uniqueness (the data probes behind the score)">RI·join·PK</th>
-                                    <th className="text-left px-2 py-1 font-semibold text-slate-500 dark:text-slate-400">Reasoning</th>
+                                    <th className="text-left px-2 py-1 font-semibold text-slate-500 dark:text-slate-400">{tr('common.column')}</th>
+                                    <th className="text-left px-2 py-1 font-semibold text-slate-500 dark:text-slate-400">{tr('mr.re.references')}</th>
+                                    <th className="text-left px-2 py-1 font-semibold text-slate-500 dark:text-slate-400" title={tr('mr.re.finalTip')}>{tr('mr.re.final')}</th>
+                                    <th className="text-left px-1 py-1 font-semibold text-slate-500 dark:text-slate-400">{tr('common.status')}</th>
+                                    <th className="text-left px-2 py-1 font-semibold text-slate-500 dark:text-slate-400" title={tr('mr.re.modelConfTip')}>{tr('mr.re.hdrAi')}</th>
+                                    <th className="text-left px-2 py-1 font-semibold text-slate-500 dark:text-slate-400" title={tr('mr.re.simTip')}>{tr('mr.re.sim')}</th>
+                                    <th className="text-left px-2 py-1 font-semibold text-slate-500 dark:text-slate-400" title={tr('mr.re.probesTip')}>{tr('mr.re.hdrRiJoinPk')}</th>
+                                    <th className="text-left px-2 py-1 font-semibold text-slate-500 dark:text-slate-400">{tr('mr.re.reasoning')}</th>
                                     <th className="w-8 px-1 py-1"></th>
                                   </tr></thead>
                                   <tbody>
@@ -1878,18 +1881,18 @@ function ReviewEditor() {
                             )}
                             {incoming.length > 0 && (
                               <div className="overflow-x-auto">
-                                <p className="text-[10px] font-semibold text-teal-500 dark:text-teal-400 uppercase tracking-wider mb-1">&#8592; Incoming (referenced by)</p>
+                                <p className="text-[10px] font-semibold text-teal-500 dark:text-teal-400 uppercase tracking-wider mb-1">{tr('mr.re.incoming')}</p>
                                 <table className="min-w-full text-xs">
                                   <thead><tr className="bg-dbx-oat/50 dark:bg-dbx-navy-500/50">
                                     <th className="w-8 px-1 py-1"></th>
-                                    <th className="text-left px-2 py-1 font-semibold text-slate-500 dark:text-slate-400">From</th>
-                                    <th className="text-left px-2 py-1 font-semibold text-slate-500 dark:text-slate-400">Column</th>
-                                    <th className="text-left px-2 py-1 font-semibold text-slate-500 dark:text-slate-400" title="Combined final confidence">Final</th>
-                                    <th className="text-left px-1 py-1 font-semibold text-slate-500 dark:text-slate-400">Status</th>
-                                    <th className="text-left px-2 py-1 font-semibold text-slate-500 dark:text-slate-400" title="AI model confidence">AI</th>
-                                    <th className="text-left px-2 py-1 font-semibold text-slate-500 dark:text-slate-400" title="Column embedding similarity">Sim</th>
-                                    <th className="text-left px-2 py-1 font-semibold text-slate-500 dark:text-slate-400" title="Referential integrity · actual join hit rate · parent-key uniqueness (the data probes behind the score)">RI·join·PK</th>
-                                    <th className="text-left px-2 py-1 font-semibold text-slate-500 dark:text-slate-400">Reasoning</th>
+                                    <th className="text-left px-2 py-1 font-semibold text-slate-500 dark:text-slate-400">{tr('mr.re.from')}</th>
+                                    <th className="text-left px-2 py-1 font-semibold text-slate-500 dark:text-slate-400">{tr('common.column')}</th>
+                                    <th className="text-left px-2 py-1 font-semibold text-slate-500 dark:text-slate-400" title={tr('mr.re.finalTip')}>{tr('mr.re.final')}</th>
+                                    <th className="text-left px-1 py-1 font-semibold text-slate-500 dark:text-slate-400">{tr('common.status')}</th>
+                                    <th className="text-left px-2 py-1 font-semibold text-slate-500 dark:text-slate-400" title={tr('mr.re.modelConfTip')}>{tr('mr.re.hdrAi')}</th>
+                                    <th className="text-left px-2 py-1 font-semibold text-slate-500 dark:text-slate-400" title={tr('mr.re.simTip')}>{tr('mr.re.sim')}</th>
+                                    <th className="text-left px-2 py-1 font-semibold text-slate-500 dark:text-slate-400" title={tr('mr.re.probesTip')}>{tr('mr.re.hdrRiJoinPk')}</th>
+                                    <th className="text-left px-2 py-1 font-semibold text-slate-500 dark:text-slate-400">{tr('mr.re.reasoning')}</th>
                                     <th className="w-8 px-1 py-1"></th>
                                   </tr></thead>
                                   <tbody>
@@ -1902,7 +1905,7 @@ function ReviewEditor() {
                               </div>
                             )}
                             {outgoing.length === 0 && incoming.length === 0 && (
-                              <p className="text-xs text-slate-400 italic">No foreign key predictions for this table.</p>
+                              <p className="text-xs text-slate-400 italic">{tr('mr.re.noFkPredictions')}</p>
                             )}
                           </div>
                         )
@@ -1929,66 +1932,66 @@ function ReviewEditor() {
       {/* Export bar */}
       {reviewData.length > 0 && (
         <div className="card p-5 space-y-3">
-          <h3 className="text-sm font-semibold text-slate-700 dark:text-slate-200">Export & Apply</h3>
+          <h3 className="text-sm font-semibold text-slate-700 dark:text-slate-200">{tr('mr.re.exportApply')}</h3>
           <div className="flex flex-wrap items-center gap-3">
             <select value={ddlCategory} onChange={e => { setDdlCategory(e.target.value); setDdlSql(''); setDdlApplyResult(null) }}
               className="border border-slate-300 dark:border-dbx-navy-400/40 rounded-lg px-3 py-1.5 text-sm bg-white dark:bg-dbx-navy/60 dark:text-slate-200">
-              <option value="comments">Comments</option>
-              <option value="domain">Domain Tags</option>
-              <option value="sensitivity">Sensitivity Tags</option>
+              <option value="comments">{tr('mr.re.comments')}</option>
+              <option value="domain">{tr('mr.re.domainTags')}</option>
+              <option value="sensitivity">{tr('mr.re.sensitivityTags')}</option>
             </select>
             {ddlCategory === 'domain' && (
               <>
-                <input value={customDomainKey} onChange={e => setCustomDomainKey(e.target.value)} placeholder="domain tag key (default: domain)"
+                <input value={customDomainKey} onChange={e => setCustomDomainKey(e.target.value)} placeholder={tr('mr.re.domainKeyPh')}
                   className="border border-slate-300 dark:border-dbx-navy-400/40 rounded px-2 py-1.5 text-sm w-52 bg-white dark:bg-dbx-navy/60 dark:text-slate-200" />
-                <input value={customSubdomainKey} onChange={e => setCustomSubdomainKey(e.target.value)} placeholder="subdomain tag key (default: subdomain)"
+                <input value={customSubdomainKey} onChange={e => setCustomSubdomainKey(e.target.value)} placeholder={tr('mr.re.subdomainKeyPh')}
                   className="border border-slate-300 dark:border-dbx-navy-400/40 rounded px-2 py-1.5 text-sm w-56 bg-white dark:bg-dbx-navy/60 dark:text-slate-200" />
               </>
             )}
             {ddlCategory === 'sensitivity' && (
               <>
-                <input value={customSensitivityKey} onChange={e => setCustomSensitivityKey(e.target.value)} placeholder="classification tag key (default: data_classification)"
+                <input value={customSensitivityKey} onChange={e => setCustomSensitivityKey(e.target.value)} placeholder={tr('mr.re.classKeyPh')}
                   className="border border-slate-300 dark:border-dbx-navy-400/40 rounded px-2 py-1.5 text-sm w-64 bg-white dark:bg-dbx-navy/60 dark:text-slate-200" />
-                <input value={customSensitivityTypeKey} onChange={e => setCustomSensitivityTypeKey(e.target.value)} placeholder="subclassification tag key (default: data_subclassification)"
+                <input value={customSensitivityTypeKey} onChange={e => setCustomSensitivityTypeKey(e.target.value)} placeholder={tr('mr.re.subclassKeyPh')}
                   className="border border-slate-300 dark:border-dbx-navy-400/40 rounded px-2 py-1.5 text-sm w-68 bg-white dark:bg-dbx-navy/60 dark:text-slate-200" />
               </>
             )}
-            <button onClick={generateDdl} disabled={ddlLoading} className="px-4 py-1.5 bg-dbx-oat dark:bg-dbx-navy-500 text-slate-700 dark:text-slate-200 rounded-lg text-sm font-medium hover:bg-dbx-oat-dark dark:hover:bg-dbx-navy-400 disabled:opacity-50">Generate DDL</button>
-            <button onClick={applyDdl} disabled={ddlLoading} className="px-4 py-1.5 bg-dbx-lava text-white rounded-lg text-sm font-medium hover:bg-red-700 disabled:opacity-50">Generate &amp; Apply DDL</button>
+            <button onClick={generateDdl} disabled={ddlLoading} className="px-4 py-1.5 bg-dbx-oat dark:bg-dbx-navy-500 text-slate-700 dark:text-slate-200 rounded-lg text-sm font-medium hover:bg-dbx-oat-dark dark:hover:bg-dbx-navy-400 disabled:opacity-50">{tr('mr.re.generateDdl')}</button>
+            <button onClick={applyDdl} disabled={ddlLoading} className="px-4 py-1.5 bg-dbx-lava text-white rounded-lg text-sm font-medium hover:bg-red-700 disabled:opacity-50">{tr('mr.re.generateApplyDdl')}</button>
             <label className="flex items-center gap-1.5 text-xs text-slate-500 dark:text-slate-400 cursor-pointer select-none"
-              title="Skip objects that already have a comment in Unity Catalog, preserving the existing one instead of overwriting it.">
+              title={tr('mr.re.keepExistingTip')}>
               <input type="checkbox" checked={skipExisting} onChange={e => setSkipExisting(e.target.checked)} className="rounded" />
-              Keep existing comments
+              {tr('mr.re.keepExisting')}
             </label>
             {certifiedPolicy === 'warn' && (
               <label className="flex items-center gap-1.5 text-xs text-slate-500 dark:text-slate-400 cursor-pointer select-none"
-                title="Under the 'warn' policy, the comments/tags on certified assets are overwritten by default (you'll be warned first). Check this to leave them untouched: certified tables/columns are skipped. The asset and its certified status are never changed.">
+                title={tr('mr.re.skipCertifiedTip')}>
                 <input type="checkbox" checked={skipCertified} onChange={e => setSkipCertified(e.target.checked)} className="rounded" />
-                Skip applying to certified assets
+                {tr('mr.re.skipCertified')}
               </label>
             )}
             {certifiedPolicy === 'block' && (
               <span className="flex items-center gap-1.5 text-xs text-emerald-700 dark:text-emerald-300 select-none"
-                title="Deployment policy certified_apply_policy=block: the comments/tags on certified assets are never overwritten and this cannot be overridden here. Uncertify an asset to let its comments/tags be updated.">
-                <span className="px-1 py-0 rounded bg-emerald-100 dark:bg-emerald-900/40 font-medium">policy: block</span>
-                Certified assets are protected
+                title={tr('mr.re.certBlockTip')}>
+                <span className="px-1 py-0 rounded bg-emerald-100 dark:bg-emerald-900/40 font-medium">{tr('mr.re.policyBlock')}</span>
+                {tr('mr.re.certProtected')}
               </span>
             )}
-            <span className="text-[10px] text-slate-400 dark:text-slate-500" title="Apply DDL will execute ALTER TABLE / COMMENT ON statements against your Unity Catalog tables">Apply writes comments and tags to your tables</span>
+            <span className="text-[10px] text-slate-400 dark:text-slate-500" title={tr('mr.re.applyDdlTip')}>{tr('mr.re.applyWrites')}</span>
             {govTags.enabled && (
               <button onClick={publishGovernedTags} disabled={govBusy}
-                title={`Publish the domain as the native UC governed tag "${govTags.key}" (value = domain or domain/subdomain) so tables join UC Domains / the semantic layer. Separate from the ungoverned Domain Tags above; those are unchanged.`}
+                title={tr('mr.re.publishGovTip', { key: govTags.key })}
                 className="px-4 py-1.5 bg-dbx-teal text-white rounded-lg text-sm font-medium hover:bg-teal-700 disabled:opacity-50">
-                {govBusy ? 'Publishing…' : 'Publish governed tags'}
+                {govBusy ? tr('mr.re.publishing') : tr('mr.re.publishGov')}
               </button>
             )}
             <span className="border-l border-slate-300 dark:border-dbx-navy-400/40 h-6" />
-            <button onClick={() => exportVolume('tsv')} disabled={exportLoading} className="px-4 py-1.5 bg-dbx-oat dark:bg-dbx-navy-500 text-slate-700 dark:text-slate-200 rounded-lg text-sm font-medium hover:bg-dbx-oat-dark dark:hover:bg-dbx-navy-400 disabled:opacity-50">Export TSV</button>
-            <button onClick={() => exportVolume('excel')} disabled={exportLoading} className="px-4 py-1.5 bg-dbx-oat dark:bg-dbx-navy-500 text-slate-700 dark:text-slate-200 rounded-lg text-sm font-medium hover:bg-dbx-oat-dark dark:hover:bg-dbx-navy-400 disabled:opacity-50">Export Excel</button>
+            <button onClick={() => exportVolume('tsv')} disabled={exportLoading} className="px-4 py-1.5 bg-dbx-oat dark:bg-dbx-navy-500 text-slate-700 dark:text-slate-200 rounded-lg text-sm font-medium hover:bg-dbx-oat-dark dark:hover:bg-dbx-navy-400 disabled:opacity-50">{tr('mr.re.exportTsv')}</button>
+            <button onClick={() => exportVolume('excel')} disabled={exportLoading} className="px-4 py-1.5 bg-dbx-oat dark:bg-dbx-navy-500 text-slate-700 dark:text-slate-200 rounded-lg text-sm font-medium hover:bg-dbx-oat-dark dark:hover:bg-dbx-navy-400 disabled:opacity-50">{tr('mr.re.exportExcel')}</button>
             <span className="border-l border-slate-300 h-6" />
-            <button onClick={openVolumeBrowser} disabled={importLoading} className="px-4 py-1.5 bg-slate-600 text-white rounded-lg text-sm font-medium hover:bg-slate-700 disabled:opacity-50">Import from Volume</button>
+            <button onClick={openVolumeBrowser} disabled={importLoading} className="px-4 py-1.5 bg-slate-600 text-white rounded-lg text-sm font-medium hover:bg-slate-700 disabled:opacity-50">{tr('mr.re.importFromVolume')}</button>
             <label className={`px-4 py-1.5 bg-slate-600 text-white rounded-lg text-sm font-medium hover:bg-slate-700 cursor-pointer ${importLoading ? 'opacity-50 pointer-events-none' : ''}`}>
-              Upload File
+              {tr('mr.re.uploadFile')}
               <input type="file" accept=".tsv,.xlsx,.xls" onChange={importUpload} className="hidden" />
             </label>
           </div>
@@ -1996,10 +1999,10 @@ function ReviewEditor() {
           {govResult && (govResult.error
             ? <p className="text-sm text-red-600">{govResult.error}</p>
             : govResult.status === 'noop'
-              ? <p className="text-sm text-amber-700 dark:text-amber-300">Governed tags not published: {govResult.reason}</p>
+              ? <p className="text-sm text-amber-700 dark:text-amber-300">{tr('mr.re.govNotPublished', { reason: govResult.reason })}</p>
               : <p className={`text-sm ${(govResult.errors || 0) === 0 ? 'text-green-600' : 'text-amber-700'}`}>
-                  Published governed “{govResult.tag_key}” tag to {govResult.applied} table(s)
-                  {govResult.skipped ? `, skipped ${govResult.skipped}` : ''}{govResult.errors ? `, ${govResult.errors} error(s)` : ''}.
+                  {tr('mr.re.govPublished', { key: govResult.tag_key, n: govResult.applied })}
+                  {govResult.skipped ? tr('mr.re.govSkipped', { n: govResult.skipped }) : ''}{govResult.errors ? tr('mr.re.govErrors', { n: govResult.errors }) : ''}.
                   {govResult.capability_missing && <span className="text-amber-700 dark:text-amber-300"> {govResult.hint}</span>}
                 </p>
           )}
@@ -2007,16 +2010,18 @@ function ReviewEditor() {
             ? <p className="text-sm text-red-600">{ddlApplyResult.detail}</p>
             : <div className="space-y-2">
                 <p className={`text-sm ${ddlApplyResult.ok ? 'text-green-600' : 'text-amber-700'}`}>
-                  Applied {ddlApplyResult.applied} statement(s){ddlApplyResult.errors ? ` of ${ddlApplyResult.applied + ddlApplyResult.errors.length}` : ''}.
+                  {ddlApplyResult.errors
+                    ? tr('mr.re.appliedOfN', { n: ddlApplyResult.applied, total: ddlApplyResult.applied + ddlApplyResult.errors.length })
+                    : tr('mr.re.appliedN', { n: ddlApplyResult.applied })}
                 </p>
                 {ddlApplyResult.blocked?.length > 0 && (
                   <p className="text-sm text-emerald-700 dark:text-emerald-300">
-                    Left the comments/tags on {ddlApplyResult.blocked.length} certified object(s) untouched{certifiedPolicy === 'warn' ? '. Uncheck “Skip applying to certified assets” to overwrite them.' : ' (policy: block).'}
+                    {tr(certifiedPolicy === 'warn' ? 'mr.re.blockedWarn' : 'mr.re.blockedBlock', { n: ddlApplyResult.blocked.length })}
                   </p>
                 )}
                 {ddlApplyResult.skipped?.length > 0 && (
                   <p className="text-sm text-slate-500 dark:text-slate-400">
-                    Kept {ddlApplyResult.skipped.length} existing comment(s) (nothing overwritten).
+                    {tr('mr.re.keptExisting', { n: ddlApplyResult.skipped.length })}
                   </p>
                 )}
                 {ddlApplyResult.errors?.map((e, i) => (
@@ -2031,11 +2036,11 @@ function ReviewEditor() {
               </div>
           )}
           {exportResult && (exportResult.ok
-            ? <p className="text-sm text-green-600">Exported {exportResult.rows} rows to <span className="font-mono text-xs">{exportResult.path}</span></p>
+            ? <p className="text-sm text-green-600">{tr('mr.re.exported', { rows: exportResult.rows })} <span className="font-mono text-xs">{exportResult.path}</span></p>
             : <p className="text-sm text-red-600">{errMsg(exportResult.detail)}</p>)}
           {importResult && (importResult.ok
-            ? <p className="text-sm text-green-600">Imported {importResult.total_rows} rows: {importResult.tables_updated} tables, {importResult.columns_updated} columns updated{importResult.skipped ? `, ${importResult.skipped} skipped` : ''}{importResult.saved_to ? ` (saved to ${importResult.saved_to})` : ''}</p>
-            : <p className="text-sm text-red-600">Import failed: {errMsg(importResult.detail)}</p>)}
+            ? <p className="text-sm text-green-600">{tr('mr.re.imported', { rows: importResult.total_rows, tables: importResult.tables_updated, cols: importResult.columns_updated, extra: `${importResult.skipped ? `, ${importResult.skipped} skipped` : ''}${importResult.saved_to ? ` (saved to ${importResult.saved_to})` : ''}` })}</p>
+            : <p className="text-sm text-red-600">{tr('mr.re.importFailed')} {errMsg(importResult.detail)}</p>)}
           {ddlSql && (
             <div className="relative">
               <pre className="text-xs text-slate-800 dark:text-slate-200 bg-dbx-oat dark:bg-dbx-navy-600 border border-slate-200 dark:border-dbx-navy-400/30 rounded-lg p-3 overflow-auto max-h-64 whitespace-pre-wrap">{ddlSql}</pre>
@@ -2048,49 +2053,48 @@ function ReviewEditor() {
       {/* DDL Bundle -- unified advanced metadata export (advanced view only) */}
       {!simplified && <div className="card p-5 space-y-3">
         <h3 className="text-sm font-semibold text-slate-700 dark:text-slate-200">
-          DDL Bundle <Tip text="Generate a unified SQL script covering comments, domain tags, sensitivity tags, ontology tags, and FK metadata. Export for use in other environments or apply directly." />
+          {tr('mr.re.ddlBundle')} <Tip text={tr('mr.re.ddlBundleTip')} />
         </h3>
         <p className="text-xs text-slate-500 dark:text-slate-400">
-          Select the metadata types to include, then <strong>Generate Bundle</strong> to preview the SQL or <strong>Generate & Apply Bundle</strong> to execute it against your catalog.
-          Use the optional target catalog/schema fields to redirect output to a different location. You can also download or copy the generated SQL for manual review.
+          {tr('mr.re.ddlBundleDesc')}
         </p>
         <p className="text-[10px] text-amber-600 dark:text-amber-400">
-          Applying a bundle will execute SQL statements (COMMENT ON, ALTER TABLE SET TAGS, ADD CONSTRAINT) against your Unity Catalog tables. Existing comments and tags of the selected types will be overwritten.
+          {tr('mr.re.ddlBundleWarn')}
         </p>
         <div className="flex flex-wrap gap-2 items-center">
           {[
-            ['comments', 'Comments'], ['domain', 'Domain'], ['sensitivity', 'Sensitivity'],
-            ['ontology', 'Ontology Tags'], ['fk', 'Foreign Keys'],
+            ['comments', 'mr.re.btComments'], ['domain', 'mr.re.btDomain'], ['sensitivity', 'mr.re.btSensitivity'],
+            ['ontology', 'mr.re.btOntology'], ['fk', 'mr.re.btFk'],
           ].map(([key, label]) => (
             <label key={key} className={`flex items-center gap-1.5 px-3 py-1.5 rounded-lg text-xs font-medium border cursor-pointer select-none transition-all duration-200 ${bundleTypes[key] ? 'bg-dbx-teal/10 border-dbx-teal text-dbx-teal dark:bg-dbx-teal/20 dark:text-dbx-teal-light' : 'bg-white dark:bg-dbx-navy/60 border-slate-300 dark:border-dbx-navy-400/40 text-slate-600 dark:text-slate-400'}`}>
               <input type="checkbox" checked={!!bundleTypes[key]} onChange={() => setBundleTypes(prev => ({ ...prev, [key]: !prev[key] }))} className="sr-only" />
-              {label}
+              {tr(label)}
             </label>
           ))}
           {bundleTypes.fk && (
             <select value={fkMode} onChange={e => setFkMode(e.target.value)}
               className="border border-slate-300 dark:border-dbx-navy-400/40 rounded px-2 py-1 text-xs bg-white dark:bg-dbx-navy/60 dark:text-slate-200">
-              <option value="tags">FK as Tags</option>
-              <option value="constraints">FK as Constraints</option>
+              <option value="tags">{tr('mr.re.fkAsTags')}</option>
+              <option value="constraints">{tr('mr.re.fkAsConstraints')}</option>
             </select>
           )}
         </div>
         <div className="flex flex-wrap items-center gap-3">
-          <input value={bundleTargetCatalog} onChange={e => setBundleTargetCatalog(e.target.value)} placeholder="Target catalog (optional)"
+          <input value={bundleTargetCatalog} onChange={e => setBundleTargetCatalog(e.target.value)} placeholder={tr('mr.re.targetCatalogPh')}
             className="border border-slate-300 dark:border-dbx-navy-400/40 rounded px-2 py-1.5 text-sm w-48 bg-white dark:bg-dbx-navy/60 dark:text-slate-200" />
-          <input value={bundleTargetSchema} onChange={e => setBundleTargetSchema(e.target.value)} placeholder="Target schema (optional)"
+          <input value={bundleTargetSchema} onChange={e => setBundleTargetSchema(e.target.value)} placeholder={tr('mr.re.targetSchemaPh')}
             className="border border-slate-300 dark:border-dbx-navy-400/40 rounded px-2 py-1.5 text-sm w-48 bg-white dark:bg-dbx-navy/60 dark:text-slate-200" />
-          <button onClick={generateBundle} disabled={bundleLoading} className="px-4 py-1.5 bg-dbx-oat dark:bg-dbx-navy-500 text-slate-700 dark:text-slate-200 rounded-lg text-sm font-medium hover:bg-dbx-oat-dark dark:hover:bg-dbx-navy-400 disabled:opacity-50">Generate Bundle</button>
-          <button onClick={applyBundle} disabled={bundleLoading} className="px-4 py-1.5 bg-dbx-lava text-white rounded-lg text-sm font-medium hover:bg-red-700 disabled:opacity-50">Generate & Apply Bundle</button>
+          <button onClick={generateBundle} disabled={bundleLoading} className="px-4 py-1.5 bg-dbx-oat dark:bg-dbx-navy-500 text-slate-700 dark:text-slate-200 rounded-lg text-sm font-medium hover:bg-dbx-oat-dark dark:hover:bg-dbx-navy-400 disabled:opacity-50">{tr('mr.re.generateBundle')}</button>
+          <button onClick={applyBundle} disabled={bundleLoading} className="px-4 py-1.5 bg-dbx-lava text-white rounded-lg text-sm font-medium hover:bg-red-700 disabled:opacity-50">{tr('mr.re.generateApplyBundle')}</button>
           {bundleSql && (
             <>
-              <button onClick={downloadBundleSql} className="px-4 py-1.5 bg-dbx-oat dark:bg-dbx-navy-500 text-slate-700 dark:text-slate-200 rounded-lg text-sm font-medium hover:bg-dbx-oat-dark dark:hover:bg-dbx-navy-400">Download .sql</button>
-              <button onClick={() => navigator.clipboard.writeText(bundleSql)} className="px-4 py-1.5 bg-dbx-oat dark:bg-dbx-navy-500 text-slate-700 dark:text-slate-200 rounded-lg text-sm font-medium hover:bg-dbx-oat-dark dark:hover:bg-dbx-navy-400">Copy SQL</button>
+              <button onClick={downloadBundleSql} className="px-4 py-1.5 bg-dbx-oat dark:bg-dbx-navy-500 text-slate-700 dark:text-slate-200 rounded-lg text-sm font-medium hover:bg-dbx-oat-dark dark:hover:bg-dbx-navy-400">{tr('mr.re.downloadSql')}</button>
+              <button onClick={() => navigator.clipboard.writeText(bundleSql)} className="px-4 py-1.5 bg-dbx-oat dark:bg-dbx-navy-500 text-slate-700 dark:text-slate-200 rounded-lg text-sm font-medium hover:bg-dbx-oat-dark dark:hover:bg-dbx-navy-400">{tr('mr.re.copySql')}</button>
             </>
           )}
         </div>
         {bundleLoading && <p className="text-sm text-slate-500">
-          {bundleApplyProgress ? `Applying: ${bundleApplyProgress.current_section || '...'} (${bundleApplyProgress.total_applied || 0} applied)` : 'Generating DDL bundle...'}
+          {bundleApplyProgress ? `Applying: ${bundleApplyProgress.current_section || '...'} (${bundleApplyProgress.total_applied || 0} applied)` : tr('mr.re.generatingBundle')}
         </p>}
         {bundleError && <p className="text-sm text-red-600">{bundleError}</p>}
         {bundleWarnings && bundleWarnings.length > 0 && (
@@ -2105,12 +2109,12 @@ function ReviewEditor() {
             ))}
           </div>
         )}
-        {bundleVolumePath && <p className="text-xs text-slate-500 dark:text-slate-400 font-mono">Saved to: {bundleVolumePath}</p>}
+        {bundleVolumePath && <p className="text-xs text-slate-500 dark:text-slate-400 font-mono">{tr('mr.re.savedTo')} {bundleVolumePath}</p>}
         {bundleApplyResult && (bundleApplyResult.ok
-          ? <p className="text-sm text-green-600">Applied {bundleApplyResult.applied} statement(s).</p>
+          ? <p className="text-sm text-green-600">{tr('mr.re.appliedN', { n: bundleApplyResult.applied })}</p>
           : bundleApplyResult.detail
             ? <p className="text-sm text-red-600">{bundleApplyResult.detail}</p>
-            : <p className="text-sm text-amber-700">Applied {bundleApplyResult.applied}, {bundleApplyResult.errors} failed.</p>
+            : <p className="text-sm text-amber-700">{tr('mr.re.appliedFailed', { n: bundleApplyResult.applied, errors: bundleApplyResult.errors })}</p>
         )}
         {bundleSql && (
           <div className="relative">
@@ -2122,19 +2126,19 @@ function ReviewEditor() {
       {/* Standalone import section (always visible) */}
       {reviewData.length === 0 && (
         <div className="bg-white dark:bg-slate-800 rounded-xl border border-slate-200 dark:border-slate-600 p-4 shadow-sm space-y-3">
-          <h3 className="text-sm font-semibold text-slate-700 dark:text-slate-200">Import Reviewed Metadata</h3>
-          <p className="text-xs text-slate-500 dark:text-slate-400">Import a previously exported and reviewed TSV or Excel file to update the knowledge base tables.</p>
+          <h3 className="text-sm font-semibold text-slate-700 dark:text-slate-200">{tr('mr.re.importReviewed')}</h3>
+          <p className="text-xs text-slate-500 dark:text-slate-400">{tr('mr.re.importDesc')}</p>
           <div className="flex items-center gap-3">
-            <button onClick={openVolumeBrowser} disabled={importLoading} className="px-4 py-1.5 bg-slate-600 text-white rounded-lg text-sm font-medium hover:bg-slate-700 disabled:opacity-50">Import from Volume</button>
+            <button onClick={openVolumeBrowser} disabled={importLoading} className="px-4 py-1.5 bg-slate-600 text-white rounded-lg text-sm font-medium hover:bg-slate-700 disabled:opacity-50">{tr('mr.re.importFromVolume')}</button>
             <label className={`px-4 py-1.5 bg-slate-600 text-white rounded-lg text-sm font-medium hover:bg-slate-700 cursor-pointer ${importLoading ? 'opacity-50 pointer-events-none' : ''}`}>
-              Upload File
+              {tr('mr.re.uploadFile')}
               <input type="file" accept=".tsv,.xlsx,.xls" onChange={importUpload} className="hidden" />
             </label>
-            {importLoading && <span className="text-sm text-slate-500">Importing...</span>}
+            {importLoading && <span className="text-sm text-slate-500">{tr('mr.re.importing')}</span>}
           </div>
           {importResult && (importResult.ok
-            ? <p className="text-sm text-green-600">Imported {importResult.total_rows} rows: {importResult.tables_updated} tables, {importResult.columns_updated} columns updated{importResult.skipped ? `, ${importResult.skipped} skipped` : ''}</p>
-            : <p className="text-sm text-red-600">Import failed: {errMsg(importResult.detail)}</p>)}
+            ? <p className="text-sm text-green-600">{tr('mr.re.imported', { rows: importResult.total_rows, tables: importResult.tables_updated, cols: importResult.columns_updated, extra: importResult.skipped ? `, ${importResult.skipped} skipped` : '' })}</p>
+            : <p className="text-sm text-red-600">{tr('mr.re.importFailed')} {errMsg(importResult.detail)}</p>)}
         </div>
       )}
 
@@ -2143,18 +2147,18 @@ function ReviewEditor() {
         <div className="fixed inset-0 bg-black/50 backdrop-blur-sm z-50 flex items-center justify-center p-6 animate-fade-in" role="dialog" aria-modal="true">
           <div className="bg-white dark:bg-dbx-navy-650 rounded-2xl shadow-elevated max-w-lg w-full max-h-[70vh] flex flex-col animate-slide-up">
             <div className="flex items-center justify-between px-6 pt-5 pb-3 border-b border-slate-200 dark:border-slate-600">
-              <h3 className="text-sm font-bold text-slate-800 dark:text-slate-100">Select File from Volume</h3>
+              <h3 className="text-sm font-bold text-slate-800 dark:text-slate-100">{tr('mr.re.selectFileVolume')}</h3>
               <button onClick={() => setShowVolumeBrowser(false)} className="text-slate-400 hover:text-slate-600 dark:hover:text-slate-300" aria-label="Close">
                 <svg className="w-5 h-5" fill="none" viewBox="0 0 24 24" stroke="currentColor"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M6 18L18 6M6 6l12 12" /></svg>
               </button>
             </div>
             <div className="flex-1 overflow-y-auto px-6 py-3">
               {volumeFilesLoading ? (
-                <p className="text-sm text-slate-500 py-4">Loading files...</p>
+                <p className="text-sm text-slate-500 py-4">{tr('mr.re.loadingFiles')}</p>
               ) : volumeFilesError ? (
                 <p className="text-sm text-red-600 py-4">{volumeFilesError}</p>
               ) : volumeFiles.length === 0 ? (
-                <p className="text-sm text-slate-400 py-4">No TSV or Excel files found in the volume.</p>
+                <p className="text-sm text-slate-400 py-4">{tr('mr.re.noFilesFound')}</p>
               ) : (
                 <div className="space-y-1">
                   {volumeFiles.map((f, i) => (
@@ -2168,7 +2172,7 @@ function ReviewEditor() {
               )}
             </div>
             <div className="px-6 py-3 border-t border-slate-200 dark:border-slate-600">
-              <button onClick={() => setShowVolumeBrowser(false)} className="px-4 py-1.5 text-sm text-slate-600 dark:text-slate-300 hover:bg-slate-100 dark:hover:bg-slate-700 rounded-lg">Cancel</button>
+              <button onClick={() => setShowVolumeBrowser(false)} className="px-4 py-1.5 text-sm text-slate-600 dark:text-slate-300 hover:bg-slate-100 dark:hover:bg-slate-700 rounded-lg">{tr('common.cancel')}</button>
             </div>
           </div>
         </div>
@@ -2178,7 +2182,8 @@ function ReviewEditor() {
 }
 
 function EditableTableKB({ rows, original, setRows }) {
-  if (!rows?.length) return <p className="text-sm text-slate-400 py-4">No data available.</p>
+  const { t } = useLanguage()
+  if (!rows?.length) return <p className="text-sm text-slate-400 py-4">{t('mr.re.noData')}</p>
   const editable = ['comment', 'domain', 'subdomain']
   const otherCols = ['table_name', 'catalog', 'schema', 'table_short_name', 'has_pii', 'has_phi', 'created_at', 'updated_at', 'review_updated_at'].filter(c => rows[0] && c in rows[0])
   const onChange = (i, field, value) => {
@@ -2212,7 +2217,8 @@ function EditableTableKB({ rows, original, setRows }) {
 }
 
 function EditableColumnKB({ rows, original, setRows }) {
-  if (!rows?.length) return <p className="text-sm text-slate-400 py-4">No data available.</p>
+  const { t } = useLanguage()
+  if (!rows?.length) return <p className="text-sm text-slate-400 py-4">{t('mr.re.noData')}</p>
   const editable = ['comment', 'classification']
   const otherCols = ['column_id', 'table_name', 'schema', 'column_name', 'data_type', 'confidence', 'created_at', 'updated_at', 'review_updated_at'].filter(c => rows[0] && c in rows[0])
   const onChange = (i, field, value) => {
@@ -2246,7 +2252,8 @@ function EditableColumnKB({ rows, original, setRows }) {
 }
 
 function EditableSchemaKB({ rows, original, setRows }) {
-  if (!rows?.length) return <p className="text-sm text-slate-400 py-4">No data available.</p>
+  const { t } = useLanguage()
+  if (!rows?.length) return <p className="text-sm text-slate-400 py-4">{t('mr.re.noData')}</p>
   const editable = ['comment', 'domain']
   const otherCols = ['schema_id', 'catalog', 'schema_name', 'has_pii', 'has_phi', 'table_count', 'created_at', 'updated_at', 'review_updated_at'].filter(c => rows[0] && c in rows[0])
   const onChange = (i, field, value) => {
@@ -2280,6 +2287,7 @@ function EditableSchemaKB({ rows, original, setRows }) {
 }
 
 function EntityTagsPanel() {
+  const { t } = useLanguage()
   const [entities, setEntities] = useState([])
   const [relationships, setRelationships] = useState([])
   const [error, setError] = useState(null)
@@ -2342,11 +2350,11 @@ function EntityTagsPanel() {
     <div className="card p-6">
       <ErrorBanner error={error} />
       <div className="flex items-center justify-between mb-4">
-        <h2 className="text-lg font-semibold text-slate-800">Discovered Entities</h2>
+        <h2 className="text-lg font-semibold text-slate-800">{t('mr.et.discovered')}</h2>
         {selected.size > 0 && (
           <button onClick={applyToTable} disabled={applying}
             className="px-4 py-1.5 bg-dbx-lava text-white rounded-lg text-sm font-medium hover:bg-red-700 disabled:opacity-50">
-            Apply tags ({selected.size})
+            {t('mr.et.applyTags', { n: selected.size })}
           </button>
         )}
       </div>
@@ -2356,13 +2364,13 @@ function EntityTagsPanel() {
         </div>
       )}
       {groupedEntities.length === 0
-        ? <p className="text-sm text-slate-400">No entities discovered yet.</p>
+        ? <p className="text-sm text-slate-400">{t('mr.et.noneDiscovered')}</p>
         : <div className="overflow-x-auto">
             <table className="min-w-full text-sm">
               <thead><tr>
                 <th className="w-10 px-2 py-2.5 bg-dbx-oat border-b border-slate-200"></th>
-                {['Entity', 'Type', 'Conf', 'Validated', 'Source Tables', 'Columns / Bindings'].map(h =>
-                  <th key={h} className="text-left px-3 py-2.5 bg-dbx-oat font-semibold text-slate-800 dark:text-slate-200 border-b border-slate-200 text-xs uppercase tracking-wider">{h}</th>)}
+                {['mr.et.hdrEntity', 'mr.et.hdrType', 'mr.et.hdrConf', 'mr.et.hdrValidated', 'mr.et.hdrSourceTables', 'mr.et.hdrColumnsBindings'].map(h =>
+                  <th key={h} className="text-left px-3 py-2.5 bg-dbx-oat font-semibold text-slate-800 dark:text-slate-200 border-b border-slate-200 text-xs uppercase tracking-wider">{t(h)}</th>)}
               </tr></thead>
               <tbody>
                 {groupedEntities.map((e, i) => {
@@ -2381,7 +2389,7 @@ function EntityTagsPanel() {
                         <td className="px-3 py-2 font-medium text-slate-700">{e.entity_name}</td>
                         <td className="px-3 py-2"><span className="inline-block bg-orange-100 text-red-700 text-xs font-medium px-2 py-0.5 rounded-full">{e.entity_type}</span></td>
                         <td className="px-3 py-2 text-slate-600">{Number(e.confidence).toFixed(2)}</td>
-                        <td className="px-3 py-2">{e.validated === 'true' || e.validated === true ? <span className="text-emerald-600 font-medium">Yes</span> : <span className="text-slate-400">No</span>}</td>
+                        <td className="px-3 py-2">{e.validated === 'true' || e.validated === true ? <span className="text-emerald-600 font-medium">{t('mr.et.yes')}</span> : <span className="text-slate-400">{t('mr.et.no')}</span>}</td>
                         <td className="px-3 py-2 max-w-xs truncate text-slate-500">{Array.isArray(e.source_tables) ? e.source_tables.map(shortName).join(', ') : String(e.source_tables ?? '')}</td>
                         <td className="px-3 py-2">{hasDetail ? (
                           <button onClick={() => setExpanded(prev => { const n = new Set(prev); n.has(i) ? n.delete(i) : n.add(i); return n })}
@@ -2392,9 +2400,9 @@ function EntityTagsPanel() {
                       </tr>
                       {isExpanded && hasDetail && (
                         <tr className="bg-slate-50/60"><td></td><td colSpan={6} className="px-3 py-2">
-                          {bindings.length > 0 && <div className="mb-1"><span className="text-xs font-semibold text-slate-500 mr-2">Attribute mappings:</span>
+                          {bindings.length > 0 && <div className="mb-1"><span className="text-xs font-semibold text-slate-500 mr-2">{t('mr.et.attributeMappings')}</span>
                             <span className="flex flex-wrap gap-1 mt-0.5">{bindings.map((b, bi) => <span key={bi} className="inline-block bg-indigo-50 text-indigo-700 text-xs px-1.5 py-0.5 rounded">{b.attribute_name || '?'} &larr; {shortName(b.bound_column || '')}</span>)}</span></div>}
-                          {srcCols.length > 0 && bindings.length === 0 && <div><span className="text-xs font-semibold text-slate-500 mr-2">Source columns:</span><span className="text-xs text-slate-600">{srcCols.join(', ')}</span></div>}
+                          {srcCols.length > 0 && bindings.length === 0 && <div><span className="text-xs font-semibold text-slate-500 mr-2">{t('mr.et.sourceColumns')}</span><span className="text-xs text-slate-600">{srcCols.join(', ')}</span></div>}
                         </td></tr>
                       )}
                     </React.Fragment>
@@ -2409,6 +2417,7 @@ function EntityTagsPanel() {
 }
 
 export default function MetadataReview({ onNavigate, pipelineStats }) {
+  const { t } = useLanguage()
   const [tab, setTab] = useState('editor')
   const [data, setData] = useState([])
   const [original, setOriginal] = useState([])
@@ -2547,55 +2556,55 @@ export default function MetadataReview({ onNavigate, pipelineStats }) {
 
   return (
     <div className="space-y-4">
-      <PageHeader title="Review & Apply" subtitle="Inspect AI-generated metadata, make corrections, then apply approved changes to Unity Catalog" />
+      <PageHeader title={t('mr.pageTitle')} subtitle={t('mr.pageSubtitle')} />
       <ErrorBanner error={error} />
       <PrereqBanner
         show={pipelineStats && pipelineStats.profiled === 0}
-        message="No metadata generated yet. Run Generate Metadata (Step 1) first to produce results you can review here."
-        actionLabel="Go to Generate Metadata"
+        message={t('mr.prereqMsg')}
+        actionLabel={t('mr.prereqAction')}
         onAction={() => onNavigate?.('jobs')}
       />
       <div className="flex flex-wrap items-center gap-4">
         <div className="inline-flex bg-dbx-oat/60 dark:bg-dbx-navy-650 rounded-xl p-1 shadow-inner-soft">
-          {[['editor', 'Review Editor'], ['fk_apply', 'FK Apply'], ['entity_tags', 'Entity Tags'], ['kb', 'Table KB'], ['columns', 'Column KB'], ['schemas', 'Schema KB'], ['log', 'Generation Log']]
+          {[['editor', 'mr.tab.editor'], ['fk_apply', 'FK Apply'], ['entity_tags', 'Entity Tags'], ['kb', 'Table KB'], ['columns', 'Column KB'], ['schemas', 'Schema KB'], ['log', 'mr.tab.log']]
             // NOTE: Only 'editor' and 'log' are shipped for now.
             // The other tabs (fk_apply, entity_tags, kb, columns, schemas) are stubbed out
             // for future release -- keep the code but hide the tabs until ready.
             .filter(([k]) => ['editor', 'log'].includes(k))
             .map(([k, l]) => (
             <button key={k} onClick={() => setTab(k)}
-              className={`px-3.5 py-1.5 text-sm rounded-lg transition-all duration-200 ${tab === k ? 'bg-white dark:bg-dbx-navy-500 shadow-sm font-semibold text-dbx-lava' : 'text-slate-500 dark:text-slate-400 hover:text-slate-700 dark:hover:text-slate-200'}`}>{l}</button>
+              className={`px-3.5 py-1.5 text-sm rounded-lg transition-all duration-200 ${tab === k ? 'bg-white dark:bg-dbx-navy-500 shadow-sm font-semibold text-dbx-lava' : 'text-slate-500 dark:text-slate-400 hover:text-slate-700 dark:hover:text-slate-200'}`}>{t(l)}</button>
           ))}
         </div>
         <span className="text-[10px] text-slate-400 dark:text-slate-500">
-          {tab === 'editor' && 'Edit comments, PII flags, domains, ontology, and FK metadata per table. Use DDL Bundle below to apply.'}
-          {tab === 'log' && 'Raw generation log showing every LLM call result -- useful for debugging or auditing.'}
+          {tab === 'editor' && t('mr.desc.editor')}
+          {tab === 'log' && t('mr.desc.log')}
         </span>
         {!['editor', 'fk_apply', 'entity_tags'].includes(tab) && <>
           {tab === 'schemas' && (
-            <input value={filterExtra} onChange={e => setFilterExtra(e.target.value)} placeholder="Filter by schema name..."
+            <input value={filterExtra} onChange={e => setFilterExtra(e.target.value)} placeholder={t('mr.filterBySchema')}
               className="border border-slate-300 rounded-lg px-3 py-1.5 text-sm w-48 focus:ring-2 focus:ring-orange-500" aria-label="Filter by schema name" />
           )}
           {(tab === 'kb' || tab === 'log') && (
             <>
-              <input value={filterTable} onChange={e => setFilterTable(e.target.value)} placeholder="Filter by table name..."
+              <input value={filterTable} onChange={e => setFilterTable(e.target.value)} placeholder={t('mr.filterByTable')}
                 className="border border-slate-300 rounded-lg px-3 py-1.5 text-sm w-48 focus:ring-2 focus:ring-orange-500" aria-label="Filter by table name" />
-              {tab === 'kb' && <input value={filterExtra} onChange={e => setFilterExtra(e.target.value)} placeholder="Schema name (exact)"
+              {tab === 'kb' && <input value={filterExtra} onChange={e => setFilterExtra(e.target.value)} placeholder={t('mr.schemaExact')}
                 className="border border-slate-300 rounded-lg px-3 py-1.5 text-sm w-40 focus:ring-2 focus:ring-orange-500" aria-label="Filter by schema name" />}
             </>
           )}
           {tab === 'columns' && (
             <>
-              <input value={filterTable} onChange={e => setFilterTable(e.target.value)} placeholder="Filter by table name..."
+              <input value={filterTable} onChange={e => setFilterTable(e.target.value)} placeholder={t('mr.filterByTable')}
                 className="border border-slate-300 rounded-lg px-3 py-1.5 text-sm w-48 focus:ring-2 focus:ring-orange-500" aria-label="Filter by table name" />
-              <input value={filterExtra} onChange={e => setFilterExtra(e.target.value)} placeholder="Filter by column name..."
+              <input value={filterExtra} onChange={e => setFilterExtra(e.target.value)} placeholder={t('mr.filterByColumn')}
                 className="border border-slate-300 rounded-lg px-3 py-1.5 text-sm w-48 focus:ring-2 focus:ring-orange-500" aria-label="Filter by column name" />
             </>
           )}
-          <button onClick={() => load(tab)} className="px-4 py-1.5 bg-dbx-oat text-slate-700 rounded-lg text-sm font-medium hover:bg-dbx-oat-dark">Search</button>
+          <button onClick={() => load(tab)} className="px-4 py-1.5 bg-dbx-oat text-slate-700 rounded-lg text-sm font-medium hover:bg-dbx-oat-dark">{t('mr.search')}</button>
           {isEditable && modifiedCount > 0 && (
             <button onClick={handleUpdate} disabled={saving}
-              className="px-4 py-1.5 bg-dbx-lava text-white rounded-lg text-sm font-medium hover:bg-red-700 shadow-sm disabled:opacity-50">Save changes ({modifiedCount})</button>
+              className="px-4 py-1.5 bg-dbx-lava text-white rounded-lg text-sm font-medium hover:bg-red-700 shadow-sm disabled:opacity-50">{t('mr.saveChanges')} ({modifiedCount})</button>
           )}
         </>}
       </div>
@@ -2603,7 +2612,7 @@ export default function MetadataReview({ onNavigate, pipelineStats }) {
        tab === 'fk_apply' ? <FKApplyPanel /> :
        tab === 'entity_tags' ? <EntityTagsPanel /> : (
         <div className="bg-white dark:bg-slate-800 rounded-xl border border-slate-200 dark:border-slate-600 p-4 shadow-sm">
-          {loading ? <p className="text-sm text-slate-400 py-4">Loading...</p> : (
+          {loading ? <p className="text-sm text-slate-400 py-4">{t('mr.loading')}</p> : (
             tab === 'log' ? <DataTable data={data} /> : (
               tab === 'kb' ? <EditableTableKB rows={data} original={original} setRows={setData} /> :
               tab === 'columns' ? <EditableColumnKB rows={data} original={original} setRows={setData} /> :
@@ -2615,10 +2624,10 @@ export default function MetadataReview({ onNavigate, pipelineStats }) {
 
       {(tab === 'kb' || tab === 'columns' || tab === 'schemas') && (
         <div className="bg-dbx-oat-light rounded-xl border border-slate-200 p-4 shadow-sm space-y-3">
-          <h3 className="text-sm font-semibold text-slate-700">Generate SQL / Apply DDL</h3>
-          <p className="text-[10px] text-amber-600">Apply DDL will execute COMMENT ON and ALTER TABLE SET TAGS statements directly on your Unity Catalog tables. Existing comments and tags will be overwritten.</p>
+          <h3 className="text-sm font-semibold text-slate-700">{t('mr.genApplyTitle')}</h3>
+          <p className="text-[10px] text-amber-600">{t('mr.applyDdlWarning')}</p>
           <div className="flex flex-wrap items-center gap-4">
-            <span className="text-sm text-slate-600">Scope:</span>
+            <span className="text-sm text-slate-600">{t('mr.scopeLabel')}</span>
             {['table', 'schema', 'column'].map(s => (
               <label key={s} className="inline-flex items-center gap-1.5">
                 <input type="radio" name="ddlScope" checked={ddlScope === s} onChange={() => setDdlScope(s)} className="rounded border-slate-300" />
@@ -2626,16 +2635,16 @@ export default function MetadataReview({ onNavigate, pipelineStats }) {
               </label>
             ))}
             <input value={ddlIdentifiers} onChange={e => setDdlIdentifiers(e.target.value)}
-              placeholder={ddlScope === 'table' ? 'Table names (optional, comma/newline)' : ddlScope === 'schema' ? 'Schema names (optional)' : 'Column IDs or table names (optional)'}
+              placeholder={ddlScope === 'table' ? t('mr.ddlTablePlaceholder') : ddlScope === 'schema' ? t('mr.ddlSchemaPlaceholder') : t('mr.ddlColumnPlaceholder')}
               className="border border-slate-300 rounded-lg px-3 py-1.5 text-sm flex-1 min-w-[12rem] focus:ring-2 focus:ring-orange-500" />
-            <button onClick={runGenerateDdl} disabled={ddlLoading} className="px-4 py-1.5 bg-dbx-oat text-slate-700 rounded-lg text-sm font-medium hover:bg-dbx-oat-dark disabled:opacity-50">Generate SQL</button>
-            <button onClick={runApplyDdl} disabled={ddlLoading} className="px-4 py-1.5 bg-dbx-lava text-white rounded-lg text-sm font-medium hover:bg-red-700 disabled:opacity-50">Apply DDL</button>
+            <button onClick={runGenerateDdl} disabled={ddlLoading} className="px-4 py-1.5 bg-dbx-oat text-slate-700 rounded-lg text-sm font-medium hover:bg-dbx-oat-dark disabled:opacity-50">{t('mr.genSql')}</button>
+            <button onClick={runApplyDdl} disabled={ddlLoading} className="px-4 py-1.5 bg-dbx-lava text-white rounded-lg text-sm font-medium hover:bg-red-700 disabled:opacity-50">{t('mr.applyDdl')}</button>
           </div>
           {ddlApplyResult && (ddlApplyResult.ok ? <p className="text-sm text-green-600">Applied {ddlApplyResult.applied} statement(s).</p> : <p className="text-sm text-red-600">{JSON.stringify(ddlApplyResult.detail)}</p>)}
           {ddlSql && (
             <div className="relative">
               <pre className="text-xs bg-dbx-oat border border-slate-200 rounded-lg p-3 overflow-auto max-h-64 whitespace-pre-wrap">{ddlSql}</pre>
-              <button type="button" onClick={() => navigator.clipboard.writeText(ddlSql)} className="absolute top-2 right-2 px-2 py-1 bg-dbx-oat-light border border-slate-200 rounded text-xs hover:bg-dbx-oat">Copy</button>
+              <button type="button" onClick={() => navigator.clipboard.writeText(ddlSql)} className="absolute top-2 right-2 px-2 py-1 bg-dbx-oat-light border border-slate-200 rounded text-xs hover:bg-dbx-oat">{t('common.copy')}</button>
             </div>
           )}
         </div>

@@ -121,6 +121,21 @@ _AVAILABLE_MODELS = [
     "databricks-gpt-oss-120b",
 ]
 
+_OUTPUT_LANGUAGE = os.environ.get("OUTPUT_LANGUAGE", "").strip().lower()
+
+
+def _lang_directive() -> str:
+    """Output-language instruction appended to user-visible LLM prompts.
+    Empty (default) keeps English. Only natural-language prose is translated;
+    identifiers/SQL/formulas/JSON keys stay in English so queries don't break."""
+    if _OUTPUT_LANGUAGE in ("ko", "korean", "한국어"):
+        return ("\n\nIMPORTANT OUTPUT LANGUAGE: Write ALL natural-language text "
+                "(names, display names, descriptions, comments, questions, prose paragraphs) "
+                "in Korean (한국어). KEEP in English/unchanged: SQL expressions, column/table/view names, "
+                "formulas, JSON keys, format type values, enum/code literals, proper nouns "
+                "(FHIR R4, FIBO, OMOP, schema.org, etc.), and any identifier.")
+    return ""
+
 # Serving-endpoint names are a constrained identifier charset (letters, digits,
 # and _ . -). AI_QUERY's first arg is a literal that CANNOT be a bind parameter,
 # so a request-supplied model name is interpolated into SQL -- validate it here
@@ -536,6 +551,35 @@ _CONFIG_ERRORS: list[str] = _compute_config_errors(CATALOG, os.environ.get("WARE
 
 def fq(table: str) -> str:
     return f"`{CATALOG}`.`{SCHEMA}`.`{table}`"
+
+
+# Optional timezone for user-facing timestamps that become FILE NAMES and version
+# identifiers (export files, DDL bundles), e.g. DISPLAY_TZ=Asia/Seoul so the names match
+# the users' local time. DB-stored timestamps stay UTC. Unset (default) keeps the
+# container's local time, i.e. the previous behavior.
+_DISPLAY_TZ = os.environ.get("DISPLAY_TZ", "").strip()
+
+
+def _display_now():
+    """Current time in DISPLAY_TZ, or the container's local time when unset."""
+    from datetime import datetime as _d
+    if _DISPLAY_TZ:
+        try:
+            from zoneinfo import ZoneInfo
+            return _d.now(ZoneInfo(_DISPLAY_TZ))
+        except Exception:
+            pass
+    return _d.now()
+
+
+def _file_ts() -> str:
+    """Timestamp for file names / version ids, in the display tz: YYYYmmdd_HHMMSS."""
+    return _display_now().strftime("%Y%m%d_%H%M%S")
+
+
+def _file_date() -> str:
+    """Date for file paths, in the display tz: YYYYmmdd."""
+    return _display_now().strftime("%Y%m%d")
 
 
 # Safe for use in LIKE/WHERE: alphanumeric, underscore, dot, hyphen, space, %
@@ -2106,8 +2150,8 @@ def generate_ddl(body: GenerateDDLBody):
     vol_path = None
     if stmts:
         from datetime import datetime
-        ts = datetime.now().strftime("%Y%m%d_%H%M%S")
-        current_date = datetime.now().strftime("%Y%m%d")
+        ts = _file_ts()
+        current_date = _file_date()
         volume_name = os.environ.get("VOLUME_NAME", "generated_metadata")
         ws = _get_effective_client()
         current_user = "app"
@@ -2615,8 +2659,8 @@ def generate_ddl_bundle(body: DDLBundleBody):
     vol_path = None
     if total_count > 0:
         from datetime import datetime
-        ts = datetime.now().strftime("%Y%m%d_%H%M%S")
-        current_date = datetime.now().strftime("%Y%m%d")
+        ts = _file_ts()
+        current_date = _file_date()
         volume_name = os.environ.get("VOLUME_NAME", "generated_metadata")
         ws = _get_effective_client()
         current_user = "app"
@@ -2993,8 +3037,8 @@ def export_to_volume(body: ExportVolumeRequest):
     if not rows:
         raise HTTPException(400, "No data to export")
 
-    ts = datetime.now().strftime("%Y%m%d_%H%M%S")
-    current_date = datetime.now().strftime("%Y%m%d")
+    ts = _file_ts()
+    current_date = _file_date()
     volume_name = os.environ.get("VOLUME_NAME", "generated_metadata")
     ws = _get_effective_client()
     current_user = "app"
@@ -3195,8 +3239,7 @@ async def import_reviewed_upload(file: UploadFile = File(...)):
         current_user = ws.current_user.me().user_name.split("@")[0]
     except Exception:
         pass
-    from datetime import datetime
-    current_date = datetime.now().strftime("%Y%m%d")
+    current_date = _file_date()
     vol_path = f"/Volumes/{CATALOG}/{SCHEMA}/{volume_name}/{current_user}/reviewed_outputs/{current_date}/{filename}"
     try:
         ws.files.upload(vol_path, io.BytesIO(content), overwrite=True)
@@ -9589,7 +9632,7 @@ CATALOG METADATA:
 QUESTIONS this view answers:
 {q_block}
 
-OUTPUT (one JSON object only, no array, no explanation):"""
+OUTPUT (one JSON object only, no array, no explanation):""" + _lang_directive()
 
 
 def _parse_single_json_safe(response: str) -> dict:
@@ -9639,7 +9682,7 @@ CATALOG METADATA:
 QUESTIONS this view should help answer:
 {q_block}
 
-OUTPUT (one JSON object only, no array, no explanation):"""
+OUTPUT (one JSON object only, no array, no explanation):""" + _lang_directive()
 
 
 def _batch_generate_views(
@@ -12223,7 +12266,7 @@ Generate exactly {count} questions that a BUSINESS LEADER would ask to track org
 - Prefer questions that decompose into a measure (SUM, AVG, COUNT) and dimensions (time, category, region)
 - Do NOT mention column names, table names, or SQL concepts -- use business language only
 {existing_block}
-Return ONLY a JSON array of strings, no other text."""
+Return ONLY a JSON array of strings, no other text.""" + _lang_directive()
     else:
         prompt = f"""You are a data analyst helping business users explore their data through a natural language SQL interface.
 {biz_ctx_block}
@@ -12237,7 +12280,7 @@ Generate exactly {count} questions that a BUSINESS USER would naturally ask. Rul
 - Focus on trends, comparisons, rankings, anomalies, and KPIs
 - Vary the question types: aggregations, time-series trends, top-N, filters, comparisons
 {existing_block}
-Return ONLY a JSON array of strings, no other text."""
+Return ONLY a JSON array of strings, no other text.""" + _lang_directive()
 
     llm = ChatDatabricks(endpoint=model_endpoint, temperature=0.7, max_tokens=2048)
     response = llm.invoke(prompt)
@@ -12377,7 +12420,7 @@ Generate exactly {req.count} questions that a BUSINESS LEADER would ask to track
 - Do NOT mention column names, table names, or SQL concepts -- use business language only
 - A business user who USES the data but doesn't know the data model should understand every question
 {existing_block}
-Return ONLY a JSON array of strings, no other text."""
+Return ONLY a JSON array of strings, no other text.""" + _lang_directive()
     elif mv_only:
         prompt = f"""You are a data analyst helping business users explore pre-defined metric views through a natural language SQL interface (Databricks Genie).
 {biz_ctx_block}
@@ -12394,7 +12437,7 @@ Generate exactly {req.count} questions that a BUSINESS USER would naturally ask 
 - Do NOT reference column names, table names, SQL concepts, or MEASURE() syntax -- use business language only
 - Do NOT ask about concepts not represented in the metric views (no products, orders, invoices unless those are actual measures/dimensions listed)
 {existing_block}
-Return ONLY a JSON array of strings, no other text."""
+Return ONLY a JSON array of strings, no other text.""" + _lang_directive()
     else:
         prompt = f"""You are a data analyst helping business users explore their data through a natural language SQL interface (Databricks Genie).
 {biz_ctx_block}
@@ -12411,7 +12454,7 @@ Generate exactly {req.count} questions that a BUSINESS USER would naturally ask.
 - Do NOT reference column names, table names, or technical schema details
 - A business user who USES the data but doesn't know the data model should understand every question
 {existing_block}
-Return ONLY a JSON array of strings, no other text."""
+Return ONLY a JSON array of strings, no other text.""" + _lang_directive()
 
     llm = ChatDatabricks(endpoint=req.model_endpoint, temperature=0.7, max_tokens=2048)
     response = llm.invoke(prompt)
@@ -13418,6 +13461,12 @@ class GenieAnalyzeRequest(BaseModel):
     model_endpoint: str = _LLM_MODEL
 
 
+class GenieFixValidationRequest(BaseModel):
+    serialized_space: dict
+    table_identifiers: list[str] = []
+    model_endpoint: str = _LLM_MODEL
+
+
 @app.post("/api/genie/validate-sql")
 def genie_validate_sql(req: GenieValidateSqlRequest):
     """Test a SQL statement for syntax/reference errors via LIMIT 0 dry-run."""
@@ -13509,6 +13558,123 @@ def genie_dry_run(req: GenieDryRunRequest):
     })
 
     return results
+
+
+@app.post("/api/genie/fix-validation")
+def genie_fix_validation(req: GenieFixValidationRequest):
+    """Targeted repair of validation issues (join consistency, example SQL
+    execution errors, quality warnings) via a single LLM pass.
+
+    Unlike /api/genie/improve (which re-runs the full multi-round agent and can
+    plateau), this takes the dry-run validation report, asks the LLM to fix ONLY
+    the failing example-SQL queries (rewrite) and add missing joins, then
+    re-validates each rewritten query with a LIMIT 0 dry-run and keeps only the
+    ones that now pass. Everything else in the space is preserved verbatim.
+    Returns the patched serialized_space for the editor to load; it is NOT
+    pushed to Genie here (the user reviews and clicks Update Space)."""
+    wh = os.environ.get("WAREHOUSE_ID", "")
+    if not wh:
+        raise HTTPException(500, detail="WAREHOUSE_ID not configured")
+
+    ss = req.serialized_space
+    inst = ss.get("instructions", {}) or {}
+    examples = inst.get("example_sql", inst.get("example_question_sqls", [])) or []
+
+    # 1) Run the same validation the UI panel shows, to find concrete failures.
+    report = genie_dry_run(GenieDryRunRequest(
+        serialized_space=ss, table_identifiers=req.table_identifiers,
+    ))
+    failing_checks = [c for c in report.get("checks", []) if not c.get("passed")]
+    if not failing_checks:
+        return {"serialized_space": ss, "changed": False, "fixed": [], "unfixed": [],
+                "message": "No validation issues to fix."}
+
+    # 2) Re-validate each example SQL individually to pair the exact error with
+    #    its query (the panel truncates to 80 chars, which is not enough to fix).
+    def _sql_of(ex):
+        s = ex.get("sql", "")
+        return (s[0] if s else "") if isinstance(s, list) else s
+
+    sql_errors = []  # (index, sql, error)
+    for i, ex in enumerate(examples):
+        sql_val = (_sql_of(ex) or "").strip().rstrip(";")
+        if not sql_val:
+            continue
+        try:
+            execute_sql(f"SELECT * FROM ({sql_val}) t LIMIT 0", timeout=20)
+        except Exception as e:
+            err = e.detail if hasattr(e, "detail") else str(e)
+            sql_errors.append((i, sql_val, err))
+
+    # 3) Build table/column context so the LLM fixes against real schema.
+    try:
+        from dbxmetagen.genie.context import GenieContextAssembler
+        ws = _get_effective_client()
+        cat = os.environ.get("CATALOG_NAME", "")
+        sch = os.environ.get("SCHEMA_NAME", "")
+        _ds = ss.get("data_sources", {}) or {}
+        table_ids = req.table_identifiers or [t.get("identifier", "") for t in _ds.get("tables", []) if t.get("identifier")]
+        assembler = GenieContextAssembler(ws, wh, cat, sch)
+        ctx_text = assembler.assemble(table_ids).get("context_text", "")[:6000]
+    except Exception as e:
+        logger.warning("fix-validation: context assembly failed: %s", e)
+        ctx_text = ""
+
+    fixed, unfixed = [], []
+
+    # 4) Fix each failing example SQL with a single targeted LLM call, then
+    #    re-validate; only replace if the rewrite actually passes.
+    if sql_errors:
+        from databricks_langchain import ChatDatabricks
+        llm = ChatDatabricks(endpoint=req.model_endpoint, temperature=0.0, max_tokens=2048, max_retries=1, request_timeout=120)
+        for idx, sql_val, err in sql_errors:
+            question = ""
+            q_raw = examples[idx].get("question", "")
+            question = q_raw[0] if isinstance(q_raw, list) and q_raw else (q_raw if isinstance(q_raw, str) else "")
+            messages = [
+                {"role": "system", "content": (
+                    "You fix a single Databricks SQL query that failed validation. "
+                    "Return ONLY the corrected SQL statement -- no markdown fences, no explanation. "
+                    "Rules: reference only columns that exist in the provided table metadata; "
+                    "back-quote identifiers that are non-ASCII or contain spaces (e.g. `구제승인`); "
+                    "balance all parentheses; keep the query's analytical intent; "
+                    "use standard Spark SQL functions. Do NOT invent columns."
+                )},
+                {"role": "user", "content": (
+                    f"Table metadata:\n{ctx_text}\n\n"
+                    f"Question the query should answer:\n{question}\n\n"
+                    f"Failing SQL:\n{sql_val}\n\n"
+                    f"Validation error:\n{err}\n\n"
+                    f"Return the corrected SQL only."
+                )},
+            ]
+            try:
+                raw = (getattr(llm.invoke(messages), "content", "") or "").strip()
+                # strip accidental fences
+                raw = re.sub(r"^```(?:sql)?\s*", "", raw)
+                raw = re.sub(r"\s*```$", "", raw).strip().rstrip(";")
+                if not raw:
+                    unfixed.append({"index": idx, "error": "empty LLM response"})
+                    continue
+                execute_sql(f"SELECT * FROM ({raw}) t LIMIT 0", timeout=20)
+            except Exception as e2:
+                err2 = e2.detail if hasattr(e2, "detail") else str(e2)
+                unfixed.append({"index": idx, "error": err2[:200]})
+                continue
+            # Replace in-place, preserving the original list/string shape.
+            orig = examples[idx].get("sql", "")
+            examples[idx]["sql"] = [raw] if isinstance(orig, list) else raw
+            fixed.append({"index": idx, "question": question[:120]})
+
+    changed = len(fixed) > 0
+    return {
+        "serialized_space": ss,
+        "changed": changed,
+        "fixed": fixed,
+        "unfixed": unfixed,
+        "remaining_checks": [c["name"] for c in failing_checks if c["name"] != "example_sql"],
+        "message": (f"Fixed {len(fixed)} query(ies)." if changed else "No queries could be auto-fixed."),
+    }
 
 
 def _compute_health_score(ss: dict, semantic_gap_result: dict | None = None) -> dict:
@@ -13892,6 +14058,7 @@ def genie_analyze(req: GenieAnalyzeRequest):
                     "'Partially answerable' (score 1) means the data exists but joins or measures are missing. "
                     "'Unanswerable' (score 0) means the required tables or data are not in the space.\n"
                     "Output JSON in ```json``` fences: {\"questions\": [{\"question\": \"...\", \"score\": 0|1|2, \"reason\": \"...\"}]}"
+                    + _lang_directive()
                 )},
                 {"role": "user", "content": (
                     f"Genie space configuration:\n{space_config}\n\n"
@@ -13960,6 +14127,7 @@ def genie_analyze(req: GenieAnalyzeRequest):
                         "and are already queryable. Don't flag them as missing anything.\n"
                         "Focus suggestions on actionable gaps in the analytical tables and space configuration.\n"
                         "Output a JSON array of objects with keys: section, severity (high/medium/low), message, action."
+                        + _lang_directive()
                     )},
                     {"role": "user", "content": (
                         f"Analyze this Genie space for gaps.\n\nSpace summary:\n{space_summary}\n\n"
@@ -14972,7 +15140,7 @@ For each KPI provide:
 - domain: business domain (e.g. sales, finance, operations, clinical)
 - source_table: the EXACT short table name (last part after the last dot) containing the primary columns used. Must match one of the table names shown above.
 
-Return ONLY a JSON array of objects with keys: name, description, formula, domain, source_table. No other text."""
+Return ONLY a JSON array of objects with keys: name, description, formula, domain, source_table. No other text.""" + _lang_directive()
 
     llm = ChatDatabricks(endpoint=req.model_endpoint, temperature=0.6, max_tokens=4096)
     response = llm.invoke(prompt)
@@ -15123,10 +15291,13 @@ Write in plain prose, no headings, no bullet points.
 TABLE DESCRIPTIONS:
 {desc_block}
 
-Return ONLY the paragraph text."""
+Return ONLY the paragraph text.""" + _lang_directive()
 
     try:
-        llm = ChatDatabricks(endpoint=req.model_endpoint, temperature=0.3, max_tokens=512)
+        # 2048 (was 512): a 3-5 sentence paragraph fits 512 tokens in English, but
+        # Korean (OUTPUT_LANGUAGE=KO) is ~2-3x less token-efficient and got cut mid-
+        # sentence ("...형성하며,"). 2048 covers KO prose and matches sibling calls.
+        llm = ChatDatabricks(endpoint=req.model_endpoint, temperature=0.3, max_tokens=2048)
         text = (llm.invoke(prompt).content or "").strip()
     except Exception as e:
         logger.warning("suggest-business-context: LLM call failed: %s", e)

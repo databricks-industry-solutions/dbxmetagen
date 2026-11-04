@@ -1,5 +1,6 @@
 import React from 'react'
 import simpleMarkdown from '../utils/simpleMarkdown'
+import { useLanguage } from '../contexts/LanguageContext'
 
 /**
  * Shared chat message bubble. Handles user, assistant, and error roles.
@@ -11,17 +12,9 @@ import simpleMarkdown from '../utils/simpleMarkdown'
  *   size       - 'sm' (default) or 'xs' for compact follow-up chats
  *   toolDescriptions - optional map of tool name -> description string
  */
-const TOOL_LABELS = {
-  execute_metadata_sql: 'Query metadata',
-  expand_vs_hits: 'Expand search results',
-  search_metadata: 'Search metadata',
-  traverse_graph: 'Traverse graph',
-  get_table_details: 'Get table details',
-  get_entity_details: 'Get entity details',
-  list_tables: 'List tables',
-}
-
 export default function ChatMessageBubble({ msg, modeBadge, onRetry, size = 'sm', toolDescriptions }) {
+  // Aliased to `tr` -- tool_calls.map uses `t` as the item param below.
+  const { t: tr } = useLanguage()
   const textSize = size === 'xs' ? 'text-xs' : 'text-sm'
 
   if (msg.role === 'user') {
@@ -41,7 +34,7 @@ export default function ChatMessageBubble({ msg, modeBadge, onRetry, size = 'sm'
           <p className="text-red-600 dark:text-red-400">{msg.content}</p>
           {onRetry && (
             <button onClick={onRetry} className="mt-2 text-xs text-red-500 hover:text-red-700 dark:hover:text-red-300 font-medium">
-              Retry this question
+              {tr('chat.retryQuestion')}
             </button>
           )}
         </div>
@@ -64,11 +57,14 @@ export default function ChatMessageBubble({ msg, modeBadge, onRetry, size = 'sm'
           dangerouslySetInnerHTML={{ __html: simpleMarkdown(msg.content) }} />
         {msg.tool_calls?.length > 0 && (
           <div className="mt-1 pt-1 border-t border-slate-200/30 flex flex-wrap gap-1">
-            {msg.tool_calls.map((t, j) => (
-              <span key={j} className="text-xs opacity-60" title={toolDescriptions?.[t] || t}>
-                {TOOL_LABELS[t] || t}
-              </span>
-            ))}
+            {msg.tool_calls.map((t, j) => {
+              const label = tr(`chat.tool.${t}`)
+              return (
+                <span key={j} className="text-xs opacity-60" title={toolDescriptions?.[t] || t}>
+                  {label === `chat.tool.${t}` ? t : label}
+                </span>
+              )
+            })}
           </div>
         )}
       </div>

@@ -1,7 +1,7 @@
 import React, { useRef, useEffect, useCallback, useMemo, useState } from 'react'
 import ForceGraph2D from 'react-force-graph-2d'
-
-const NODE_COLORS = { table: '#3b82f6', column: '#10b981', schema: '#f59e0b', entity: '#8b5cf6' }
+import { useLanguage } from '../contexts/LanguageContext'
+import { NODE_COLORS } from '../constants/graphColors'
 
 const EDGE_COLORS = {
   references: '#22c55e', predicted_fk: '#22c55e', derives_from: '#f97316',
@@ -61,6 +61,8 @@ export default function GraphSubgraph({
   nodes, edges, collapsedColumns, highlightedNodes, startNode,
   height = 380, onNodeClick, onNodeExpand, showLegend = false,
 }) {
+  // Aliased to `tr` -- the legend `.map(t => ...)` uses `t` as the node-type param.
+  const { t: tr } = useLanguage()
   const graphRef = useRef()
   const containerRef = useRef()
   const needsFit = useRef(true)
@@ -150,7 +152,7 @@ export default function GraphSubgraph({
     }
 
     if (node.collapsed > 0 && isHover) {
-      const badge = `+${node.collapsed} cols`
+      const badge = tr('gsg.collapsedBadge', { count: node.collapsed })
       ctx.font = '7px Inter, system-ui, sans-serif'
       const bw = ctx.measureText(badge).width + 6
       const isDark = document.documentElement.classList.contains('dark')
@@ -162,7 +164,7 @@ export default function GraphSubgraph({
       ctx.fillText(badge, node.x, node.y + r + 23)
     }
     ctx.globalAlpha = 1.0
-  }, [hovered, startNode, isNeighbor])
+  }, [hovered, startNode, isNeighbor, tr])
 
   const paintLink = useCallback((link, ctx) => {
     const srcNode = typeof link.source === 'object' ? link.source : null
@@ -243,7 +245,7 @@ export default function GraphSubgraph({
   }, [onNodeClick, onNodeExpand])
 
   if (!graphData.nodes.length) {
-    return <div className="flex items-center justify-center h-32 text-sm text-slate-400">No graph data to display.</div>
+    return <div className="flex items-center justify-center h-32 text-sm text-slate-400">{tr('gsg.empty')}</div>
   }
 
   const warmup = nodeCount > 100 ? 10 : 30
@@ -267,7 +269,7 @@ export default function GraphSubgraph({
             ctx.arc(node.x, node.y, r, 0, 2 * Math.PI)
             ctx.fill()
           }}
-          nodeLabel={n => `${n.id}\n${n.domain ? 'Domain: ' + n.domain : ''}${n.sensitivity ? ' | ' + n.sensitivity : ''}${n.desc ? '\n' + n.desc : ''}`}
+          nodeLabel={n => `${n.id}\n${n.domain ? tr('gsg.tooltipDomain') + n.domain : ''}${n.sensitivity ? ' | ' + n.sensitivity : ''}${n.desc ? '\n' + n.desc : ''}`}
           linkLabel={l => `${l.rel} (${l.weight.toFixed(2)})`}
           warmupTicks={warmup}
           cooldownTicks={200}
@@ -285,16 +287,20 @@ export default function GraphSubgraph({
         />
         {showLegend && legendTypes.length > 0 && (
           <div className="absolute bottom-2 left-2 flex items-center gap-2.5 px-2 py-1 rounded-md bg-white/80 dark:bg-slate-800/80 backdrop-blur-sm pointer-events-none">
-            {legendTypes.map(t => (
-              <span key={t} className="flex items-center gap-1 text-[10px] text-slate-600 dark:text-slate-300">
-                <span className="inline-block w-2 h-2 rounded-full" style={{ backgroundColor: NODE_COLORS[t] || '#94a3b8' }} />
-                {t.charAt(0).toUpperCase() + t.slice(1)}
-              </span>
-            ))}
+            {legendTypes.map(nt => {
+              const key = `gsg.nodeType.${nt}`
+              const label = tr(key)
+              return (
+                <span key={nt} className="flex items-center gap-1 text-[10px] text-slate-600 dark:text-slate-300">
+                  <span className="inline-block w-2 h-2 rounded-full" style={{ backgroundColor: NODE_COLORS[nt] || '#94a3b8' }} />
+                  {label === key ? nt.charAt(0).toUpperCase() + nt.slice(1) : label}
+                </span>
+              )
+            })}
             {startNode && (
               <span className="flex items-center gap-1 text-[10px] text-slate-600 dark:text-slate-300">
                 <span className="inline-block w-2 h-2 rounded-full" style={{ backgroundColor: '#FF3621' }} />
-                Start
+                {tr('gsg.legendStart')}
               </span>
             )}
           </div>

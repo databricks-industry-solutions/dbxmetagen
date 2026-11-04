@@ -5,6 +5,7 @@ import ChatInputBar from './ChatInputBar'
 import ChatMessageBubble from './ChatMessageBubble'
 import SuggestedQuestions from './SuggestedQuestions'
 import useTaskPolling from '../hooks/useTaskPolling'
+import { useLanguage } from '../contexts/LanguageContext'
 
 const SAMPLE_QUESTIONS = [
   'What if I drop the patient_id column from the encounters table?',
@@ -14,6 +15,7 @@ const SAMPLE_QUESTIONS = [
 ]
 
 export default function ImpactAnalysis({ embedded }) {
+  const { t } = useLanguage()
   const [input, setInput] = useState('')
   const [loading, setLoading] = useState(false)
   const [error, setError] = useState(null)
@@ -38,7 +40,7 @@ export default function ImpactAnalysis({ embedded }) {
     if (!q.trim() || loading) return
     setError(null)
     setLoading(true)
-    setStage('Starting impact analysis...')
+    setStage(t('ia.starting'))
     setReport(null)
     setChatMessages([])
     setInput('')
@@ -84,16 +86,16 @@ export default function ImpactAnalysis({ embedded }) {
     <div className={embedded ? 'space-y-4' : 'max-w-6xl mx-auto p-4 space-y-4'}>
       {!embedded && (
         <div>
-          <h2 className="text-xl font-bold text-dbx-navy dark:text-white">Impact Analysis</h2>
-          <p className="text-xs text-slate-500 mt-0.5">What-if analysis for schema changes using the full semantic layer</p>
+          <h2 className="text-xl font-bold text-dbx-navy dark:text-white">{t('ia.pageTitle')}</h2>
+          <p className="text-xs text-slate-500 mt-0.5">{t('ia.pageSubtitle')}</p>
         </div>
       )}
 
       <ErrorBanner error={error} onDismiss={() => setError(null)} />
 
       <ChatInputBar value={input} onChange={setInput} onSubmit={() => handleAnalyze()}
-        loading={loading} placeholder="What if I change...?"
-        buttonLabel={loading ? 'Analyzing...' : 'Analyze Impact'} />
+        loading={loading} placeholder={t('ia.inputPlaceholder')}
+        buttonLabel={loading ? t('ia.analyzing') : t('ia.analyzeImpact')} />
 
       {!loading && !report && (
         <SuggestedQuestions questions={SAMPLE_QUESTIONS} onSelect={q => handleAnalyze(q)} />
@@ -103,7 +105,7 @@ export default function ImpactAnalysis({ embedded }) {
         <div className="border rounded-xl p-6 bg-white dark:bg-dbx-navy-600/50 text-center">
           <div className="w-8 h-8 border-2 border-dbx-teal border-t-transparent rounded-full animate-spin mx-auto mb-3" />
           <p className="text-sm text-slate-500">{stage}</p>
-          <p className="text-xs text-slate-400 mt-1">The supervisor agent is coordinating identify, trace, and assess steps...</p>
+          <p className="text-xs text-slate-400 mt-1">{t('ia.coordinating')}</p>
         </div>
       )}
 
@@ -117,33 +119,33 @@ export default function ImpactAnalysis({ embedded }) {
 
           {report.target && (
             <div className="border rounded-xl p-4 bg-slate-50 dark:bg-dbx-navy-600/50">
-              <h3 className="text-sm font-bold text-slate-700 dark:text-slate-200 mb-1">Target Identified</h3>
+              <h3 className="text-sm font-bold text-slate-700 dark:text-slate-200 mb-1">{t('ia.targetIdentified')}</h3>
               <p className="text-xs text-slate-600 dark:text-slate-400">{report.target}</p>
-              <p className="text-xs text-slate-400 mt-1">Supervisor steps: {report.steps}</p>
+              <p className="text-xs text-slate-400 mt-1">{t('ia.supervisorSteps', { n: report.steps })}</p>
             </div>
           )}
 
           <div className="border rounded-xl p-4 bg-white dark:bg-dbx-navy-600/50">
-            <h3 className="text-sm font-bold text-dbx-navy dark:text-white mb-3">Impact Report</h3>
+            <h3 className="text-sm font-bold text-dbx-navy dark:text-white mb-3">{t('ia.impactReport')}</h3>
             <div className="text-sm text-slate-700 dark:text-slate-300 prose prose-sm max-w-none"
               dangerouslySetInnerHTML={{ __html: simpleMarkdown(report.answer) }} />
           </div>
 
           <div className="border rounded-xl p-4 bg-white dark:bg-dbx-navy-600/50">
-            <h3 className="text-sm font-bold text-slate-700 dark:text-slate-200 mb-3">Follow-up Questions</h3>
+            <h3 className="text-sm font-bold text-slate-700 dark:text-slate-200 mb-3">{t('ia.followupQuestions')}</h3>
             <div className="space-y-2 max-h-96 overflow-y-auto mb-3">
               {chatMessages.map((msg, i) => (
                 <ChatMessageBubble key={i} msg={msg} size="xs" />
               ))}
-              {chatLoading && <div className="text-xs text-slate-400 animate-pulse">Analyzing...</div>}
+              {chatLoading && <div className="text-xs text-slate-400 animate-pulse">{t('ia.analyzing')}</div>}
               <div ref={chatEndRef} />
             </div>
             <ChatInputBar value={chatInput} onChange={setChatInput} onSubmit={handleChat}
-              loading={chatLoading} placeholder="Ask a follow-up about this impact..." />
+              loading={chatLoading} placeholder={t('ia.followupPlaceholder')} />
           </div>
 
           <details className="border rounded-xl bg-white dark:bg-dbx-navy-600/50 overflow-hidden">
-            <summary className="px-4 py-3 text-sm font-medium text-slate-600 dark:text-slate-300 cursor-pointer select-none">Try another scenario</summary>
+            <summary className="px-4 py-3 text-sm font-medium text-slate-600 dark:text-slate-300 cursor-pointer select-none">{t('ia.tryAnotherScenario')}</summary>
             <div className="px-4 pb-4">
               <SuggestedQuestions questions={SAMPLE_QUESTIONS} onSelect={q => handleAnalyze(q)} />
             </div>

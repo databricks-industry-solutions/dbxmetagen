@@ -1,5 +1,6 @@
 import React, { useEffect, useMemo, useRef } from 'react'
 import { useCatalogSchemaTables } from '../hooks/useCatalogSchemaTables'
+import { useLanguage } from '../contexts/LanguageContext'
 
 // Cap how many table checkboxes render at once; the filter box narrows past it.
 const RENDER_CAP = 300
@@ -34,10 +35,14 @@ export default function TableScopePicker({
   kbOnly = false,
   seedTables = [],
   allowAll = true,
-  allLabel = 'All tables',
-  selectedLabel = 'Selected tables',
+  allLabel: allLabelProp,
+  selectedLabel: selectedLabelProp,
   allWarning = '',
 }) {
+  // Aliased to `tr` -- `t` is used as a local arrow-fn param throughout (fq, map, etc.).
+  const { t: tr } = useLanguage()
+  const allLabel = allLabelProp ?? tr('tsp.allTables')
+  const selectedLabel = selectedLabelProp ?? tr('tsp.selectedTables')
   const mode = allowAll ? (value?.mode || 'all') : 'selected'
   const tables = value?.tables || []
 
@@ -102,7 +107,7 @@ export default function TableScopePicker({
       {mode === 'all' ? (
         <div className="space-y-1.5">
           <p className="text-xs text-slate-500 dark:text-slate-400">
-            Runs against <strong>all {kbOnly ? 'knowledge-base ' : ''}tables in scope</strong>.
+            {tr('tsp.runsAgainstAll', { scope: kbOnly ? tr('tsp.kbScope') : '' })}
           </p>
           {allWarning && (
             <p className="text-xs text-amber-700 dark:text-amber-400 bg-amber-50/70 dark:bg-amber-900/15 border border-amber-200 dark:border-amber-800/40 rounded-md px-2 py-1.5 flex items-start gap-1.5">
@@ -115,27 +120,27 @@ export default function TableScopePicker({
         <div className="space-y-2">
           {error && (
             <p className="text-xs text-amber-600 dark:text-amber-400">
-              Could not load catalogs/schemas — check the SQL warehouse is running and permissions are granted.
+              {tr('tsp.loadError')}
             </p>
           )}
           <div className="grid grid-cols-1 md:grid-cols-3 gap-2">
             <select value={catalog} onChange={e => { setCatalog(e.target.value); setSchema('') }} className="input-base !text-xs">
-              <option value="">Select catalog…</option>
+              <option value="">{tr('tsp.selectCatalog')}</option>
               {catalogs.map(c => <option key={c} value={c}>{c}</option>)}
             </select>
             <select value={schema} onChange={e => setSchema(e.target.value)} disabled={!catalog} className="input-base !text-xs">
-              <option value="">Select schema…</option>
+              <option value="">{tr('tsp.selectSchema')}</option>
               {schemas.map(s => <option key={s} value={s}>{s}</option>)}
             </select>
-            <input value={filter} onChange={e => setFilter(e.target.value)} placeholder="Filter tables…" className="input-base !text-xs" aria-label="Filter tables" />
+            <input value={filter} onChange={e => setFilter(e.target.value)} placeholder={tr('tsp.filterTables')} className="input-base !text-xs" aria-label={tr('tsp.filterTables')} />
           </div>
 
           {allTables.length > 0 && (
             <>
               <div className="flex gap-2 text-xs">
-                <button type="button" onClick={selectAllInSchema} className="text-blue-600 dark:text-blue-400 hover:underline">Select all ({filteredTables.length})</button>
-                <button type="button" onClick={clearSchema} className="text-blue-600 dark:text-blue-400 hover:underline">Clear schema</button>
-                <span className="text-slate-400 ml-auto">{tables.length} selected total</span>
+                <button type="button" onClick={selectAllInSchema} className="text-blue-600 dark:text-blue-400 hover:underline">{tr('tsp.selectAll', { n: filteredTables.length })}</button>
+                <button type="button" onClick={clearSchema} className="text-blue-600 dark:text-blue-400 hover:underline">{tr('tsp.clearSchema')}</button>
+                <span className="text-slate-400 ml-auto">{tr('tsp.selectedTotal', { n: tables.length })}</span>
               </div>
               <div className="grid grid-cols-2 md:grid-cols-3 lg:grid-cols-4 gap-1 max-h-40 overflow-y-auto border dark:border-slate-600 rounded-md p-2">
                 {/* Render at most RENDER_CAP checkboxes so a schema with thousands
@@ -150,22 +155,22 @@ export default function TableScopePicker({
               </div>
               {filteredTables.length > RENDER_CAP && (
                 <p className="text-xs text-slate-400">
-                  Showing first {RENDER_CAP} of {filteredTables.length} — type to filter, or use “Select all” to include every match.
+                  {tr('tsp.showingFirst', { cap: RENDER_CAP, total: filteredTables.length })}
                 </p>
               )}
             </>
           )}
           {catalog && schema && allTables.length === 0 && allSchemaTableCount > 0 && (
             <p className="text-xs text-amber-600 dark:text-amber-400">
-              {allSchemaTableCount} table{allSchemaTableCount !== 1 ? 's' : ''} in {catalog}.{schema}, but none have core metadata yet.
+              {tr('tsp.noCoreMetadata', { n: allSchemaTableCount, catalog, schema })}
             </p>
           )}
 
           {tables.length > 0 && (
             <div>
               <div className="flex items-center gap-2 mb-1">
-                <span className="text-xs font-medium text-slate-600 dark:text-slate-300">Selected ({tables.length})</span>
-                <button type="button" onClick={clearAll} className="text-xs text-red-500 hover:underline">Clear all</button>
+                <span className="text-xs font-medium text-slate-600 dark:text-slate-300">{tr('tsp.selectedCount', { n: tables.length })}</span>
+                <button type="button" onClick={clearAll} className="text-xs text-red-500 hover:underline">{tr('tsp.clearAll')}</button>
               </div>
               <div className="flex flex-wrap gap-1.5">
                 {/* Cap rendered badges so a bulk "Select all" on a 5k-table schema
@@ -179,7 +184,7 @@ export default function TableScopePicker({
                 ))}
                 {tables.length > BADGE_CAP && (
                   <span className="inline-flex items-center px-2 py-0.5 text-xs text-slate-500 dark:text-slate-400">
-                    …and {tables.length - BADGE_CAP} more selected
+                    {tr('tsp.andMore', { n: tables.length - BADGE_CAP })}
                   </span>
                 )}
               </div>
@@ -187,7 +192,7 @@ export default function TableScopePicker({
           )}
           {tables.length === 0 && (
             <p className="text-xs text-amber-600 dark:text-amber-400">
-              {allowAll ? `Select at least one table, or switch to “${allLabel}”.` : 'Select at least one table to run.'}
+              {allowAll ? tr('tsp.selectAtLeastOne', { label: allLabel }) : tr('tsp.selectAtLeastOneToRun')}
             </p>
           )}
         </div>
