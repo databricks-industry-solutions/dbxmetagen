@@ -2,20 +2,22 @@ import React, { useState, useEffect, useRef, useMemo } from 'react'
 import { safeFetchObj, ErrorBanner, PrereqBanner } from '../App'
 import { cachedFetch, TTL } from '../apiCache'
 import { PageHeader, EmptyState, SkeletonTable } from './ui'
+import { useLanguage } from '../contexts/LanguageContext'
+import { formatDateTime } from '../utils/datetime'
 import GenieUpdater from './GenieUpdater'
 
 const STAGES = {
-  starting: 'Starting...',
-  gathering_context: 'Gathering metadata context...',
-  initializing: 'Initializing agent...',
-  agent_running: 'Agent generating configuration...',
-  generating: 'Generating configuration...',
-  validating_sql: 'Validating SQL expressions...',
-  tool_round: 'Validating SQL...',
-  parsing: 'Finalizing output...',
-  recovering: 'Recovering partial result...',
-  done: 'Complete',
-  error: 'Failed',
+  starting: 'gb.stage.starting',
+  gathering_context: 'gb.stage.gatheringContext',
+  initializing: 'gb.stage.initializing',
+  agent_running: 'gb.stage.agentRunning',
+  generating: 'gb.stage.generating',
+  validating_sql: 'gb.stage.validatingSql',
+  tool_round: 'gb.stage.toolRound',
+  parsing: 'gb.stage.parsing',
+  recovering: 'gb.stage.recovering',
+  done: 'gb.stage.done',
+  error: 'gb.stage.error',
 }
 
 function formatElapsed(seconds) {
@@ -37,6 +39,9 @@ function parseProjectTables(proj) {
 }
 
 export default function GenieBuilder({ onNavigate, pipelineStats }) {
+  // Translation hook aliased to `tr` -- this file uses `t` as a table-item
+  // arrow-fn param throughout (map/filter callbacks), so avoid shadowing.
+  const { t: tr } = useLanguage()
   const [editingSpaceId, setEditingSpaceId] = useState(null)
   const [loadByIdValue, setLoadByIdValue] = useState('')
   const [tables, setTables] = useState([])
@@ -342,7 +347,7 @@ export default function GenieBuilder({ onNavigate, pipelineStats }) {
 
   return (
     <div className="space-y-6">
-      <PageHeader title="Genie Space Builder" subtitle="Create a Databricks Genie space from your tables, metric views, and business questions" />
+      <PageHeader title={tr('gb.pageTitle')} subtitle={tr('gb.pageSubtitle')} />
 
       <ErrorBanner error={error} />
       <PrereqBanner
@@ -354,20 +359,20 @@ export default function GenieBuilder({ onNavigate, pipelineStats }) {
 
       {/* Step-by-step workflow guide */}
       <div className="card p-4 text-xs text-slate-600 dark:text-slate-300 leading-relaxed space-y-1">
-        <p className="font-semibold text-sm text-slate-700 dark:text-slate-200">How to build a Genie space</p>
+        <p className="font-semibold text-sm text-slate-700 dark:text-slate-200">{tr('gb.howTo')}</p>
         <ol className="list-decimal list-inside space-y-0.5 text-slate-500 dark:text-slate-400">
-          <li><strong>Create metric views first</strong> (recommended) &mdash; go to the <em>Semantic Layer</em> tab, generate and validate metric views for your tables. Applied metric views become Genie data sources; validated (unapplied) ones contribute SQL snippets. Metric views give Genie pre-built measures and dimensions, improving answer quality.</li>
-          <li><strong>Select tables</strong> below. Expand each schema to pick tables and any applied metric views. When tables are selected, the AI generates joins, expressions, and SQL snippets. When only metric views are selected, the space is built from existing MV definitions without additional expression generation.</li>
-          <li><strong>Add context</strong> (optional) &mdash; describe your business and key terminology to improve the AI output.</li>
-          <li><strong>Add questions</strong> (optional) &mdash; write sample questions or click Suggest to auto-generate them from your tables.</li>
-          <li>Click <strong>Generate Genie Config</strong> &mdash; AI builds the space configuration. Most builds take one to three minutes.</li>
-          <li>Review the <strong>Config Preview</strong>, optionally refine, then enter a title and click <strong>Create Genie Space</strong> to deploy it.</li>
+          <li>{tr('gb.step1')}</li>
+          <li>{tr('gb.step2')}</li>
+          <li>{tr('gb.step3')}</li>
+          <li>{tr('gb.step4')}</li>
+          <li>{tr('gb.step5')}</li>
+          <li>{tr('gb.step6')}</li>
         </ol>
       </div>
 
       {/* Table selection */}
       <div className="card p-5">
-        <h3 className="text-sm font-medium text-slate-700 dark:text-slate-300 mb-3">Select Tables</h3>
+        <h3 className="text-sm font-medium text-slate-700 dark:text-slate-300 mb-3">{tr('gb.selectTables')}</h3>
         <div className="flex gap-3 mb-3">
           <select
             value={selectedCatalog}
@@ -395,7 +400,7 @@ export default function GenieBuilder({ onNavigate, pipelineStats }) {
               }}
               className="border border-slate-200 dark:border-slate-600 rounded-md px-3 py-1.5 text-sm bg-dbx-oat-light dark:bg-slate-700 text-slate-800 dark:text-slate-200"
             >
-              <option value="">All projects</option>
+              <option value="">{tr('gb.allProjects')}</option>
               {projects.map(p => <option key={p.project_id} value={p.project_id}>{p.project_name}</option>)}
             </select>
           )}
@@ -403,7 +408,7 @@ export default function GenieBuilder({ onNavigate, pipelineStats }) {
             type="text"
             value={tableFilter}
             onChange={e => setTableFilter(e.target.value)}
-            placeholder="Filter tables..."
+            placeholder={tr('gb.filterTables')}
             className="flex-1 border border-slate-200 dark:border-slate-600 rounded-md px-3 py-1.5 text-sm bg-dbx-oat-light dark:bg-slate-700 text-slate-800 dark:text-slate-200 placeholder-slate-400"
           />
         </div>
@@ -429,10 +434,10 @@ export default function GenieBuilder({ onNavigate, pipelineStats }) {
                 </div>
                 <span
                   onClick={e => { e.stopPropagation(); toggleAllInSchema(schema) }}
-                  title="Toggle selection of all items in this schema"
+                  title={tr('gb.toggleAllTip')}
                   className="text-[10px] px-2 py-0.5 rounded border border-slate-300 dark:border-slate-600 text-slate-500 dark:text-slate-400 hover:bg-dbx-oat-dark dark:hover:bg-slate-600 cursor-pointer"
                 >
-                  {allSelected ? 'Deselect all' : 'Select all'}
+                  {allSelected ? tr('gb.deselectAll') : tr('gb.selectAll')}
                 </span>
               </button>
               {isOpen && (
@@ -477,33 +482,33 @@ export default function GenieBuilder({ onNavigate, pipelineStats }) {
         })}
         {selectedProject && !projectScopedTables.length ? (
           <EmptyState
-            title="This project has no saved tables yet"
-            description="Add tables to it in the Semantic Layer tab, or choose 'All projects' to browse tables by catalog."
-            action={{ label: 'Browse all projects', onClick: () => setSelectedProject('') }}
+            title={tr('gb.noSavedTablesTip')}
+            description={tr('gb.noSavedTablesDesc')}
+            action={{ label: tr('gb.browseAllProjects'), onClick: () => setSelectedProject('') }}
           />
         ) : (
           <>
             {!tables.length && (tablesLoading || mvsLoading) && <SkeletonTable rows={3} cols={3} />}
             {!tables.length && !tablesLoading && !mvsLoading && !schemas.length && (
               <EmptyState
-                title="No tables or metric views in this catalog"
-                description="Run the metadata pipeline on tables, or apply metric views in the Semantic Layer tab."
-                action={onNavigate ? { label: 'Generate Metadata', onClick: () => onNavigate('jobs') } : undefined}
+                title={tr('gb.noTablesInCatalogTip')}
+                description={tr('gb.noTablesDesc')}
+                action={onNavigate ? { label: tr('gb.generateMetadata'), onClick: () => onNavigate('jobs') } : undefined}
               />
             )}
             {!tables.length && !tablesLoading && schemas.length > 0 && (
-              <p className="text-xs text-slate-400 dark:text-slate-500 mt-1">No metadata-processed tables in this catalog. Schemas above contain applied metric views only.</p>
+              <p className="text-xs text-slate-400 dark:text-slate-500 mt-1">{tr('gb.noMetaTables')}</p>
             )}
-            {tableFilter && !filteredTables.length && projectScopedTables.length > 0 && <p className="text-sm text-slate-400">No tables match "{tableFilter}".</p>}
+            {tableFilter && !filteredTables.length && projectScopedTables.length > 0 && <p className="text-sm text-slate-400">{tr('gb.noTablesMatch', { filter: tableFilter })}</p>}
           </>
         )}
       </div>
 
       {fetchErrors.metricViews && (
-        <p className="text-xs text-amber-600 dark:text-amber-400 px-1">Could not load metric views. <button onClick={() => { setFetchErrors(p => ({ ...p, metricViews: null })); fetch('/api/semantic/metric-views?status=applied').then(r => r.ok ? r.json() : []).then(setMetricViews).catch(e => setFetchErrors(p => ({ ...p, metricViews: e.message }))) }} className="underline">Retry</button></p>
+        <p className="text-xs text-amber-600 dark:text-amber-400 px-1">{tr('gb.couldNotLoadMvs')} <button onClick={() => { setFetchErrors(p => ({ ...p, metricViews: null })); fetch('/api/semantic/metric-views?status=applied').then(r => r.ok ? r.json() : []).then(setMetricViews).catch(e => setFetchErrors(p => ({ ...p, metricViews: e.message }))) }} className="underline">{tr('common.retry')}</button></p>
       )}
       {fetchErrors.kpis && (
-        <p className="text-xs text-amber-600 dark:text-amber-400 px-1">Could not load KPIs. <button onClick={() => { setFetchErrors(p => ({ ...p, kpis: null })); fetch('/api/kpis').then(r => r.ok ? r.json() : []).then(setKpis).catch(e => setFetchErrors(p => ({ ...p, kpis: e.message }))) }} className="underline">Retry</button></p>
+        <p className="text-xs text-amber-600 dark:text-amber-400 px-1">{tr('gb.couldNotLoadKpis')} <button onClick={() => { setFetchErrors(p => ({ ...p, kpis: null })); fetch('/api/kpis').then(r => r.ok ? r.json() : []).then(setKpis).catch(e => setFetchErrors(p => ({ ...p, kpis: e.message }))) }} className="underline">{tr('common.retry')}</button></p>
       )}
 
 
@@ -547,13 +552,13 @@ export default function GenieBuilder({ onNavigate, pipelineStats }) {
 
       {/* Business Context */}
       <div className="card p-5">
-        <h3 className="text-sm font-medium text-slate-700 dark:text-slate-300 mb-1">Business Context (optional)</h3>
-        <p className="text-xs text-gray-500 dark:text-gray-400 mb-2">Describe your business, priorities, and key terminology. This steers question suggestions, measure generation, and sample questions toward what matters to your users.</p>
+        <h3 className="text-sm font-medium text-slate-700 dark:text-slate-300 mb-1">{tr('gb.businessContext')}</h3>
+        <p className="text-xs text-gray-500 dark:text-gray-400 mb-2">{tr('gb.businessContextHelp')}</p>
         <textarea
           value={businessContext}
           onChange={e => setBusinessContext(e.target.value)}
           rows={2}
-          placeholder="e.g. We are a B2B SaaS company focused on ARR growth, net revenue retention, and pipeline velocity. Our CFO reviews quarterly cohort metrics."
+          placeholder={tr('gb.businessContextPh')}
           className="w-full border border-slate-200 dark:border-slate-600 rounded-md px-3 py-2 text-sm bg-dbx-oat-light dark:bg-slate-700 text-slate-800 dark:text-slate-200 placeholder-slate-400"
         />
       </div>
@@ -562,20 +567,20 @@ export default function GenieBuilder({ onNavigate, pipelineStats }) {
       <div className="card p-5">
         <div className="flex items-center justify-between mb-2">
           <div>
-            <h3 className="text-sm font-medium text-slate-700 dark:text-slate-300">Business Questions (optional)</h3>
-            <p className="text-xs text-gray-500 dark:text-gray-400 mt-0.5">Questions are generated based on the selected tables, their metric views, and discovered business entities.</p>
+            <h3 className="text-sm font-medium text-slate-700 dark:text-slate-300">{tr('gb.businessQuestions')}</h3>
+            <p className="text-xs text-gray-500 dark:text-gray-400 mt-0.5">{tr('gb.questionsHelp')}</p>
           </div>
           <button onClick={suggestQuestions} disabled={suggestingQs || (!selectedTables.length && !selectedMVs.size)}
             className="text-xs px-3 py-1 bg-dbx-navy text-white rounded hover:bg-slate-700 disabled:opacity-50 transition-colors flex items-center gap-1.5">
             {suggestingQs && <span className="w-3 h-3 border-2 border-white border-t-transparent rounded-full animate-spin" />}
-            {suggestingQs ? 'Generating...' : 'Suggest Questions'}
+            {suggestingQs ? tr('gb.generating') : tr('gb.suggestQuestions')}
           </button>
         </div>
         <textarea
           value={questions}
           onChange={e => setQuestions(e.target.value)}
           rows={3}
-          placeholder="One question per line..."
+          placeholder={tr('gb.oneQuestionPerLinePh')}
           className="w-full border border-slate-200 dark:border-slate-600 rounded-md px-3 py-2 text-sm bg-dbx-oat-light dark:bg-slate-700 text-slate-800 dark:text-slate-200 placeholder-slate-400"
         />
       </div>
@@ -583,11 +588,7 @@ export default function GenieBuilder({ onNavigate, pipelineStats }) {
       {/* Mixed tables + metric views advisory */}
       {selectedTables.length > 0 && selectedMVs.size > 0 && (
         <div className="bg-amber-50 dark:bg-amber-950/40 border border-amber-300 dark:border-amber-800/60 rounded-lg px-4 py-3 text-sm text-amber-800 dark:text-amber-200">
-          <strong>Recommendation:</strong> avoid combining tables and metric views in
-          the same Genie space. Genie currently cannot join a metric view to a table
-          (or to another metric view), so questions spanning both won't resolve.
-          For best results, build one space from metric views <em>or</em> from tables &mdash;
-          not both.
+          <strong>{tr('gb.recommendation')}</strong> {tr('gb.mixedAdvisory')}
         </div>
       )}
 
@@ -597,7 +598,7 @@ export default function GenieBuilder({ onNavigate, pipelineStats }) {
         disabled={loading || (!selectedTables.length && !selectedMVs.size)}
         className="px-5 py-2.5 bg-dbx-lava text-white text-sm font-medium rounded-lg hover:bg-red-700 disabled:opacity-50 disabled:cursor-not-allowed transition-colors"
       >
-        {loading ? 'Generating...' : 'Generate Genie Config'}
+        {loading ? tr('gb.generating') : tr('gb.generateConfig')}
       </button>
 
       {/* Progress */}
@@ -607,7 +608,7 @@ export default function GenieBuilder({ onNavigate, pipelineStats }) {
             <div className="flex items-center gap-2">
               <div className="w-4 h-4 border-2 border-blue-500 border-t-transparent rounded-full animate-spin" />
               <span className="text-sm font-medium text-slate-800 dark:text-blue-200">
-                {taskStatus.message || STAGES[taskStatus.stage] || taskStatus.stage}
+                {taskStatus.message || (STAGES[taskStatus.stage] ? tr(STAGES[taskStatus.stage]) : taskStatus.stage)}
               </span>
               {taskStatus.round > 0 && (
                 <span className="text-xs px-1.5 py-0.5 rounded bg-blue-100 dark:bg-blue-900/60 text-blue-800 dark:text-blue-200">
@@ -659,7 +660,7 @@ export default function GenieBuilder({ onNavigate, pipelineStats }) {
               )}
               {taskStatus.warnings?.length > 0 && (
                 <details className="inline-block ml-2">
-                  <summary className="cursor-pointer text-amber-600 dark:text-amber-400">{taskStatus.warnings.length} quality warning(s)</summary>
+                  <summary className="cursor-pointer text-amber-600 dark:text-amber-400">{tr('gb.qualityWarnings', { count: taskStatus.warnings.length })}</summary>
                   <ul className="mt-1 ml-4 list-disc text-amber-600 dark:text-amber-400 space-y-0.5">
                     {taskStatus.warnings.map((w, i) => <li key={i}>{w}</li>)}
                   </ul>
@@ -670,7 +671,7 @@ export default function GenieBuilder({ onNavigate, pipelineStats }) {
           {(() => {
             let parsed = null, parseErr = false
             try { parsed = JSON.parse(editedJson) } catch { parseErr = true }
-            if (parseErr) return <p className="text-xs text-amber-600 dark:text-amber-400 card p-3">Config preview unavailable — the JSON has a syntax error. Fix it in the editor below.</p>
+            if (parseErr) return <p className="text-xs text-amber-600 dark:text-amber-400 card p-3">{tr('gb.configPreviewErr')}</p>
             if (!parsed) return null
             const ds = parsed.data_sources || {}
             const tblCount = (ds.tables?.length || 0)
@@ -686,22 +687,22 @@ export default function GenieBuilder({ onNavigate, pipelineStats }) {
             const sampleQCount = parsed.sample_questions?.length || 0
             return (
               <div className="card p-5 space-y-2">
-                <h3 className="text-sm font-medium text-slate-700 dark:text-slate-300">Config Preview</h3>
+                <h3 className="text-sm font-medium text-slate-700 dark:text-slate-300">{tr('gb.configPreview')}</h3>
                 <div className="grid grid-cols-2 md:grid-cols-5 gap-3 text-xs">
-                  <div><span className="text-slate-500">Tables</span><p className="font-medium">{tblDisplay}{mvDisplay > 0 || (typeof mvDisplay === 'string') ? ` + ${mvDisplay} MVs` : ''}</p></div>
-                  <div><span className="text-slate-500">Example SQL</span><p className="font-medium">{exampleSqlCount}</p></div>
-                  <div><span className="text-slate-500">Joins</span><p className="font-medium">{joinCount}</p></div>
-                  <div><span className="text-slate-500">Snippets</span><p className="font-medium" title="Filters / Measures / Expressions">{snippetFilters + snippetMeasures + snippetExprs} ({snippetFilters} filters, {snippetMeasures} measures, {snippetExprs} exprs)</p></div>
-                  <div><span className="text-slate-500">Sample Qs</span><p className="font-medium">{sampleQCount}</p></div>
+                  <div><span className="text-slate-500">{tr('gb.statTables')}</span><p className="font-medium">{tblDisplay}{mvDisplay > 0 || (typeof mvDisplay === 'string') ? ` + ${mvDisplay} MVs` : ''}</p></div>
+                  <div><span className="text-slate-500">{tr('gb.statExampleSql')}</span><p className="font-medium">{exampleSqlCount}</p></div>
+                  <div><span className="text-slate-500">{tr('gb.statJoins')}</span><p className="font-medium">{joinCount}</p></div>
+                  <div><span className="text-slate-500">{tr('gb.statSnippets')}</span><p className="font-medium" title={tr('gb.snippetsTip')}>{snippetFilters + snippetMeasures + snippetExprs} ({snippetFilters} filters, {snippetMeasures} measures, {snippetExprs} exprs)</p></div>
+                  <div><span className="text-slate-500">{tr('gb.statSampleQs')}</span><p className="font-medium">{sampleQCount}</p></div>
                 </div>
                 {parsed.description && <p className="text-xs text-slate-500 mt-1 line-clamp-2">{parsed.description}</p>}
-                {instrText && <p className="text-xs text-slate-400 mt-1">Instructions: {instrText.length.toLocaleString()} chars</p>}
+                {instrText && <p className="text-xs text-slate-400 mt-1">{tr('gb.instructionsChars', { n: instrText.length.toLocaleString() })}</p>}
                 <details className="mt-3 pt-3 border-t border-slate-200 dark:border-slate-600 text-xs text-slate-600 dark:text-slate-400">
-                  <summary className="cursor-pointer font-medium text-slate-700 dark:text-slate-300 select-none">How joins and metric views work</summary>
+                  <summary className="cursor-pointer font-medium text-slate-700 dark:text-slate-300 select-none">{tr('gb.howJoinsWork')}</summary>
                   <ul className="mt-2 ml-4 list-disc space-y-1.5">
-                    <li><span className="font-medium text-slate-700 dark:text-slate-300">Joins</span> counts explicit <code className="text-[11px] bg-slate-100 dark:bg-slate-800 px-1 rounded">join_specs</code> between selected tables (and selected join targets). A low or zero count is normal when the space is metric-view heavy or when underlying fact tables are not in your <em>table</em> selection.</li>
-                    <li><span className="font-medium text-slate-700 dark:text-slate-300">Snippets</span> (filters / measures / expressions) come from two sources: (1) MV-derived measures and expressions are generated only from <em>validated</em> (unapplied) metric views, and (2) filter snippets are generated from table column value samples regardless of MV status. The LLM may also add additional snippets from table metadata. Applied MVs are added as Genie data sources directly.</li>
-                    <li>Join logic defined <em>inside</em> an MV definition is not the same as a high Joins count here; Genie still uses instructions and example SQL to query MVs.</li>
+                    <li>{tr('gb.join1')}</li>
+                    <li>{tr('gb.join2')}</li>
+                    <li>{tr('gb.join3')}</li>
                   </ul>
                 </details>
               </div>
@@ -722,7 +723,7 @@ export default function GenieBuilder({ onNavigate, pipelineStats }) {
                 disabled={loading}
                 className="px-4 py-2 text-xs font-medium rounded-md bg-blue-600 text-white hover:bg-blue-700 disabled:opacity-50 transition-colors"
               >
-                {showRefine ? 'Hide Feedback' : 'Refine with Feedback'}
+                {showRefine ? tr('gb.hideFeedback') : tr('gb.refineWithFeedback')}
               </button>
             </div>
             {showRefine && (
@@ -731,7 +732,7 @@ export default function GenieBuilder({ onNavigate, pipelineStats }) {
                   value={refineFeedback}
                   onChange={e => setRefineFeedback(e.target.value)}
                   rows={2}
-                  placeholder="e.g. Add more time-based filters, improve the description, add window function examples..."
+                  placeholder={tr('gb.refinePh')}
                   className="w-full border border-slate-200 dark:border-slate-600 rounded-md px-3 py-2 text-sm bg-dbx-oat-light dark:bg-slate-700 text-slate-800 dark:text-slate-200 placeholder-slate-400"
                 />
                 <button
@@ -771,31 +772,31 @@ export default function GenieBuilder({ onNavigate, pipelineStats }) {
 
           <div className="flex items-end gap-3">
             <div className="flex-1">
-              <label className="block text-sm font-medium text-slate-700 dark:text-slate-300 mb-1">Genie Space Title <span className="font-normal text-xs text-slate-400">&mdash; review the config above, then name and create your space</span></label>
+              <label className="block text-sm font-medium text-slate-700 dark:text-slate-300 mb-1">{tr('gb.spaceTitle')} <span className="font-normal text-xs text-slate-400">{tr('gb.spaceTitleSub')}</span></label>
               <input
                 type="text"
                 value={title}
                 onChange={e => setTitle(e.target.value)}
-                placeholder="My Analytics Space"
-                title="Name for the Genie space (used as display name in Databricks)"
+                placeholder={tr('gb.spaceTitlePh')}
+                title={tr('gb.spaceTitleTipFull')}
                 className="w-full border border-slate-200 dark:border-slate-600 rounded-md px-3 py-2 text-sm bg-dbx-oat-light dark:bg-slate-700 text-slate-800 dark:text-slate-200"
               />
             </div>
             <button
               onClick={createSpace}
               disabled={!title.trim() || creating}
-              title="Create a Databricks Genie space from the selected tables with AI-generated instructions and example queries"
+              title={tr('gb.createSpaceTipFull')}
               className="px-5 py-2.5 bg-emerald-600 text-white text-sm font-medium rounded-lg hover:bg-emerald-700 disabled:opacity-50 transition-colors flex items-center gap-1.5"
             >
               {creating && <span className="w-3 h-3 border-2 border-white border-t-transparent rounded-full animate-spin" />}
-              {creating ? 'Creating...' : 'Create Genie Space'}
+              {creating ? tr('gb.creating') : tr('gb.createSpace')}
             </button>
           </div>
 
           {createError && (
             <div className="bg-red-50 dark:bg-red-900/30 border border-red-200 dark:border-red-700 rounded-lg px-4 py-3 text-sm space-y-1">
               <p className="font-medium text-red-700 dark:text-red-300">
-                {createError.includes('Data source validation failed') ? 'Some data sources could not be found' : 'Failed to create Genie space'}
+                {createError.includes('Data source validation failed') ? tr('gb.dataSourceNotFound') : tr('gb.failedToCreate')}
               </p>
               {createError.includes('Data source validation failed') ? (
                 <div className="text-xs text-red-600 dark:text-red-400 space-y-1">
@@ -825,7 +826,7 @@ export default function GenieBuilder({ onNavigate, pipelineStats }) {
               )}
               {workspaceHost && createdSpace.space_id && (
                 <> &mdash; <a href={`${workspaceHost}/genie/rooms/${createdSpace.space_id}`} target="_blank" rel="noopener noreferrer"
-                  className="underline font-medium">Open in Databricks</a></>
+                  className="underline font-medium">{tr('gb.openInDatabricks')}</a></>
               )}
               {createdSpace.warnings?.length > 0 && (
                 <p className="text-xs text-amber-600 dark:text-amber-400 mt-1">{createdSpace.warnings.length} warning(s): {createdSpace.warnings.join('; ')}</p>
@@ -838,12 +839,12 @@ export default function GenieBuilder({ onNavigate, pipelineStats }) {
       {/* Tracked Spaces */}
       {trackedSpaces.length > 0 && (
         <div className="card p-6 mt-6">
-          <h2 className="heading-section mb-4">My Genie Spaces</h2>
+          <h2 className="heading-section mb-4">{tr('gb.myGenieSpaces')}</h2>
           <div className="overflow-x-auto">
             <table className="min-w-full text-sm">
               <thead><tr>
-                {['Title', 'Space ID', 'Version', 'Tables', 'Last Updated', ''].map(h =>
-                  <th key={h} className="text-left px-3 py-2.5 bg-dbx-oat dark:bg-slate-700 font-semibold text-slate-600 dark:text-slate-300 border-b border-slate-200 dark:border-slate-600 text-xs uppercase tracking-wider">{h}</th>)}
+                {[['gb.hTitle', 'Title'], ['gb.hSpaceId', 'Space ID'], ['gb.hVersion', 'Version'], ['gb.hTables', 'Tables'], ['gb.hLastUpdated', 'Last Updated'], ['', '']].map(([k, h]) =>
+                  <th key={h || 'actions'} className="text-left px-3 py-2.5 bg-dbx-oat dark:bg-slate-700 font-semibold text-slate-600 dark:text-slate-300 border-b border-slate-200 dark:border-slate-600 text-xs uppercase tracking-wider">{k ? tr(k) : ''}</th>)}
               </tr></thead>
               <tbody>
                 {trackedSpaces.map((s, i) => (
@@ -857,14 +858,14 @@ export default function GenieBuilder({ onNavigate, pipelineStats }) {
                     <td className="px-3 py-2 font-mono text-xs text-slate-500">{s.space_id}</td>
                     <td className="px-3 py-2 text-slate-600 dark:text-slate-400">{s.version || 1}</td>
                     <td className="px-3 py-2 text-slate-600 dark:text-slate-400 text-xs">{Array.isArray(s.tables) ? s.tables.length : 0}</td>
-                    <td className="px-3 py-2 text-xs text-slate-500">{s.updated_at ? new Date(s.updated_at).toLocaleString() : ''}</td>
+                    <td className="px-3 py-2 text-xs text-slate-500">{s.updated_at ? formatDateTime(s.updated_at) : ''}</td>
                     <td className="px-3 py-2 flex gap-2">
                       {workspaceHost && (
                         <a href={`${workspaceHost}/genie/rooms/${s.space_id}`} target="_blank" rel="noopener noreferrer"
-                          className="text-xs text-emerald-600 hover:text-emerald-800 hover:underline">Open</a>
+                          className="text-xs text-emerald-600 hover:text-emerald-800 hover:underline">{tr('gb.open')}</a>
                       )}
                       <button onClick={() => setEditingSpaceId(s.space_id)}
-                        className="text-xs text-blue-600 hover:text-blue-800 hover:underline">Edit</button>
+                        className="text-xs text-blue-600 hover:text-blue-800 hover:underline">{tr('gb.edit')}</button>
                       <button onClick={async () => {
                         if (!confirm(`Delete Genie space "${s.title}"?`)) return
                         try {
@@ -872,7 +873,7 @@ export default function GenieBuilder({ onNavigate, pipelineStats }) {
                           if (!res.ok) { const d = await res.json().catch(() => ({})); setError(d.detail || 'Delete failed'); return }
                           loadTrackedSpaces()
                         } catch (e) { setError(e.message || 'Delete failed') }
-                      }} className="text-xs text-red-600 hover:text-red-800 hover:underline">Delete</button>
+                      }} className="text-xs text-red-600 hover:text-red-800 hover:underline">{tr('gb.delete')}</button>
                     </td>
                   </tr>
                 ))}
@@ -884,15 +885,15 @@ export default function GenieBuilder({ onNavigate, pipelineStats }) {
 
       {/* Load by Space ID */}
       <div className="card p-5">
-        <h3 className="text-sm font-medium text-slate-700 dark:text-slate-300 mb-2">Edit Existing Space by ID</h3>
+        <h3 className="text-sm font-medium text-slate-700 dark:text-slate-300 mb-2">{tr('gb.editExisting')}</h3>
         <div className="flex gap-2">
           <input value={loadByIdValue} onChange={e => setLoadByIdValue(e.target.value)}
-            placeholder="Paste a Genie Space ID..."
+            placeholder={tr('gb.pasteSpaceIdPh')}
             className="flex-1 border border-slate-200 dark:border-slate-600 rounded-md px-3 py-2 text-sm bg-dbx-oat-light dark:bg-slate-700 text-slate-800 dark:text-slate-200" />
           <button onClick={() => { if (loadByIdValue.trim()) setEditingSpaceId(loadByIdValue.trim()) }}
             disabled={!loadByIdValue.trim()}
             className="px-4 py-2 text-sm font-medium rounded-md bg-dbx-navy text-white hover:bg-slate-700 disabled:opacity-50 transition-colors">
-            Load
+            {tr('gb.load')}
           </button>
         </div>
       </div>

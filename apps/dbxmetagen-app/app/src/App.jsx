@@ -36,6 +36,7 @@ import OntologyBuilder from './components/OntologyBuilder'
 import SyncOps from './components/SyncOps'
 import GettingStarted from './components/GettingStarted'
 import Home from './components/Home'
+import { useLanguage } from './contexts/LanguageContext'
 const COMPONENTS = {
   home: Home,
   guide: GettingStarted,
@@ -61,24 +62,25 @@ const TAB_ACCENT = {
 // Primary nav mirrors the core flow: Home + generate → review/apply, plus the
 // semantic-layer outcome. Review & Apply is primary (not buried in More) so the
 // generate → review → apply path is discoverable end-to-end.
+// label/desc values are i18n keys resolved via t() at render time.
 const PRIMARY_NAV = [
-  { id: 'home',     label: 'Home' },
-  { id: 'jobs',     label: 'Generate Metadata' },
-  { id: 'metadata', label: 'Review & Apply' },
-  { id: 'semantic', label: 'Semantic Layer' },
+  { id: 'home',     label: 'nav.home' },
+  { id: 'jobs',     label: 'nav.generateMetadata' },
+  { id: 'metadata', label: 'nav.reviewApply' },
+  { id: 'semantic', label: 'nav.semanticLayer' },
 ]
 
 // Everything else — exploration and the deeper build tools — lives under one
 // "More" menu so it doesn't compete with the primary paths.
 // Coverage is folded into Review & Apply (not a standalone destination).
 const MORE_NAV = {
-  category: 'More',
+  category: 'nav.more',
   items: [
-    { id: 'agent', label: 'Explore / Agent', desc: 'Chat, graph explorer, and semantic search' },
-    { id: 'genie', label: 'Build Genie Space', desc: 'Build natural-language SQL spaces' },
-    { id: 'entities', label: 'Entity Browser', desc: 'Entity-first navigation with conformance view' },
-    { id: 'ontologyBuilder', label: 'Build Ontology', desc: 'Visual entity, relationship, and property editor' },
-    { id: 'syncops', label: 'Sync & Ops', desc: 'Rebuild graph/index, sync to Lakebase, set up MCP' },
+    { id: 'agent', label: 'nav.explore', desc: 'nav.explore.desc' },
+    { id: 'genie', label: 'nav.buildGenie', desc: 'nav.buildGenie.desc' },
+    { id: 'entities', label: 'nav.entityBrowser', desc: 'nav.entityBrowser.desc' },
+    { id: 'ontologyBuilder', label: 'nav.buildOntology', desc: 'nav.buildOntology.desc' },
+    { id: 'syncops', label: 'nav.syncOps', desc: 'nav.syncOps.desc' },
     // 'guide' intentionally omitted from More — reachable via the header "?" button.
   ],
 }
@@ -159,6 +161,7 @@ const TOUR_STEPS = [
 ]
 
 function NavDropdown({ cat, activeTab, onSelect, dataTour }) {
+  const { t } = useLanguage()
   const [open, setOpen] = useState(false)
   const ref = useRef(null)
   const activeItem = cat.items.find(i => i.id === activeTab)
@@ -179,10 +182,10 @@ function NavDropdown({ cat, activeTab, onSelect, dataTour }) {
             ? 'bg-white dark:bg-dbx-navy-500 text-dbx-lava shadow-sm'
             : 'text-slate-600 dark:text-slate-400 hover:text-dbx-navy dark:hover:text-slate-200 hover:bg-white/60 dark:hover:bg-dbx-navy-500/50'
         }`}>
-        <span className={`text-[10px] font-semibold uppercase tracking-wider ${catColor}`}>{cat.category}</span>
-        {cat.beta && <span className="ml-1 px-1 py-0.5 text-[8px] font-bold uppercase tracking-wider bg-amber-100 text-amber-700 dark:bg-amber-900/40 dark:text-amber-300 rounded">Beta</span>}
+        <span className={`text-[10px] font-semibold uppercase tracking-wider ${catColor}`}>{t(cat.category)}</span>
+        {cat.beta && <span className="ml-1 px-1 py-0.5 text-[8px] font-bold uppercase tracking-wider bg-amber-100 text-amber-700 dark:bg-amber-900/40 dark:text-amber-300 rounded">{t('nav.beta')}</span>}
         {activeItem && <span className="text-slate-400 dark:text-slate-500 mx-0.5">/</span>}
-        {activeItem && <span>{activeItem.label}{activeItem.beta && <span className="ml-1 px-1 py-0.5 text-[8px] font-bold uppercase tracking-wider bg-amber-100 text-amber-700 dark:bg-amber-900/40 dark:text-amber-300 rounded">Beta</span>}</span>}
+        {activeItem && <span>{t(activeItem.label)}{activeItem.beta && <span className="ml-1 px-1 py-0.5 text-[8px] font-bold uppercase tracking-wider bg-amber-100 text-amber-700 dark:bg-amber-900/40 dark:text-amber-300 rounded">{t('nav.beta')}</span>}</span>}
         <svg className={`w-3 h-3 transition-transform duration-200 ${open ? 'rotate-180' : ''}`} fill="none" viewBox="0 0 24 24" stroke="currentColor">
           <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M19 9l-7 7-7-7" />
         </svg>
@@ -197,8 +200,8 @@ function NavDropdown({ cat, activeTab, onSelect, dataTour }) {
                   ? 'bg-dbx-oat-light dark:bg-dbx-navy-500/60 text-dbx-lava'
                   : 'text-slate-700 dark:text-slate-300 hover:bg-dbx-oat-light/60 dark:hover:bg-dbx-navy-500/40'
               }`}>
-              <span className="text-sm font-medium block">{item.label}{item.beta && <span className="ml-1.5 px-1 py-0.5 text-[8px] font-bold uppercase tracking-wider bg-amber-100 text-amber-700 dark:bg-amber-900/40 dark:text-amber-300 rounded align-middle">Beta</span>}</span>
-              <span className="text-xs text-slate-400 dark:text-slate-500">{item.desc}</span>
+              <span className="text-sm font-medium block">{t(item.label)}{item.beta && <span className="ml-1.5 px-1 py-0.5 text-[8px] font-bold uppercase tracking-wider bg-amber-100 text-amber-700 dark:bg-amber-900/40 dark:text-amber-300 rounded align-middle">{t('nav.beta')}</span>}</span>
+              <span className="text-xs text-slate-400 dark:text-slate-500">{t(item.desc)}</span>
             </button>
           ))}
         </div>
@@ -284,6 +287,7 @@ function SettingsMenu({ simplified, onChange }) {
 }
 
 function AuthStatusBadge() {
+  const { t } = useLanguage()
   const [auth, setAuth] = useState(null)
   const [expanded, setExpanded] = useState(false)
   useEffect(() => {
@@ -297,26 +301,26 @@ function AuthStatusBadge() {
     : 'bg-red-500/20 text-red-300 border-red-400/30'
   const label = auth.user_identity
     ? auth.user_identity.split('@')[0]
-    : (auth.obo_enabled ? 'SP fallback' : 'Service principal')
+    : (auth.obo_enabled ? t('auth.spFallback') : t('auth.servicePrincipal'))
   return (
     <div className="relative" data-tour="auth-badge">
       <button onClick={() => setExpanded(e => !e)}
         className={`flex items-center gap-1.5 px-2.5 py-1 rounded-lg text-[11px] font-medium border ${color} transition-all hover:brightness-125`}
-        title={`Running as: ${auth.running_as}`}>
+        title={`${t('auth.runningAs')}: ${auth.running_as}`}>
         <span className={`w-1.5 h-1.5 rounded-full ${hasWarning ? 'bg-amber-400' : ok ? 'bg-emerald-400' : 'bg-red-400'}`} />
         {label}
       </button>
       {expanded && (
         <div className="absolute right-0 top-full mt-2 w-80 bg-white dark:bg-dbx-navy-600 rounded-xl shadow-elevated border border-slate-200 dark:border-dbx-navy-400/30 p-4 text-xs z-50 space-y-2 animate-slide-up">
-          <div className="flex justify-between"><span className="text-slate-500 dark:text-slate-400">Running as</span><span className="font-medium text-slate-700 dark:text-slate-200">{auth.running_as}</span></div>
-          {auth.user_identity && <div className="flex justify-between"><span className="text-slate-500 dark:text-slate-400">User</span><span className="font-medium text-slate-700 dark:text-slate-200">{auth.user_identity}</span></div>}
-          <div className="flex justify-between"><span className="text-slate-500 dark:text-slate-400">OBO enabled</span><span className={auth.obo_enabled ? 'text-emerald-600 dark:text-emerald-400' : 'text-slate-500'}>{auth.obo_enabled ? 'Yes' : 'No'}</span></div>
-          {auth.obo_enabled && <div className="flex justify-between"><span className="text-slate-500 dark:text-slate-400">OBO token received</span><span className={auth.obo_token_received ? 'text-emerald-600 dark:text-emerald-400' : 'text-amber-600 dark:text-amber-400'}>{auth.obo_token_received ? 'Yes' : 'No'}</span></div>}
-          <div className="flex justify-between"><span className="text-slate-500 dark:text-slate-400">Catalog access</span><span className={auth.has_catalog_access ? 'text-emerald-600 dark:text-emerald-400' : 'text-red-600 dark:text-red-400'}>{auth.has_catalog_access ? 'OK' : 'Failed'}</span></div>
-          <div className="flex justify-between"><span className="text-slate-500 dark:text-slate-400">Schema access</span><span className={auth.has_schema_access ? 'text-emerald-600 dark:text-emerald-400' : 'text-red-600 dark:text-red-400'}>{auth.has_schema_access ? 'OK' : 'Failed'}</span></div>
+          <div className="flex justify-between"><span className="text-slate-500 dark:text-slate-400">{t('auth.runningAs')}</span><span className="font-medium text-slate-700 dark:text-slate-200">{auth.running_as}</span></div>
+          {auth.user_identity && <div className="flex justify-between"><span className="text-slate-500 dark:text-slate-400">{t('auth.user')}</span><span className="font-medium text-slate-700 dark:text-slate-200">{auth.user_identity}</span></div>}
+          <div className="flex justify-between"><span className="text-slate-500 dark:text-slate-400">{t('auth.oboEnabled')}</span><span className={auth.obo_enabled ? 'text-emerald-600 dark:text-emerald-400' : 'text-slate-500'}>{auth.obo_enabled ? t('common.yes') : t('common.no')}</span></div>
+          {auth.obo_enabled && <div className="flex justify-between"><span className="text-slate-500 dark:text-slate-400">{t('auth.oboTokenReceived')}</span><span className={auth.obo_token_received ? 'text-emerald-600 dark:text-emerald-400' : 'text-amber-600 dark:text-amber-400'}>{auth.obo_token_received ? t('common.yes') : t('common.no')}</span></div>}
+          <div className="flex justify-between"><span className="text-slate-500 dark:text-slate-400">{t('auth.catalogAccess')}</span><span className={auth.has_catalog_access ? 'text-emerald-600 dark:text-emerald-400' : 'text-red-600 dark:text-red-400'}>{auth.has_catalog_access ? t('common.ok') : t('common.failed')}</span></div>
+          <div className="flex justify-between"><span className="text-slate-500 dark:text-slate-400">{t('auth.schemaAccess')}</span><span className={auth.has_schema_access ? 'text-emerald-600 dark:text-emerald-400' : 'text-red-600 dark:text-red-400'}>{auth.has_schema_access ? t('common.ok') : t('common.failed')}</span></div>
           {auth.identity_error && <p className="text-amber-600 dark:text-amber-400 leading-relaxed">{auth.identity_error}</p>}
-          {auth.catalog_error && <p className="text-red-600 dark:text-red-400 leading-relaxed">Catalog: {auth.catalog_error}</p>}
-          {auth.schema_error && <p className="text-red-600 dark:text-red-400 leading-relaxed">Schema: {auth.schema_error}</p>}
+          {auth.catalog_error && <p className="text-red-600 dark:text-red-400 leading-relaxed">{t('auth.catalogPrefix')} {auth.catalog_error}</p>}
+          {auth.schema_error && <p className="text-red-600 dark:text-red-400 leading-relaxed">{t('auth.schemaPrefix')} {auth.schema_error}</p>}
         </div>
       )}
     </div>
@@ -324,6 +328,7 @@ function AuthStatusBadge() {
 }
 
 export default function App() {
+  const { t, language, setLanguage } = useLanguage()
   const [activeTab, setActiveTab] = useState(() => readHash())
   const [visitedTabs, setVisitedTabs] = useState(new Set([activeTab]))
   const [runTour, setRunTour] = useState(false)
@@ -426,7 +431,7 @@ export default function App() {
       {configErrors.length > 0 && (
         <div className="bg-red-600 text-white px-6 py-3 text-sm">
           <div className="max-w-[90rem] mx-auto">
-            <strong>Deployment incomplete —</strong> the app is missing required configuration:
+            <strong>{t('config.incomplete')}</strong> {t('config.missing')}
             <ul className="list-disc ml-6 mt-1">
               {configErrors.map((e, i) => <li key={i}>{e}</li>)}
             </ul>
@@ -439,7 +444,7 @@ export default function App() {
           <button
             onClick={() => setActiveTab('home')}
             className="flex items-center gap-3 text-left transition-opacity hover:opacity-80"
-            title="Home" aria-label="Go to home">
+            title={t('header.home')} aria-label={t('header.home')}>
             <div className="relative">
               <img src="/logo.png" alt="dbxmetagen" className="h-9 w-9" />
               <div className="absolute -bottom-0.5 left-0 right-0 h-0.5 bg-dbx-lava rounded-full" />
@@ -449,19 +454,28 @@ export default function App() {
                 dbxmetagen{appMeta.displayName && <><span className="text-dbx-oat/50 font-normal mx-1.5">:</span><span className="text-dbx-lava font-semibold">{appMeta.displayName}</span></>}
                 {appMeta.version && <span className="ml-2 text-xs font-normal text-dbx-oat/40">v{appMeta.version}</span>}
               </h1>
-              <p className="text-dbx-oat/60 text-xs mt-0.5">Automated metadata, knowledge graph, and semantic layer for Unity Catalog</p>
+              <p className="text-dbx-oat/60 text-xs mt-0.5">{t('app.tagline')}</p>
             </div>
           </button>
           <div className="flex items-center gap-1.5">
             <AuthStatusBadge />
+            <div className="flex items-center rounded-lg bg-white/10 backdrop-blur-sm border border-white/10 overflow-hidden" title={t('header.language')} aria-label={t('header.language')}>
+              {['en', 'ko'].map(lng => (
+                <button key={lng} onClick={() => setLanguage(lng)}
+                  className={`px-2 h-8 text-xs font-semibold transition-all ${
+                    language === lng ? 'bg-dbx-lava text-white' : 'text-dbx-oat/70 hover:text-white hover:bg-white/10'
+                  }`}
+                  aria-pressed={language === lng}>{lng.toUpperCase()}</button>
+              ))}
+            </div>
             <button onClick={() => setActiveTab('guide')} data-tour="header-guide"
               className="w-8 h-8 flex items-center justify-center rounded-lg bg-white/10 backdrop-blur-sm border border-white/10 text-dbx-oat/80 hover:text-white hover:bg-white/20 transition-all text-sm font-bold"
-              title="Getting Started" aria-label="Getting Started">?</button>
+              title={t('header.gettingStarted')} aria-label={t('header.gettingStarted')}>?</button>
             <SettingsMenu simplified={simplified} onChange={setViewMode} />
             <button onClick={() => setDark(d => !d)}
               className="w-8 h-8 flex items-center justify-center rounded-lg bg-white/10 backdrop-blur-sm border border-white/10 text-dbx-oat/80 hover:text-white hover:bg-white/20 transition-all"
-              title={dark ? 'Switch to light mode' : 'Switch to dark mode'}
-              aria-label="Toggle dark mode">
+              title={dark ? t('header.toLight') : t('header.toDark')}
+              aria-label={t('header.toggleDark')}>
               {dark ? (
                 <svg className="w-4 h-4" fill="none" viewBox="0 0 24 24" stroke="currentColor">
                   <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2}
@@ -510,7 +524,7 @@ export default function App() {
                   ? 'bg-white dark:bg-dbx-navy-500 text-dbx-lava shadow-sm'
                   : 'text-slate-600 dark:text-slate-400 hover:text-dbx-navy dark:hover:text-slate-200 hover:bg-white/60 dark:hover:bg-dbx-navy-500/50'
               }`}>
-              {item.label}
+              {t(item.label)}
             </button>
           ))}
           {/* Advanced tools live under "More" — hidden entirely in simplified view. */}

@@ -4,45 +4,47 @@ import { cachedFetch, cachedFetchObj, invalidateCache, TTL } from '../apiCache'
 import { PageHeader, EmptyState, Skeleton, Section } from './ui'
 import { useCatalogSchemaTables } from '../hooks/useCatalogSchemaTables'
 import { useSharedJobRunner } from '../hooks/useJobRunner'
+import { useLanguage } from '../contexts/LanguageContext'
+import { formatDate, formatDateTime } from '../utils/datetime'
 import AdvancedPipelinePanel from './AdvancedPipelinePanel'
 import ErdDesigner from './ErdDesigner'
 
 const STAGES = {
-  starting: 'Starting...',
-  building_context: 'Building metadata context...',
-  planning: 'Planning generation strategy...',
-  generating: 'Generating metric view definitions...',
-  retrying: 'Retrying failed views with simplified prompts...',
-  checking_coverage: 'Checking question coverage...',
-  validating: 'Validating expressions...',
-  done: 'Complete',
+  starting: 'sm.m.stage.starting',
+  building_context: 'sm.m.stage.buildingContext',
+  planning: 'sm.m.stage.planning',
+  generating: 'sm.m.stage.generating',
+  retrying: 'sm.m.stage.retrying',
+  checking_coverage: 'sm.m.stage.checkingCoverage',
+  validating: 'sm.m.stage.validating',
+  done: 'sm.m.stage.done',
 }
 
 const MAT_STORAGE_KEY = 'dbxmetagen.sl.materialize'
 const MAT_SCHEDULE_KEY = 'dbxmetagen.sl.matSchedule'
 const MAT_PRESET_KEY = 'dbxmetagen.sl.matPreset'
 const MAT_SCHEDULE_PRESETS = [
-  { id: '6h', label: 'Every 6 hours', value: 'every 6 hours' },
-  { id: '12h', label: 'Every 12 hours', value: 'every 12 hours' },
-  { id: '1d', label: 'Every 1 day', value: 'every 1 day' },
-  { id: 'manual', label: 'Manual only', value: '' },
-  { id: 'custom', label: 'Custom...', value: '__custom__' },
+  { id: '6h', label: 'sm.m.sched.6h', value: 'every 6 hours' },
+  { id: '12h', label: 'sm.m.sched.12h', value: 'every 12 hours' },
+  { id: '1d', label: 'sm.m.sched.1d', value: 'every 1 day' },
+  { id: 'manual', label: 'sm.m.sched.manual', value: '' },
+  { id: 'custom', label: 'sm.m.sched.custom', value: '__custom__' },
 ]
 
-function matBadge(hasMat, schedule) {
+function matBadge(hasMat, schedule, tr) {
   if (hasMat) {
-    const sched = schedule || 'manual refresh'
+    const sched = schedule || tr('sm.m.manualRefresh')
     return (
       <span className="px-1.5 py-0.5 rounded text-[10px] font-medium bg-sky-100 text-sky-700 dark:bg-sky-900/30 dark:text-sky-300"
-        title={`Materialized baseline MV; schedule: ${sched}`}>
-        Materialized{schedule ? ` (${schedule})` : ''}
+        title={tr('sm.m.matTooltip', { sched })}>
+        {tr('sm.m.materialized')}{schedule ? ` (${schedule})` : ''}
       </span>
     )
   }
   return (
     <span className="px-1.5 py-0.5 rounded text-[10px] font-medium bg-slate-100 text-slate-500 dark:bg-slate-800 dark:text-slate-400"
-      title="No materialization block in definition">
-      No materialization
+      title={tr('sm.m.noMatBlock')}>
+      {tr('sm.m.noMaterialization')}
     </span>
   )
 }
@@ -59,17 +61,18 @@ const _issueSevStyles = {
 
 // Refinement actions Analyze can surface (issue.action -> button label + focus).
 const _REFINE_ACTIONS = {
-  add_measures: { label: 'Add measures', focus: 'add_measures' },
-  add_dimensions: { label: 'Add dimensions', focus: 'add_dimensions' },
-  check_filters: { label: 'Check filters', focus: 'check_filters' },
+  add_measures: { label: 'sm.m.refine.addMeasures', focus: 'add_measures' },
+  add_dimensions: { label: 'sm.m.refine.addDimensions', focus: 'add_dimensions' },
+  check_filters: { label: 'sm.m.refine.checkFilters', focus: 'check_filters' },
 }
 
 function MvAnalysisPanel({ issues, onClose, onApplyFix, onRefine, appliedFields, busy }) {
+  const { t } = useLanguage()
   const applied = appliedFields || new Set()
   if (!issues || issues.length === 0) return (
     <div className="mt-2 p-3 bg-emerald-50 dark:bg-emerald-900/20 border border-emerald-200 dark:border-emerald-700 rounded text-xs text-emerald-700 dark:text-emerald-400">
-      No issues found.
-      <button onClick={onClose} className="ml-2 text-slate-400 hover:text-slate-600">Close</button>
+      {t('sm.sub.noIssues')}
+      <button onClick={onClose} className="ml-2 text-slate-400 hover:text-slate-600">{t('common.close')}</button>
     </div>
   )
   const fixable = issues.filter(iss => iss.field && iss.fix_value && !applied.has(iss.field))
@@ -84,24 +87,24 @@ function MvAnalysisPanel({ issues, onClose, onApplyFix, onRefine, appliedFields,
   return (
     <div className="mt-2 p-3 border border-cyan-200 dark:border-cyan-700 rounded space-y-2">
       <div className="flex items-center justify-between">
-        <span className="text-xs font-medium text-slate-700 dark:text-slate-300">Analysis Issues ({issues.length})</span>
+        <span className="text-xs font-medium text-slate-700 dark:text-slate-300">{t('sm.sub.analysisIssues', { n: issues.length })}</span>
         <div className="flex items-center gap-2">
           {fixable.length > 0 && onApplyFix && (
             <button onClick={() => onApplyFix('__all__')} disabled={anyBusy}
               className="px-2 py-0.5 text-[10px] bg-cyan-600 text-white rounded hover:bg-cyan-700 disabled:opacity-50">
-              {applyBusy ? 'Applying...' : `Apply All (${fixable.length})`}
+              {applyBusy ? t('sm.sub.applying') : t('sm.sub.applyAll', { n: fixable.length })}
             </button>
           )}
-          <button onClick={onClose} className="text-xs text-slate-400 hover:text-slate-600">Close</button>
+          <button onClick={onClose} className="text-xs text-slate-400 hover:text-slate-600">{t('common.close')}</button>
         </div>
       </div>
       {refineActions.length > 0 && (
         <div className="flex flex-wrap items-center gap-2 pb-1 border-b border-slate-100 dark:border-slate-700">
-          <span className="text-[10px] text-slate-400 dark:text-slate-500">Refine:</span>
+          <span className="text-[10px] text-slate-400 dark:text-slate-500">{t('sm.sub.refine')}</span>
           {refineActions.map(a => (
             <button key={a} onClick={() => onRefine(_REFINE_ACTIONS[a].focus)} disabled={!!busy}
               className="px-2 py-0.5 text-[10px] rounded border border-cyan-400 text-cyan-700 dark:text-cyan-300 hover:bg-cyan-50 dark:hover:bg-cyan-900/30 disabled:opacity-50">
-              {busy === _REFINE_ACTIONS[a].focus ? 'Working…' : _REFINE_ACTIONS[a].label}
+              {busy === _REFINE_ACTIONS[a].focus ? t('sm.sub.working') : t(_REFINE_ACTIONS[a].label)}
             </button>
           ))}
         </div>
@@ -111,20 +114,20 @@ function MvAnalysisPanel({ issues, onClose, onApplyFix, onRefine, appliedFields,
         return (
           <div key={i} className={`flex items-start gap-2 text-xs py-1 ${isApplied ? 'opacity-50' : ''}`}>
             {isApplied ? (
-              <span className="px-1.5 py-0.5 rounded font-medium shrink-0 text-emerald-700 dark:text-emerald-400 bg-emerald-100 dark:bg-emerald-900/30">fixed</span>
+              <span className="px-1.5 py-0.5 rounded font-medium shrink-0 text-emerald-700 dark:text-emerald-400 bg-emerald-100 dark:bg-emerald-900/30">{t('sm.sub.fixed')}</span>
             ) : (
               <span className={`px-1.5 py-0.5 rounded font-medium shrink-0 ${_issueSevStyles[iss.severity] || _issueSevStyles.low}`}>{iss.severity}</span>
             )}
             <div className="flex-1 min-w-0">
               <p className={`text-slate-700 dark:text-slate-300 ${isApplied ? 'line-through' : ''}`}>{iss.message}</p>
-              {iss.field && <p className="text-slate-400 text-[10px]">Field: {iss.field}</p>}
+              {iss.field && <p className="text-slate-400 text-[10px]">{t('sm.sub.field', { f: iss.field })}</p>}
               {iss.suggestion && !isApplied && (
                 <div className="flex items-center gap-2 mt-1">
                   <p className="text-slate-500 dark:text-slate-400 italic flex-1">{iss.suggestion}</p>
                   {iss.field && iss.fix_value && onApplyFix && (
                     <button onClick={() => onApplyFix(iss.field, iss.fix_value)} disabled={anyBusy}
                       className="shrink-0 px-1.5 py-0.5 text-[10px] bg-cyan-600 text-white rounded hover:bg-cyan-700 disabled:opacity-50">
-                      {applyBusy ? '...' : 'Apply'}</button>
+                      {applyBusy ? '...' : t('sm.sub.apply')}</button>
                   )}
                 </div>
               )}
@@ -147,6 +150,7 @@ const _testStatusStyles = {
 }
 
 function MvTestResultsPanel({ data, onClose, onRunFederatedFull, busy }) {
+  const { t } = useLanguage()
   const [openSql, setOpenSql] = useState(null)
   const results = data.results || []
   const summary = data.summary || {}
@@ -156,28 +160,28 @@ function MvTestResultsPanel({ data, onClose, onRunFederatedFull, busy }) {
     <div className="mt-2 p-3 border border-teal-200 dark:border-teal-700 rounded space-y-2">
       <div className="flex items-center justify-between">
         <div className="flex items-center gap-2">
-          <span className="text-xs font-medium text-slate-700 dark:text-slate-300">Test Queries</span>
+          <span className="text-xs font-medium text-slate-700 dark:text-slate-300">{t('sm.sub.testQueries')}</span>
           {running ? (
             <span className="px-1.5 py-0.5 rounded text-[10px] font-medium bg-blue-100 text-blue-700 dark:bg-blue-900/30 dark:text-blue-400 inline-flex items-center gap-1">
               <svg className="animate-spin h-3 w-3" viewBox="0 0 24 24"><circle className="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" strokeWidth="4" fill="none"/><path className="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4z"/></svg>
-              Running {data.done || 0}/{data.total || 0}
+              {t('sm.sub.running', { done: data.done || 0, total: data.total || 0 })}
             </span>
           ) : (
             <span className={`px-1.5 py-0.5 rounded text-[10px] font-medium ${overallCls}`}>
-              {summary.passed || 0} passed · {summary.warned || 0} warn · {summary.failed || 0} failed
+              {t('sm.sub.passWarnFail', { p: summary.passed || 0, w: summary.warned || 0, f: summary.failed || 0 })}
             </span>
           )}
         </div>
-        <button onClick={onClose} className="text-xs text-slate-400 hover:text-slate-600">Close</button>
+        <button onClick={onClose} className="text-xs text-slate-400 hover:text-slate-600">{t('common.close')}</button>
       </div>
       {data.federation_note && (
         <div className="text-[10px] text-amber-700 dark:text-amber-400 bg-amber-50 dark:bg-amber-900/20 rounded px-2 py-1 flex items-center justify-between gap-2">
           <span>{data.federation_note}</span>
           {!data.allow_federated_full && onRunFederatedFull && !running && (
             <button onClick={onRunFederatedFull} disabled={busy}
-              title="Run all drills against the federated source. Each aggregation may pull the remote table if it does not push down."
+              title={t('sm.sub.runFederatedTip')}
               className="shrink-0 px-1.5 py-0.5 rounded border border-amber-400 text-amber-700 dark:text-amber-300 hover:bg-amber-100 dark:hover:bg-amber-800/30 disabled:opacity-50">
-              Run full set anyway
+              {t('sm.sub.runFullAnyway')}
             </button>
           )}
         </div>
@@ -188,7 +192,7 @@ function MvTestResultsPanel({ data, onClose, onRunFederatedFull, busy }) {
         </p>
       )}
       {!running && results.length === 0 && !data.stopped && (
-        <p className="text-xs text-slate-400">No test queries were run.</p>
+        <p className="text-xs text-slate-400">{t('sm.sub.noTestQueries')}</p>
       )}
       {results.map((r, i) => {
         const st = (r.health && r.health.status) || (r.error ? 'fail' : 'ok')
@@ -200,10 +204,10 @@ function MvTestResultsPanel({ data, onClose, onRunFederatedFull, busy }) {
               <div className="flex-1 min-w-0">
                 <div className="flex items-center gap-2">
                   <span className="text-slate-700 dark:text-slate-300 font-medium">{r.label}</span>
-                  <span className="text-slate-400 text-[10px]">{r.row_count} row(s)</span>
+                  <span className="text-slate-400 text-[10px]">{t('sm.sub.rowCount', { n: r.row_count })}</span>
                   <button onClick={() => setOpenSql(openSql === i ? null : i)}
                     className="text-teal-600 dark:text-teal-400 text-[10px] hover:underline">
-                    {openSql === i ? 'hide SQL' : 'show SQL'}
+                    {openSql === i ? t('sm.sub.hideSql') : t('sm.sub.showSql')}
                   </button>
                 </div>
                 {(r.health?.notes || []).map((n, j) => (
@@ -249,6 +253,7 @@ function MvTestResultsPanel({ data, onClose, onRunFederatedFull, busy }) {
 // ---------------------------------------------------------------------------
 
 function MvStructuredEditor({ defn, setDefn, onSave, onCancel }) {
+  const { t } = useLanguage()
   const update = (path, val) => {
     const d = JSON.parse(JSON.stringify(defn))
     const tokens = path.split('.')
@@ -280,10 +285,10 @@ function MvStructuredEditor({ defn, setDefn, onSave, onCancel }) {
 
   const ItemRow = ({ type, idx, item }) => (
     <div className="flex flex-wrap gap-2 py-1.5 border-b border-slate-100 dark:border-gray-700 last:border-0">
-      <SmallInput label="Name" value={item.name} onChange={v => update(`${type}[${idx}].name`, v)} className="w-28" />
-      <SmallInput label="Expression" value={item.expr} onChange={v => update(`${type}[${idx}].expr`, v)} className="w-48 font-mono" />
-      <SmallInput label="Comment" value={item.comment} onChange={v => update(`${type}[${idx}].comment`, v)} className="flex-1" />
-      <SmallInput label="Synonyms (comma-sep)" value={Array.isArray(item.synonyms) ? item.synonyms.join(', ') : (item.synonyms || '')}
+      <SmallInput label={t('common.name')} value={item.name} onChange={v => update(`${type}[${idx}].name`, v)} className="w-28" />
+      <SmallInput label={t('sm.sub.expression')} value={item.expr} onChange={v => update(`${type}[${idx}].expr`, v)} className="w-48 font-mono" />
+      <SmallInput label={t('common.comment')} value={item.comment} onChange={v => update(`${type}[${idx}].comment`, v)} className="flex-1" />
+      <SmallInput label={t('sm.sub.synonyms')} value={Array.isArray(item.synonyms) ? item.synonyms.join(', ') : (item.synonyms || '')}
         onChange={v => update(`${type}[${idx}].synonyms`, v.split(',').map(s => s.trim()).filter(Boolean))} className="w-36" />
     </div>
   )
@@ -303,14 +308,14 @@ function MvStructuredEditor({ defn, setDefn, onSave, onCancel }) {
 
   return (
     <div className="bg-dbx-oat dark:bg-gray-900 border dark:border-gray-600 rounded p-3 space-y-3 text-xs">
-      <SmallInput label="Source table" value={defn.source} className="font-mono bg-slate-50 dark:bg-gray-800 cursor-default" onChange={() => {}} />
-      <SmallInput label="Comment" value={defn.comment} onChange={v => update('comment', v)} textarea />
+      <SmallInput label={t('sm.sub.sourceTable')} value={defn.source} className="font-mono bg-slate-50 dark:bg-gray-800 cursor-default" onChange={() => {}} />
+      <SmallInput label={t('common.comment')} value={defn.comment} onChange={v => update('comment', v)} textarea />
 
       {/* Dimensions */}
       <div>
         <div className="flex items-center justify-between mb-1">
-          <span className="font-medium text-slate-700 dark:text-slate-300">Dimensions ({(defn.dimensions || []).length})</span>
-          <button onClick={() => addItem('dimensions')} className="text-[10px] text-blue-600 hover:underline">+ Add</button>
+          <span className="font-medium text-slate-700 dark:text-slate-300">{t('sm.sub.dimensions', { n: (defn.dimensions || []).length })}</span>
+          <button onClick={() => addItem('dimensions')} className="text-[10px] text-blue-600 hover:underline">{t('sm.sub.addItem')}</button>
         </div>
         {(defn.dimensions || []).map((dim, i) => (
           <div key={i} className="relative group">
@@ -323,8 +328,8 @@ function MvStructuredEditor({ defn, setDefn, onSave, onCancel }) {
       {/* Measures */}
       <div>
         <div className="flex items-center justify-between mb-1">
-          <span className="font-medium text-slate-700 dark:text-slate-300">Measures ({(defn.measures || []).length})</span>
-          <button onClick={() => addItem('measures')} className="text-[10px] text-blue-600 hover:underline">+ Add</button>
+          <span className="font-medium text-slate-700 dark:text-slate-300">{t('sm.sub.measures', { n: (defn.measures || []).length })}</span>
+          <button onClick={() => addItem('measures')} className="text-[10px] text-blue-600 hover:underline">{t('sm.sub.addItem')}</button>
         </div>
         {(defn.measures || []).map((meas, i) => (
           <div key={i} className="relative group">
@@ -337,23 +342,23 @@ function MvStructuredEditor({ defn, setDefn, onSave, onCancel }) {
       {/* Joins */}
       {(defn.joins || []).length > 0 && (
         <div>
-          <span className="font-medium text-slate-700 dark:text-slate-300">Joins ({defn.joins.length})</span>
+          <span className="font-medium text-slate-700 dark:text-slate-300">{t('sm.sub.joins', { n: defn.joins.length })}</span>
           {defn.joins.map((j, i) => (
             <div key={i} className="flex flex-wrap gap-2 py-1.5 border-b border-slate-100 dark:border-gray-700">
-              <SmallInput label="Name" value={j.name} onChange={v => update(`joins[${i}].name`, v)} className="w-28" />
-              <SmallInput label="Source" value={j.source} onChange={v => update(`joins[${i}].source`, v)} className="w-48 font-mono" />
-              <SmallInput label="On" value={j.on} onChange={v => update(`joins[${i}].on`, v)} className="flex-1 font-mono" />
+              <SmallInput label={t('common.name')} value={j.name} onChange={v => update(`joins[${i}].name`, v)} className="w-28" />
+              <SmallInput label={t('sm.sub.source')} value={j.source} onChange={v => update(`joins[${i}].source`, v)} className="w-48 font-mono" />
+              <SmallInput label={t('sm.sub.on')} value={j.on} onChange={v => update(`joins[${i}].on`, v)} className="flex-1 font-mono" />
             </div>
           ))}
         </div>
       )}
 
       {/* Filter */}
-      <SmallInput label="Filter" value={defn.filter} onChange={v => update('filter', v)} className="font-mono" />
+      <SmallInput label={t('sm.sub.filter')} value={defn.filter} onChange={v => update('filter', v)} className="font-mono" />
 
       <div className="flex justify-end gap-2 pt-2">
-        <button onClick={onCancel} className="px-3 py-1 text-xs border rounded text-slate-600 hover:bg-slate-50 dark:text-slate-300 dark:hover:bg-gray-800">Cancel</button>
-        <button onClick={onSave} className="px-3 py-1 text-xs bg-blue-600 text-white rounded hover:bg-blue-700">Save</button>
+        <button onClick={onCancel} className="px-3 py-1 text-xs border rounded text-slate-600 hover:bg-slate-50 dark:text-slate-300 dark:hover:bg-gray-800">{t('common.cancel')}</button>
+        <button onClick={onSave} className="px-3 py-1 text-xs bg-blue-600 text-white rounded hover:bg-blue-700">{t('common.save')}</button>
       </div>
     </div>
   )
@@ -399,6 +404,7 @@ function deriveFoundation(pipelineStats) {
  * unmet prerequisite. Collapses to a thin confirmation once ready.
  */
 function FoundationRail({ foundation, onNavigate, step2Runner }) {
+  const { t } = useLanguage()
   const [showRerun, setShowRerun] = useState(false)
   if (!foundation) return null
   const { metadataDone, analyticsDone, ready, stats } = foundation
@@ -419,7 +425,7 @@ function FoundationRail({ foundation, onNavigate, step2Runner }) {
           {step2Runner && (
             <button onClick={() => setShowRerun(v => !v)}
               className="ml-auto text-xs font-semibold text-dbx-lava hover:underline shrink-0">
-              {showRerun ? 'Hide' : 'Re-run advanced metadata'}
+              {showRerun ? t('sm.m.hide') : t('sm.m.rerunAdvanced')}
             </button>
           )}
         </div>
@@ -465,28 +471,28 @@ function FoundationRail({ foundation, onNavigate, step2Runner }) {
       <div className="flex flex-wrap gap-4 items-start">
         <Step
           n={1}
-          title="Core metadata"
+          title={t('sm.sub.coreMetadata')}
           done={metadataDone}
           current={!metadataDone}
-          detail={metadataDone ? `${profiled}${total ? `/${total}` : ''} tables described` : 'Not generated yet'}
-          actionLabel="Generate metadata"
+          detail={metadataDone ? t('sm.sub.tablesDescribed', { n: `${profiled}${total ? `/${total}` : ''}` }) : t('sm.sub.notGenerated')}
+          actionLabel={t('sm.sub.generateMetadata')}
           actionTab="jobs"
         />
         <div className="hidden sm:flex items-center text-slate-300 dark:text-slate-600 self-center">&rarr;</div>
         <Step
           n={2}
-          title="Analytics pipeline"
+          title={t('sm.sub.analyticsPipeline')}
           done={analyticsDone}
           current={metadataDone && !analyticsDone}
-          detail={analyticsDone ? 'Ontology, FKs & index built' : (metadataDone ? 'Run it below' : 'Run it below (core metadata not detected — you can still run it)')}
+          detail={analyticsDone ? t('sm.sub.ontologyBuilt') : (metadataDone ? t('sm.sub.runItBelow') : t('sm.sub.runItBelowNoCore'))}
         />
         <div className="hidden sm:flex items-center text-slate-300 dark:text-slate-600 self-center">&rarr;</div>
         <Step
           n={3}
-          title="Metric views"
+          title={t('sm.sub.metricViews')}
           done={false}
           current={metadataDone && analyticsDone}
-          detail={metadataDone && analyticsDone ? 'Ready to generate' : 'Unlocks when 1 & 2 are done'}
+          detail={metadataDone && analyticsDone ? t('sm.sub.readyToGenerate') : t('sm.sub.unlocksWhen')}
         />
       </div>
       {/* Inline analytics-pipeline runner — shown whenever the pipeline hasn't
@@ -507,6 +513,9 @@ function FoundationRail({ foundation, onNavigate, step2Runner }) {
 }
 
 export default function SemanticLayer({ onNavigate, pipelineStats, onRefreshPipelineStats }) {
+  // `tr` alias -- this file uses `t` as a table-item arrow-fn param throughout
+  // (selectedTables.map(t => …)), so avoid shadowing the translation hook.
+  const { t: tr } = useLanguage()
   // Shared job runner — lets the foundation gate start + track the analytics
   // pipeline inline (see AdvancedPipelinePanel below).
   const jobRunner = useSharedJobRunner()
@@ -758,7 +767,7 @@ export default function SemanticLayer({ onNavigate, pipelineStats, onRefreshPipe
           clearInterval(pollRef.current)
           if (data.status === 'done') { refreshDefinitions(); loadProjects(); setDefStatusFilter('all'); setActiveTab('definitions') }
         }
-      } catch { clearInterval(pollRef.current); setTaskStatus(prev => prev?.status === 'done' || prev?.status === 'error' ? prev : { status: 'error', error: 'Lost connection to server. Try generating again.' }) }
+      } catch { clearInterval(pollRef.current); setTaskStatus(prev => prev?.status === 'done' || prev?.status === 'error' ? prev : { status: 'error', error: tr('sm.m.lostConnection') }) }
     }, 2000)
     return () => clearInterval(pollRef.current)
   }, [taskId])
@@ -1395,7 +1404,7 @@ export default function SemanticLayer({ onNavigate, pipelineStats, onRefreshPipe
           setMvTestResults(prev => ({
             ...prev,
             [defId]: { ...(prev[defId] || {}), status: 'done',
-              stopped: 'Stopped waiting after 200s — the queries may still be running on the warehouse. Results shown are partial.' },
+              stopped: tr('sm.m.pollStopped') },
           }))
           setActionLoading(prev => ({ ...prev, [defId]: null }))
           return
@@ -1813,7 +1822,7 @@ export default function SemanticLayer({ onNavigate, pipelineStats, onRefreshPipe
   return (
     <div className="space-y-6">
       <div className="flex items-center justify-between">
-        <PageHeader title="Metric Views" subtitle="Build governed business metrics as Unity Catalog views" />
+        <PageHeader title={tr('sm.pageTitle')} subtitle={tr('sm.pageSubtitle')} />
         <button onClick={async () => {
           const res = await fetch(`/api/semantic-layer/export-sql${globalTargetOverride ? `?catalog=${encodeURIComponent(globalTargetOverride.split('.')[0])}&schema=${encodeURIComponent(globalTargetOverride.split('.')[1])}` : ''}`)
           if (!res.ok) { setError((await res.json()).detail || 'Export failed'); return }
@@ -1822,7 +1831,7 @@ export default function SemanticLayer({ onNavigate, pipelineStats, onRefreshPipe
           const a = document.createElement('a'); a.href = url; a.download = 'metric_views.sql'; a.click()
           URL.revokeObjectURL(url)
         }} className="px-4 py-2 text-sm rounded-md border border-slate-300 dark:border-dbx-navy-400 text-slate-700 dark:text-slate-200 hover:bg-slate-100 dark:hover:bg-dbx-navy-500 transition-colors whitespace-nowrap">
-          Export SQL
+          {tr('sm.exportSql')}
         </button>
       </div>
       <FoundationRail
@@ -1859,14 +1868,14 @@ export default function SemanticLayer({ onNavigate, pipelineStats, onRefreshPipe
         <div className="text-xs text-slate-500 dark:text-slate-400 px-1">
           Scope: <span className="font-medium text-slate-700 dark:text-slate-200">{selectedCatalog || '?'}.{selectedSchema || '?'}</span>
           {globalTargetOverride && (
-            <span className="ml-3">Override: <span className="font-medium text-slate-700 dark:text-slate-200">{globalTargetOverride}</span></span>
+            <span className="ml-3">{tr('sm.m.override')} <span className="font-medium text-slate-700 dark:text-slate-200">{globalTargetOverride}</span></span>
           )}
         </div>
       )}
 
       {/* Tab Bar */}
       <div className="inline-flex bg-dbx-oat/60 dark:bg-dbx-navy-600 rounded-xl p-1 shadow-inner-soft">
-        {[['setup', 'Setup'], ['questions', 'Questions & KPIs'], ['model', 'Model'], ['generate', 'Generate'], ['definitions', 'Definitions']].map(([k, l]) => {
+        {[['setup', 'sm.tab.setup'], ['questions', 'sm.tab.questions'], ['model', 'sm.tab.model'], ['generate', 'sm.tab.generate'], ['definitions', 'sm.tab.definitions']].map(([k, l]) => {
           const count = k === 'setup' && selectedTables.length ? `${selectedTables.length} tables`
             : k === 'questions' ? [questionLines.length && `${questionLines.length}q`, kpis.length && `${kpis.length} KPIs`].filter(Boolean).join(', ') || ''
             : k === 'definitions' && definitions.length ? `${definitions.length}` : ''
@@ -1875,7 +1884,7 @@ export default function SemanticLayer({ onNavigate, pipelineStats, onRefreshPipe
           return (
             <button key={k} onClick={() => setActiveTab(k)}
               className={`px-3.5 py-1.5 text-sm rounded-lg transition-all duration-200 ${activeTab === k ? 'bg-white dark:bg-dbx-navy-500 shadow-sm font-semibold text-dbx-lava' : 'text-slate-500 dark:text-slate-400 hover:text-slate-700 dark:hover:text-slate-200'}`}>
-              {l}{count && <span className="ml-1 text-[10px] text-slate-400">({count})</span>}
+              {tr(l)}{count && <span className="ml-1 text-[10px] text-slate-400">({count})</span>}
               {genReady && <span className="ml-1 inline-block w-1.5 h-1.5 rounded-full bg-green-500" />}
               {genNotReady && <span className="ml-1 inline-block w-1.5 h-1.5 rounded-full bg-amber-400" />}
             </button>
@@ -1885,7 +1894,7 @@ export default function SemanticLayer({ onNavigate, pipelineStats, onRefreshPipe
 
       {/* Workflow guide */}
       <div className="text-xs text-slate-500 dark:text-slate-400 leading-relaxed px-1">
-        <span className="font-semibold text-slate-600 dark:text-slate-300">How it works:</span>{' '}
+        <span className="font-semibold text-slate-600 dark:text-slate-300">{tr('sm.m.howItWorks')}</span>{' '}
         <span className={activeTab === 'setup' ? 'font-semibold text-dbx-lava' : ''}>1. Setup</span> &mdash; pick a project and select tables &rarr;{' '}
         <span className={activeTab === 'questions' ? 'font-semibold text-dbx-lava' : ''}>2. Questions</span> &mdash; define business questions and KPIs &rarr;{' '}
         <span className={activeTab === 'model' ? 'font-semibold text-dbx-lava' : ''}>3. Model</span> &mdash; review the recommended ERD (facts, joins) &rarr;{' '}
@@ -1900,9 +1909,9 @@ export default function SemanticLayer({ onNavigate, pipelineStats, onRefreshPipe
       {/* Project Selector */}
       <section className={section}>
         <div className="flex items-center gap-4 mb-1">
-          <h2 className="text-lg font-semibold dark:text-gray-100 whitespace-nowrap">Project</h2>
+          <h2 className="text-lg font-semibold dark:text-gray-100 whitespace-nowrap">{tr('sm.project')}</h2>
           <select value={selectedProjectId} onChange={e => setSelectedProjectId(e.target.value)} className={`${input} max-w-xs`}>
-            <option value="">All definitions (no project)</option>
+            <option value="">{tr('sm.m.allDefinitions')}</option>
             {projects.map(p => <option key={p.project_id} value={p.project_id}>{p.project_name}</option>)}
           </select>
           {!showNewProject ? (
@@ -1912,51 +1921,51 @@ export default function SemanticLayer({ onNavigate, pipelineStats, onRefreshPipe
           ) : (
             <div className="flex items-center gap-2">
               <input value={newProjectName} onChange={e => setNewProjectName(e.target.value)}
-                placeholder="Project name" className="input-base w-48"
+                placeholder={tr('sm.m.projectNamePh')} className="input-base w-48"
                 onKeyDown={e => e.key === 'Enter' && createNewProject()} />
               <button onClick={createNewProject} disabled={loading || !newProjectName.trim()}
-                className="px-3 py-1 bg-dbx-lava text-white rounded text-sm hover:bg-red-700 disabled:opacity-50">Create</button>
+                className="px-3 py-1 bg-dbx-lava text-white rounded text-sm hover:bg-red-700 disabled:opacity-50">{tr('sm.m.create')}</button>
               <button onClick={() => { setShowNewProject(false); setNewProjectName('') }}
-                className="text-sm text-gray-500 dark:text-gray-400 hover:underline">Cancel</button>
+                className="text-sm text-gray-500 dark:text-gray-400 hover:underline">{tr('common.cancel')}</button>
             </div>
           )}
           {selectedProjectId && (
             <button onClick={() => deleteProject(selectedProjectId)} disabled={loading}
-              className="text-sm text-red-500 hover:underline ml-auto">Delete Project</button>
+              className="text-sm text-red-500 hover:underline ml-auto">{tr('sm.m.deleteProject')}</button>
           )}
         </div>
-        <p className="text-xs text-slate-500 dark:text-slate-400">Projects group your table selections and generated definitions. Create one per use-case or team.</p>
+        <p className="text-xs text-slate-500 dark:text-slate-400">{tr('sm.m.projectsHelp')}</p>
         {selectedProjectId && selectedTables.length > 0 && (
           <div className="mt-2 text-xs text-gray-500 dark:text-gray-400">
-            <span className="font-medium">Tables:</span> {selectedTables.join(', ')}
+            <span className="font-medium">{tr('sm.m.tables')}</span> {selectedTables.join(', ')}
           </div>
         )}
       </section>
 
       {/* Table Selection */}
       <section className={section}>
-        <h2 className="text-lg font-semibold mb-1 dark:text-gray-100">Select Tables</h2>
-        <p className="text-xs text-slate-500 dark:text-slate-400 mb-3">Choose the source tables you want to create metric views for. Tables can span multiple schemas.</p>
+        <h2 className="text-lg font-semibold mb-1 dark:text-gray-100">{tr('sm.selectTables')}</h2>
+        <p className="text-xs text-slate-500 dark:text-slate-400 mb-3">{tr('sm.m.chooseTablesHelp')}</p>
         <details className="mb-3 bg-blue-50 dark:bg-blue-900/20 border border-blue-200 dark:border-blue-700/50 rounded-md text-xs text-blue-800 dark:text-blue-200 leading-relaxed group">
           <summary className="px-3 py-2 font-semibold cursor-pointer select-none flex items-center gap-1.5">
             <svg className="w-3 h-3 transition-transform group-open:rotate-90 shrink-0" fill="none" viewBox="0 0 24 24" stroke="currentColor">
               <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M9 5l7 7-7 7" />
             </svg>
-            Which tables make good metric views?
+            {tr('sm.m.whichTables')}
           </summary>
           <div className="px-3 pb-2 space-y-1.5">
             <ul className="list-disc ml-4 space-y-1">
-              <li><span className="font-medium">Star schema (richest output):</span> select fact / transaction tables (<code className="px-1 bg-blue-100 dark:bg-blue-800/40 rounded">fct_</code>, <code className="px-1 bg-blue-100 dark:bg-blue-800/40 rounded">fact_</code>) together with their related dimension tables (<code className="px-1 bg-blue-100 dark:bg-blue-800/40 rounded">dim_</code>). The generator uses approved foreign keys to join them, producing multi-dimensional breakdowns (e.g. revenue by region, product, and month). Run and approve FK predictions first &mdash; without FKs it can only build single-table views.</li>
-              <li><span className="font-medium">Pre-aggregated gold / data marts:</span> if a table is already heavily aggregated (one row per summarized grain), select it on its own. You'll get a simple single-table metric view with direct aggregations and no joins. Don't expect joins, and don't mix marts with raw facts in the same selection.</li>
-              <li>Avoid raw / bronze / staging, audit / log, and purely operational tables.</li>
-              <li>Don't select dimension tables by themselves &mdash; they carry no measures.</li>
+              <li><span className="font-medium">{tr('sm.m.starSchema')}</span> select fact / transaction tables (<code className="px-1 bg-blue-100 dark:bg-blue-800/40 rounded">fct_</code>, <code className="px-1 bg-blue-100 dark:bg-blue-800/40 rounded">fact_</code>) together with their related dimension tables (<code className="px-1 bg-blue-100 dark:bg-blue-800/40 rounded">dim_</code>). The generator uses approved foreign keys to join them, producing multi-dimensional breakdowns (e.g. revenue by region, product, and month). Run and approve FK predictions first &mdash; without FKs it can only build single-table views.</li>
+              <li><span className="font-medium">{tr('sm.m.preAggregated')}</span> if a table is already heavily aggregated (one row per summarized grain), select it on its own. You'll get a simple single-table metric view with direct aggregations and no joins. Don't expect joins, and don't mix marts with raw facts in the same selection.</li>
+              <li>{tr('sm.m.avoidRaw')}</li>
+              <li>{tr('sm.m.noDimAlone')}</li>
             </ul>
-            <div className="text-blue-700/80 dark:text-blue-300/80">Only tables that already have core metadata appear in the list below.</div>
+            <div className="text-blue-700/80 dark:text-blue-300/80">{tr('sm.m.onlyCoreMeta')}</div>
           </div>
         </details>
         <div className="grid grid-cols-1 md:grid-cols-3 gap-4 mb-4">
           <div>
-            <label className={label}>Catalog</label>
+            <label className={label}>{tr('sm.m.catalog')}</label>
             <select value={selectedCatalog} onChange={e => { setSelectedCatalog(e.target.value); setSelectedSchema('') }}
               className={input}>
               <option value="">-- select --</option>
@@ -1964,7 +1973,7 @@ export default function SemanticLayer({ onNavigate, pipelineStats, onRefreshPipe
             </select>
           </div>
           <div>
-            <label className={label}>Schema</label>
+            <label className={label}>{tr('sm.m.schema')}</label>
             <select value={selectedSchema} onChange={e => setSelectedSchema(e.target.value)}
               className={input} disabled={!selectedCatalog}>
               <option value="">-- select --</option>
@@ -1972,16 +1981,16 @@ export default function SemanticLayer({ onNavigate, pipelineStats, onRefreshPipe
             </select>
           </div>
           <div>
-            <label className={label}>Filter tables</label>
+            <label className={label}>{tr('sm.m.filterTables')}</label>
             <input value={tableFilter} onChange={e => setTableFilter(e.target.value)}
-              placeholder="Type to filter..." className={input} aria-label="Filter tables" />
+              placeholder={tr('sm.m.typeToFilter')} className={input} aria-label="Filter tables" />
           </div>
         </div>
         {allTables.length > 0 && (
           <>
             <div className="flex gap-2 mb-2 text-xs">
               <button onClick={selectAll} className="text-blue-600 dark:text-blue-400 hover:underline">Select all ({filteredTables.length})</button>
-              <button onClick={selectNone} className="text-blue-600 dark:text-blue-400 hover:underline">Clear schema</button>
+              <button onClick={selectNone} className="text-blue-600 dark:text-blue-400 hover:underline">{tr('sm.m.clearSchema')}</button>
               <span className="text-gray-400 ml-auto">{selectedTables.length} selected total</span>
             </div>
             <div className="grid grid-cols-2 md:grid-cols-3 lg:grid-cols-4 gap-1 max-h-48 overflow-y-auto border dark:border-gray-600 rounded-md p-2">
@@ -1995,11 +2004,11 @@ export default function SemanticLayer({ onNavigate, pipelineStats, onRefreshPipe
           </>
         )}
         {selectedCatalog && selectedSchema && allTables.length === 0 && allSchemaTableCount === 0 && (
-          <p className="text-sm text-gray-500 dark:text-gray-400 italic">No managed tables found in {selectedCatalog}.{selectedSchema}</p>
+          <p className="text-sm text-gray-500 dark:text-gray-400 italic">{tr('sm.m.noManagedTables', { loc: `${selectedCatalog}.${selectedSchema}` })}</p>
         )}
         {selectedCatalog && selectedSchema && allTables.length === 0 && allSchemaTableCount > 0 && (
           <p className="text-sm text-amber-600 dark:text-amber-400 italic">
-            {allSchemaTableCount} table{allSchemaTableCount !== 1 ? 's' : ''} found in {selectedCatalog}.{selectedSchema}, but none have core metadata yet. Run <strong>Generate Core Metadata</strong> first, then return here to select tables.
+            {allSchemaTableCount} table{allSchemaTableCount !== 1 ? 's' : ''} found in {selectedCatalog}.{selectedSchema}, but none have core metadata yet. Run <strong>{tr('sm.m.generateCoreMetadata')}</strong> first, then return here to select tables.
           </p>
         )}
         {allTables.length > 0 && allSchemaTableCount > allTables.length && (
@@ -2011,16 +2020,16 @@ export default function SemanticLayer({ onNavigate, pipelineStats, onRefreshPipe
           <div className="mt-4">
             <div className="flex items-center gap-2 mb-2">
               <span className="text-xs font-medium text-slate-600 dark:text-slate-300">Selected Tables ({selectedTables.length})</span>
-              <button onClick={() => setSelectedTables([])} className="text-xs text-red-500 hover:underline">Clear all</button>
+              <button onClick={() => setSelectedTables([])} className="text-xs text-red-500 hover:underline">{tr('sm.m.clearAll')}</button>
               {selectedProjectId && (
                 <button onClick={saveProjectTables} disabled={tableSaveStatus === 'saving'}
                   className="text-xs px-2 py-0.5 rounded bg-blue-600 text-white hover:bg-blue-700 disabled:opacity-50 ml-auto">
-                  {tableSaveStatus === 'saving' ? 'Saving...' : 'Save Tables'}
+                  {tableSaveStatus === 'saving' ? tr('common.saving') : tr('sm.m.saveTables')}
                 </button>
               )}
-              {tableSaveStatus === 'saved' && <span className="text-xs text-green-600 dark:text-green-400">Saved</span>}
-              {tableSaveStatus === 'pending' && <span className="text-xs text-amber-500 dark:text-amber-400">Unsaved</span>}
-              {tableSaveStatus === 'error' && <span className="text-xs text-red-500">Failed to save table selection</span>}
+              {tableSaveStatus === 'saved' && <span className="text-xs text-green-600 dark:text-green-400">{tr('sm.m.saved')}</span>}
+              {tableSaveStatus === 'pending' && <span className="text-xs text-amber-500 dark:text-amber-400">{tr('sm.m.unsaved')}</span>}
+              {tableSaveStatus === 'error' && <span className="text-xs text-red-500">{tr('sm.m.failedSaveSelection')}</span>}
             </div>
             <div className="flex flex-wrap gap-1.5">
               {selectedTables.map(t => (
@@ -2041,14 +2050,14 @@ export default function SemanticLayer({ onNavigate, pipelineStats, onRefreshPipe
 
       {/* Question Profiles */}
       <section className={section}>
-        <h2 className="text-lg font-semibold mb-1 dark:text-gray-100">Question Profile</h2>
-        <p className="text-xs text-slate-500 dark:text-slate-400 mb-3">Write the business questions your analysts would ask. These drive which metric views get generated. Profiles let you save and reuse question sets across projects.</p>
+        <h2 className="text-lg font-semibold mb-1 dark:text-gray-100">{tr('sm.questionProfile')}</h2>
+        <p className="text-xs text-slate-500 dark:text-slate-400 mb-3">{tr('sm.m.writeQuestionsHelp')}</p>
         <div className="px-3 py-2 mb-3 bg-amber-50 dark:bg-amber-900/20 border border-amber-200 dark:border-amber-700/50 rounded-md text-xs text-amber-800 dark:text-amber-300 leading-relaxed">
-          <span className="font-semibold">Coverage tip:</span> For best results, ensure your questions span all selected tables and key business areas. Each table should be referenced by at least one question. Tables without questions won't produce metric views.
+          <span className="font-semibold">{tr('sm.m.coverageTip')}</span> For best results, ensure your questions span all selected tables and key business areas. Each table should be referenced by at least one question. Tables without questions won't produce metric views.
         </div>
         <div className="grid grid-cols-1 md:grid-cols-2 gap-4 mb-4">
           <div>
-            <label className={label}>Load Profile</label>
+            <label className={label}>{tr('sm.m.loadProfile')}</label>
             <select value={activeProfileId} onChange={e => selectProfile(e.target.value)} className={input}>
               <option value="">-- new profile --</option>
               {profiles.map(p => (
@@ -2059,22 +2068,22 @@ export default function SemanticLayer({ onNavigate, pipelineStats, onRefreshPipe
             </select>
           </div>
           <div>
-            <label className={label}>Profile Name</label>
+            <label className={label}>{tr('sm.m.profileName')}</label>
             <input value={profileName} onChange={e => setProfileName(e.target.value)}
-              placeholder="e.g. Sales Analytics Questions" className={input} />
+              placeholder={tr('sm.m.profileNamePh')} className={input} />
           </div>
         </div>
         <div className="flex items-center flex-wrap gap-x-3 gap-y-1 mb-1">
-          <label className={`${label} !mb-0`}>Business Context <span className="text-gray-400 font-normal">(optional -- describe your industry, strategic priorities, or key terminology to steer all generation)</span></label>
+          <label className={`${label} !mb-0`}>{tr('sm.m.businessContext')} <span className="text-gray-400 font-normal">(optional -- describe your industry, strategic priorities, or key terminology to steer all generation)</span></label>
           <button
             type="button"
             onClick={suggestBusinessContext}
             disabled={bizCtxLoading || !selectedTables.length}
-            title={!selectedTables.length ? 'Select tables first' : `Draft from ${bizCtxUseKb ? 'knowledge-base descriptions' : 'table comments'}`}
+            title={!selectedTables.length ? tr('sm.m.tipSelectTablesFirst') : (bizCtxUseKb ? tr('sm.m.tipDraftFromKb') : tr('sm.m.tipDraftFromComments'))}
             className="text-xs px-2 py-1 rounded-md bg-amber-100 text-amber-800 dark:bg-amber-900/40 dark:text-amber-300 hover:bg-amber-200 dark:hover:bg-amber-800 disabled:opacity-50">
-            {bizCtxLoading ? 'Drafting…' : '✨ Suggest from tables'}
+            {bizCtxLoading ? tr('sm.m.drafting') : tr('sm.m.suggestFromTables')}
           </button>
-          <label className="inline-flex items-center gap-1.5 text-xs text-gray-500 dark:text-gray-400 cursor-pointer" title="Use the generated descriptions from the knowledge base instead of the live table comments.">
+          <label className="inline-flex items-center gap-1.5 text-xs text-gray-500 dark:text-gray-400 cursor-pointer" title={tr('sm.m.useGeneratedDescTip')}>
             <input type="checkbox" checked={bizCtxUseKb} onChange={e => setBizCtxUseKb(e.target.checked)} className="rounded" />
             Use knowledge-base descriptions
           </label>
@@ -2092,11 +2101,11 @@ export default function SemanticLayer({ onNavigate, pipelineStats, onRefreshPipe
           </summary>
           <div className="px-3 pb-3 space-y-2">
             <p className="text-xs text-slate-500 dark:text-slate-400">
-              Pull the curated example SQL &amp; benchmarks from an existing Genie space. Generation then treats them as proven query patterns — reusing the measures, dimensions, grains, and joins that already work — to build metric views that cover a data-mart layer without changing the Genie space.
+              {tr('sm.m.importGenieHelp')}
             </p>
-            {genieSpacesLoading && <p className="text-xs text-slate-400">Loading Genie spaces…</p>}
+            {genieSpacesLoading && <p className="text-xs text-slate-400">{tr('sm.m.loadingGenieSpaces')}</p>}
             {genieSpaces !== null && genieSpaces.length === 0 && !genieSpacesLoading && (
-              <p className="text-xs text-amber-600 dark:text-amber-400">No Genie spaces found in this workspace.</p>
+              <p className="text-xs text-amber-600 dark:text-amber-400">{tr('sm.m.noGenieSpaces')}</p>
             )}
             {genieSpaces !== null && genieSpaces.length > 0 && (
               <div className="max-h-40 overflow-y-auto border dark:border-slate-600 rounded-md p-2 space-y-0.5">
@@ -2114,26 +2123,26 @@ export default function SemanticLayer({ onNavigate, pipelineStats, onRefreshPipe
               <button type="button" onClick={pullGenieSql}
                 disabled={geniePullLoading || !genieSelectedSpaces.length}
                 className="text-xs px-2 py-1 rounded-md bg-blue-100 text-blue-800 dark:bg-blue-900/40 dark:text-blue-300 hover:bg-blue-200 dark:hover:bg-blue-800 disabled:opacity-50">
-                {geniePullLoading ? 'Pulling…' : `Pull example SQL${genieSelectedSpaces.length ? ` (${genieSelectedSpaces.length})` : ''}`}
+                {geniePullLoading ? tr('sm.m.pulling') : `${tr('sm.m.pullExampleSql')}${genieSelectedSpaces.length ? ` (${genieSelectedSpaces.length})` : ''}`}
               </button>
               {geniePullStatus && <span className="text-xs text-green-600 dark:text-green-400">{geniePullStatus}</span>}
             </div>
           </div>
         </details>
 
-        <label className={label}>Business Questions (one per line)</label>
+        <label className={label}>{tr('sm.m.businessQuestions')}</label>
         <textarea value={questionsText} onChange={e => setQuestionsText(e.target.value)}
           placeholder={"What was total revenue by region last quarter?\nHow many orders per month by product category?\nWhat is the average deal size by sales rep?"}
           className={`${input} h-32 mb-3`} />
         <div className="flex gap-3 items-center flex-wrap">
           <button onClick={suggestQuestions} disabled={suggestQLoading || !selectedTables.length}
             className="px-4 py-2 bg-amber-600 text-white rounded-md text-sm hover:bg-amber-700 disabled:opacity-50">
-            {suggestQLoading ? 'Suggesting...' : 'Suggest Questions'}
+            {suggestQLoading ? tr('sm.m.suggesting') : tr('sm.m.suggestQuestions')}
           </button>
           {suggestQProgress && <span className="text-xs text-slate-500 dark:text-slate-400 italic">{suggestQProgress}</span>}
           <button onClick={saveProfile} disabled={loading || !profileName.trim() || !questionLines.length}
             className="px-4 py-2 bg-blue-600 text-white rounded-md text-sm hover:bg-blue-700 disabled:opacity-50">
-            {activeProfileId ? 'Update Profile' : 'Save Profile'}
+            {activeProfileId ? tr('sm.m.updateProfile') : tr('sm.m.saveProfile')}
           </button>
           {activeProfileId && (
             <button onClick={deleteProfile} disabled={loading}
@@ -2145,14 +2154,14 @@ export default function SemanticLayer({ onNavigate, pipelineStats, onRefreshPipe
             <span className="text-xs text-gray-500 dark:text-gray-400">{questionLines.length} question{questionLines.length !== 1 ? 's' : ''}</span>
           )}
         </div>
-        <p className="text-xs text-gray-400 dark:text-gray-500 mt-2">Click multiple times to expand coverage -- each run generates new questions that complement the existing ones.</p>
+        <p className="text-xs text-gray-400 dark:text-gray-500 mt-2">{tr('sm.m.expandCoverageHint')}</p>
         {/* Drive `current` from the questions actually shown (questionLines), not the
             backend's separately-counted value — the backend counts by profile scope and
             can read 0 while the list shows several, producing "0 of ~N". Only recommend
             more when the visible count is below the backend's target. */}
         {genSufficiency?.questions?.recommended && questionLines.length < genSufficiency.questions.recommended && (
           <div className="mt-2 px-3 py-2 rounded-md bg-amber-50 dark:bg-amber-900/20 border border-amber-200 dark:border-amber-700/50 text-xs text-amber-800 dark:text-amber-300 leading-relaxed">
-            <span className="font-semibold">Recommendation:</span>{' '}
+            <span className="font-semibold">{tr('sm.m.recommendation')}</span>{' '}
             generate more questions &mdash; {questionLines.length} of ~{genSufficiency.questions.recommended} suggested
             {genSufficiency.questions.reasons?.length > 0 && <> ({genSufficiency.questions.reasons.join(', ')})</>}.
           </div>
@@ -2163,38 +2172,38 @@ export default function SemanticLayer({ onNavigate, pipelineStats, onRefreshPipe
       <section className={section}>
         <div className="flex items-center justify-between mb-3">
           <div>
-            <h2 className="text-lg font-semibold dark:text-gray-100">KPI Library</h2>
-            <p className="text-xs text-gray-500 dark:text-gray-400 mt-0.5">Define or auto-suggest business KPIs from your selected tables. KPIs feed into metric view generation and Genie space configuration. Run multiple times for broader coverage -- each pass generates different KPIs.</p>
+            <h2 className="text-lg font-semibold dark:text-gray-100">{tr('sm.kpiLibrary')}</h2>
+            <p className="text-xs text-gray-500 dark:text-gray-400 mt-0.5">{tr('sm.m.kpiHelp')}</p>
             {/* Use the visible KPI count (kpis.length) for `current`, not the backend's
                 profile-scoped COUNT(*) which can read 0 while the library shows several
                 (the "0 of ~8" bug). Recommend more only when the visible count is under
                 the backend target. */}
             {genSufficiency?.kpis?.recommended && kpis.length < genSufficiency.kpis.recommended ? (
               <p className="text-xs text-amber-600 dark:text-amber-400 mt-1">
-                Recommendation: generate more KPIs &mdash; {kpis.length} of ~{genSufficiency.kpis.recommended}
+                {tr('sm.m.kpiRecommend', { n: kpis.length, rec: genSufficiency.kpis.recommended })}
                 {genSufficiency.kpis.reasons?.length > 0 && <> ({genSufficiency.kpis.reasons.join(', ')})</>}.
               </p>
             ) : (
-              <p className="text-xs text-amber-600 dark:text-amber-400 mt-1">The more validated KPIs per fact table, the richer the generated metric views will be.</p>
+              <p className="text-xs text-amber-600 dark:text-amber-400 mt-1">{tr('sm.m.kpiRichnessHint')}</p>
             )}
           </div>
           <div className="flex gap-2">
             <button onClick={suggestKpis} disabled={kpiSuggesting || !selectedTables.length}
               className="px-3 py-1.5 bg-teal-600 text-white rounded text-xs hover:bg-teal-700 disabled:opacity-50">
-              {kpiSuggesting ? 'Suggesting...' : 'Auto-Suggest KPIs'}
+              {kpiSuggesting ? tr('sm.m.suggesting') : tr('sm.m.autoSuggestKpis')}
             </button>
             <button onClick={() => { setShowKpiForm(true); setKpiEditId(null); setKpiDraft({ name: '', description: '', formula: '', domain: '', target_tables: [] }) }}
               className="px-3 py-1.5 bg-dbx-blue text-white rounded text-xs hover:bg-blue-700">+ Add KPI</button>
             {kpis.some(k => (k.validation_status || '').toLowerCase() === 'invalid') && (
               <button onClick={deleteInvalidKpis}
-                title="Delete every KPI whose formula failed to validate against its source table(s)."
+                title={tr('sm.m.deleteFailedKpisTip')}
                 className="px-3 py-1.5 bg-amber-600 text-white rounded text-xs hover:bg-amber-700">
                 Delete all invalid ({kpis.filter(k => (k.validation_status || '').toLowerCase() === 'invalid').length})
               </button>
             )}
             {kpis.length > 0 && (
               <button onClick={deleteAllKpis}
-                className="px-3 py-1.5 bg-red-600 text-white rounded text-xs hover:bg-red-700">Delete All</button>
+                className="px-3 py-1.5 bg-red-600 text-white rounded text-xs hover:bg-red-700">{tr('sm.m.deleteAll')}</button>
             )}
           </div>
         </div>
@@ -2236,25 +2245,25 @@ export default function SemanticLayer({ onNavigate, pipelineStats, onRefreshPipe
         {showKpiForm && (
           <div className="border border-slate-200 dark:border-slate-700 rounded-lg p-4 mb-3 space-y-2 bg-slate-50 dark:bg-slate-800/50">
             <input value={kpiDraft.name} onChange={e => setKpiDraft(d => ({ ...d, name: e.target.value }))}
-              placeholder="KPI Name (e.g. Monthly Revenue Growth)" className="input-base w-full" />
+              placeholder={tr('sm.m.kpiNamePh')} className="input-base w-full" />
             <textarea value={kpiDraft.description} onChange={e => setKpiDraft(d => ({ ...d, description: e.target.value }))}
-              placeholder="Business description" rows={2} className="input-base w-full" />
+              placeholder={tr('sm.m.kpiDescPh')} rows={2} className="input-base w-full" />
             <input value={kpiDraft.formula} onChange={e => setKpiDraft(d => ({ ...d, formula: e.target.value }))}
-              placeholder="SQL formula (e.g. SUM(orders.total_amount))" className="input-base w-full" />
+              placeholder={tr('sm.m.kpiFormulaPh')} className="input-base w-full" />
             <div>
               <label className="block text-xs text-slate-500 dark:text-slate-400 mb-1">Source table &mdash; which table this KPI's formula runs against</label>
               <select value={(kpiDraft.target_tables && kpiDraft.target_tables[0]) || ''}
                 onChange={e => setKpiDraft(d => ({ ...d, target_tables: e.target.value ? [e.target.value] : [] }))}
                 className="input-base w-full">
-                <option value="">Auto (validate against all selected tables)</option>
+                <option value="">{tr('sm.m.autoValidate')}</option>
                 {selectedTables.map(t => <option key={t} value={t}>{t.split('.').slice(-1)[0]}</option>)}
               </select>
             </div>
             <div className="flex gap-2">
               <input value={kpiDraft.domain} onChange={e => setKpiDraft(d => ({ ...d, domain: e.target.value }))}
-                placeholder="Domain (e.g. sales)" className="input-base flex-1" />
+                placeholder={tr('sm.m.kpiDomainPh')} className="input-base flex-1" />
               <button onClick={() => saveKpi()} disabled={!kpiDraft.name.trim()} className={btnPrimary}>{kpiEditId ? 'Update' : 'Save'}</button>
-              <button onClick={() => setShowKpiForm(false)} className="px-3 py-1.5 bg-slate-200 dark:bg-slate-700 rounded text-xs">Cancel</button>
+              <button onClick={() => setShowKpiForm(false)} className="px-3 py-1.5 bg-slate-200 dark:bg-slate-700 rounded text-xs">{tr('common.cancel')}</button>
             </div>
           </div>
         )}
@@ -2270,7 +2279,7 @@ export default function SemanticLayer({ onNavigate, pipelineStats, onRefreshPipe
               invalid: 'bg-red-100 dark:bg-red-900/40 text-red-700 dark:text-red-300',
               unchecked: 'bg-slate-100 dark:bg-slate-700 text-slate-600 dark:text-slate-300',
             }
-            const labels = { valid: 'Valid', empty: 'No data', invalid: 'Invalid', unchecked: 'Unchecked' }
+            const labels = { valid: tr('sm.m.qual.valid'), empty: tr('sm.m.qual.empty'), invalid: tr('sm.m.qual.invalid'), unchecked: tr('sm.m.qual.unchecked') }
             if (!labels[s]) return null  // skipped / unknown -> no badge
             return (
               <span className={`ml-2 text-xs px-1.5 py-0.5 rounded ${styles[s]}`}
@@ -2285,12 +2294,12 @@ export default function SemanticLayer({ onNavigate, pipelineStats, onRefreshPipe
                 {kpiStatusBadge(k.validation_status, k.validation_error)}
                 {k.description && <p className="text-xs text-gray-500 dark:text-gray-400 mt-0.5 truncate">{k.description}</p>}
                 {k.formula && <code className="text-xs text-gray-400 dark:text-gray-500 block mt-0.5 truncate">{k.formula}</code>}
-                {k.resolved_table && <p className="text-[10px] text-slate-400 dark:text-slate-500 mt-0.5">validated against {k.resolved_table.split('.').slice(-1)[0]}</p>}
+                {k.resolved_table && <p className="text-[10px] text-slate-400 dark:text-slate-500 mt-0.5">{tr('sm.m.validatedAgainst', { table: k.resolved_table.split('.').slice(-1)[0] })}</p>}
               </div>
               <div className="flex gap-1 shrink-0">
                 <button onClick={() => { setKpiEditId(k.kpi_id); setKpiDraft({ name: k.name, description: k.description || '', formula: k.formula || '', domain: k.domain || '', target_tables: Array.isArray(k.target_tables) ? k.target_tables : [] }); setShowKpiForm(true) }}
-                  className="text-xs text-blue-600 hover:underline">Edit</button>
-                <button onClick={() => deleteKpi(k.kpi_id)} className="text-xs text-red-500 hover:underline">Del</button>
+                  className="text-xs text-blue-600 hover:underline">{tr('common.edit')}</button>
+                <button onClick={() => deleteKpi(k.kpi_id)} className="text-xs text-red-500 hover:underline">{tr('common.delete')}</button>
               </div>
             </div>
           )
@@ -2305,11 +2314,11 @@ export default function SemanticLayer({ onNavigate, pipelineStats, onRefreshPipe
             ? kpis
             : kpis.filter(k => (k.validation_status || '').toLowerCase() === kpiFilter)
           if (visibleKpis.length === 0) return (
-            <p className="text-xs text-slate-400 dark:text-slate-500">No {kpiFilter} KPIs.</p>
+            <p className="text-xs text-slate-400 dark:text-slate-500">{tr('sm.m.noKpisFiltered', { filter: kpiFilter })}</p>
           )
           if (!profiles.length) return (
             <div>
-              <p className="text-xs text-slate-400 dark:text-slate-500 mb-2">Create a Question Profile above to organize KPIs.</p>
+              <p className="text-xs text-slate-400 dark:text-slate-500 mb-2">{tr('sm.m.createProfileFirst')}</p>
               <div className="space-y-1.5">{visibleKpis.map(k => <KpiRow key={k.kpi_id} k={k} />)}</div>
             </div>
           )
@@ -2342,7 +2351,7 @@ export default function SemanticLayer({ onNavigate, pipelineStats, onRefreshPipe
                     <span className={`transition-transform ${expandedKpiSections.has('__unassigned') ? 'rotate-90' : ''}`}>&#9654;</span>
                     Unassigned ({unassigned.length})
                   </button>
-                  <p className="text-[10px] text-slate-400 dark:text-slate-500 ml-4 mt-0.5">Created before profile support. Re-save from a profile to assign.</p>
+                  <p className="text-[10px] text-slate-400 dark:text-slate-500 ml-4 mt-0.5">{tr('sm.m.createdBeforeProfile')}</p>
                   {expandedKpiSections.has('__unassigned') && (
                     <div className="space-y-1.5 mt-1.5">{unassigned.map(k => <KpiRow key={k.kpi_id} k={k} dimmed />)}</div>
                   )}
@@ -2352,7 +2361,7 @@ export default function SemanticLayer({ onNavigate, pipelineStats, onRefreshPipe
           )
         })()}
         {kpis.length === 0 && !showKpiForm && (
-          <EmptyState title="No KPIs defined yet" description="Add manually or use auto-suggest above" />
+          <EmptyState title={tr('sm.noKpis')} description={tr('sm.noKpis.desc')} />
         )}
       </section>
 
@@ -2362,7 +2371,7 @@ export default function SemanticLayer({ onNavigate, pipelineStats, onRefreshPipe
       {activeTab === 'model' && (
         <section className={section}>
           <div className="flex items-center gap-2 mb-1">
-            <h2 className="text-lg font-semibold dark:text-gray-100">Data model</h2>
+            <h2 className="text-lg font-semibold dark:text-gray-100">{tr('sm.dataModel')}</h2>
             <span className="text-xs text-slate-400">recommended from your metadata</span>
           </div>
           <p className="text-xs text-slate-500 dark:text-slate-400 mb-3 leading-relaxed">
@@ -2388,17 +2397,17 @@ export default function SemanticLayer({ onNavigate, pipelineStats, onRefreshPipe
 
       {/* Generation inputs summary */}
       <section className={section}>
-        <h2 className="text-lg font-semibold mb-1 dark:text-gray-100">Generation Inputs</h2>
-        <p className="text-xs text-slate-500 dark:text-slate-400 mb-3">Review your inputs below, then scroll down and click Generate. AI will create YAML metric view definitions from your tables, questions, and KPIs.</p>
+        <h2 className="text-lg font-semibold mb-1 dark:text-gray-100">{tr('sm.generationInputs')}</h2>
+        <p className="text-xs text-slate-500 dark:text-slate-400 mb-3">{tr('sm.m.reviewInputsHelp')}</p>
         <div className="grid grid-cols-2 md:grid-cols-3 gap-3 text-sm">
           <div className="p-3 rounded-lg bg-slate-50 dark:bg-slate-800/50 border border-slate-200 dark:border-slate-700">
-            <span className="text-xs text-slate-500 dark:text-slate-400 block mb-1">Project</span>
+            <span className="text-xs text-slate-500 dark:text-slate-400 block mb-1">{tr('sm.m.project')}</span>
             <span className="font-medium dark:text-gray-200">
-              {selectedProjectId ? projects.find(p => p.project_id === selectedProjectId)?.project_name || 'Unknown' : 'None'}
+              {selectedProjectId ? projects.find(p => p.project_id === selectedProjectId)?.project_name || tr('sm.m.unknown') : tr('sm.m.none')}
             </span>
           </div>
           <div className="p-3 rounded-lg bg-slate-50 dark:bg-slate-800/50 border border-slate-200 dark:border-slate-700">
-            <span className="text-xs text-slate-500 dark:text-slate-400 block mb-1">Tables</span>
+            <span className="text-xs text-slate-500 dark:text-slate-400 block mb-1">{tr('sm.m.tablesPlain')}</span>
             <span className={`font-medium ${selectedTables.length ? 'dark:text-gray-200' : 'text-amber-600 dark:text-amber-400'}`}>
               {selectedTables.length || 'None selected'}
             </span>
@@ -2407,15 +2416,15 @@ export default function SemanticLayer({ onNavigate, pipelineStats, onRefreshPipe
             )}
           </div>
           <div className="p-3 rounded-lg bg-slate-50 dark:bg-slate-800/50 border border-slate-200 dark:border-slate-700">
-            <span className="text-xs text-slate-500 dark:text-slate-400 block mb-1">Questions</span>
+            <span className="text-xs text-slate-500 dark:text-slate-400 block mb-1">{tr('sm.m.questions')}</span>
             <span className={`font-medium ${questionLines.length ? 'dark:text-gray-200' : 'text-amber-600 dark:text-amber-400'}`}>
               {questionLines.length || 'None'}
             </span>
           </div>
           <div className="p-3 rounded-lg bg-slate-50 dark:bg-slate-800/50 border border-slate-200 dark:border-slate-700">
-            <span className="text-xs text-slate-500 dark:text-slate-400 block mb-1">Business Context</span>
+            <span className="text-xs text-slate-500 dark:text-slate-400 block mb-1">{tr('sm.m.businessContextPlain')}</span>
             <span className="font-medium dark:text-gray-200 text-xs">
-              {businessContext ? (businessContext.length > 80 ? businessContext.slice(0, 80) + '...' : businessContext) : 'None'}
+              {businessContext ? (businessContext.length > 80 ? businessContext.slice(0, 80) + '...' : businessContext) : tr('sm.m.none')}
             </span>
           </div>
           <div className="p-3 rounded-lg bg-slate-50 dark:bg-slate-800/50 border border-slate-200 dark:border-slate-700">
@@ -2443,7 +2452,7 @@ export default function SemanticLayer({ onNavigate, pipelineStats, onRefreshPipe
 
       {/* Generate actions */}
       <section className={section}>
-        <h2 className="text-lg font-semibold mb-2 dark:text-gray-100">Generate Metric Views</h2>
+        <h2 className="text-lg font-semibold mb-2 dark:text-gray-100">{tr('sm.generateMetricViews')}</h2>
         <p className="text-sm text-gray-500 dark:text-gray-400 mb-3">
           Uses AI to analyze your questions against the catalog metadata for the selected tables and generate metric view definitions.
         </p>
@@ -2459,7 +2468,7 @@ export default function SemanticLayer({ onNavigate, pipelineStats, onRefreshPipe
             || Math.min(Math.max(Math.floor(selectedTables.length / 3), 2), 15)
           return <>
         <div className="flex items-center gap-2 mb-2">
-          <label className="text-sm font-medium text-slate-700 dark:text-slate-200 whitespace-nowrap">Max views</label>
+          <label className="text-sm font-medium text-slate-700 dark:text-slate-200 whitespace-nowrap">{tr('sm.m.maxViews')}</label>
           <input type="number" min={1}
             max={Math.max(Math.floor(selectedTables.length / 2), 2)}
             placeholder={String(recommended)}
@@ -2467,7 +2476,7 @@ export default function SemanticLayer({ onNavigate, pipelineStats, onRefreshPipe
             onChange={e => setMaxViews(e.target.value ? parseInt(e.target.value) : null)}
             className="w-16 px-2 py-1 border rounded text-sm dark:bg-slate-700 dark:border-slate-600 dark:text-white" />
           <span className="text-xs text-slate-400 dark:text-slate-500"
-            title="Each metric view costs 1-2 AI_QUERY calls. More views = more cost and generation time.">
+            title={tr('sm.m.eachViewCostTip')}>
             of {selectedTables.length} tables (recommended: {recommended})
           </span>
           {maxViews == null && (
@@ -2477,10 +2486,10 @@ export default function SemanticLayer({ onNavigate, pipelineStats, onRefreshPipe
         </div>
         {erdSufficiency && (erdSufficiency.reasons?.length > 0 || erdSufficiency.missing_kpis?.length > 0) && (
           <div className="mb-4 px-3 py-2 rounded-md bg-amber-50 dark:bg-amber-900/20 border border-amber-200 dark:border-amber-700/50 text-xs text-amber-800 dark:text-amber-300 leading-relaxed">
-            <span className="font-semibold">Coverage recommendation:</span>{' '}
+            <span className="font-semibold">{tr('sm.m.coverageRecommendation')}</span>{' '}
             {erdSufficiency.reasons?.join(' · ')}
             {erdSufficiency.missing_kpis?.length > 0 && <> — {erdSufficiency.missing_kpis.length} KPI(s) not yet covered by a measure.</>}
-            {onNavigate && <> Refine the data model in <button onClick={() => setActiveTab('model')} className="font-semibold underline">Model</button>.</>}
+            {onNavigate && <> Refine the data model in <button onClick={() => setActiveTab('model')} className="font-semibold underline">{tr('sm.m.model')}</button>.</>}
           </div>
         )}
         {erdSufficiency?.fanout_warnings?.length > 0 && (
@@ -2495,8 +2504,8 @@ export default function SemanticLayer({ onNavigate, pipelineStats, onRefreshPipe
         })()}
         <div className="mb-4 p-4 rounded-lg border border-slate-200 dark:border-slate-700 bg-slate-50/50 dark:bg-slate-900/30">
           <div className="flex items-center gap-2 mb-2">
-            <h3 className="text-sm font-semibold text-slate-800 dark:text-slate-100">Query acceleration (Materialization)</h3>
-            <span className="px-1.5 py-0.5 rounded text-[10px] font-semibold bg-violet-100 text-violet-700 dark:bg-violet-900/40 dark:text-violet-300">Public Preview</span>
+            <h3 className="text-sm font-semibold text-slate-800 dark:text-slate-100">{tr('sm.queryAcceleration')}</h3>
+            <span className="px-1.5 py-0.5 rounded text-[10px] font-semibold bg-violet-100 text-violet-700 dark:bg-violet-900/40 dark:text-violet-300">{tr('sm.m.publicPreview')}</span>
           </div>
           <p className="text-xs text-slate-500 dark:text-slate-400 mb-3">
             Pre-compute joins and filters via an unaggregated materialized view; Databricks routes eligible queries automatically.
@@ -2505,12 +2514,12 @@ export default function SemanticLayer({ onNavigate, pipelineStats, onRefreshPipe
             <input type="checkbox" checked={materialize}
               onChange={e => setMaterialize(e.target.checked)}
               className="accent-dbx-lava w-4 h-4" />
-            <span className="text-sm font-medium text-slate-700 dark:text-slate-200">Enable materialization for generated views</span>
+            <span className="text-sm font-medium text-slate-700 dark:text-slate-200">{tr('sm.m.enableMaterialization')}</span>
           </label>
           {materialize && (
             <div className="space-y-3">
               <div className="flex items-center gap-2 flex-wrap">
-                <label className="text-sm font-medium text-slate-700 dark:text-slate-200 whitespace-nowrap">Refresh schedule</label>
+                <label className="text-sm font-medium text-slate-700 dark:text-slate-200 whitespace-nowrap">{tr('sm.m.refreshSchedule')}</label>
                 <select value={matSchedulePreset}
                   onChange={e => {
                     const preset = e.target.value
@@ -2519,26 +2528,26 @@ export default function SemanticLayer({ onNavigate, pipelineStats, onRefreshPipe
                     if (p && p.value !== '__custom__') setMaterializationSchedule(p.value)
                   }}
                   className="px-2 py-1 border rounded text-sm dark:bg-slate-700 dark:border-slate-600 dark:text-white">
-                  {MAT_SCHEDULE_PRESETS.map(p => <option key={p.id} value={p.id}>{p.label}</option>)}
+                  {MAT_SCHEDULE_PRESETS.map(p => <option key={p.id} value={p.id}>{tr(p.label)}</option>)}
                 </select>
                 {(matSchedulePreset === 'custom' || !MAT_SCHEDULE_PRESETS.some(p => p.id !== 'custom' && p.value === materializationSchedule)) && (
                   <input type="text"
                     value={materializationSchedule}
                     onChange={e => { setMaterializationSchedule(e.target.value); setMatSchedulePreset('custom') }}
-                    placeholder="every 6 hours"
+                    placeholder={tr('sm.m.every6h')}
                     className="w-48 px-2 py-1 border rounded text-sm dark:bg-slate-700 dark:border-slate-600 dark:text-white" />
                 )}
               </div>
               <div className="p-3 rounded-md border border-amber-200 dark:border-amber-800 bg-amber-50/80 dark:bg-amber-900/20 text-xs text-amber-900 dark:text-amber-200 space-y-1">
-                <p className="font-medium">Requirements</p>
+                <p className="font-medium">{tr('sm.m.requirements')}</p>
                 <ul className="list-disc ml-4 space-y-0.5">
-                  <li>Serverless compute enabled in workspace</li>
-                  <li>SQL warehouse on DBR 17.3+</li>
-                  <li>Creates a Databricks-managed Lakeflow pipeline per metric view</li>
+                  <li>{tr('sm.m.serverlessEnabled')}</li>
+                  <li>{tr('sm.m.sqlWarehouseDbr')}</li>
+                  <li>{tr('sm.m.createsLakeflow')}</li>
                 </ul>
                 <p>
                   <a href="https://docs.databricks.com/en/metric-views/materialization" target="_blank" rel="noopener noreferrer"
-                    className="text-amber-800 dark:text-amber-300 underline">Databricks materialization docs</a>
+                    className="text-amber-800 dark:text-amber-300 underline">{tr('sm.m.materializationDocs')}</a>
                   {' '}&mdash; unaggregated baseline may not help simple single-table views.
                 </p>
               </div>
@@ -2551,26 +2560,26 @@ export default function SemanticLayer({ onNavigate, pipelineStats, onRefreshPipe
         {!foundationReady && (
           <div className="rounded-lg border border-amber-200 dark:border-amber-700/40 bg-amber-50/80 dark:bg-amber-900/15 px-4 py-3 text-sm text-slate-600 dark:text-slate-300 mb-3">
             {foundation && !foundation.metadataDone
-              ? 'For best results, generate core metadata first — metric views reference table and column descriptions. You can still generate now. '
-              : 'For best results, run the analytics pipeline first — metric views build on the ontology, foreign keys, and vector index it produces. You can still generate now. '}
+              ? tr('sm.m.foundationCoreFirst')
+              : tr('sm.m.foundationPipelineFirst')}
             <button onClick={() => onNavigate?.('jobs')} className="font-semibold text-dbx-lava hover:underline">
-              Go to Generate Metadata &rarr;
+              {tr('sm.m.goToGenerateMetadata')}
             </button>
           </div>
         )}
         <div className="flex gap-3 flex-wrap">
           <button onClick={() => startGeneration('replace')}
             disabled={loading || isGenerating || !selectedTables.length || !questionLines.length}
-            title={!foundationReady ? 'Recommended after core metadata + analytics pipeline, but you can generate now' : 'Create new metric view definitions (replaces any pending ones)'}
+            title={!foundationReady ? tr('sm.m.tipRecommendedAfter') : tr('sm.m.tipCreateNewDefs')}
             className={btnPrimary}>
-            {isGenerating ? 'Generating...' : 'Generate'}
+            {isGenerating ? tr('common.generating') : tr('sm.m.generate')}
           </button>
           {selectedProjectId && (
-            <button onClick={() => { if (!confirm('Regenerate all definitions in this project? Applied metric views are preserved.')) return; startGeneration('replace_all') }}
+            <button onClick={() => { if (!confirm(tr('sm.m.confirmRegenAll'))) return; startGeneration('replace_all') }}
               disabled={loading || isGenerating || !selectedTables.length || !questionLines.length}
-              title={!foundationReady ? 'Recommended after core metadata + analytics pipeline, but you can generate now' : 'Replace all draft, validated, and failed definitions in this project and regenerate. Applied metric views are preserved.'}
+              title={!foundationReady ? tr('sm.m.tipRecommendedAfter') : tr('sm.m.tipReplaceAllDefs')}
               className="px-4 py-2 bg-dbx-lava text-white rounded-md text-sm hover:bg-red-700 disabled:opacity-50">
-              Regenerate All
+              {tr('sm.m.regenerateAll')}
             </button>
           )}
         </div>
@@ -2579,13 +2588,13 @@ export default function SemanticLayer({ onNavigate, pipelineStats, onRefreshPipe
       {/* Generation Progress */}
       {taskStatus && (
         <section className={section}>
-          <h3 className="font-medium mb-2 dark:text-gray-100">Generation Progress</h3>
+          <h3 className="font-medium mb-2 dark:text-gray-100">{tr('sm.generationProgress')}</h3>
           <div className="flex items-center gap-3">
             {taskStatus.status === 'running' && (
               <div className="h-4 w-4 border-2 border-dbx-lava border-t-transparent rounded-full animate-spin" />
             )}
             <span className={`text-sm ${taskStatus.status === 'error' ? 'text-red-600 dark:text-red-400' : taskStatus.status === 'done' ? 'text-green-600 dark:text-green-400' : 'text-gray-700 dark:text-gray-300'}`}>
-              {STAGES[taskStatus.stage] || taskStatus.stage}
+              {STAGES[taskStatus.stage] ? tr(STAGES[taskStatus.stage]) : taskStatus.stage}
             </span>
             {taskStatus.planned && (
               <span className="text-xs text-gray-500 dark:text-gray-400">
@@ -2616,11 +2625,11 @@ export default function SemanticLayer({ onNavigate, pipelineStats, onRefreshPipe
           {taskStatus.status === 'done' && taskStatus.result && (
             <div className="text-sm mt-2 space-y-2 text-gray-700 dark:text-gray-300">
               <div className="flex flex-wrap gap-3">
-                <span>Generated: <strong>{taskStatus.result.generated}</strong></span>
-                <span>Validated: <strong className="text-green-600 dark:text-green-400">{taskStatus.result.validated}</strong></span>
-                <span>Failed: <strong className={taskStatus.result.failed ? 'text-red-600 dark:text-red-400' : ''}>{taskStatus.result.failed}</strong></span>
-                {taskStatus.result.repaired > 0 && <span>Repaired: <strong className="text-amber-600 dark:text-amber-400">{taskStatus.result.repaired}</strong></span>}
-                {taskStatus.result.skipped > 0 && <span>Skipped: <strong>{taskStatus.result.skipped}</strong></span>}
+                <span>{tr('sm.m.generatedLabel')} <strong>{taskStatus.result.generated}</strong></span>
+                <span>{tr('sm.m.validatedLabel')} <strong className="text-green-600 dark:text-green-400">{taskStatus.result.validated}</strong></span>
+                <span>{tr('sm.m.failedLabel')} <strong className={taskStatus.result.failed ? 'text-red-600 dark:text-red-400' : ''}>{taskStatus.result.failed}</strong></span>
+                {taskStatus.result.repaired > 0 && <span>{tr('sm.m.repairedLabel')} <strong className="text-amber-600 dark:text-amber-400">{taskStatus.result.repaired}</strong></span>}
+                {taskStatus.result.skipped > 0 && <span>{tr('sm.m.skippedLabel')} <strong>{taskStatus.result.skipped}</strong></span>}
               </div>
               {taskStatus.result.materialize != null && (
                 <p className="text-xs text-slate-500 dark:text-slate-400">
@@ -2695,28 +2704,28 @@ export default function SemanticLayer({ onNavigate, pipelineStats, onRefreshPipe
       {activeTab === 'definitions' && <>
 
       <div className="text-xs text-slate-500 dark:text-slate-400 space-y-1">
-        <p>Each definition below is a metric view. Lifecycle:
+        <p>{tr('sm.m.lifecycleIntro')}
           {' '}<span className="px-1.5 py-0.5 rounded bg-slate-100 dark:bg-slate-800 text-slate-600 dark:text-slate-300">validated</span> (SQL checked, stored, ready to deploy)
-          {' '}&rarr; <span className="px-1.5 py-0.5 rounded bg-green-100 text-green-700 dark:bg-green-900/40 dark:text-green-300">applied</span> (deployed as a UC metric view via <strong>Deploy as UC View</strong>)
+          {' '}&rarr; <span className="px-1.5 py-0.5 rounded bg-green-100 text-green-700 dark:bg-green-900/40 dark:text-green-300">applied</span> (deployed as a UC metric view via <strong>{tr('sm.m.deployAsView')}</strong>)
           {' '}&mdash; a <span className="px-1.5 py-0.5 rounded bg-red-100 text-red-700 dark:bg-red-900/40 dark:text-red-300">failed</span> one couldn't validate or deploy.
-          Use <strong>Improve</strong> to re-generate a definition with AI feedback; after deploying, use <strong>Test Queries</strong> to confirm it returns sensible results.</p>
+          Use <strong>{tr('sm.m.improve')}</strong> to re-generate a definition with AI feedback; after deploying, use <strong>{tr('sm.sub.testQueries')}</strong> to confirm it returns sensible results.</p>
         <p className="text-sky-700 dark:text-sky-400">
-          After applying metric views, sync them to the vector store so the agents and Genie can find them:{' '}
+          {tr('sm.m.syncAfterApply')}{' '}
           {onNavigate
-            ? <button onClick={() => onNavigate('syncops')} className="font-semibold underline">Refresh KG / Index in Sync &amp; Ops</button>
-            : <strong>Refresh KG / Index in Sync &amp; Ops</strong>}
-          {' '}(or the next full analytics pipeline run).
+            ? <button onClick={() => onNavigate('syncops')} className="font-semibold underline">{tr('sm.m.refreshKgLink')}</button>
+            : <strong>{tr('sm.m.refreshKgLink')}</strong>}
+          {' '}{tr('sm.m.syncOrPipeline')}
         </p>
-        <p className="text-amber-700 dark:text-amber-400">Note: Only the owner of a metric view can edit it. {userIdentity
-          ? <>Views created by this app are owned by you (<strong>{userIdentity}</strong>) via on-behalf-of authentication.</>
-          : <>Views created by this app are owned by the app service principal. Use <strong>Transfer Ownership</strong> to take ownership &mdash; this is irreversible for the app.</>
+        <p className="text-amber-700 dark:text-amber-400">{tr('sm.m.ownerNote')} {userIdentity
+          ? <>{tr('sm.m.ownedByYou')}<strong>{userIdentity}</strong>{tr('sm.m.ownedByYouVia')}</>
+          : <>{tr('sm.m.ownedBySpn')}<strong>{tr('sm.m.transferOwnership')}</strong>{tr('sm.m.transferHint')}</>
         }</p>
         <div className="flex items-center gap-2">
-          <span>Showing definitions for:</span>
+          <span>{tr('sm.m.showingDefsFor')}</span>
           <span className="font-medium text-slate-700 dark:text-slate-200">
-            {selectedProjectId ? projects.find(p => p.project_id === selectedProjectId)?.project_name : 'All projects'}
+            {selectedProjectId ? projects.find(p => p.project_id === selectedProjectId)?.project_name : tr('sm.m.allProjects')}
           </span>
-          <button onClick={() => setActiveTab('setup')} className="text-blue-600 dark:text-blue-400 hover:underline ml-1">Change</button>
+          <button onClick={() => setActiveTab('setup')} className="text-blue-600 dark:text-blue-400 hover:underline ml-1">{tr('sm.m.change')}</button>
         </div>
       </div>
 
@@ -2724,11 +2733,11 @@ export default function SemanticLayer({ onNavigate, pipelineStats, onRefreshPipe
       {definitions.length === 0 ? (
         <section className={section}>
           <div className="text-sm text-slate-500 dark:text-slate-400 text-center py-8 space-y-2">
-            <p className="font-medium text-slate-600 dark:text-slate-300">No metric view definitions yet.</p>
+            <p className="font-medium text-slate-600 dark:text-slate-300">{tr('sm.m.noDefsYet')}</p>
             <p className="text-xs">
-              1. <button onClick={() => setActiveTab('setup')} className="text-blue-600 dark:text-blue-400 hover:underline font-medium">Setup</button> — pick your tables ·
+              1. <button onClick={() => setActiveTab('setup')} className="text-blue-600 dark:text-blue-400 hover:underline font-medium">{tr('sm.m.setup')}</button> — pick your tables ·
               {' '}2. <button onClick={() => setActiveTab('questions')} className="text-blue-600 dark:text-blue-400 hover:underline font-medium">Questions &amp; KPIs</button> — define what to measure ·
-              {' '}3. <button onClick={() => setActiveTab('generate')} className="text-blue-600 dark:text-blue-400 hover:underline font-medium">Generate</button> — create definitions
+              {' '}3. <button onClick={() => setActiveTab('generate')} className="text-blue-600 dark:text-blue-400 hover:underline font-medium">{tr('sm.m.generate')}</button> — create definitions
             </p>
           </div>
         </section>
@@ -2743,37 +2752,37 @@ export default function SemanticLayer({ onNavigate, pipelineStats, onRefreshPipe
         return (
         <section className={section}>
           <div className="flex items-center justify-between mb-3">
-            <h2 className="text-lg font-semibold dark:text-gray-100">Metric View Definitions ({definitions.length})</h2>
-            <button onClick={refreshDefinitions} className="text-sm text-blue-600 dark:text-blue-400 hover:underline">Refresh</button>
+            <h2 className="text-lg font-semibold dark:text-gray-100">{tr('sm.metricViewDefinitions')} ({definitions.length})</h2>
+            <button onClick={refreshDefinitions} className="text-sm text-blue-600 dark:text-blue-400 hover:underline">{tr('sm.refresh')}</button>
           </div>
 
           {/* Deploy target override */}
           <div className="flex items-center gap-3 mb-4 p-3 bg-dbx-oat dark:bg-gray-900 rounded-md border dark:border-gray-700 flex-wrap">
-            <span className="text-xs font-medium text-gray-600 dark:text-gray-400 whitespace-nowrap" title="Metric views deploy to this output catalog.schema. Required -- results never land in the source table's (possibly read-only/federated) schema.">Output schema <span className="text-red-500">*</span>:</span>
+            <span className="text-xs font-medium text-gray-600 dark:text-gray-400 whitespace-nowrap" title="Metric views deploy to this output catalog.schema. Required -- results never land in the source table's (possibly read-only/federated) schema.">{tr('sm.outputSchema')} <span className="text-red-500">*</span>:</span>
             <select value={schemaOptions.includes(globalTargetOverride) ? globalTargetOverride : (globalTargetOverride || customTargetMode ? '__custom__' : '')}
               onChange={e => { userEditedTargetRef.current = true; if (e.target.value === '__custom__') { setCustomTargetMode(true); setGlobalTargetOverride('') } else { setCustomTargetMode(false); setGlobalTargetOverride(e.target.value) } }}
               className="input-base !text-xs w-56">
               <option value="">(Select an output schema — required)</option>
               {schemaOptions.map(s => <option key={s} value={s}>{s}</option>)}
-              <option value="__custom__">Custom catalog.schema...</option>
+              <option value="__custom__">{tr('sm.m.customCatalogSchema')}</option>
             </select>
-            <input type="text" placeholder="catalog.schema"
+            <input type="text" placeholder={tr('sm.m.catalogSchemaPh')}
               value={!schemaOptions.includes(globalTargetOverride) ? globalTargetOverride : ''}
               onChange={e => { userEditedTargetRef.current = true; setCustomTargetMode(true); setGlobalTargetOverride(e.target.value) }}
               className={`input-base !text-xs w-48 ${schemaOptions.includes(globalTargetOverride) && globalTargetOverride ? 'opacity-40 pointer-events-none' : ''}`}
-              title="Type a custom catalog.schema for federated or cross-catalog deploys" />
+              title={tr('sm.m.customTargetTip')} />
             {globalTargetOverride && !schemaOptions.includes(globalTargetOverride) && !globalTargetOverride.match(/^[^.]+\.[^.]+$/) && (
-              <span className="text-[10px] text-red-500">Format: catalog.schema</span>
+              <span className="text-[10px] text-red-500">{tr('sm.m.formatCatalogSchema')}</span>
             )}
             {!isValidTarget(globalTargetOverride) && (
-              <span className="text-[10px] text-amber-600 dark:text-amber-400">Pick an output catalog.schema to enable deploy</span>
+              <span className="text-[10px] text-amber-600 dark:text-amber-400">{tr('sm.m.pickOutputToDeploy')}</span>
             )}
             {definitions.filter(d => d.status === 'validated').length > 0 && (
               <button onClick={createAllValidated}
                 disabled={bulkCreating || definitions.filter(d => d.status === 'validated').some(d => !isValidTarget(getEffectiveTarget(d)))}
-                title={definitions.filter(d => d.status === 'validated').some(d => !isValidTarget(getEffectiveTarget(d))) ? 'Choose an output catalog.schema first' : ''}
+                title={definitions.filter(d => d.status === 'validated').some(d => !isValidTarget(getEffectiveTarget(d))) ? tr('sm.m.tipChooseCatalog') : ''}
                 className="ml-auto px-3 py-1.5 bg-green-600 text-white rounded text-xs hover:bg-green-700 disabled:opacity-50 whitespace-nowrap">
-                {bulkCreating ? 'Creating...' : `Create All Validated (${definitions.filter(d => d.status === 'validated').length})`}
+                {bulkCreating ? tr('common.creating') : `${tr('sm.m.createAllValidated')} (${definitions.filter(d => d.status === 'validated').length})`}
               </button>
             )}
           </div>
@@ -2783,53 +2792,53 @@ export default function SemanticLayer({ onNavigate, pipelineStats, onRefreshPipe
               {definitions.filter(d => d.status !== 'applied').length > 0 && (
                 <button onClick={deleteAllNonApplied} disabled={!!bulkDeleting}
                   className="px-2.5 py-1 text-xs text-red-600 dark:text-red-400 border border-red-300 dark:border-red-700 rounded hover:bg-red-50 dark:hover:bg-red-900/20 disabled:opacity-50 whitespace-nowrap">
-                  {bulkDeleting === 'non-applied' ? 'Deleting...' : `Delete All Non-Applied (${definitions.filter(d => d.status !== 'applied').length})`}
+                  {bulkDeleting === 'non-applied' ? tr('common.deleting') : `${tr('sm.m.deleteAllNonApplied')} (${definitions.filter(d => d.status !== 'applied').length})`}
                 </button>
               )}
               {definitions.filter(d => d.status === 'applied').length > 0 && (
                 <button onClick={deleteAllApplied} disabled={!!bulkDeleting}
                   className="px-2.5 py-1 text-xs text-red-600 dark:text-red-400 border border-red-300 dark:border-red-700 rounded hover:bg-red-50 dark:hover:bg-red-900/20 disabled:opacity-50 whitespace-nowrap">
-                  {bulkDeleting === 'applied' ? 'Dropping & Deleting...' : `Drop & Delete All Applied (${definitions.filter(d => d.status === 'applied').length})`}
+                  {bulkDeleting === 'applied' ? tr('sm.m.droppingDeleting') : `${tr('sm.m.dropDeleteAllApplied')} (${definitions.filter(d => d.status === 'applied').length})`}
                 </button>
               )}
               <button onClick={syncToVectorStore} disabled={vectorSyncing}
-                title="Indexes metric view definitions into the Vector Search index so the Metric View Agent can find them via semantic search. Run after creating or updating metric views."
+                title={tr('sm.m.tipVectorIndex')}
                 className="px-2.5 py-1 text-xs text-blue-600 dark:text-blue-400 border border-blue-300 dark:border-blue-700 rounded hover:bg-blue-50 dark:hover:bg-blue-900/20 disabled:opacity-50 whitespace-nowrap">
-                {vectorSyncing ? 'Syncing...' : 'Sync to Vector Store'}
+                {vectorSyncing ? tr('common.syncing') : tr('sm.m.syncToVectorStore')}
               </button>
               <button onClick={syncToSemanticGraph} disabled={sgSyncing}
-                title="Builds a relationship graph of metric views, their source tables, dimensions, and measures. Powers the Metric View Agent's ability to find related metrics and trace lineage between KPIs."
+                title={tr('sm.m.tipSemanticGraph')}
                 className="px-2.5 py-1 text-xs text-purple-600 dark:text-purple-400 border border-purple-300 dark:border-purple-700 rounded hover:bg-purple-50 dark:hover:bg-purple-900/20 disabled:opacity-50 whitespace-nowrap">
-                {sgSyncing ? 'Syncing...' : 'Sync to Semantic Graph'}
+                {sgSyncing ? tr('common.syncing') : tr('sm.m.syncToSemanticGraph')}
               </button>
               <button onClick={findDuplicates} disabled={dupLoading}
                 className="px-2.5 py-1 text-xs text-amber-600 dark:text-amber-400 border border-amber-300 dark:border-amber-700 rounded hover:bg-amber-50 dark:hover:bg-amber-900/20 disabled:opacity-50 whitespace-nowrap">
-                {dupLoading ? 'Scanning...' : 'Find Duplicates'}
+                {dupLoading ? tr('common.scanning') : tr('sm.m.findDuplicates')}
               </button>
             </div>
           )}
 
           {/* Filters (4.2) */}
           <div className="flex items-center gap-2 mb-3">
-            <input value={defFilter} onChange={e => setDefFilter(e.target.value)} placeholder="Filter by name or table..."
+            <input value={defFilter} onChange={e => setDefFilter(e.target.value)} placeholder={tr('sm.m.filterByNameTable')}
               className="input-base !text-xs w-56" />
             <div className="inline-flex bg-dbx-oat/60 dark:bg-dbx-navy-600 rounded-lg p-0.5">
               {['all', 'validated', 'applied', 'failed'].map(s => (
                 <button key={s} onClick={() => setDefStatusFilter(s)}
                   className={`px-2 py-0.5 text-[10px] rounded-md transition-colors ${defStatusFilter === s ? 'bg-white dark:bg-dbx-navy-500 shadow-sm font-semibold' : 'text-slate-500 hover:text-slate-700 dark:hover:text-slate-300'}`}>
-                  {s === 'all' ? 'All' : s.charAt(0).toUpperCase() + s.slice(1)}
+                  {tr(`sm.m.status${s.charAt(0).toUpperCase() + s.slice(1)}`)}
                 </button>
               ))}
             </div>
             <div className="inline-flex bg-dbx-oat/60 dark:bg-dbx-navy-600 rounded-lg p-0.5">
               {[
-                { id: 'all', label: 'All mat' },
-                { id: 'materialized', label: 'Materialized' },
-                { id: 'not_materialized', label: 'No mat' },
+                { id: 'all', label: 'sm.m.mat.all' },
+                { id: 'materialized', label: 'sm.m.mat.materialized' },
+                { id: 'not_materialized', label: 'sm.m.mat.notMaterialized' },
               ].map(s => (
                 <button key={s.id} onClick={() => setDefMatFilter(s.id)}
                   className={`px-2 py-0.5 text-[10px] rounded-md transition-colors ${defMatFilter === s.id ? 'bg-white dark:bg-dbx-navy-500 shadow-sm font-semibold' : 'text-slate-500 hover:text-slate-700 dark:hover:text-slate-300'}`}>
-                  {s.label}
+                  {tr(s.label)}
                 </button>
               ))}
             </div>
@@ -2838,7 +2847,7 @@ export default function SemanticLayer({ onNavigate, pipelineStats, onRefreshPipe
 
           {kpiCoverage && kpiCoverage.total > 0 && (
             <div className="flex items-center gap-2 mb-3 px-2.5 py-1.5 rounded-md bg-slate-50 dark:bg-dbx-navy-600 text-xs">
-              <span className="font-medium text-slate-600 dark:text-slate-300">KPI Coverage:</span>
+              <span className="font-medium text-slate-600 dark:text-slate-300">{tr('sm.m.kpiCoverage')}</span>
               <span className="text-emerald-600 dark:text-emerald-400">{(kpiCoverage.implemented || []).length}/{kpiCoverage.total} implemented</span>
               {(kpiCoverage.missing || []).length > 0 && (
                 <span className="text-amber-600 dark:text-amber-400" title={`Missing: ${kpiCoverage.missing.join(', ')}`}>
@@ -2903,19 +2912,19 @@ export default function SemanticLayer({ onNavigate, pipelineStats, onRefreshPipe
                         <select value={perMvTargets[d.definition_id] || ''} onChange={e => setPerMvTargets(prev => ({...prev, [d.definition_id]: e.target.value}))}
                           disabled={!!globalTargetOverride}
                           className="bg-transparent border border-slate-200 dark:border-gray-600 rounded px-1 py-0 text-[10px] cursor-pointer disabled:opacity-50"
-                          title={globalTargetOverride ? `Overridden to ${globalTargetOverride}` : 'Deploy target for this metric view'}>
-                          <option value="">{getDefaultTarget(d) || '(no default)'}</option>
+                          title={globalTargetOverride ? tr('sm.m.overriddenTo', { target: globalTargetOverride }) : tr('sm.m.tipDeployTarget')}>
+                          <option value="">{getDefaultTarget(d) || tr('sm.m.noDefault')}</option>
                           {schemaOptions.filter(s => s !== getDefaultTarget(d)).map(s => <option key={s} value={s}>{s}</option>)}
                         </select>
                       </span>
                       {(d.applied_at || d.created_at) && (
-                        <span className="text-gray-400 dark:text-gray-500 text-[10px] ml-2" title={d.applied_at ? `Applied: ${d.applied_at}` : `Created: ${d.created_at}`}>
-                          {d.applied_at ? `Applied ${new Date(d.applied_at).toLocaleDateString()}` : `Created ${new Date(d.created_at).toLocaleDateString()}`}
+                        <span className="text-gray-400 dark:text-gray-500 text-[10px] ml-2" title={d.applied_at ? tr('sm.m.appliedAt', { date: formatDateTime(d.applied_at) }) : tr('sm.m.createdAt', { date: formatDateTime(d.created_at) })}>
+                          {d.applied_at ? tr('sm.m.appliedDate', { date: formatDate(d.applied_at) }) : tr('sm.m.createdDate', { date: formatDate(d.created_at) })}
                         </span>
                       )}
                       {d.deployed_catalog && d.deployed_schema && (
                         <span className={`text-[10px] ml-2 px-1 py-0.5 rounded ${d.deployed_exists === false ? 'bg-amber-50 dark:bg-amber-900/20 text-amber-600 dark:text-amber-400' : 'bg-emerald-50 dark:bg-emerald-900/20 text-emerald-600 dark:text-emerald-400'}`}>
-                          {d.deployed_exists === false ? 'Missing from UC: ' : 'Deployed: '}{d.deployed_catalog}.{d.deployed_schema}
+                          {d.deployed_exists === false ? tr('sm.m.missingFromUc') + ' ' : tr('sm.m.deployedPrefix') + ' '}{d.deployed_catalog}.{d.deployed_schema}
                         </span>
                       )}
                     </div>
@@ -2923,11 +2932,11 @@ export default function SemanticLayer({ onNavigate, pipelineStats, onRefreshPipe
                       {busy && (
                         <span className="inline-flex items-center gap-1 px-1.5 py-0.5 rounded text-[10px] font-medium bg-blue-100 text-blue-700 dark:bg-blue-900/30 dark:text-blue-400 animate-pulse">
                           <svg className="animate-spin h-3 w-3" viewBox="0 0 24 24"><circle className="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" strokeWidth="4" fill="none"/><path className="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4z"/></svg>
-                          {busy === 'improve' ? 'Improving...' : busy === 'create' ? 'Creating...' : busy === 'retry' ? 'Retrying...' : busy === 'delete' ? 'Deleting...' : busy === 'drop' ? 'Dropping...' : 'Working...'}
+                          {busy === 'improve' ? tr('common.improving') : busy === 'create' ? tr('common.creating') : busy === 'retry' ? tr('common.retrying') : busy === 'delete' ? tr('common.deleting') : busy === 'drop' ? tr('common.dropping') : tr('common.working')}
                         </span>
                       )}
                       {statusBadge(d.status)}
-                      {matBadge(d.has_materialization, d.materialization_schedule)}
+                      {matBadge(d.has_materialization, d.materialization_schedule, tr)}
                       {(d.complexity_score != null || d.quality_score != null) && (() => {
                         const combined = (Number(d.complexity_score) || 0) + (Number(d.quality_score) || 0)
                         const pct = combined / 50
@@ -2937,95 +2946,95 @@ export default function SemanticLayer({ onNavigate, pipelineStats, onRefreshPipe
                         return <span className={`px-1.5 py-0.5 rounded text-[10px] font-medium ${cls}`} title={`Complexity: ${d.complexity_score ?? '?'}/30, Quality: ${d.quality_score ?? '?'}/20`}>{combined}/50</span>
                       })()}
                       {d.complexity_level === 'basic' && (
-                        <span className="px-1.5 py-0.5 rounded text-[10px] font-medium bg-amber-100 text-amber-700 dark:bg-amber-900/30 dark:text-amber-400" title={`Complexity: ${d.complexity_score ?? '?'}/30 -- few measures, no joins`}>Basic</span>
+                        <span className="px-1.5 py-0.5 rounded text-[10px] font-medium bg-amber-100 text-amber-700 dark:bg-amber-900/30 dark:text-amber-400" title={`Complexity: ${d.complexity_score ?? '?'}/30 -- few measures, no joins`}>{tr('sm.m.basic')}</span>
                       )}
                       {d.complexity_level === 'standard' && (
-                        <span className="px-1.5 py-0.5 rounded text-[10px] font-medium bg-sky-100 text-sky-700 dark:bg-sky-900/30 dark:text-sky-400" title={`Complexity: ${d.complexity_score ?? '?'}/30 -- joins or ratios present`}>Standard</span>
+                        <span className="px-1.5 py-0.5 rounded text-[10px] font-medium bg-sky-100 text-sky-700 dark:bg-sky-900/30 dark:text-sky-400" title={`Complexity: ${d.complexity_score ?? '?'}/30 -- joins or ratios present`}>{tr('sm.m.standard')}</span>
                       )}
                       {d.complexity_level === 'rich' && (
-                        <span className="px-1.5 py-0.5 rounded text-[10px] font-medium bg-emerald-100 text-emerald-700 dark:bg-emerald-900/30 dark:text-emerald-400" title={`Complexity: ${d.complexity_score ?? '?'}/30 -- multi-join, ratios, filters`}>Rich</span>
+                        <span className="px-1.5 py-0.5 rounded text-[10px] font-medium bg-emerald-100 text-emerald-700 dark:bg-emerald-900/30 dark:text-emerald-400" title={`Complexity: ${d.complexity_score ?? '?'}/30 -- multi-join, ratios, filters`}>{tr('sm.m.rich')}</span>
                       )}
                       {d.quality_level && d.quality_level !== 'ready' && (
                         <span className={`px-1.5 py-0.5 rounded text-[10px] font-medium ${
                           d.quality_level === 'production' ? 'bg-blue-100 text-blue-700 dark:bg-blue-900/30 dark:text-blue-400'
                           : 'bg-slate-100 text-slate-600 dark:bg-slate-800 dark:text-slate-400'
-                        }`} title={`Quality: ${d.quality_score ?? '?'}/20 - ${d.quality_level === 'production' ? 'Full metadata, synonyms, format, agent-ready' : 'Missing metadata (synonyms, format, or display_name)'}`}>{d.quality_level === 'production' ? 'Production' : 'Draft'}</span>
+                        }`} title={d.quality_level === 'production' ? tr('sm.m.qualTipProd', { score: d.quality_score ?? '?' }) : tr('sm.m.qualTipDraft', { score: d.quality_score ?? '?' })}>{d.quality_level === 'production' ? tr('sm.m.qual.production') : tr('sm.m.qual.draft')}</span>
                       )}
                       {/* Compact action menu */}
                       <div className="relative" ref={openMenuId === d.definition_id ? menuRef : undefined}>
                         <button onClick={() => setOpenMenuId(prev => prev === d.definition_id ? null : d.definition_id)}
-                          className="px-1.5 py-0.5 text-xs text-slate-500 hover:text-slate-700 dark:hover:text-slate-300 cursor-pointer select-none rounded hover:bg-slate-100 dark:hover:bg-dbx-navy-500">Actions</button>
+                          className="px-1.5 py-0.5 text-xs text-slate-500 hover:text-slate-700 dark:hover:text-slate-300 cursor-pointer select-none rounded hover:bg-slate-100 dark:hover:bg-dbx-navy-500">{tr('sm.m.actions')}</button>
                         {openMenuId === d.definition_id && (
                         <div className="absolute right-0 mt-1 z-20 bg-white dark:bg-dbx-navy-600 border dark:border-gray-600 rounded-lg shadow-lg py-1 min-w-[140px]">
                           <button onClick={() => { loadDefinitionJson(d.definition_id); setOpenMenuId(null) }} className="w-full text-left px-3 py-1.5 text-xs hover:bg-slate-50 dark:hover:bg-dbx-navy-500">
-                            {expandedDef === d.definition_id ? 'Hide JSON' : 'View JSON'}
+                            {expandedDef === d.definition_id ? tr('sm.m.hideJson') : tr('sm.m.viewJson')}
                           </button>
-                          <button onClick={() => { openEdit(d.definition_id); setOpenMenuId(null) }} className="w-full text-left px-3 py-1.5 text-xs hover:bg-slate-50 dark:hover:bg-dbx-navy-500">Edit JSON</button>
+                          <button onClick={() => { openEdit(d.definition_id); setOpenMenuId(null) }} className="w-full text-left px-3 py-1.5 text-xs hover:bg-slate-50 dark:hover:bg-dbx-navy-500">{tr('sm.m.editJson')}</button>
                           <button onClick={() => { analyzeMv(d.definition_id); setOpenMenuId(null) }} disabled={!!busy}
                             className="w-full text-left px-3 py-1.5 text-xs text-cyan-600 hover:bg-cyan-50 dark:hover:bg-cyan-900/20 disabled:opacity-50">
-                            {busy === 'analyze' ? 'Analyzing...' : 'Analyze'}
+                            {busy === 'analyze' ? tr('common.analyzing') : tr('sm.m.analyze')}
                           </button>
                           {d.status === 'failed' && (
                             <button onClick={() => { retryDefinition(d.definition_id); setOpenMenuId(null) }} disabled={!!busy}
                               className="w-full text-left px-3 py-1.5 text-xs text-dbx-lava hover:bg-red-50 dark:hover:bg-red-900/20 disabled:opacity-50">
-                              {busy === 'retry' ? 'Retrying...' : 'Retry'}
+                              {busy === 'retry' ? tr('common.retrying') : tr('sm.m.retry')}
                             </button>
                           )}
                           {(d.status === 'validated' || d.status === 'applied') && (
                             <>
                               <button onClick={() => { improveDefinition(d.definition_id); setOpenMenuId(null) }} disabled={!!busy}
-                                title="Re-generate this definition with AI feedback (replaces the current definition)."
+                                title={tr('sm.m.regenTip')}
                                 className="w-full text-left px-3 py-1.5 text-xs text-blue-600 hover:bg-blue-50 dark:hover:bg-blue-900/20 disabled:opacity-50">
-                                {busy === 'improve' ? 'Re-generating...' : 'Improve (re-generate)'}
+                                {busy === 'improve' ? tr('sm.m.regenerating') : tr('sm.m.improveRegenerate')}
                               </button>
                               {d.status === 'validated' && (
                                 <>
                                   <button onClick={() => { addItems(d.definition_id, 'measures'); setOpenMenuId(null) }} disabled={!!busy}
-                                    title="Ask AI for additional measures and merge them in (existing measures are kept and duplicates skipped)."
+                                    title={tr('sm.m.addMeasuresTip')}
                                     className="w-full text-left px-3 py-1.5 text-xs text-blue-600 hover:bg-blue-50 dark:hover:bg-blue-900/20 disabled:opacity-50">
-                                    {busy === 'add_measures' ? 'Adding measures...' : 'Add measures'}
+                                    {busy === 'add_measures' ? tr('sm.m.addingMeasures') : tr('sm.m.refine.addMeasures')}
                                   </button>
                                   <button onClick={() => { addItems(d.definition_id, 'dimensions'); setOpenMenuId(null) }} disabled={!!busy}
-                                    title="Ask AI for additional dimensions and merge them in (existing dimensions are kept and duplicates skipped)."
+                                    title={tr('sm.m.addDimensionsTip')}
                                     className="w-full text-left px-3 py-1.5 text-xs text-blue-600 hover:bg-blue-50 dark:hover:bg-blue-900/20 disabled:opacity-50">
-                                    {busy === 'add_dimensions' ? 'Adding dimensions...' : 'Add dimensions'}
+                                    {busy === 'add_dimensions' ? tr('sm.m.addingDimensions') : tr('sm.m.refine.addDimensions')}
                                   </button>
                                   <button onClick={() => { improveDefinition(d.definition_id, 'check_filters'); setOpenMenuId(null) }} disabled={!!busy}
-                                    title="Ask AI to review and set the scope filter for this view."
+                                    title={tr('sm.m.setScopeTip')}
                                     className="w-full text-left px-3 py-1.5 text-xs text-blue-600 hover:bg-blue-50 dark:hover:bg-blue-900/20 disabled:opacity-50">
-                                    {busy === 'check_filters' ? 'Checking filters...' : 'Check filters'}
+                                    {busy === 'check_filters' ? tr('sm.m.checkingFilters') : tr('sm.m.refine.checkFilters')}
                                   </button>
                                 </>
                               )}
                               <button onClick={() => { createDefinition(d.definition_id); setOpenMenuId(null) }}
                                 disabled={!!busy || !isValidTarget(getEffectiveTarget(d))}
-                                title={!isValidTarget(getEffectiveTarget(d)) ? 'Select an output catalog.schema first (Output schema selector above)' : (d.status === 'applied' ? 'Re-run CREATE OR REPLACE VIEW in Unity Catalog' : 'Deploy this definition as a UC metric view (CREATE OR REPLACE VIEW)')}
+                                title={!isValidTarget(getEffectiveTarget(d)) ? tr('sm.m.tipSelectOutputFirst') : (d.status === 'applied' ? tr('sm.m.tipRedeployUc') : tr('sm.m.tipDeployDef'))}
                                 className="w-full text-left px-3 py-1.5 text-xs text-green-600 hover:bg-green-50 dark:hover:bg-green-900/20 disabled:opacity-50">
-                                {busy === 'create' ? 'Deploying...' : d.status === 'applied' ? 'Redeploy' : 'Deploy as UC View'}
+                                {busy === 'create' ? tr('common.deploying') : d.status === 'applied' ? tr('sm.m.redeploy') : tr('sm.m.deployAsUcView')}
                               </button>
                             </>
                           )}
                           {d.status === 'applied' && (
                             <>
                             <button onClick={() => { runTestQueries(d.definition_id); setOpenMenuId(null) }} disabled={!!busy}
-                              title="Run auto-generated MEASURE() drill queries against the deployed view to confirm it returns sensible results."
+                              title={tr('sm.m.runDrillsTip')}
                               className="w-full text-left px-3 py-1.5 text-xs text-teal-600 hover:bg-teal-50 dark:hover:bg-teal-900/20 disabled:opacity-50">
-                              {busy === 'test' ? 'Testing...' : 'Test Queries'}
+                              {busy === 'test' ? tr('common.testing') : tr('sm.m.testQueries')}
                             </button>
                             <button onClick={() => { dropDefinition(d.definition_id); setOpenMenuId(null) }} disabled={!!busy}
                               className="w-full text-left px-3 py-1.5 text-xs text-amber-600 hover:bg-amber-50 dark:hover:bg-amber-900/20 disabled:opacity-50">
-                              {busy === 'drop' ? 'Dropping...' : 'Drop from UC'}
+                              {busy === 'drop' ? tr('common.dropping') : tr('sm.m.dropFromUc')}
                             </button>
                             <button onClick={() => { transferOwnership(d.definition_id); setOpenMenuId(null) }} disabled={!!busy}
                               className="w-full text-left px-3 py-1.5 text-xs text-purple-600 hover:bg-purple-50 dark:hover:bg-purple-900/20 disabled:opacity-50">
-                              {busy === 'transfer' ? 'Transferring...' : 'Transfer Ownership'}
+                              {busy === 'transfer' ? tr('sm.m.transferring') : tr('sm.m.transferOwnershipBtn')}
                             </button>
                             </>
                           )}
                           <hr className="my-1 dark:border-gray-600" />
                           <button onClick={() => { deleteDefinition(d.definition_id, d.status); setOpenMenuId(null) }} disabled={!!busy}
                             className="w-full text-left px-3 py-1.5 text-xs text-red-600 hover:bg-red-50 dark:hover:bg-red-900/20 disabled:opacity-50">
-                            {busy === 'delete' ? 'Deleting...' : 'Delete'}
+                            {busy === 'delete' ? tr('common.deleting') : tr('common.delete')}
                           </button>
                         </div>
                         )}
@@ -3054,25 +3063,25 @@ export default function SemanticLayer({ onNavigate, pipelineStats, onRefreshPipe
                             ...prev,
                             [d.definition_id]: { ...prev[d.definition_id], enabled: true, schedule: e.target.value },
                           }))}
-                          placeholder="every 6 hours"
+                          placeholder={tr('sm.m.every6h')}
                           className="w-40 px-2 py-0.5 border rounded text-[10px] dark:bg-slate-700 dark:border-slate-600 dark:text-white" />
                       )}
                     </div>
                   )}
                   {createError[d.definition_id] && (
                     <div className="mt-2 p-2 bg-red-50 dark:bg-red-900/20 border border-red-200 dark:border-red-800 rounded text-xs">
-                      <p className="text-red-700 dark:text-red-300 font-medium mb-1">Create failed:</p>
+                      <p className="text-red-700 dark:text-red-300 font-medium mb-1">{tr('sm.m.createFailed')}</p>
                       <p className="text-red-600 dark:text-red-400 whitespace-pre-wrap break-words">{createError[d.definition_id]}</p>
                       <div className="flex gap-2 mt-2">
                         <button onClick={() => getSuggestion(d.definition_id)} disabled={suggestLoading}
-                          className="px-2 py-1 bg-amber-600 text-white rounded text-xs hover:bg-amber-700 disabled:opacity-50">Get suggestion</button>
+                          className="px-2 py-1 bg-amber-600 text-white rounded text-xs hover:bg-amber-700 disabled:opacity-50">{tr('sm.m.getSuggestion')}</button>
                         <button onClick={() => openEdit(d.definition_id)}
-                          className="px-2 py-1 bg-slate-600 text-white rounded text-xs hover:bg-slate-700">Edit definition</button>
+                          className="px-2 py-1 bg-slate-600 text-white rounded text-xs hover:bg-slate-700">{tr('sm.m.editDefinition')}</button>
                       </div>
                     </div>
                   )}
                   {d.genie_space_id && (
-                    <p className="text-xs text-emerald-600 dark:text-emerald-400 mt-1">Genie space: {d.genie_space_id}</p>
+                    <p className="text-xs text-emerald-600 dark:text-emerald-400 mt-1">{tr('sm.m.genieSpaceLabel')} {d.genie_space_id}</p>
                   )}
                   {expandedDef === d.definition_id && expandedJson && (
                     <div className="mt-2 space-y-2">
@@ -3144,7 +3153,7 @@ export default function SemanticLayer({ onNavigate, pipelineStats, onRefreshPipe
                 </div>
               )
             })}
-            {filtered.length === 0 && <p className="text-xs text-slate-400 py-4 text-center">No definitions match this filter.</p>}
+            {filtered.length === 0 && <p className="text-xs text-slate-400 py-4 text-center">{tr('sm.m.noDefsMatch')}</p>}
           </div>
         </section>
       )})()}
@@ -3154,16 +3163,16 @@ export default function SemanticLayer({ onNavigate, pipelineStats, onRefreshPipe
       {editDefId && (
         <div className="fixed inset-0 bg-black/50 flex items-center justify-center z-50 p-4" onClick={() => !suggestLoading && setEditDefId(null)} role="dialog" aria-modal="true">
           <div className="bg-white dark:bg-dbx-navy-600 rounded-2xl shadow-elevated max-w-3xl w-full max-h-[90vh] flex flex-col animate-slide-up" onClick={e => e.stopPropagation()}>
-            <div className="p-3 border-b dark:border-gray-700 font-medium dark:text-gray-100">Edit definition JSON</div>
+            <div className="p-3 border-b dark:border-gray-700 font-medium dark:text-gray-100">{tr('sm.m.editDefinitionJson')}</div>
             <textarea value={editJson} onChange={e => setEditJson(e.target.value)}
               className="flex-1 p-3 font-mono text-xs border-0 dark:bg-gray-900 dark:text-gray-200 resize-none min-h-[200px]"
               spellCheck={false} />
             <div className="p-3 border-t dark:border-gray-700 flex justify-end gap-2">
               <button onClick={() => setEditDefId(null)} disabled={suggestLoading}
-                className="px-3 py-1.5 border dark:border-gray-600 rounded text-sm">Cancel</button>
+                className="px-3 py-1.5 border dark:border-gray-600 rounded text-sm">{tr('common.cancel')}</button>
               <button onClick={saveEdit} disabled={suggestLoading}
                 className="px-3 py-1.5 bg-dbx-lava text-white rounded text-sm hover:bg-red-700 disabled:opacity-50">
-                {suggestLoading ? 'Saving...' : 'Save'}
+                {suggestLoading ? tr('common.saving') : tr('common.save')}
               </button>
             </div>
           </div>

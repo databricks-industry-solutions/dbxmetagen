@@ -4,26 +4,22 @@ import simpleMarkdown from '../utils/simpleMarkdown'
 import ChatInputBar from './ChatInputBar'
 import SuggestedQuestions from './SuggestedQuestions'
 import ChartRenderer from './ChartRenderer'
+import { useLanguage } from '../contexts/LanguageContext'
 
+// Display label/desc resolved via t() at render; keys are code values matched against the API.
 const MODE_CONFIG = {
-  compare: { label: 'Compare (Blind vs Enriched)', color: 'bg-amber-600', desc: 'Run both side-by-side to see the value of the semantic layer' },
-  enriched: { label: 'Enriched Only', color: 'bg-emerald-600', desc: 'Full semantic layer: KB, ontology, FK, profiling, metrics' },
-  blind: { label: 'Blind Only', color: 'bg-slate-600', desc: 'Schema introspection only: DESCRIBE, SHOW, sample rows' },
+  compare: { labelKey: 'anc.mode.compare.label', color: 'bg-amber-600', descKey: 'anc.mode.compare.desc' },
+  enriched: { labelKey: 'anc.mode.enriched.label', color: 'bg-emerald-600', descKey: 'anc.mode.enriched.desc' },
+  blind: { labelKey: 'anc.mode.blind.label', color: 'bg-slate-600', descKey: 'anc.mode.blind.desc' },
 }
 
-const STAGE_LABELS = {
-  starting: 'Starting both agents...',
-  blind_running: 'Blind agent working...',
-  enriched_running: 'Enriched agent working...',
-  blind_done: 'Blind done, waiting for enriched...',
-  enriched_done: 'Enriched done, waiting for blind...',
-  comparing: 'Generating comparison analysis...',
-}
+// Stage labels resolved via t(`anc.stage.<stage>`) at render.
 
+// Question strings are agent INPUT (sent to backend) -- kept English. Only label/desc are UI.
 const QUESTION_GROUPS = [
   {
-    label: 'Semantic Disambiguation',
-    desc: 'Business terms that don\'t match column names -- column comments, ontology roles, and metric definitions bridge the gap (enriched advantage)',
+    labelKey: 'anc.group.semantic.label',
+    descKey: 'anc.group.semantic.desc',
     questions: [
       'How has medication spending per care episode trended over the past year?',
       'What is the workforce-to-patient ratio across our care facilities, and which facilities are understaffed?',
@@ -32,8 +28,8 @@ const QUESTION_GROUPS = [
     ],
   },
   {
-    label: 'Governance & Data Quality',
-    desc: 'Sensitivity flags, documentation gaps, and profiling stats -- requires classification metadata and column-level context (enriched advantage)',
+    labelKey: 'anc.group.governance.label',
+    descKey: 'anc.group.governance.desc',
     questions: [
       'Which columns contain sensitive personal data but lack documentation or have high incompleteness?',
       'What are the PII/PHI exposure risks across the data catalog, and which tables need remediation?',
@@ -41,8 +37,8 @@ const QUESTION_GROUPS = [
     ],
   },
   {
-    label: 'Multi-Table Aggregation',
-    desc: 'Complex joins and rollups with explicit table references -- tests both agents\' ability to discover and combine data',
+    labelKey: 'anc.group.aggregation.label',
+    descKey: 'anc.group.aggregation.desc',
     questions: [
       'What are the top 10 accounts by total order value, broken down by product name?',
       'Show quarterly fund flow trends for the top 5 funds by total AUM, including their average return',
@@ -52,10 +48,11 @@ const QUESTION_GROUPS = [
 ]
 
 function DataTable({ columns, rows }) {
+  const { t } = useLanguage()
   if (!columns?.length || !rows?.length) return null
   return (
     <div className="mb-3">
-      <p className="text-xs font-semibold text-slate-500 mb-1">Result Data ({rows.length} rows):</p>
+      <p className="text-xs font-semibold text-slate-500 mb-1">{t('anc.resultData', { count: rows.length })}</p>
       <div className="max-h-64 overflow-auto rounded-lg border dark:border-slate-700">
         <table className="w-full text-xs">
           <thead className="bg-slate-100 dark:bg-slate-800 sticky top-0">
@@ -81,19 +78,21 @@ function DataTable({ columns, rows }) {
 }
 
 function ResultPanel({ title, color, result, loading, stage, chart, plotLoading, onGeneratePlot }) {
+  // Aliased to `tr` -- tool_calls.map uses `t` as the item param below.
+  const { t: tr } = useLanguage()
   if (loading) return (
     <div className="flex-1 min-w-0 border rounded-xl p-4 bg-white dark:bg-dbx-navy-600/50">
       <h3 className={`text-sm font-bold ${color} mb-3`}>{title}</h3>
       <div className="flex items-center gap-2 text-xs text-slate-500 animate-pulse">
         <div className="w-2 h-2 rounded-full bg-amber-400 animate-bounce" />
-        {stage || 'Running...'}
+        {stage || tr('anc.running')}
       </div>
     </div>
   )
   if (!result) return (
     <div className="flex-1 min-w-0 border rounded-xl p-4 bg-white dark:bg-dbx-navy-600/50 opacity-50">
       <h3 className={`text-sm font-bold ${color} mb-3`}>{title}</h3>
-      <p className="text-xs text-slate-400">Waiting for query...</p>
+      <p className="text-xs text-slate-400">{tr('anc.waitingForQuery')}</p>
     </div>
   )
   const r = result.error ? null : result
@@ -112,7 +111,7 @@ function ResultPanel({ title, color, result, loading, stage, chart, plotLoading,
         <>
           {r?.sql && (
             <div className="mb-3">
-              <p className="text-xs font-semibold text-slate-500 mb-1">Generated SQL:</p>
+              <p className="text-xs font-semibold text-slate-500 mb-1">{tr('anc.generatedSql')}</p>
               <pre className="bg-slate-100 dark:bg-slate-800 rounded-lg p-3 text-xs overflow-x-auto whitespace-pre-wrap">{r.sql}</pre>
             </div>
           )}
@@ -128,7 +127,7 @@ function ResultPanel({ title, color, result, loading, stage, chart, plotLoading,
           {plotLoading && (
             <div className="mt-3 flex items-center gap-2 text-xs text-slate-400">
               <div className="w-3 h-3 border-2 border-teal-400 border-t-transparent rounded-full animate-spin" />
-              Generating chart...
+              {tr('anc.generatingChart')}
             </div>
           )}
           {r?.answer && !chart && !plotLoading && onGeneratePlot && (
@@ -137,12 +136,12 @@ function ResultPanel({ title, color, result, loading, stage, chart, plotLoading,
               <svg className="w-3.5 h-3.5" fill="none" viewBox="0 0 24 24" stroke="currentColor">
                 <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M9 19v-6a2 2 0 00-2-2H5a2 2 0 00-2 2v6a2 2 0 002 2h2a2 2 0 002-2zm0 0V9a2 2 0 012-2h2a2 2 0 012 2v10m-6 0a2 2 0 002 2h2a2 2 0 002-2m0 0V5a2 2 0 012-2h2a2 2 0 012 2v14a2 2 0 01-2 2h-2a2 2 0 01-2-2z" />
               </svg>
-              Generate Plot
+              {tr('anc.generatePlot')}
             </button>
           )}
           {r?.tool_calls?.length > 0 && (
             <div className="mt-3 pt-2 border-t">
-              <p className="text-xs font-semibold text-slate-400 mb-1">Tools used ({r.tool_calls.length}):</p>
+              <p className="text-xs font-semibold text-slate-400 mb-1">{tr('anc.toolsUsed', { count: r.tool_calls.length })}</p>
               <div className="flex flex-wrap gap-1">
                 {r.tool_calls.map((t, i) => (
                   <span key={i} className="text-xs px-2 py-0.5 rounded-full bg-slate-100 dark:bg-slate-700 text-slate-600 dark:text-slate-300">{t}</span>
@@ -157,15 +156,18 @@ function ResultPanel({ title, color, result, loading, stage, chart, plotLoading,
 }
 
 function TokenBadge({ usage }) {
+  const { t } = useLanguage()
   if (!usage || !usage.total_tokens) return null
   return (
-    <span className="text-xs text-slate-400" title={`In: ${(usage.input_tokens || 0).toLocaleString()} / Out: ${(usage.output_tokens || 0).toLocaleString()}`}>
-      {(usage.total_tokens).toLocaleString()} tokens
+    <span className="text-xs text-slate-400" title={t('anc.tokenTooltip', { input: (usage.input_tokens || 0).toLocaleString(), output: (usage.output_tokens || 0).toLocaleString() })}>
+      {t('anc.tokensLabel', { count: (usage.total_tokens).toLocaleString() })}
     </span>
   )
 }
 
 export default function AnalystChat() {
+  // Aliased to `tr` -- line ~352 uses `t` as a `.filter(t => ...)` param.
+  const { t: tr } = useLanguage()
   const [mode, setMode] = useState('compare')
   const [input, setInput] = useState('')
   const [loading, setLoading] = useState(false)
@@ -204,7 +206,7 @@ export default function AnalystChat() {
 
     setError(null)
     setLoading(true)
-    setStage('Starting...')
+    setStage(tr('anc.stage.starting'))
     setCompareResult(null)
     setSingleResult(null)
     setChartData({})
@@ -246,11 +248,15 @@ export default function AnalystChat() {
           try {
             const evt = JSON.parse(line.slice(6))
             if (evt.event === 'stage') {
-              setStage(STAGE_LABELS[evt.stage] || evt.stage || '')
+              const sk = `anc.stage.${evt.stage}`
+              const sl = tr(sk)
+              setStage(sl === sk ? (evt.stage || '') : sl)
             } else if (evt.event === 'partial' && mode === 'compare') {
               const modeKey = evt.mode
               setCompareResult(prev => ({ ...prev, [modeKey]: evt.result || { error: evt.error } }))
-              setStage(STAGE_LABELS[`${modeKey}_done`] || `${modeKey} done...`)
+              const dk = `anc.stage.${modeKey}_done`
+              const dl = tr(dk)
+              setStage(dl === dk ? `${modeKey} done...` : dl)
             } else if (evt.event === 'done') {
               if (mode === 'compare') {
                 setCompareResult(evt.result)
@@ -260,7 +266,7 @@ export default function AnalystChat() {
               }
               setLoading(false)
             } else if (evt.event === 'error') {
-              setError(evt.error || 'Unknown error')
+              setError(evt.error || tr('anc.unknownError'))
               setLoading(false)
             }
           } catch (_) {}
@@ -289,22 +295,22 @@ export default function AnalystChat() {
     <div className="max-w-7xl mx-auto p-4 space-y-4">
       <div className="flex items-center justify-between">
         <div>
-          <h2 className="text-xl font-bold text-dbx-navy dark:text-white">SQL Analyst Agent Comparison</h2>
-          <p className="text-xs text-slate-500 mt-0.5">Demonstrating the realizable value of a semantic metadata layer</p>
+          <h2 className="text-xl font-bold text-dbx-navy dark:text-white">{tr('anc.pageTitle')}</h2>
+          <p className="text-xs text-slate-500 mt-0.5">{tr('anc.pageSubtitle')}</p>
         </div>
         <div className="flex items-center gap-2">
           <div className="flex gap-1 bg-dbx-oat dark:bg-dbx-navy-500 rounded-lg p-1">
             {Object.entries(MODE_CONFIG).map(([k, v]) => (
               <button key={k} onClick={() => setMode(k)}
                 className={`px-3 py-1.5 rounded-md text-xs font-medium transition-all ${mode === k ? `${v.color} text-white shadow` : 'text-slate-600 dark:text-slate-400 hover:bg-white/50'}`}>
-                {v.label}
+                {tr(v.labelKey)}
               </button>
             ))}
           </div>
           {(history.length > 0 || compareResult || singleResult) && (
             <button onClick={clearChat}
               className="px-3 py-1.5 rounded-md text-xs font-medium text-slate-500 hover:text-red-600 hover:bg-red-50 dark:hover:bg-red-900/20 transition-all border border-slate-200 dark:border-slate-600">
-              Clear Chat
+              {tr('anc.clearChat')}
             </button>
           )}
         </div>
@@ -312,15 +318,15 @@ export default function AnalystChat() {
 
       <ErrorBanner error={error} onDismiss={() => setError(null)} />
 
-      <p className="text-xs text-slate-400">{MODE_CONFIG[mode].desc}</p>
+      <p className="text-xs text-slate-400">{tr(MODE_CONFIG[mode].descKey)}</p>
 
       {!loading && !compareResult && !singleResult && (
         <div className="space-y-4">
           {QUESTION_GROUPS.map((group, gi) => (
             <div key={gi}>
               <div className="mb-2">
-                <h3 className="text-sm font-semibold text-slate-700 dark:text-slate-300">{group.label}</h3>
-                <p className="text-xs text-slate-400">{group.desc}</p>
+                <h3 className="text-sm font-semibold text-slate-700 dark:text-slate-300">{tr(group.labelKey)}</h3>
+                <p className="text-xs text-slate-400">{tr(group.descKey)}</p>
               </div>
               <SuggestedQuestions questions={group.questions} onSelect={q => handleSubmit(q)} />
             </div>
@@ -329,7 +335,7 @@ export default function AnalystChat() {
       )}
 
       <ChatInputBar value={input} onChange={setInput} onSubmit={() => handleSubmit()}
-        loading={loading} placeholder="Ask a question about your data..." />
+        loading={loading} placeholder={tr('anc.inputPlaceholder')} />
 
       {loading && (
         <div className="flex items-center gap-2 text-sm text-slate-500">
@@ -342,25 +348,25 @@ export default function AnalystChat() {
         <div className="space-y-4">
           {compareResult?.comparison_analysis && (
             <div className="border rounded-xl p-4 bg-emerald-50/50 dark:bg-emerald-900/10">
-              <h3 className="text-sm font-bold text-emerald-700 dark:text-emerald-400 mb-2">Semantic Layer Value Analysis</h3>
+              <h3 className="text-sm font-bold text-emerald-700 dark:text-emerald-400 mb-2">{tr('anc.valueAnalysisTitle')}</h3>
               <div className="text-sm text-slate-700 dark:text-slate-300 prose prose-sm max-w-none mb-3"
                 dangerouslySetInnerHTML={{ __html: simpleMarkdown(compareResult.comparison_analysis) }} />
               <div className="flex flex-wrap gap-x-6 gap-y-1 text-xs text-slate-500 pt-2 border-t border-emerald-200/50 dark:border-emerald-800/30">
-                <span>Time: Blind {compareResult.blind?.elapsed_ms ? `${(compareResult.blind.elapsed_ms/1000).toFixed(1)}s` : '?'} / Enriched {compareResult.enriched?.elapsed_ms ? `${(compareResult.enriched.elapsed_ms/1000).toFixed(1)}s` : '?'}</span>
-                <span>Steps: Blind {compareResult.blind?.steps || '?'} / Enriched {compareResult.enriched?.steps || '?'}</span>
-                <span>Tokens: Blind {compareResult.blind?.token_usage?.total_tokens?.toLocaleString() || '?'} / Enriched {compareResult.enriched?.token_usage?.total_tokens?.toLocaleString() || '?'}</span>
-                <span>Semantic tools: {(compareResult.enriched?.tool_calls || []).filter(t =>
+                <span>{tr('anc.metricTime', { blind: compareResult.blind?.elapsed_ms ? `${(compareResult.blind.elapsed_ms/1000).toFixed(1)}s` : '?', enriched: compareResult.enriched?.elapsed_ms ? `${(compareResult.enriched.elapsed_ms/1000).toFixed(1)}s` : '?' })}</span>
+                <span>{tr('anc.metricSteps', { blind: compareResult.blind?.steps || '?', enriched: compareResult.enriched?.steps || '?' })}</span>
+                <span>{tr('anc.metricTokens', { blind: compareResult.blind?.token_usage?.total_tokens?.toLocaleString() || '?', enriched: compareResult.enriched?.token_usage?.total_tokens?.toLocaleString() || '?' })}</span>
+                <span>{tr('anc.metricSemanticTools', { count: (compareResult.enriched?.tool_calls || []).filter(t =>
                   ['find_relevant_tables', 'get_join_path', 'get_column_context', 'get_metric_definitions', 'get_value_distribution'].includes(t)
-                ).length}</span>
+                ).length })}</span>
               </div>
             </div>
           )}
           <div className="flex gap-4">
-            <ResultPanel title="Blind Mode (Schema Only)" color="text-slate-600"
+            <ResultPanel title={tr('anc.panelBlindTitle')} color="text-slate-600"
               result={compareResult?.blind} loading={loading && !compareResult?.blind} stage={stage}
               chart={chartData.blind} plotLoading={plotLoading.blind}
               onGeneratePlot={compareResult?.blind?.answer ? () => generatePlot('blind', compareResult.blind.answer, compareResult.blind.sql) : undefined} />
-            <ResultPanel title="Enriched Mode (Semantic Layer)" color="text-emerald-600"
+            <ResultPanel title={tr('anc.panelEnrichedTitle')} color="text-emerald-600"
               result={compareResult?.enriched} loading={loading && !compareResult?.enriched} stage={stage}
               chart={chartData.enriched} plotLoading={plotLoading.enriched}
               onGeneratePlot={compareResult?.enriched?.answer ? () => generatePlot('enriched', compareResult.enriched.answer, compareResult.enriched.sql) : undefined} />
@@ -370,14 +376,14 @@ export default function AnalystChat() {
 
       {showSingle && (
         <div className="space-y-3">
-          <ResultPanel title={`${mode === 'enriched' ? 'Enriched' : 'Blind'} Result`}
+          <ResultPanel title={tr(mode === 'enriched' ? 'anc.panelSingleEnriched' : 'anc.panelSingleBlind')}
             color={mode === 'enriched' ? 'text-emerald-600' : 'text-slate-600'}
             result={singleResult}
             chart={chartData.single} plotLoading={plotLoading.single}
             onGeneratePlot={() => generatePlot('single', singleResult?.answer, singleResult?.sql)} />
           {singleResult?.token_usage?.total_tokens > 0 && (
             <div className="text-xs text-slate-400 pl-1">
-              Tokens: {singleResult.token_usage.total_tokens.toLocaleString()} (in: {(singleResult.token_usage.input_tokens || 0).toLocaleString()}, out: {(singleResult.token_usage.output_tokens || 0).toLocaleString()})
+              {tr('anc.singleTokens', { total: singleResult.token_usage.total_tokens.toLocaleString(), input: (singleResult.token_usage.input_tokens || 0).toLocaleString(), output: (singleResult.token_usage.output_tokens || 0).toLocaleString() })}
             </div>
           )}
         </div>

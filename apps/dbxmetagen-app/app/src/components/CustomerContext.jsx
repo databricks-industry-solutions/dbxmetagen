@@ -1,5 +1,6 @@
 import React, { useState, useEffect, useCallback, useMemo } from 'react'
 import { safeFetch } from '../App'
+import { useLanguage } from '../contexts/LanguageContext'
 
 const SCOPE_TYPES = ['catalog', 'schema', 'table', 'pattern']
 // Per-entry word cap (mirrors customer_context.MAX_WORDS_PER_ENTRY on the backend).
@@ -65,6 +66,8 @@ function isDocFile(name) {
 }
 
 function ContextManager() {
+  // Aliased to `tr` -- `t` is used as a local arrow-fn param (SCOPE_TYPES.map etc.).
+  const { t: tr } = useLanguage()
   const [entries, setEntries] = useState([])
   const [loading, setLoading] = useState(true)
   const [error, setError] = useState(null)
@@ -311,17 +314,15 @@ function ContextManager() {
     <div className="space-y-6">
       <div className="flex items-center justify-between">
         <div>
-          <h2 className="text-lg font-bold text-slate-800 dark:text-slate-100">Customer Context</h2>
+          <h2 className="text-lg font-bold text-slate-800 dark:text-slate-100">{tr('cc.pageTitle')}</h2>
           <p className="text-sm text-slate-500 dark:text-slate-400 mt-1">
-            Add domain knowledge that enriches LLM prompts during metadata generation. Scoped hierarchically: catalog &gt; schema &gt; pattern &gt; table.
-            Each entry is limited to {MAX_WORDS} words. When a table matches several scopes, the more-specific context (table &gt; pattern &gt; schema &gt; catalog) is kept first if the combined budget is exceeded &mdash; use &ldquo;Preview Resolution&rdquo; below to see exactly what gets injected and whether anything is dropped.
-            Keep entries concise: this text is injected into every prompt. For large or table-specific knowledge, prefer vector search / the knowledge base over long free-text here.
+            {tr('cc.pageDesc', { max: MAX_WORDS })}
           </p>
         </div>
         <div className="flex gap-2">
-          <button onClick={() => { setShowUpload(!showUpload); setEditing(null) }} className="btn-ghost btn-sm">Add from a File</button>
+          <button onClick={() => { setShowUpload(!showUpload); setEditing(null) }} className="btn-ghost btn-sm">{tr('cc.addFromFile')}</button>
           <button onClick={() => { setEditing('new'); setShowUpload(false); setForm({ scope: '', scope_type: 'schema', context_text: '', context_label: '', priority: 0 }) }}
-            className="btn-primary btn-sm">Write an Entry</button>
+            className="btn-primary btn-sm">{tr('cc.writeEntry')}</button>
         </div>
       </div>
 
@@ -546,85 +547,85 @@ function ContextManager() {
       {editing && (
         <div className="card p-5 space-y-4">
           <h3 className="font-semibold text-slate-800 dark:text-slate-100">
-            {editing === 'new' ? 'Add Context Entry' : 'Edit Context Entry'}
+            {editing === 'new' ? tr('cc.addContextEntry') : tr('cc.editContextEntry')}
           </h3>
           <div className="grid grid-cols-2 gap-4">
             <div>
-              <label className="block text-sm font-medium text-slate-600 dark:text-slate-300 mb-1">Scope</label>
+              <label className="block text-sm font-medium text-slate-600 dark:text-slate-300 mb-1">{tr('cc.scope')}</label>
               <input value={form.scope} onChange={e => setForm(f => ({ ...f, scope: e.target.value }))}
-                placeholder="e.g. my_catalog.my_schema"
+                placeholder={tr('cc.scopePlaceholder')}
                 className="w-full px-3 py-2 rounded-lg border border-slate-300 dark:border-dbx-navy-400 bg-white dark:bg-dbx-navy-600 text-sm" />
             </div>
             <div>
-              <label className="block text-sm font-medium text-slate-600 dark:text-slate-300 mb-1">Scope Type</label>
+              <label className="block text-sm font-medium text-slate-600 dark:text-slate-300 mb-1">{tr('cc.scopeType')}</label>
               <select value={form.scope_type} onChange={e => setForm(f => ({ ...f, scope_type: e.target.value }))}
                 className="w-full px-3 py-2 rounded-lg border border-slate-300 dark:border-dbx-navy-400 bg-white dark:bg-dbx-navy-600 text-sm">
                 {SCOPE_TYPES.map(t => <option key={t} value={t}>{t}</option>)}
               </select>
             </div>
             <div>
-              <label className="block text-sm font-medium text-slate-600 dark:text-slate-300 mb-1">Label (optional)</label>
+              <label className="block text-sm font-medium text-slate-600 dark:text-slate-300 mb-1">{tr('cc.labelOptional')}</label>
               <input value={form.context_label} onChange={e => setForm(f => ({ ...f, context_label: e.target.value }))}
-                placeholder="e.g. Claims schema context"
+                placeholder={tr('cc.labelPlaceholder')}
                 className="w-full px-3 py-2 rounded-lg border border-slate-300 dark:border-dbx-navy-400 bg-white dark:bg-dbx-navy-600 text-sm" />
             </div>
             <div>
-              <label className="block text-sm font-medium text-slate-600 dark:text-slate-300 mb-1">Priority</label>
+              <label className="block text-sm font-medium text-slate-600 dark:text-slate-300 mb-1">{tr('cc.priority')}</label>
               <input type="number" value={form.priority} onChange={e => setForm(f => ({ ...f, priority: parseInt(e.target.value) || 0 }))}
                 className="w-full px-3 py-2 rounded-lg border border-slate-300 dark:border-dbx-navy-400 bg-white dark:bg-dbx-navy-600 text-sm" />
             </div>
           </div>
           <div>
             <div className="flex justify-between items-center mb-1">
-              <label className="text-sm font-medium text-slate-600 dark:text-slate-300">Context Text</label>
+              <label className="text-sm font-medium text-slate-600 dark:text-slate-300">{tr('cc.contextText')}</label>
               <span className={`text-xs ${overLimit ? 'text-red-500 font-medium' : 'text-slate-400'}`}>
-                {wc} / {MAX_WORDS} words
+                {tr('cc.wordsCount', { wc, max: MAX_WORDS })}
               </span>
             </div>
             <textarea value={form.context_text} onChange={e => setForm(f => ({ ...f, context_text: e.target.value }))}
-              rows={5} placeholder="Domain-specific context that will be injected into LLM prompts..."
+              rows={5} placeholder={tr('cc.contextPlaceholder')}
               className={`w-full px-3 py-2 rounded-lg border bg-white dark:bg-dbx-navy-600 text-sm ${overLimit ? 'border-red-400' : 'border-slate-300 dark:border-dbx-navy-400'}`} />
           </div>
           <div className="flex gap-2 justify-end">
-            <button onClick={() => setEditing(null)} className="btn-ghost btn-sm">Cancel</button>
+            <button onClick={() => setEditing(null)} className="btn-ghost btn-sm">{tr('common.cancel')}</button>
             <button onClick={handleSave} disabled={saving || overLimit || !form.scope || !form.context_text.trim()}
-              className="btn-primary btn-sm disabled:opacity-50">{saving ? 'Saving...' : 'Save'}</button>
+              className="btn-primary btn-sm disabled:opacity-50">{saving ? tr('cc.saving') : tr('common.save')}</button>
           </div>
         </div>
       )}
 
       {/* Resolve Preview */}
       <div className="card p-4">
-        <h3 className="text-sm font-semibold text-slate-700 dark:text-slate-300 mb-2">Preview Resolution</h3>
+        <h3 className="text-sm font-semibold text-slate-700 dark:text-slate-300 mb-2">{tr('cc.previewResolution')}</h3>
         <div className="flex gap-2">
           <input value={preview.table} onChange={e => setPreview({ table: e.target.value, result: null })}
-            placeholder="catalog.schema.table_name"
+            placeholder={tr('cc.tablePlaceholder')}
             className="flex-1 px-3 py-2 rounded-lg border border-slate-300 dark:border-dbx-navy-400 bg-white dark:bg-dbx-navy-600 text-sm"
             onKeyDown={e => e.key === 'Enter' && handleResolve()} />
-          <button onClick={handleResolve} disabled={!preview.table} className="btn-primary btn-sm disabled:opacity-50">Resolve</button>
+          <button onClick={handleResolve} disabled={!preview.table} className="btn-primary btn-sm disabled:opacity-50">{tr('cc.resolve')}</button>
         </div>
         {preview.result && (
           <div className="mt-3 p-3 bg-slate-50 dark:bg-dbx-navy-600 rounded-lg text-sm space-y-2">
             <div className="flex gap-4 text-xs text-slate-500">
-              <span>Matching scopes: {preview.result.matching_scopes?.join(', ') || 'none'}</span>
-              <span>Words: {preview.result.word_count}{preview.result.budget_words ? ` / ${preview.result.budget_words}` : ''}</span>
+              <span>{tr('cc.matchingScopes', { scopes: preview.result.matching_scopes?.join(', ') || tr('cc.none') })}</span>
+              <span>{preview.result.budget_words ? tr('cc.wordsLabelBudget', { count: preview.result.word_count, budget: preview.result.budget_words }) : tr('cc.wordsLabel', { count: preview.result.word_count })}</span>
             </div>
             {preview.result.truncated && (
               <div className="text-xs px-2.5 py-2 rounded-md bg-amber-500/10 text-amber-700 dark:text-amber-300 border border-amber-400/30">
-                ⚠ Combined context exceeds the {preview.result.budget_words}-word budget. Kept the most-specific context that fits.
+                {tr('cc.budgetWarn', { budget: preview.result.budget_words })}
                 {preview.result.dropped_scopes?.length > 0 && (
-                  <> Dropped (NOT injected): {preview.result.dropped_scopes.map(d => `${d.scope_type}:${d.scope}`).join(', ')}.</>
+                  <>{tr('cc.droppedScopes', { scopes: preview.result.dropped_scopes.map(d => `${d.scope_type}:${d.scope}`).join(', ') })}</>
                 )}
                 {preview.result.truncated_scope && (
-                  <> Partially injected (head kept): {preview.result.truncated_scope.scope_type}:{preview.result.truncated_scope.scope}.</>
+                  <>{tr('cc.truncatedScope', { scope: `${preview.result.truncated_scope.scope_type}:${preview.result.truncated_scope.scope}` })}</>
                 )}
-                {' '}Trim entries or move detail to vector search / the knowledge base.
+                {tr('cc.budgetAdvice')}
               </div>
             )}
             {preview.result.resolved_context ? (
               <p className="text-slate-700 dark:text-slate-300 whitespace-pre-wrap">{preview.result.resolved_context}</p>
             ) : (
-              <p className="text-slate-400 italic">No context matches this table.</p>
+              <p className="text-slate-400 italic">{tr('cc.noContextMatch')}</p>
             )}
           </div>
         )}
@@ -662,10 +663,10 @@ function ContextManager() {
 
       {/* Filter */}
       <div className="flex gap-2 items-center">
-        <span className="text-sm text-slate-500 dark:text-slate-400">Filter:</span>
+        <span className="text-sm text-slate-500 dark:text-slate-400">{tr('cc.filter')}</span>
         <button onClick={() => setFilterType('')}
           className={`px-2.5 py-1 rounded-md text-xs font-medium transition-colors ${!filterType ? 'bg-dbx-lava text-white' : 'bg-slate-100 dark:bg-dbx-navy-600 text-slate-600 dark:text-slate-300 hover:bg-slate-200'}`}>
-          All
+          {tr('common.all')}
         </button>
         {SCOPE_TYPES.map(t => (
           <button key={t} onClick={() => setFilterType(t)}
@@ -677,22 +678,22 @@ function ContextManager() {
 
       {/* Table */}
       {loading ? (
-        <div className="text-center py-8 text-slate-400">Loading...</div>
+        <div className="text-center py-8 text-slate-400">{tr('common.loading')}</div>
       ) : groups.length === 0 ? (
         <div className="card p-8 text-center text-slate-400">
-          No customer context entries yet. Click "Write an Entry" or "Add from a File" to get started.
+          {tr('cc.noEntries')}
         </div>
       ) : (
         <div className="card overflow-hidden">
           <table className="w-full text-sm">
             <thead className="bg-slate-50 dark:bg-dbx-navy-600">
               <tr>
-                <th className="px-4 py-2.5 text-left font-medium text-slate-500 dark:text-slate-400">Scope</th>
-                <th className="px-4 py-2.5 text-left font-medium text-slate-500 dark:text-slate-400">Type</th>
-                <th className="px-4 py-2.5 text-left font-medium text-slate-500 dark:text-slate-400">Label</th>
-                <th className="px-4 py-2.5 text-left font-medium text-slate-500 dark:text-slate-400">Words</th>
-                <th className="px-4 py-2.5 text-left font-medium text-slate-500 dark:text-slate-400">Entries</th>
-                <th className="px-4 py-2.5 text-right font-medium text-slate-500 dark:text-slate-400">Actions</th>
+                <th className="px-4 py-2.5 text-left font-medium text-slate-500 dark:text-slate-400">{tr('cc.scope')}</th>
+                <th className="px-4 py-2.5 text-left font-medium text-slate-500 dark:text-slate-400">{tr('common.type')}</th>
+                <th className="px-4 py-2.5 text-left font-medium text-slate-500 dark:text-slate-400">{tr('cc.colLabel')}</th>
+                <th className="px-4 py-2.5 text-left font-medium text-slate-500 dark:text-slate-400">{tr('cc.colWords')}</th>
+                <th className="px-4 py-2.5 text-left font-medium text-slate-500 dark:text-slate-400">{tr('cc.colEntries')}</th>
+                <th className="px-4 py-2.5 text-right font-medium text-slate-500 dark:text-slate-400">{tr('cc.colActions')}</th>
               </tr>
             </thead>
             <tbody className="divide-y divide-slate-100 dark:divide-dbx-navy-500">
@@ -719,11 +720,11 @@ function ContextManager() {
                     <td className="px-4 py-3 text-slate-500">{g.count}</td>
                     <td className="px-4 py-3 text-right whitespace-nowrap">
                       {multi ? (
-                        <button onClick={() => openResolve(g)} className="text-xs text-amber-600 dark:text-amber-400 font-medium hover:underline mr-3">Resolve</button>
+                        <button onClick={() => openResolve(g)} className="text-xs text-amber-600 dark:text-amber-400 font-medium hover:underline mr-3">{tr('cc.resolveDup')}</button>
                       ) : (
-                        <button onClick={() => handleEdit(only)} className="text-xs text-dbx-sky hover:underline mr-3">Edit</button>
+                        <button onClick={() => handleEdit(only)} className="text-xs text-dbx-sky hover:underline mr-3">{tr('common.edit')}</button>
                       )}
-                      <button onClick={() => multi ? handleDeleteScope(g) : handleDelete(only.context_id)} className="text-xs text-red-500 hover:underline">Delete{multi ? ' all' : ''}</button>
+                      <button onClick={() => multi ? handleDeleteScope(g) : handleDelete(only.context_id)} className="text-xs text-red-500 hover:underline">{multi ? tr('cc.deleteAll') : tr('common.delete')}</button>
                     </td>
                   </tr>
                 )
@@ -1124,28 +1125,29 @@ function OverridesManager() {
   )
 }
 
+// label values are i18n keys resolved via tr() at render time.
 const CC_TABS = [
-  { id: 'context', label: 'Context' },
-  { id: 'acronyms', label: 'Acronyms' },
-  { id: 'descriptions', label: 'Descriptions' },
+  { id: 'context', label: 'cc.tab.context' },
+  { id: 'acronyms', label: 'cc.tab.acronyms' },
+  { id: 'descriptions', label: 'cc.tab.descriptions' },
 ]
 
 export default function CustomerContext() {
+  const { t: tr } = useLanguage()
   const [tab, setTab] = useState('context')
   return (
     <div className="space-y-5">
       <div>
-        <h2 className="text-lg font-bold text-slate-800 dark:text-slate-100">Customer Context</h2>
+        <h2 className="text-lg font-bold text-slate-800 dark:text-slate-100">{tr('cc.pageTitle')}</h2>
         <p className="text-sm text-slate-500 dark:text-slate-400 mt-1">
-          Domain knowledge that steers metadata generation: free-text context, acronym expansions, and
-          verbatim column descriptions.
+          {tr('cc.wrapperDesc')}
         </p>
       </div>
       <div className="flex gap-1 border-b border-slate-200 dark:border-dbx-navy-400/30">
         {CC_TABS.map(t => (
           <button key={t.id} onClick={() => setTab(t.id)}
             className={`px-4 py-2 text-sm font-medium border-b-2 -mb-px transition-colors ${tab === t.id ? 'border-dbx-lava text-dbx-lava' : 'border-transparent text-slate-500 dark:text-slate-400 hover:text-slate-700 dark:hover:text-slate-200'}`}>
-            {t.label}
+            {tr(t.label)}
           </button>
         ))}
       </div>

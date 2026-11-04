@@ -1,5 +1,6 @@
 import React from 'react'
 import { useViewMode } from '../hooks/useViewMode'
+import { useLanguage } from '../contexts/LanguageContext'
 
 /**
  * Two-door landing. The app's primary entry point: the user picks one of two
@@ -45,9 +46,9 @@ function DoorCard({ accent, eyebrow, title, description, bullets, cta, onClick }
 }
 
 const SECONDARY = [
-  { id: 'metadata', label: 'Review & apply', desc: 'Edit and apply generated metadata' },
-  { id: 'agent', label: 'Explore / Agent', desc: 'Ask questions, browse the graph' },
-  { id: 'genie', label: 'Build Genie space', desc: 'Natural-language SQL over your data' },
+  { id: 'metadata', label: 'home.secondary.reviewApply', desc: 'home.secondary.reviewApply.desc' },
+  { id: 'agent', label: 'home.secondary.explore', desc: 'home.secondary.explore.desc' },
+  { id: 'genie', label: 'home.secondary.genie', desc: 'home.secondary.genie.desc' },
 ]
 
 // Mirror of App.jsx SIMPLIFIED_TABS: destinations that still exist in simplified view.
@@ -58,28 +59,29 @@ const SIMPLIFIED_DESTS = new Set(['home', 'jobs', 'metadata', 'guide', 'context'
 export default function Home({ onNavigate }) {
   const { simplified } = useViewMode()
   const secondary = simplified ? SECONDARY.filter(s => SIMPLIFIED_DESTS.has(s.id)) : SECONDARY
+  const { t } = useLanguage()
   return (
     <div className="max-w-4xl mx-auto py-6">
       <div className="text-center mb-8">
-        <h2 className="text-2xl font-bold text-slate-800 dark:text-white">What do you want to do?</h2>
+        <h2 className="text-2xl font-bold text-slate-800 dark:text-white">{t('home.title')}</h2>
         <p className="text-sm text-slate-500 dark:text-slate-400 mt-1.5">
-          Pick a starting point. Once you're in, everything else is a click away.
+          {t('home.subtitle')}
         </p>
       </div>
 
       <div className={`grid grid-cols-1 gap-5 ${simplified ? 'max-w-md mx-auto' : 'md:grid-cols-2'}`}>
         <DoorCard
           accent="#FF3621"
-          eyebrow="Start here"
-          title="Generate basic metadata"
-          description="AI-generated descriptions, sensitivity classification, and business domain tags — reviewed, then applied to your Unity Catalog tables."
+          eyebrow={t('home.door1.eyebrow')}
+          title={t('home.door1.title')}
+          description={t('home.door1.desc')}
           bullets={[
-            'Table & column descriptions',
-            'PII / PHI / PCI sensitivity labels',
-            'Business domain tags',
-            'Review before anything touches your catalog',
+            t('home.door1.b1'),
+            t('home.door1.b2'),
+            t('home.door1.b3'),
+            t('home.door1.b4'),
           ]}
-          cta="Generate metadata"
+          cta={t('home.door1.cta')}
           onClick={() => onNavigate('jobs')}
         />
         {/* Semantic layer is an advanced-only surface (hidden tab in simplified view),
@@ -87,16 +89,16 @@ export default function Home({ onNavigate }) {
         {!simplified && (
           <DoorCard
             accent="#1B7EAB"
-            eyebrow="Full semantic layer"
-            title="Generate semantic layer"
-            description="Build metric views, a vector index, and a knowledge graph for AI/BI and Genie. Generates and reviews the underlying metadata for you first."
+            eyebrow={t('home.door2.eyebrow')}
+            title={t('home.door2.title')}
+            description={t('home.door2.desc')}
             bullets={[
-              'Metric views (KPIs your tools can query)',
-              'Vector index for semantic search',
-              'Knowledge graph of how tables relate',
-              'Metadata generated as the foundation',
+              t('home.door2.b1'),
+              t('home.door2.b2'),
+              t('home.door2.b3'),
+              t('home.door2.b4'),
             ]}
-            cta="Build semantic layer"
+            cta={t('home.door2.cta')}
             onClick={() => onNavigate('semantic')}
           />
         )}
@@ -104,7 +106,7 @@ export default function Home({ onNavigate }) {
 
       <div className="mt-8 border-t border-slate-200 dark:border-dbx-navy-400/30 pt-5">
         <p className="text-xs font-semibold uppercase tracking-wider text-slate-400 dark:text-slate-500 mb-3">
-          Already have metadata?
+          {t('home.secondary.title')}
         </p>
         <div className="grid grid-cols-1 sm:grid-cols-3 gap-2.5">
           {secondary.map(s => (
@@ -112,10 +114,10 @@ export default function Home({ onNavigate }) {
               key={s.id}
               onClick={() => onNavigate(s.id)}
               className="flex items-center gap-2 min-w-0 px-3.5 py-2 rounded-lg border border-slate-200 dark:border-dbx-navy-400/30 text-sm text-slate-600 dark:text-slate-300 hover:border-dbx-lava/40 hover:text-dbx-lava dark:hover:text-dbx-lava transition-colors"
-              title={s.desc}
+              title={t(s.desc)}
             >
-              <span className="font-medium whitespace-nowrap">{s.label}</span>
-              <span className="text-xs text-slate-400 dark:text-slate-500 hidden lg:inline truncate">· {s.desc}</span>
+              <span className="font-medium whitespace-nowrap">{t(s.label)}</span>
+              <span className="text-xs text-slate-400 dark:text-slate-500 hidden lg:inline truncate">· {t(s.desc)}</span>
             </button>
           ))}
         </div>

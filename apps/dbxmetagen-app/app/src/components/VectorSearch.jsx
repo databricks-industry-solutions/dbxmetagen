@@ -1,14 +1,16 @@
 import React, { useState, useEffect, useRef, useCallback } from 'react'
 import { ErrorBanner } from '../App'
+import { useLanguage } from '../contexts/LanguageContext'
 import { PageHeader, StatCard, SkeletonCards, EmptyState } from './ui'
+import { TERMINAL_STATES } from '../hooks/useJobRunner'
 
 const DOC_TYPES = [
-  { value: '', label: 'All Types' },
-  { value: 'table', label: 'Table' },
-  { value: 'column', label: 'Column' },
-  { value: 'entity', label: 'Entity' },
-  { value: 'metric_view', label: 'Metric View' },
-  { value: 'fk_relationship', label: 'FK Relationship' },
+  { value: '', label: 'vs.dtAll' },
+  { value: 'table', label: 'vs.dtTable' },
+  { value: 'column', label: 'vs.dtColumn' },
+  { value: 'entity', label: 'vs.dtEntity' },
+  { value: 'metric_view', label: 'vs.dtMetricView' },
+  { value: 'fk_relationship', label: 'vs.dtFkRelationship' },
 ]
 
 const DOC_TYPE_COLORS = {
@@ -36,6 +38,7 @@ function classifyState(state) {
 }
 
 export default function VectorSearch() {
+  const { t } = useLanguage()
   const [status, setStatus] = useState(null)
   const [error, setError] = useState(null)
   const [query, setQuery] = useState('')
@@ -48,8 +51,6 @@ export default function VectorSearch() {
   const [syncRunId, setSyncRunId] = useState(null)
   const [syncResult, setSyncResult] = useState(null)
   const pollRef = useRef(null)
-
-  const TERMINAL_STATES = new Set(['TERMINATED', 'SKIPPED', 'INTERNAL_ERROR'])
 
   const loadStatus = () => {
     fetch('/api/vector/status').then(r => r.ok ? r.json() : null).then(setStatus).catch(() => {})
@@ -127,43 +128,43 @@ export default function VectorSearch() {
 
   return (
     <div className="space-y-5 max-w-full overflow-hidden">
-      <PageHeader title="Vector Search" subtitle="Search and explore indexed metadata" />
+      <PageHeader title={t('vs.pageTitle')} subtitle={t('vs.pageSubtitle')} />
       <ErrorBanner error={error} />
 
       {/* Index Status */}
       <div className="card p-5">
         <div className="flex items-center justify-between mb-3">
-          <h2 className="text-base font-semibold text-slate-800 dark:text-slate-100">Index Status</h2>
+          <h2 className="text-base font-semibold text-slate-800 dark:text-slate-100">{t('vs.indexStatus')}</h2>
           <div className="flex gap-2">
             <button onClick={doSync} disabled={syncing || endpointMissing || endpointError}
-              title="Triggers the Build Vector Index job to regenerate metadata documents and re-index them in Vector Search. Same as the 'Sync Vector Index' button on the Advanced Metadata tab."
+              title={t('vs.buildIndexTip')}
               className="btn-secondary btn-sm">
-              {syncing ? (syncRunId ? 'Building...' : 'Syncing...') : 'Sync Now'}
+              {syncing ? (syncRunId ? t('vs.building') : t('vs.syncing')) : t('vs.syncNow')}
             </button>
-            {syncResult === 'success' && <span className="text-xs text-emerald-600 dark:text-emerald-400">Sync complete</span>}
-            {syncResult === 'failed' && <span className="text-xs text-red-600 dark:text-red-400">Sync job failed</span>}
-            <button onClick={loadStatus} className="btn-ghost btn-sm">Refresh</button>
+            {syncResult === 'success' && <span className="text-xs text-emerald-600 dark:text-emerald-400">{t('vs.syncComplete')}</span>}
+            {syncResult === 'failed' && <span className="text-xs text-red-600 dark:text-red-400">{t('vs.syncFailed')}</span>}
+            <button onClick={loadStatus} className="btn-ghost btn-sm">{t('vs.refresh')}</button>
           </div>
         </div>
 
         {endpointMissing ? (
           <div className="bg-amber-50 border border-amber-200 rounded-lg p-4 text-sm">
-            <p className="font-medium text-amber-800 mb-1">Vector Search endpoint not yet created</p>
+            <p className="font-medium text-amber-800 mb-1">{t('vs.endpointNotCreated')}</p>
             <p className="text-amber-700">
               The endpoint <code className="bg-amber-100 px-1 rounded">{status.endpoint_name}</code> does not exist yet.
-              Run the <strong>Build Vector Index</strong> job from the Generate Metadata tab, or redeploy the application to create it automatically.
+              Run the <strong>{t('vs.buildVectorIndex')}</strong> job from the Generate Metadata tab, or redeploy the application to create it automatically.
             </p>
           </div>
         ) : endpointError ? (
           <div className="bg-red-50 border border-red-200 rounded-lg p-4 text-sm">
-            <p className="font-medium text-red-800 mb-1">Error checking Vector Search endpoint</p>
+            <p className="font-medium text-red-800 mb-1">{t('vs.errorChecking')}</p>
             <p className="text-red-700 mb-2">
               Could not query endpoint <code className="bg-red-100 px-1 rounded">{status.endpoint_name}</code>.
               This is usually a permission or SDK issue, not a missing endpoint.
             </p>
             {status.endpoint_error && (
               <details className="text-xs text-red-600">
-                <summary className="cursor-pointer hover:underline">Show error details</summary>
+                <summary className="cursor-pointer hover:underline">{t('vs.showErrorDetails')}</summary>
                 <pre className="mt-1 bg-red-100 p-2 rounded whitespace-pre-wrap break-all">{status.endpoint_error}</pre>
               </details>
             )}
@@ -171,26 +172,26 @@ export default function VectorSearch() {
         ) : status ? (
           <div className="grid grid-cols-2 md:grid-cols-4 gap-4 text-sm">
             <div className="min-w-0">
-              <span className="text-xs text-slate-500 dark:text-slate-400 block mb-1">Endpoint</span>
+              <span className="text-xs text-slate-500 dark:text-slate-400 block mb-1">{t('vs.endpoint')}</span>
               <span className="font-medium text-slate-700 dark:text-slate-200">{status.endpoint_name}</span>
               <span className={`ml-2 px-1.5 py-0.5 rounded text-xs ${status.endpoint_state === 'ONLINE' ? 'bg-green-100 text-green-700 dark:bg-green-900/40 dark:text-green-300' : 'bg-yellow-100 text-yellow-700 dark:bg-yellow-900/40 dark:text-yellow-300'}`}>
                 {status.endpoint_state}
               </span>
             </div>
             <div className="min-w-0">
-              <span className="text-xs text-slate-500 dark:text-slate-400 block mb-1">Index</span>
+              <span className="text-xs text-slate-500 dark:text-slate-400 block mb-1">{t('vs.index')}</span>
               {indexMissing ? (
-                <span className="text-xs text-amber-600 dark:text-amber-400">Not yet created -- run Build Vector Index</span>
+                <span className="text-xs text-amber-600 dark:text-amber-400">{t('vs.indexNotCreated')}</span>
               ) : (
                 <span className="font-mono text-xs break-all text-slate-600 dark:text-slate-300">{status.index_name}</span>
               )}
             </div>
             <div className="min-w-0">
-              <span className="text-xs text-slate-500 dark:text-slate-400 block mb-1">Total Documents</span>
+              <span className="text-xs text-slate-500 dark:text-slate-400 block mb-1">{t('vs.totalDocuments')}</span>
               <span className="text-3xl font-bold text-dbx-navy dark:text-white">{status.total_documents}</span>
             </div>
             <div className="min-w-0">
-              <span className="text-xs text-slate-500 dark:text-slate-400 block mb-1">By Type</span>
+              <span className="text-xs text-slate-500 dark:text-slate-400 block mb-1">{t('vs.byType')}</span>
               <div className="flex flex-wrap gap-1.5 mt-1">
                 {Object.entries(status.doc_counts || {}).map(([k, v]) => (
                   <span key={k} className="text-sm text-slate-700 dark:text-slate-200"><DocTypeBadge type={k} /> {v}</span>
@@ -205,32 +206,32 @@ export default function VectorSearch() {
 
       {/* Search Form */}
       <div className="card p-5">
-        <h2 className="text-base font-semibold text-slate-800 dark:text-slate-100 mb-3">Similarity Search</h2>
+        <h2 className="text-base font-semibold text-slate-800 dark:text-slate-100 mb-3">{t('vs.similaritySearch')}</h2>
         <div className="grid grid-cols-1 md:grid-cols-4 gap-3 mb-3">
           <div className="md:col-span-2">
             <input value={query} onChange={e => setQuery(e.target.value)} onKeyDown={handleKey}
-              placeholder="Search metadata (e.g. 'patient encounter tables')"
+              placeholder={t('vs.searchPlaceholder')}
               className="input-base" />
           </div>
           <div>
             <select value={docType} onChange={e => setDocType(e.target.value)}
               className="select-base">
-              {DOC_TYPES.map(dt => <option key={dt.value} value={dt.value}>{dt.label}</option>)}
+              {DOC_TYPES.map(dt => <option key={dt.value} value={dt.value}>{t(dt.label)}</option>)}
             </select>
           </div>
           <div className="flex gap-2 items-center">
-            <label className="text-xs text-slate-500 dark:text-slate-400 whitespace-nowrap">Results: {numResults}</label>
+            <label className="text-xs text-slate-500 dark:text-slate-400 whitespace-nowrap">{t('vs.resultsCount', { n: numResults })}</label>
             <input type="range" min={1} max={20} value={numResults} onChange={e => setNumResults(Number(e.target.value))}
               className="flex-1" />
           </div>
         </div>
         <div className="flex items-center gap-3">
           <button onClick={doSearch} disabled={searching || !query.trim() || endpointMissing || endpointError}
-            className="btn-secondary btn-md">{searching ? 'Searching...' : 'Search'}</button>
+            className="btn-secondary btn-md">{searching ? t('vs.searchingBtn') : t('vs.searchBtn')}</button>
           <label className="flex items-center gap-2 text-sm text-slate-600 dark:text-slate-300">
             <input type="checkbox" checked={queryType === 'HYBRID'}
               onChange={e => setQueryType(e.target.checked ? 'HYBRID' : 'ANN')} />
-            Hybrid search (vector + keyword)
+            {t('vs.hybridSearch')}
           </label>
         </div>
       </div>
@@ -239,7 +240,7 @@ export default function VectorSearch() {
       {results && (
         <div className="card p-5 overflow-hidden">
           <h2 className="text-base font-semibold text-slate-800 dark:text-slate-100 mb-3">
-            Results <span className="text-sm font-normal text-slate-500 dark:text-slate-400">({results.count} matches, {results.query_type === 'ANN' ? 'Vector' : results.query_type === 'HYBRID' ? 'Hybrid' : results.query_type})</span>
+            {t('vs.results')} <span className="text-sm font-normal text-slate-500 dark:text-slate-400">{t('vs.matchesInfo', { n: results.count, type: results.query_type === 'ANN' ? t('vs.vector') : results.query_type === 'HYBRID' ? t('vs.hybrid') : results.query_type })}</span>
           </h2>
           {results.matches && results.matches.length > 0 ? (
             <div className="space-y-3">
@@ -249,22 +250,22 @@ export default function VectorSearch() {
                     <DocTypeBadge type={m.doc_type} />
                     <span className="font-mono text-xs text-slate-600 dark:text-slate-300 truncate min-w-0 flex-1">{m.doc_id}</span>
                     {m.score != null && (
-                      <span className="text-xs font-medium text-slate-500 dark:text-slate-400 flex-shrink-0">score: {Number(m.score).toFixed(3)}</span>
+                      <span className="text-xs font-medium text-slate-500 dark:text-slate-400 flex-shrink-0">{t('vs.scoreLabel', { s: Number(m.score).toFixed(3) })}</span>
                     )}
                   </div>
                   <p className="text-sm text-slate-700 dark:text-slate-300 whitespace-pre-wrap line-clamp-4 max-w-full break-words">
                     {typeof m.content === 'string' ? m.content.slice(0, 500) : JSON.stringify(m.content)}
                   </p>
                   <div className="flex flex-wrap gap-3 mt-1.5 text-xs text-slate-400 dark:text-slate-500">
-                    {m.table_name && <span>table: {m.table_name}</span>}
-                    {m.domain && <span>domain: {m.domain}</span>}
-                    {m.entity_type && <span>entity: {m.entity_type}</span>}
+                    {m.table_name && <span>{t('vs.tableLabel', { v: m.table_name })}</span>}
+                    {m.domain && <span>{t('vs.domainLabel', { v: m.domain })}</span>}
+                    {m.entity_type && <span>{t('vs.entityLabel', { v: m.entity_type })}</span>}
                   </div>
                 </div>
               ))}
             </div>
           ) : (
-            <EmptyState title="No matches found" description="Try adjusting your search query or broadening the doc type filter" />
+            <EmptyState title={t('vs.noMatches')} description={t('vs.noMatchesDesc')} />
           )}
         </div>
       )}

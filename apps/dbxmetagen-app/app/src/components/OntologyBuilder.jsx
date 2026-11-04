@@ -3,6 +3,7 @@ import ForceGraph2D from 'react-force-graph-2d'
 import { safeFetchObj, ErrorBanner } from '../App'
 import { cachedFetch, invalidateCache, TTL } from '../apiCache'
 import { PageHeader, EmptyState } from './ui'
+import { useLanguage } from '../contexts/LanguageContext'
 import { useCatalogSchemaTables } from '../hooks/useCatalogSchemaTables'
 
 const PALETTE = [
@@ -160,7 +161,10 @@ function useUndoReducer(reducer, init) {
 
 // ── Tag Input ────────────────────────────────────────────────────────
 
-function TagInput({ tags = [], onChange, placeholder = 'Type and press Enter' }) {
+function TagInput({ tags = [], onChange, placeholder }) {
+  // Aliased to `tr` -- tags.map uses `t` as the item param below.
+  const { t: tr } = useLanguage()
+  const ph = placeholder ?? tr('ob.tagInputPh')
   const [value, setValue] = useState('')
   const add = () => {
     const v = value.trim()
@@ -176,7 +180,7 @@ function TagInput({ tags = [], onChange, placeholder = 'Type and press Enter' })
       ))}
       <input value={value} onChange={e => setValue(e.target.value)}
         onKeyDown={e => { if (e.key === 'Enter') { e.preventDefault(); add() } }}
-        placeholder={placeholder}
+        placeholder={ph}
         className="input-base !py-1 !text-xs flex-1 min-w-[100px]" />
     </div>
   )
@@ -185,6 +189,7 @@ function TagInput({ tags = [], onChange, placeholder = 'Type and press Enter' })
 // ── Suggestion Card (with inline edit) ──────────────────────────────
 
 function SuggestionCard({ item, type, onAccept, onDismiss }) {
+  const { t } = useLanguage()
   const [editing, setEditing] = useState(false)
   const [draft, setDraft] = useState(item)
 
@@ -194,16 +199,16 @@ function SuggestionCard({ item, type, onAccept, onDismiss }) {
     return (
       <div className="card p-3 space-y-2 animate-slide-up border-2 border-dbx-teal/30">
         <input value={draft.name} onChange={e => setDraft({ ...draft, name: e.target.value })}
-          className="input-base !text-sm !font-semibold" placeholder="Name" />
+          className="input-base !text-sm !font-semibold" placeholder={t('common.name')} />
         <textarea value={draft.description || ''} onChange={e => setDraft({ ...draft, description: e.target.value })}
-          rows={2} className="textarea-base !text-xs" placeholder="Description" />
+          rows={2} className="textarea-base !text-xs" placeholder={t('common.description')} />
         <div>
-          <span className="text-[10px] text-slate-500">Keywords</span>
-          <TagInput tags={draft.keywords || []} onChange={keywords => setDraft({ ...draft, keywords })} placeholder="keyword..." />
+          <span className="text-[10px] text-slate-500">{t('common.keywords')}</span>
+          <TagInput tags={draft.keywords || []} onChange={keywords => setDraft({ ...draft, keywords })} placeholder={t('ob.keywordPh')} />
         </div>
         <div className="flex gap-1.5">
-          <button onClick={() => { onAccept(draft); setEditing(false) }} className="btn-primary !py-1 !px-2 !text-xs">Accept</button>
-          <button onClick={() => { setDraft(item); setEditing(false) }} className="btn-ghost !py-1 !px-2 !text-xs">Cancel</button>
+          <button onClick={() => { onAccept(draft); setEditing(false) }} className="btn-primary !py-1 !px-2 !text-xs">{t('common.accept')}</button>
+          <button onClick={() => { setDraft(item); setEditing(false) }} className="btn-ghost !py-1 !px-2 !text-xs">{t('common.cancel')}</button>
         </div>
       </div>
     )
@@ -221,9 +226,9 @@ function SuggestionCard({ item, type, onAccept, onDismiss }) {
         )}
       </div>
       <div className="flex flex-col gap-1.5 flex-shrink-0">
-        <button onClick={() => onAccept(item)} className="btn-primary !py-1 !px-2 !text-xs">Accept</button>
-        <button onClick={() => setEditing(true)} className="btn-ghost !py-1 !px-2 !text-xs border border-slate-200 dark:border-dbx-navy-400/30">Edit</button>
-        <button onClick={() => onDismiss(item)} className="btn-ghost !py-1 !px-2 !text-xs text-slate-400">Dismiss</button>
+        <button onClick={() => onAccept(item)} className="btn-primary !py-1 !px-2 !text-xs">{t('common.accept')}</button>
+        <button onClick={() => setEditing(true)} className="btn-ghost !py-1 !px-2 !text-xs border border-slate-200 dark:border-dbx-navy-400/30">{t('common.edit')}</button>
+        <button onClick={() => onDismiss(item)} className="btn-ghost !py-1 !px-2 !text-xs text-slate-400">{t('common.dismiss')}</button>
       </div>
     </div>
   )
@@ -232,6 +237,7 @@ function SuggestionCard({ item, type, onAccept, onDismiss }) {
 // ── Entity Form ──────────────────────────────────────────────────────
 
 function EntityForm({ entity, entityName, allEntities, onUpdate, onDelete, onSuggestProps, suggestingProps }) {
+  const { t } = useLanguage()
   if (!entity) return null
   const edgeCount = Object.values(entity.properties || {}).filter(p => p.kind === 'object_property').length
   return (
@@ -240,34 +246,34 @@ function EntityForm({ entity, entityName, allEntities, onUpdate, onDelete, onSug
         <h3 className="text-sm font-bold text-slate-800 dark:text-slate-100">{entityName}</h3>
         <button onClick={() => {
           const relCount = Object.keys(entity.properties || {}).length
-          if (window.confirm(`Delete "${entityName}" and its ${relCount} properties? Connected edges will also be removed.`)) onDelete()
-        }} className="text-xs text-red-500 hover:text-red-700">Delete</button>
+          if (window.confirm(t('ob.confirmDeleteEntity', { name: entityName, count: relCount }))) onDelete()
+        }} className="text-xs text-red-500 hover:text-red-700">{t('common.delete')}</button>
       </div>
       <label className="block">
-        <span className="text-xs text-slate-500">Description</span>
+        <span className="text-xs text-slate-500">{t('common.description')}</span>
         <textarea value={entity.description || ''} onChange={e => onUpdate({ description: e.target.value })}
           rows={2} className="textarea-base !text-xs mt-1" />
       </label>
       <label className="block">
-        <span className="text-xs text-slate-500">URI (optional)</span>
+        <span className="text-xs text-slate-500">{t('ob.uriOptional')}</span>
         <input value={entity.uri || ''} onChange={e => onUpdate({ uri: e.target.value })}
-          className="input-base !text-xs mt-1" placeholder="schema:Person" />
+          className="input-base !text-xs mt-1" placeholder={t('ob.uriPh')} />
       </label>
       <div>
-        <span className="text-xs text-slate-500">Keywords</span>
-        <TagInput tags={entity.keywords || []} onChange={keywords => onUpdate({ keywords })} placeholder="Add keyword..." />
+        <span className="text-xs text-slate-500">{t('common.keywords')}</span>
+        <TagInput tags={entity.keywords || []} onChange={keywords => onUpdate({ keywords })} placeholder={t('ob.addKeywordPh')} />
       </div>
       <div>
-        <span className="text-xs text-slate-500">Typical Attributes</span>
-        <TagInput tags={entity.typical_attributes || []} onChange={typical_attributes => onUpdate({ typical_attributes })} placeholder="Add attribute..." />
+        <span className="text-xs text-slate-500">{t('ob.typicalAttributes')}</span>
+        <TagInput tags={entity.typical_attributes || []} onChange={typical_attributes => onUpdate({ typical_attributes })} placeholder={t('ob.addAttributePh')} />
       </div>
 
       {/* Properties */}
       <div className="border-t border-slate-200 dark:border-dbx-navy-400/30 pt-3">
         <div className="flex items-center justify-between mb-2">
-          <span className="text-xs font-semibold text-slate-600 dark:text-slate-300">Properties ({Object.keys(entity.properties || {}).length})</span>
+          <span className="text-xs font-semibold text-slate-600 dark:text-slate-300">{t('ob.properties')} ({Object.keys(entity.properties || {}).length})</span>
           <button onClick={onSuggestProps} disabled={suggestingProps}
-            className="btn-ghost !py-0.5 !px-2 !text-[10px]">{suggestingProps ? 'Suggesting...' : 'Suggest Properties'}</button>
+            className="btn-ghost !py-0.5 !px-2 !text-[10px]">{suggestingProps ? t('ob.suggesting') : t('ob.suggestProperties')}</button>
         </div>
         {Object.entries(entity.properties || {}).map(([pName, prop]) => (
           <PropertyRow key={pName} name={pName} prop={prop} allEntities={allEntities}
@@ -284,6 +290,7 @@ function EntityForm({ entity, entityName, allEntities, onUpdate, onDelete, onSug
 }
 
 function PropertyRow({ name, prop, allEntities, onUpdate, onRemove }) {
+  const { t } = useLanguage()
   const [expanded, setExpanded] = useState(false)
   return (
     <div className="border border-slate-200 dark:border-dbx-navy-400/20 rounded-lg p-2 mb-1.5 text-xs">
@@ -298,14 +305,14 @@ function PropertyRow({ name, prop, allEntities, onUpdate, onRemove }) {
         <div className="mt-2 space-y-2 pt-2 border-t border-slate-100 dark:border-dbx-navy-500/30">
           <div className="grid grid-cols-2 gap-2">
             <label className="block">
-              <span className="text-[10px] text-slate-500">Kind</span>
+              <span className="text-[10px] text-slate-500">{t('ob.kind')}</span>
               <select value={prop.kind || 'data_property'} onChange={e => onUpdate({ kind: e.target.value })} className="select-base !text-xs mt-0.5">
                 <option value="data_property">data_property</option>
                 <option value="object_property">object_property</option>
               </select>
             </label>
             <label className="block">
-              <span className="text-[10px] text-slate-500">Role</span>
+              <span className="text-[10px] text-slate-500">{t('ob.role')}</span>
               <select value={prop.role || 'dimension'} onChange={e => onUpdate({ role: e.target.value })} className="select-base !text-xs mt-0.5">
                 {ROLE_OPTIONS.map(r => <option key={r} value={r}>{r}</option>)}
               </select>
@@ -314,21 +321,21 @@ function PropertyRow({ name, prop, allEntities, onUpdate, onRemove }) {
           {prop.kind === 'object_property' && (
             <div className="grid grid-cols-2 gap-2">
               <label className="block">
-                <span className="text-[10px] text-slate-500">Edge</span>
+                <span className="text-[10px] text-slate-500">{t('ob.edge')}</span>
                 <input value={prop.edge || ''} onChange={e => onUpdate({ edge: e.target.value })} className="input-base !text-xs mt-0.5" />
               </label>
               <label className="block">
-                <span className="text-[10px] text-slate-500">Target Entity</span>
+                <span className="text-[10px] text-slate-500">{t('ob.targetEntity')}</span>
                 <select value={prop.target_entity || ''} onChange={e => onUpdate({ target_entity: e.target.value })} className="select-base !text-xs mt-0.5">
-                  <option value="">(none)</option>
+                  <option value="">{t('ob.none')}</option>
                   {allEntities.map(e => <option key={e} value={e}>{e}</option>)}
                 </select>
               </label>
             </div>
           )}
           <div>
-            <span className="text-[10px] text-slate-500">Typical Attributes</span>
-            <TagInput tags={prop.typical_attributes || []} onChange={typical_attributes => onUpdate({ typical_attributes })} placeholder="column name..." />
+            <span className="text-[10px] text-slate-500">{t('ob.typicalAttributes')}</span>
+            <TagInput tags={prop.typical_attributes || []} onChange={typical_attributes => onUpdate({ typical_attributes })} placeholder={t('ob.columnNamePh')} />
           </div>
         </div>
       )}
@@ -337,16 +344,17 @@ function PropertyRow({ name, prop, allEntities, onUpdate, onRemove }) {
 }
 
 function AddPropertyRow({ onAdd, allEntities }) {
+  const { t } = useLanguage()
   const [open, setOpen] = useState(false)
   const [name, setName] = useState('')
   const [kind, setKind] = useState('data_property')
   const [role, setRole] = useState('dimension')
 
-  if (!open) return <button onClick={() => setOpen(true)} className="text-xs text-dbx-teal hover:underline">+ Add property</button>
+  if (!open) return <button onClick={() => setOpen(true)} className="text-xs text-dbx-teal hover:underline">{t('ob.addProperty')}</button>
 
   return (
     <div className="border border-dashed border-slate-300 dark:border-dbx-navy-400/40 rounded-lg p-2 mt-1.5 space-y-2">
-      <input value={name} onChange={e => setName(e.target.value)} placeholder="Property name" className="input-base !text-xs" />
+      <input value={name} onChange={e => setName(e.target.value)} placeholder={t('ob.propertyNamePh')} className="input-base !text-xs" />
       <div className="grid grid-cols-2 gap-2">
         <select value={kind} onChange={e => setKind(e.target.value)} className="select-base !text-xs">
           <option value="data_property">data_property</option>
@@ -358,8 +366,8 @@ function AddPropertyRow({ onAdd, allEntities }) {
       </div>
       <div className="flex gap-2">
         <button onClick={() => { if (name.trim()) { onAdd(name.trim(), { kind, role, typical_attributes: [] }); setName(''); setOpen(false) } }}
-          className="btn-primary !py-1 !px-2 !text-xs">Add</button>
-        <button onClick={() => setOpen(false)} className="btn-ghost !py-1 !px-2 !text-xs">Cancel</button>
+          className="btn-primary !py-1 !px-2 !text-xs">{t('common.add')}</button>
+        <button onClick={() => setOpen(false)} className="btn-ghost !py-1 !px-2 !text-xs">{t('common.cancel')}</button>
       </div>
     </div>
   )
@@ -368,45 +376,46 @@ function AddPropertyRow({ onAdd, allEntities }) {
 // ── Relationship Form ────────────────────────────────────────────────
 
 function RelationshipForm({ edgeName, edge, entityNames, onUpdate, onDelete }) {
+  const { t } = useLanguage()
   if (!edge) return null
   return (
     <div className="space-y-3">
       <div className="flex items-center justify-between">
         <h3 className="text-sm font-bold text-slate-800 dark:text-slate-100">{edgeName}</h3>
         <button onClick={() => {
-          if (window.confirm(`Delete relationship "${edgeName}"?`)) onDelete()
-        }} className="text-xs text-red-500 hover:text-red-700">Delete</button>
+          if (window.confirm(t('ob.confirmDeleteRelationship', { name: edgeName }))) onDelete()
+        }} className="text-xs text-red-500 hover:text-red-700">{t('common.delete')}</button>
       </div>
       <div className="grid grid-cols-2 gap-2">
         <label className="block">
-          <span className="text-xs text-slate-500">Source (Domain)</span>
+          <span className="text-xs text-slate-500">{t('ob.sourceDomain')}</span>
           <select value={edge.domain || ''} onChange={e => onUpdate({ domain: e.target.value })} className="select-base !text-xs mt-1">
-            <option value="">Any</option>
+            <option value="">{t('common.any')}</option>
             {entityNames.map(n => <option key={n} value={n}>{n}</option>)}
           </select>
         </label>
         <label className="block">
-          <span className="text-xs text-slate-500">Target (Range)</span>
+          <span className="text-xs text-slate-500">{t('ob.targetRange')}</span>
           <select value={edge.range || ''} onChange={e => onUpdate({ range: e.target.value })} className="select-base !text-xs mt-1">
-            <option value="">Any</option>
+            <option value="">{t('common.any')}</option>
             {entityNames.map(n => <option key={n} value={n}>{n}</option>)}
           </select>
         </label>
       </div>
       <label className="block">
-        <span className="text-xs text-slate-500">Inverse</span>
+        <span className="text-xs text-slate-500">{t('ob.inverse')}</span>
         <input value={edge.inverse || ''} onChange={e => onUpdate({ inverse: e.target.value })} className="input-base !text-xs mt-1" />
       </label>
       <div className="grid grid-cols-2 gap-2">
         <label className="block">
-          <span className="text-xs text-slate-500">Category</span>
+          <span className="text-xs text-slate-500">{t('ob.category')}</span>
           <select value={edge.category || 'business'} onChange={e => onUpdate({ category: e.target.value })} className="select-base !text-xs mt-1">
             {EDGE_CATEGORIES.map(c => <option key={c} value={c}>{c}</option>)}
           </select>
         </label>
         <label className="flex items-center gap-2 mt-4 text-xs text-slate-600 dark:text-slate-300 cursor-pointer">
           <input type="checkbox" checked={!!edge.symmetric} onChange={e => onUpdate({ symmetric: e.target.checked })} />
-          Symmetric
+          {t('ob.symmetric')}
         </label>
       </div>
     </div>
@@ -416,19 +425,20 @@ function RelationshipForm({ edgeName, edge, entityNames, onUpdate, onDelete }) {
 // ── Add Entity Modal ─────────────────────────────────────────────────
 
 function AddEntityModal({ open, onClose, onAdd }) {
+  const { t } = useLanguage()
   const [name, setName] = useState('')
   const [desc, setDesc] = useState('')
   if (!open) return null
   return (
     <div className="fixed inset-0 bg-black/40 z-50 flex items-center justify-center p-4" onClick={onClose}>
       <div className="bg-white dark:bg-dbx-navy-600 rounded-xl shadow-elevated p-6 w-full max-w-sm animate-slide-up" onClick={e => e.stopPropagation()}>
-        <h3 className="text-sm font-bold text-slate-800 dark:text-slate-100 mb-3">New Entity Type</h3>
-        <input value={name} onChange={e => setName(e.target.value)} placeholder="Entity name (e.g. Patient)" className="input-base !text-sm mb-2" autoFocus />
-        <textarea value={desc} onChange={e => setDesc(e.target.value)} placeholder="Description" rows={2} className="textarea-base !text-xs mb-3" />
+        <h3 className="text-sm font-bold text-slate-800 dark:text-slate-100 mb-3">{t('ob.newEntityType')}</h3>
+        <input value={name} onChange={e => setName(e.target.value)} placeholder={t('ob.entityNamePh')} className="input-base !text-sm mb-2" autoFocus />
+        <textarea value={desc} onChange={e => setDesc(e.target.value)} placeholder={t('common.description')} rows={2} className="textarea-base !text-xs mb-3" />
         <div className="flex gap-2 justify-end">
-          <button onClick={onClose} className="btn-ghost btn-sm">Cancel</button>
+          <button onClick={onClose} className="btn-ghost btn-sm">{t('common.cancel')}</button>
           <button onClick={() => { if (name.trim()) { onAdd(name.trim(), desc); setName(''); setDesc(''); onClose() } }}
-            className="btn-primary btn-sm">Add</button>
+            className="btn-primary btn-sm">{t('common.add')}</button>
         </div>
       </div>
     </div>
@@ -438,6 +448,7 @@ function AddEntityModal({ open, onClose, onAdd }) {
 // ── Add Edge Modal ───────────────────────────────────────────────────
 
 function AddEdgeModal({ open, onClose, onAdd, entityNames, source, target }) {
+  const { t } = useLanguage()
   const [name, setName] = useState('')
   const [inverse, setInverse] = useState('')
   const [category, setCategory] = useState('business')
@@ -448,16 +459,16 @@ function AddEdgeModal({ open, onClose, onAdd, entityNames, source, target }) {
   return (
     <div className="fixed inset-0 bg-black/40 z-50 flex items-center justify-center p-4" onClick={onClose}>
       <div className="bg-white dark:bg-dbx-navy-600 rounded-xl shadow-elevated p-6 w-full max-w-sm animate-slide-up" onClick={e => e.stopPropagation()}>
-        <h3 className="text-sm font-bold text-slate-800 dark:text-slate-100 mb-3">New Relationship</h3>
-        <input value={name} onChange={e => setName(e.target.value)} placeholder="Relationship name (e.g. works_at)" className="input-base !text-sm mb-2" autoFocus />
-        <input value={inverse} onChange={e => setInverse(e.target.value)} placeholder="Inverse (e.g. employs)" className="input-base !text-xs mb-2" />
+        <h3 className="text-sm font-bold text-slate-800 dark:text-slate-100 mb-3">{t('ob.newRelationship')}</h3>
+        <input value={name} onChange={e => setName(e.target.value)} placeholder={t('ob.relationshipNamePh')} className="input-base !text-sm mb-2" autoFocus />
+        <input value={inverse} onChange={e => setInverse(e.target.value)} placeholder={t('ob.inversePh')} className="input-base !text-xs mb-2" />
         <div className="grid grid-cols-2 gap-2 mb-2">
           <select value={src} onChange={e => setSrc(e.target.value)} className="select-base !text-xs">
-            <option value="">Source...</option>
+            <option value="">{t('ob.sourcePh')}</option>
             {entityNames.map(n => <option key={n} value={n}>{n}</option>)}
           </select>
           <select value={tgt} onChange={e => setTgt(e.target.value)} className="select-base !text-xs">
-            <option value="">Target...</option>
+            <option value="">{t('ob.targetPh')}</option>
             {entityNames.map(n => <option key={n} value={n}>{n}</option>)}
           </select>
         </div>
@@ -465,13 +476,13 @@ function AddEdgeModal({ open, onClose, onAdd, entityNames, source, target }) {
           {EDGE_CATEGORIES.map(c => <option key={c} value={c}>{c}</option>)}
         </select>
         <div className="flex gap-2 justify-end">
-          <button onClick={onClose} className="btn-ghost btn-sm">Cancel</button>
+          <button onClick={onClose} className="btn-ghost btn-sm">{t('common.cancel')}</button>
           <button onClick={() => {
             if (name.trim() && src && tgt) {
               onAdd(name.trim(), { inverse, symmetric: false, category, domain: src, range: tgt })
               setName(''); setInverse(''); onClose()
             }
-          }} className="btn-primary btn-sm">Add</button>
+          }} className="btn-primary btn-sm">{t('common.add')}</button>
         </div>
       </div>
     </div>
@@ -481,6 +492,7 @@ function AddEdgeModal({ open, onClose, onAdd, entityNames, source, target }) {
 // ── Domain Card (full editor with subdomains) ────────────────────────
 
 function DomainCard({ domain, index, dispatch, entityNames, affinity = [] }) {
+  const { t } = useLanguage()
   const [expanded, setExpanded] = useState(false)
   const domKey = (domain.name || '').toLowerCase().replace(/\s+/g, '_')
   return (
@@ -488,27 +500,27 @@ function DomainCard({ domain, index, dispatch, entityNames, affinity = [] }) {
       <div className="flex items-center gap-2">
         <button onClick={() => setExpanded(!expanded)} className="text-slate-400">{expanded ? '\u25BC' : '\u25B6'}</button>
         <input value={domain.name} onChange={e => dispatch({ type: 'UPDATE_DOMAIN', payload: { index, updates: { name: e.target.value } } })}
-          className="input-base !text-xs flex-1" placeholder="Domain name" />
+          className="input-base !text-xs flex-1" placeholder={t('ob.domainNamePh')} />
         <button onClick={() => {
-          if (window.confirm(`Delete domain "${domain.name || 'unnamed'}"?`)) dispatch({ type: 'REMOVE_DOMAIN', payload: index })
+          if (window.confirm(t('ob.confirmDeleteDomain', { name: domain.name || t('ob.unnamed') }))) dispatch({ type: 'REMOVE_DOMAIN', payload: index })
         }} className="text-red-400 hover:text-red-600">&times;</button>
       </div>
       {expanded && (
         <div className="pl-5 space-y-2">
           <textarea value={domain.description || ''} rows={2}
             onChange={e => dispatch({ type: 'UPDATE_DOMAIN', payload: { index, updates: { description: e.target.value } } })}
-            className="textarea-base !text-xs" placeholder="Domain description..." />
+            className="textarea-base !text-xs" placeholder={t('ob.domainDescPh')} />
           <div>
-            <span className="text-[10px] text-slate-500">Keywords</span>
+            <span className="text-[10px] text-slate-500">{t('common.keywords')}</span>
             <TagInput tags={domain.keywords || []}
               onChange={keywords => dispatch({ type: 'UPDATE_DOMAIN', payload: { index, updates: { keywords } } })}
-              placeholder="keyword..." />
+              placeholder={t('ob.keywordPh')} />
           </div>
 
           {/* Entity Affinity */}
           {entityNames.length > 0 && domKey && (
             <div>
-              <span className="text-[10px] text-slate-500">Preferred entity types</span>
+              <span className="text-[10px] text-slate-500">{t('ob.preferredEntityTypes')}</span>
               <div className="flex flex-wrap gap-1.5 mt-1">
                 {entityNames.map(en => {
                   const active = affinity.includes(en)
@@ -529,22 +541,22 @@ function DomainCard({ domain, index, dispatch, entityNames, affinity = [] }) {
 
           {/* Subdomains */}
           <div className="border-t border-slate-100 dark:border-dbx-navy-500/30 pt-2">
-            <span className="text-[10px] text-slate-500 font-semibold">Subdomains ({(domain.subdomains || []).length})</span>
+            <span className="text-[10px] text-slate-500 font-semibold">{t('ob.subdomains')} ({(domain.subdomains || []).length})</span>
             {(domain.subdomains || []).map((sub, si) => (
               <div key={si} className="flex items-start gap-2 mt-1.5">
                 <div className="flex-1 space-y-1">
                   <input value={sub.name || ''} onChange={e => dispatch({ type: 'UPDATE_SUBDOMAIN', payload: { domainIndex: index, subIndex: si, updates: { name: e.target.value } } })}
-                    className="input-base !text-xs" placeholder="Subdomain name" />
+                    className="input-base !text-xs" placeholder={t('ob.subdomainNamePh')} />
                   <TagInput tags={sub.keywords || []}
                     onChange={keywords => dispatch({ type: 'UPDATE_SUBDOMAIN', payload: { domainIndex: index, subIndex: si, updates: { keywords } } })}
-                    placeholder="keyword..." />
+                    placeholder={t('ob.keywordPh')} />
                 </div>
                 <button onClick={() => dispatch({ type: 'REMOVE_SUBDOMAIN', payload: { domainIndex: index, subIndex: si } })}
                   className="text-red-400 hover:text-red-600 mt-1">&times;</button>
               </div>
             ))}
             <button onClick={() => dispatch({ type: 'ADD_SUBDOMAIN', payload: { domainIndex: index, subdomain: { name: '', description: '', keywords: [] } } })}
-              className="text-[10px] text-dbx-teal hover:underline mt-1.5">+ Add subdomain</button>
+              className="text-[10px] text-dbx-teal hover:underline mt-1.5">{t('ob.addSubdomain')}</button>
           </div>
         </div>
       )}
@@ -555,29 +567,30 @@ function DomainCard({ domain, index, dispatch, entityNames, affinity = [] }) {
 // ── Validation Banner ────────────────────────────────────────────────
 
 function ValidationBanner({ result, onDismiss }) {
+  const { t } = useLanguage()
   if (!result) return null
   const { errors = [], warnings = [] } = result
   if (!errors.length && !warnings.length) return (
     <div className="card border-l-4 border-l-emerald-500 px-4 py-2 text-sm text-emerald-700 dark:text-emerald-300 mb-4 animate-slide-up">
-      Validation passed -- no issues found.
-      <button onClick={onDismiss} className="ml-2 text-xs underline">dismiss</button>
+      {t('ob.validationPassed')}
+      <button onClick={onDismiss} className="ml-2 text-xs underline">{t('common.dismiss')}</button>
     </div>
   )
   return (
     <div className="mb-4 space-y-2 animate-slide-up">
       {errors.length > 0 && (
         <div className="card border-l-4 border-l-red-500 px-4 py-2 text-sm text-red-700 dark:text-red-300">
-          <p className="font-semibold text-xs mb-1">Errors ({errors.length})</p>
+          <p className="font-semibold text-xs mb-1">{t('ob.errorsCount', { n: errors.length })}</p>
           <ul className="text-xs space-y-0.5">{errors.map((e, i) => <li key={i}>{e}</li>)}</ul>
         </div>
       )}
       {warnings.length > 0 && (
         <div className="card border-l-4 border-l-amber-500 px-4 py-2 text-sm text-amber-700 dark:text-amber-300">
-          <p className="font-semibold text-xs mb-1">Warnings ({warnings.length})</p>
+          <p className="font-semibold text-xs mb-1">{t('ob.warningsCount', { n: warnings.length })}</p>
           <ul className="text-xs space-y-0.5">{warnings.map((w, i) => <li key={i}>{w}</li>)}</ul>
         </div>
       )}
-      <button onClick={onDismiss} className="text-xs text-slate-400 hover:underline">dismiss</button>
+      <button onClick={onDismiss} className="text-xs text-slate-400 hover:underline">{t('common.dismiss')}</button>
     </div>
   )
 }
@@ -702,6 +715,8 @@ function stateToYaml(state) {
 // ── Main Component ───────────────────────────────────────────────────
 
 export default function OntologyBuilder({ onNavigate }) {
+  // `tr` alias -- cst.filtered.map uses `t` as the table-item param (see Table context list).
+  const { t: tr } = useLanguage()
   const [state, dispatch, { canUndo, canRedo }] = useUndoReducer(builderReducer, EMPTY_STATE)
   const [selectedNode, setSelectedNode] = useState(null)
   const [selectedEdge, setSelectedEdge] = useState(null)
@@ -779,7 +794,7 @@ export default function OntologyBuilder({ onNavigate }) {
       const raw = localStorage.getItem(LS_KEY)
       if (raw) {
         const draft = JSON.parse(raw)
-        if (draft?.metadata?.name && window.confirm(`Restore unsaved draft "${draft.metadata.name}"?`)) {
+        if (draft?.metadata?.name && window.confirm(tr('ob.confirmRestoreDraft', { name: draft.metadata.name }))) {
           origDispatch({ type: 'LOAD_STATE', payload: draft })
           setDirty(true)
         } else {
@@ -836,7 +851,7 @@ export default function OntologyBuilder({ onNavigate }) {
 
   // Load bundle
   const loadBundle = useCallback(async (key) => {
-    if (dirty && !window.confirm('You have unsaved changes. Discard them?')) return
+    if (dirty && !window.confirm(tr('ob.confirmDiscardChanges'))) return
     if (!key) { trackedDispatch({ type: 'LOAD_STATE', payload: EMPTY_STATE }); setLoadedBundle(''); localStorage.removeItem(LS_KEY); return }
     setError(null)
     const { data, error: err } = await safeFetchObj(`/api/ontology/builder/load/${encodeURIComponent(key)}`)
@@ -1014,15 +1029,15 @@ export default function OntologyBuilder({ onNavigate }) {
 
   return (
     <div>
-      <PageHeader title="Build Ontology" subtitle="Visual entity, relationship, and property editor with LLM suggestions"
-        badge={<>{loadedBundle || 'New'}{dirty && <span className="ml-1.5 inline-block w-2 h-2 rounded-full bg-amber-400" title="Unsaved changes" />}</>}
+      <PageHeader title={tr('ob.pageTitle')} subtitle={tr('ob.pageSubtitle')}
+        badge={<>{loadedBundle || tr('ob.new')}{dirty && <span className="ml-1.5 inline-block w-2 h-2 rounded-full bg-amber-400" title={tr('ob.unsavedChanges')} />}</>}
         actions={
           <div className="flex items-center gap-2">
-            <button onClick={() => trackedDispatch({ type: 'UNDO' })} disabled={!canUndo} className="btn-ghost btn-sm" title="Undo (Ctrl+Z)">Undo</button>
-            <button onClick={() => trackedDispatch({ type: 'REDO' })} disabled={!canRedo} className="btn-ghost btn-sm" title="Redo (Ctrl+Y)">Redo</button>
-            <button onClick={runValidation} className="btn-ghost btn-sm">Validate</button>
-            <button onClick={() => setShowYaml(!showYaml)} className="btn-ghost btn-sm">{showYaml ? 'Hide YAML' : 'Show YAML'}</button>
-            <button onClick={saveBundle} disabled={saving} className="btn-primary btn-sm">{saving ? 'Saving...' : 'Save Bundle'}</button>
+            <button onClick={() => trackedDispatch({ type: 'UNDO' })} disabled={!canUndo} className="btn-ghost btn-sm" title={tr('ob.undoTip')}>{tr('ob.undo')}</button>
+            <button onClick={() => trackedDispatch({ type: 'REDO' })} disabled={!canRedo} className="btn-ghost btn-sm" title={tr('ob.redoTip')}>{tr('ob.redo')}</button>
+            <button onClick={runValidation} className="btn-ghost btn-sm">{tr('ob.validate')}</button>
+            <button onClick={() => setShowYaml(!showYaml)} className="btn-ghost btn-sm">{showYaml ? tr('ob.hideYaml') : tr('ob.showYaml')}</button>
+            <button onClick={saveBundle} disabled={saving} className="btn-primary btn-sm">{saving ? tr('ob.saving') : tr('ob.save')}</button>
           </div>
         } />
 
@@ -1034,42 +1049,42 @@ export default function OntologyBuilder({ onNavigate }) {
       <div className="card p-4 mb-4 space-y-3">
         <div className="grid grid-cols-1 md:grid-cols-4 gap-3">
           <label className="block">
-            <span className="text-xs text-slate-500 dark:text-slate-400">Load Bundle</span>
+            <span className="text-xs text-slate-500 dark:text-slate-400">{tr('ob.loadBundle')}</span>
             <select value={loadedBundle} onChange={e => loadBundle(e.target.value)} className="select-base !text-sm mt-1">
-              <option value="">Start blank</option>
+              <option value="">{tr('ob.startBlank')}</option>
               {bundles.map(b => <option key={b.key} value={b.key}>{b.name || b.key}</option>)}
             </select>
           </label>
           <label className="block">
-            <span className="text-xs text-slate-500 dark:text-slate-400">Bundle Name</span>
+            <span className="text-xs text-slate-500 dark:text-slate-400">{tr('ob.bundleName')}</span>
             <input value={state.metadata.name} onChange={e => trackedDispatch({ type: 'SET_METADATA', payload: { name: e.target.value } })}
-              className="input-base !text-sm mt-1" placeholder="My Custom Ontology" />
+              className="input-base !text-sm mt-1" placeholder={tr('ob.bundleNamePh')} />
           </label>
           <label className="block">
-            <span className="text-xs text-slate-500 dark:text-slate-400">Industry</span>
+            <span className="text-xs text-slate-500 dark:text-slate-400">{tr('ob.industry')}</span>
             <input value={state.metadata.industry} onChange={e => trackedDispatch({ type: 'SET_METADATA', payload: { industry: e.target.value } })}
-              className="input-base !text-sm mt-1" placeholder="e.g. healthcare, finance" />
+              className="input-base !text-sm mt-1" placeholder={tr('ob.industryPh')} />
           </label>
           <label className="block">
-            <span className="text-xs text-slate-500 dark:text-slate-400">Stakeholder Domain</span>
+            <span className="text-xs text-slate-500 dark:text-slate-400">{tr('ob.stakeholderDomain')}</span>
             <input value={domain} onChange={e => setDomain(e.target.value)}
-              className="input-base !text-sm mt-1" placeholder="e.g. clinical operations" />
+              className="input-base !text-sm mt-1" placeholder={tr('ob.stakeholderDomainPh')} />
           </label>
         </div>
 
         {/* Table context for suggestions */}
         <details className="text-xs">
-          <summary className="cursor-pointer text-slate-500 dark:text-slate-400 font-medium">Table context for LLM suggestions</summary>
+          <summary className="cursor-pointer text-slate-500 dark:text-slate-400 font-medium">{tr('ob.tableContext')}</summary>
           <div className="mt-2 grid grid-cols-3 gap-2">
             <select value={cst.catalog} onChange={e => cst.setCatalog(e.target.value)} className="select-base !text-xs">
-              <option value="">Catalog...</option>
+              <option value="">{tr('ob.catalogPh')}</option>
               {cst.catalogs.map(c => <option key={c} value={c}>{c}</option>)}
             </select>
             <select value={cst.schema} onChange={e => cst.setSchema(e.target.value)} className="select-base !text-xs">
-              <option value="">Schema...</option>
+              <option value="">{tr('ob.schemaPh')}</option>
               {cst.schemas.map(s => <option key={s} value={s}>{s}</option>)}
             </select>
-            <input value={cst.filter} onChange={e => cst.setFilter(e.target.value)} placeholder="Filter tables..." className="input-base !text-xs" />
+            <input value={cst.filter} onChange={e => cst.setFilter(e.target.value)} placeholder={tr('common.filterTables')} className="input-base !text-xs" />
           </div>
           {cst.filtered.length > 0 && (
             <div className="mt-2 max-h-32 overflow-y-auto border border-slate-200 dark:border-dbx-navy-400/30 rounded-lg p-2 space-y-0.5">
@@ -1087,45 +1102,45 @@ export default function OntologyBuilder({ onNavigate }) {
             </div>
           )}
           <div className="flex items-center gap-3 mt-2">
-            {selectedTables.size > 0 && <span className="text-[10px] text-slate-400">{selectedTables.size} table(s) selected</span>}
+            {selectedTables.size > 0 && <span className="text-[10px] text-slate-400">{tr('ob.tablesSelected', { n: selectedTables.size })}</span>}
             <label className="flex items-center gap-1.5 text-[10px] text-slate-500 cursor-pointer">
               <input type="checkbox" checked={includeColumnMeta} onChange={e => setIncludeColumnMeta(e.target.checked)} />
-              Include column metadata in suggestions
+              {tr('ob.includeColumnMeta')}
             </label>
           </div>
         </details>
 
         <label className="block">
-          <span className="text-xs text-slate-500 dark:text-slate-400">Description</span>
+          <span className="text-xs text-slate-500 dark:text-slate-400">{tr('common.description')}</span>
           <input value={state.metadata.description} onChange={e => trackedDispatch({ type: 'SET_METADATA', payload: { description: e.target.value } })}
-            className="input-base !text-xs mt-1" placeholder="A brief description of this ontology bundle" />
+            className="input-base !text-xs mt-1" placeholder={tr('ob.descriptionPh')} />
         </label>
       </div>
 
       {/* Suggestion Actions */}
       <div className="flex flex-wrap gap-2 mb-4">
         <button onClick={suggestEntities} disabled={suggesting} className="btn-primary btn-sm">
-          {suggesting ? 'Suggesting...' : 'Suggest Entities'}
+          {suggesting ? tr('ob.suggesting') : tr('ob.suggestEntities')}
         </button>
         <button onClick={suggestRelationships} disabled={suggestingRels || entityNames.length < 2} className="btn-secondary btn-sm">
-          {suggestingRels ? 'Suggesting...' : 'Suggest Relationships'}
+          {suggestingRels ? tr('ob.suggesting') : tr('ob.suggestRelationships')}
         </button>
-        <button onClick={() => setShowAddEntity(true)} className="btn-ghost btn-sm">+ Entity</button>
-        <button onClick={() => { setAddEdgeSource(''); setAddEdgeTarget(''); setShowAddEdge(true) }} className="btn-ghost btn-sm">+ Relationship</button>
+        <button onClick={() => setShowAddEntity(true)} className="btn-ghost btn-sm">{tr('ob.addEntity')}</button>
+        <button onClick={() => { setAddEdgeSource(''); setAddEdgeTarget(''); setShowAddEdge(true) }} className="btn-ghost btn-sm">{tr('ob.addRelationship')}</button>
         <div className="flex items-center gap-1 ml-auto">
-          <button onClick={() => setViewMode('graph')} className={`btn-ghost btn-sm !px-2 ${viewMode === 'graph' ? 'bg-slate-200 dark:bg-dbx-navy-500' : ''}`} title="Graph view">Graph</button>
-          <button onClick={() => setViewMode('list')} className={`btn-ghost btn-sm !px-2 ${viewMode === 'list' ? 'bg-slate-200 dark:bg-dbx-navy-500' : ''}`} title="List view">List</button>
+          <button onClick={() => setViewMode('graph')} className={`btn-ghost btn-sm !px-2 ${viewMode === 'graph' ? 'bg-slate-200 dark:bg-dbx-navy-500' : ''}`} title={tr('ob.graphViewTip')}>{tr('ob.graphView')}</button>
+          <button onClick={() => setViewMode('list')} className={`btn-ghost btn-sm !px-2 ${viewMode === 'list' ? 'bg-slate-200 dark:bg-dbx-navy-500' : ''}`} title={tr('ob.listViewTip')}>{tr('ob.listView')}</button>
         </div>
-        <span className="text-xs text-slate-400 self-center ml-2">{entityNames.length} entities, {Object.keys(state.edge_catalog).length} relationships</span>
+        <span className="text-xs text-slate-400 self-center ml-2">{tr('ob.entityRelCount', { e: entityNames.length, r: Object.keys(state.edge_catalog).length })}</span>
       </div>
 
       {/* Entity Suggestions */}
       {suggestions.length > 0 && (
         <div className="mb-4 space-y-2">
           <div className="flex items-center gap-2">
-            <p className="text-xs font-semibold text-slate-600 dark:text-slate-300">Entity Suggestions</p>
-            <button onClick={() => { suggestions.forEach(s => acceptEntity(s)); setSuggestions([]) }} className="text-[10px] text-dbx-teal hover:underline">Accept All</button>
-            <button onClick={() => setSuggestions([])} className="text-[10px] text-slate-400 hover:underline">Dismiss All</button>
+            <p className="text-xs font-semibold text-slate-600 dark:text-slate-300">{tr('ob.entitySuggestions')}</p>
+            <button onClick={() => { suggestions.forEach(s => acceptEntity(s)); setSuggestions([]) }} className="text-[10px] text-dbx-teal hover:underline">{tr('common.acceptAll')}</button>
+            <button onClick={() => setSuggestions([])} className="text-[10px] text-slate-400 hover:underline">{tr('common.dismissAll')}</button>
           </div>
           <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-2">
             {suggestions.map(s => (
@@ -1140,9 +1155,9 @@ export default function OntologyBuilder({ onNavigate }) {
       {relSuggestions.length > 0 && (
         <div className="mb-4 space-y-2">
           <div className="flex items-center gap-2">
-            <p className="text-xs font-semibold text-slate-600 dark:text-slate-300">Relationship Suggestions</p>
-            <button onClick={() => { relSuggestions.forEach(s => acceptRelationship(s)); setRelSuggestions([]) }} className="text-[10px] text-dbx-teal hover:underline">Accept All</button>
-            <button onClick={() => setRelSuggestions([])} className="text-[10px] text-slate-400 hover:underline">Dismiss All</button>
+            <p className="text-xs font-semibold text-slate-600 dark:text-slate-300">{tr('ob.relationshipSuggestions')}</p>
+            <button onClick={() => { relSuggestions.forEach(s => acceptRelationship(s)); setRelSuggestions([]) }} className="text-[10px] text-dbx-teal hover:underline">{tr('common.acceptAll')}</button>
+            <button onClick={() => setRelSuggestions([])} className="text-[10px] text-slate-400 hover:underline">{tr('common.dismissAll')}</button>
           </div>
           <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-2">
             {relSuggestions.map(s => (
@@ -1159,18 +1174,18 @@ export default function OntologyBuilder({ onNavigate }) {
         <div className="flex-1 card overflow-hidden min-h-[480px]" ref={containerRef}>
           {viewMode === 'list' ? (
             <div className="p-4">
-              <input value={listFilter} onChange={e => setListFilter(e.target.value)} placeholder="Filter entities..."
+              <input value={listFilter} onChange={e => setListFilter(e.target.value)} placeholder={tr('common.filterEntities')}
                 className="input-base !text-xs mb-3" />
               {filteredEntities.length === 0 ? (
-                <EmptyState title="No entities" description={entityNames.length ? 'No matches' : 'Add entities to get started'} />
+                <EmptyState title={tr('ob.noEntities')} description={entityNames.length ? tr('ob.noMatches') : tr('ob.addToStart')} />
               ) : (
                 <div className="overflow-y-auto max-h-[420px]">
                   <table className="min-w-full text-xs">
                     <thead><tr>
-                      <th className="text-left px-3 py-2 bg-dbx-oat dark:bg-dbx-navy-500 font-semibold text-slate-600 dark:text-slate-300 border-b border-slate-200 dark:border-dbx-navy-400/30 uppercase tracking-wider">Entity</th>
-                      <th className="text-left px-3 py-2 bg-dbx-oat dark:bg-dbx-navy-500 font-semibold text-slate-600 dark:text-slate-300 border-b border-slate-200 dark:border-dbx-navy-400/30 uppercase tracking-wider">Props</th>
-                      <th className="text-left px-3 py-2 bg-dbx-oat dark:bg-dbx-navy-500 font-semibold text-slate-600 dark:text-slate-300 border-b border-slate-200 dark:border-dbx-navy-400/30 uppercase tracking-wider">Edges</th>
-                      <th className="text-left px-3 py-2 bg-dbx-oat dark:bg-dbx-navy-500 font-semibold text-slate-600 dark:text-slate-300 border-b border-slate-200 dark:border-dbx-navy-400/30 uppercase tracking-wider">Keywords</th>
+                      <th className="text-left px-3 py-2 bg-dbx-oat dark:bg-dbx-navy-500 font-semibold text-slate-600 dark:text-slate-300 border-b border-slate-200 dark:border-dbx-navy-400/30 uppercase tracking-wider">{tr('ob.colEntity')}</th>
+                      <th className="text-left px-3 py-2 bg-dbx-oat dark:bg-dbx-navy-500 font-semibold text-slate-600 dark:text-slate-300 border-b border-slate-200 dark:border-dbx-navy-400/30 uppercase tracking-wider">{tr('ob.colProps')}</th>
+                      <th className="text-left px-3 py-2 bg-dbx-oat dark:bg-dbx-navy-500 font-semibold text-slate-600 dark:text-slate-300 border-b border-slate-200 dark:border-dbx-navy-400/30 uppercase tracking-wider">{tr('ob.colEdges')}</th>
+                      <th className="text-left px-3 py-2 bg-dbx-oat dark:bg-dbx-navy-500 font-semibold text-slate-600 dark:text-slate-300 border-b border-slate-200 dark:border-dbx-navy-400/30 uppercase tracking-wider">{tr('common.keywords')}</th>
                     </tr></thead>
                     <tbody>
                       {filteredEntities.map(name => {
@@ -1194,7 +1209,7 @@ export default function OntologyBuilder({ onNavigate }) {
               )}
             </div>
           ) : entityNames.length === 0 ? (
-            <EmptyState title="No entities yet" description="Add entities manually or use Suggest Entities to get started." />
+            <EmptyState title={tr('ob.noEntitiesYet')} description={tr('ob.noEntitiesYetDesc')} />
           ) : (
             <ForceGraph2D
               ref={graphRef}
@@ -1245,9 +1260,9 @@ export default function OntologyBuilder({ onNavigate }) {
                   {propSuggestions.length > 0 && (
                     <div className="mt-3 border-t border-slate-200 dark:border-dbx-navy-400/30 pt-3 space-y-2">
                       <div className="flex items-center gap-2">
-                        <p className="text-xs font-semibold text-slate-600 dark:text-slate-300">Property Suggestions</p>
-                        <button onClick={() => { propSuggestions.forEach(s => acceptProperty(s)); setPropSuggestions([]) }} className="text-[10px] text-dbx-teal hover:underline">Accept All</button>
-                        <button onClick={() => setPropSuggestions([])} className="text-[10px] text-slate-400 hover:underline">Dismiss All</button>
+                        <p className="text-xs font-semibold text-slate-600 dark:text-slate-300">{tr('ob.propertySuggestions')}</p>
+                        <button onClick={() => { propSuggestions.forEach(s => acceptProperty(s)); setPropSuggestions([]) }} className="text-[10px] text-dbx-teal hover:underline">{tr('common.acceptAll')}</button>
+                        <button onClick={() => setPropSuggestions([])} className="text-[10px] text-slate-400 hover:underline">{tr('common.dismissAll')}</button>
                       </div>
                       {propSuggestions.map(s => (
                         <SuggestionCard key={s.name} item={s} type="property" onAccept={acceptProperty}
@@ -1273,8 +1288,8 @@ export default function OntologyBuilder({ onNavigate }) {
         {!selectedEntity && !selectedEdgeObj && (
           <div className="w-80 flex-shrink-0 space-y-4">
             <div className="card p-4 text-center py-8">
-              <p className="text-sm text-slate-400 dark:text-slate-500">Select a node or edge to edit</p>
-              <p className="text-xs text-slate-400 dark:text-slate-500 mt-1">Or use the buttons above to add entities and relationships</p>
+              <p className="text-sm text-slate-400 dark:text-slate-500">{tr('ob.selectNodeOrEdge')}</p>
+              <p className="text-xs text-slate-400 dark:text-slate-500 mt-1">{tr('ob.selectNodeOrEdgeHint')}</p>
             </div>
           </div>
         )}
@@ -1282,14 +1297,14 @@ export default function OntologyBuilder({ onNavigate }) {
 
       {/* Domains Section */}
       <details className="card p-4 mt-4">
-        <summary className="text-xs font-semibold text-slate-600 dark:text-slate-300 cursor-pointer">Domains ({state.domains.length})</summary>
+        <summary className="text-xs font-semibold text-slate-600 dark:text-slate-300 cursor-pointer">{tr('ob.domains')} ({state.domains.length})</summary>
         <div className="mt-3 space-y-2">
           {state.domains.map((d, i) => (
             <DomainCard key={i} domain={d} index={i} dispatch={trackedDispatch} entityNames={entityNames}
               affinity={state.domain_entity_affinity[(d.name || '').toLowerCase().replace(/\s+/g, '_')] || []} />
           ))}
           <button onClick={() => trackedDispatch({ type: 'ADD_DOMAIN', payload: { name: '', description: '', keywords: [], subdomains: [] } })}
-            className="text-xs text-dbx-teal hover:underline">+ Add domain</button>
+            className="text-xs text-dbx-teal hover:underline">{tr('ob.addDomain')}</button>
         </div>
       </details>
 
@@ -1297,14 +1312,14 @@ export default function OntologyBuilder({ onNavigate }) {
       {showYaml && (
         <div className="card p-4 mt-4">
           <div className="flex items-center justify-between mb-2">
-            <span className="text-xs font-semibold text-slate-600 dark:text-slate-300">YAML Preview</span>
+            <span className="text-xs font-semibold text-slate-600 dark:text-slate-300">{tr('ob.yamlPreview')}</span>
             <button onClick={() => {
               const blob = new Blob([yamlPreview], { type: 'text/yaml' })
               const url = URL.createObjectURL(blob)
               const a = document.createElement('a')
               a.href = url; a.download = `${state.metadata.name || 'ontology'}.yaml`; a.click()
               URL.revokeObjectURL(url)
-            }} className="btn-ghost btn-sm">Download YAML</button>
+            }} className="btn-ghost btn-sm">{tr('ob.downloadYaml')}</button>
           </div>
           <pre className="bg-slate-50 dark:bg-dbx-navy-700 p-4 rounded-lg text-xs font-mono overflow-x-auto max-h-96 overflow-y-auto scrollbar-thin text-slate-700 dark:text-slate-300 whitespace-pre">
             {yamlPreview}
