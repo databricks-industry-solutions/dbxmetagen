@@ -7666,9 +7666,15 @@ def _build_sl_context(
 
     fk_rows = []
     try:
+        # Composite-key FK members can score below the single-column threshold
+        # (a secondary key column like base_dt has lower standalone containment),
+        # so admit is_composite rows regardless of confidence -- otherwise a true
+        # composite join (e.g. guid+base_dt) is hidden from the planner and the LLM
+        # fabricates a partial-key join that fans out.
         fk_rows = execute_sql(
-            f"SELECT src_table, dst_table, src_column, dst_column, final_confidence "
-            f"FROM {fq('fk_predictions')} WHERE is_fk = 'true' AND final_confidence >= 0.85 "
+            f"SELECT src_table, dst_table, src_column, dst_column, final_confidence, is_composite "
+            f"FROM {fq('fk_predictions')} WHERE is_fk = 'true' "
+            f"AND (final_confidence >= 0.85 OR is_composite = TRUE) "
             f"AND (src_table IN ({in_clause}) OR dst_table IN ({in_clause}))"
         )
     except HTTPException:
@@ -7745,14 +7751,43 @@ def _build_sl_context(
 
     if fk_rows:
         parts.append("\nFOREIGN KEY RELATIONSHIPS:")
+        # Group columns by (src_table, dst_table) so a composite key renders as a
+        # SINGLE multi-column join predicate -- the planner/LLM must join on ALL key
+        # columns, not just one, or a snapshot (natural_key + date) join fans out.
+        def _leaf(col: str) -> str:
+            # Stored column may carry an FQ path prefix; keep the final segment.
+            return col.rsplit(".", 1)[-1]
+
+        fk_groups: dict[tuple, dict] = {}
         for fk in fk_rows:
-            sc = fk['src_column']
-            dc = fk['dst_column']
-            sc_d = f"`{sc}`" if " " in sc else sc
-            dc_d = f"`{dc}`" if " " in dc else dc
-            parts.append(
-                f"  {fk['src_table']}.{sc_d} -> {fk['dst_table']}.{dc_d} (confidence {fk['final_confidence']})"
-            )
+            pair = (fk["src_table"], fk["dst_table"])
+            g = fk_groups.setdefault(pair, {"cols": [], "composite": False, "conf": []})
+            g["cols"].append((_leaf(fk["src_column"]), _leaf(fk["dst_column"])))
+            if fk.get("is_composite"):
+                g["composite"] = True
+            # final_confidence may be stored as a string -- coerce for formatting.
+            fc = fk.get("final_confidence")
+            if fc is not None:
+                try:
+                    g["conf"].append(float(fc))
+                except (TypeError, ValueError):
+                    pass
+
+        for (src_t, dst_t), g in fk_groups.items():
+            terms = []
+            for sc, dc in g["cols"]:
+                sc_d = f"`{sc}`" if " " in sc else sc
+                dc_d = f"`{dc}`" if " " in dc else dc
+                terms.append(f"{src_t}.{sc_d} = {dst_t}.{dc_d}")
+            conf = min(g["conf"]) if g["conf"] else 0.0
+            if g["composite"] or len(terms) > 1:
+                parts.append(
+                    f"  COMPOSITE KEY ({len(terms)} columns -- join on ALL of them): "
+                    + " AND ".join(terms)
+                    + f" (confidence {conf:.2f})"
+                )
+            else:
+                parts.append(f"  {terms[0]} (confidence {conf:.2f})")
 
     if ont_rels:
         parts.append("\nENTITY RELATIONSHIPS (use for cross-entity join and metric design):")
@@ -8536,6 +8571,13 @@ def _validate_definition_structure(defn: dict) -> list[str]:
             if bad_refs:
                 errors.append(
                     f"Join '{j.get('name', '?')}' references sibling alias {bad_refs} -- use nested joins for snowflake patterns"
+                )
+            # Degenerate self-join: on-clause never references the joined alias
+            # (e.g. "source.x = source.x"). Joins nothing; the view rejects it.
+            all_quals = {m.group(1).lower() for m in ref_pat.finditer(on)}
+            if all_quals and own_alias and own_alias not in all_quals:
+                errors.append(
+                    f"Join '{j.get('name', '?')}' on-clause '{on}' never references its own alias -- degenerate join"
                 )
             if j.get("joins"):
                 child_siblings = {c.get("name", "").lower() for c in j["joins"] if c.get("name")}
@@ -9559,7 +9601,9 @@ RULES:
 - NULL CHECKS: Use IS NULL / IS NOT NULL only. NEVER compare to the string 'NULL' (e.g. = 'NULL' or != 'NULL'). NEVER generate "col IS NULL OR col = 'NULL'" -- just use IS NULL.
 - Output a single object with keys: name, source, comment, filter (optional), dimensions, measures, joins.
 - dimensions: array of {{ "name", "expr", "comment", "display_name", "synonyms" }}. "display_name" and "synonyms" (array of 2-5 alternative names) are REQUIRED. expr must be valid Databricks SQL using ONLY columns from the metadata below.
+- CODE/REFERENCE-TABLE LABEL DIMENSIONS: when a dimension maps a code column to a human-readable label by LEFT JOINing a reference/code table (e.g. country code -> country name), the join is OUTER, so unmatched codes yield NULL. Do NOT emit `CASE WHEN <join cond> THEN ref.label ELSE NULL END` -- that silently drops unmatched rows when the consumer filters IS NOT NULL. Instead: (1) wrap the label in COALESCE(ref.label, 'other') so unmatched codes get an explicit bucket (write bucket labels in the same language as the rest of the generated text); (2) if the SOURCE code column's comment identifies a sentinel/placeholder value (e.g. '_' meaning unknown), handle it first: `CASE WHEN source.<code> = '_' THEN '(unknown)' ELSE COALESCE(ref.label, 'other') END`. The label dimension must always produce a non-NULL bucket for every row.
 - measures: array of {{ "name", "expr", "comment", "display_name", "synonyms", "format" }}. "display_name", "synonyms", and "format" are REQUIRED. format is {{"type": "currency"}}, {{"type": "percentage"}}, or {{"type": "number"}}. Use SUM, COUNT, AVG, FILTER, etc.
+- MEASURE COLUMNS MUST EXIST AND BE REACHABLE: every column a measure references must physically exist on the source table or on a joined table (via its alias) in THIS view, per the metadata above. If a measure's defining column is NOT present in this view (its column lives on a table this view neither sources from nor joins), DO NOT invent the measure and DO NOT substitute a different column to fake it. NEVER copy an existing measure and only change a literal (e.g. a quoting change like `flag = 1` -> `flag = '1'`, or swapping one constant for another on the SAME column) to pretend it is a different metric -- that yields two measures with identical results. Either add the correct join so the real column is reachable, or omit that measure entirely and leave it for a view whose source actually contains the column.
 - For window measures (rolling averages, cumulative): use "window" array: [{{"order": "date_col", "range": "trailing 30 day", "semiadditive": "last"}}]. Use "trailing N day" for rolling, "unbounded" for cumulative.
 - NEVER use SQL window functions (OVER, PARTITION BY, ROW_NUMBER, LAG, LEAD) in measure "expr" fields. They are not supported. Use the "window" property or FILTER syntax instead.
 - joins: You MUST implement ALL joins from the plan exactly. Keep same join names as plan. If the plan includes joins, they are REQUIRED in your output. Add dimensions/measures that reference joined table columns.
@@ -9630,6 +9674,7 @@ RULES:
 - NO joins. NO filter. Single-table only.
 - dimensions: array of {{ "name", "expr", "comment", "display_name", "synonyms" }}. Use direct column references only (no computed expressions). "display_name" and "synonyms" (array of 2-5 alternative names) are REQUIRED.
 - measures: array of {{ "name", "expr", "comment", "display_name", "synonyms", "format" }}. Use only SUM, COUNT, AVG, MIN, MAX. "display_name", "synonyms", and "format" are REQUIRED. format is {{"type": "currency"}}, {{"type": "percentage"}}, or {{"type": "number"}}.
+- Only reference columns that physically exist on the source or a joined table. Never fake a measure by changing only a literal on another measure's column (e.g. a `flag = 1` -> `flag = '1'` quoting change); omit the measure if its column is unreachable.
 - Every dimension and measure MUST have a "comment" describing its purpose.
 - Only use column names that appear in the metadata.
 
@@ -9642,12 +9687,20 @@ QUESTIONS this view should help answer:
 OUTPUT (one JSON object only, no array, no explanation):"""
 
 
+# Default output-token cap for metric-view generation. Wide tables (50+ cols) produce
+# long JSON definitions; the endpoint's implicit default truncated them. Generous but
+# bounded (full model ceiling e.g. 128K is unnecessary and costs latency). Overridable
+# per-request via the max_tokens argument (future UI control).
+_SL_GEN_MAX_TOKENS = int(os.environ.get("SL_GEN_MAX_TOKENS", "16000"))
+
+
 def _batch_generate_views(
     plan_views: list[dict], questions: list[str], context: str,
-    model: str, simple: bool = False,
+    model: str, simple: bool = False, max_tokens: int = 0,
 ) -> tuple[list[dict], list[dict]]:
     """Run AI_QUERY in batch via VALUES -- one row per planned view.
 
+    ``max_tokens`` caps generated output length (0 -> _SL_GEN_MAX_TOKENS default).
     Returns (definitions, failures).
     """
     if not plan_views:
@@ -9664,8 +9717,18 @@ def _batch_generate_views(
         params.append(StatementParameterListItem(name=f"prompt_{i}", value=prompt))
 
     values_block = ",\n".join(rows_sql)
+    # max_tokens: metric-view JSON for wide tables (50+ cols) overran the endpoint's
+    # default output cap and got truncated -> JSON parse failed. Set a generous cap.
+    # failOnError=false makes AI_QUERY return a {response, errorMessage} struct per row
+    # instead of aborting the whole batch when one row fails.
+    # NOTE: responseFormat json_object was tried but this endpoint rejects it
+    # ("responseFormat is invalid or unsupported by the model") -> removed. The prompt
+    # already asks for a bare JSON object and _parse_single_json_safe strips fences.
+    mt = int(max_tokens) if max_tokens else _SL_GEN_MAX_TOKENS
     batch_sql = (
-        f"SELECT view_name, AI_QUERY('{_safe_model_endpoint(model)}', prompt) AS response "
+        f"SELECT view_name, AI_QUERY('{_safe_model_endpoint(model)}', prompt, "
+        f"modelParameters => named_struct('max_tokens', {mt}), "
+        f"failOnError => false) AS response "
         f"FROM VALUES\n{values_block}\nAS t(view_name, prompt)"
     )
     timeout = 60 + 120 * min(len(plan_views), 6)
@@ -9680,16 +9743,36 @@ def _batch_generate_views(
     failures: list[dict] = []
     for row in (result_rows or []):
         vname = row.get("view_name", "?")
-        resp = row.get("response", "")
+        # With failOnError=false, AI_QUERY wraps the output in a struct. The actual
+        # field name is `result` (not `response`), and the model's JSON is further
+        # wrapped in a ```json fence INSIDE that string -- i.e. double-wrapped:
+        #   {"result": "```json\n{...actual definition...}```", "errorMessage": null}
+        # Unwrap the struct (dict or JSON string), accept result/response, then let
+        # _parse_single_json_safe strip the inner fence. Plain string = backward-compat.
+        raw = row.get("response", "")
+        ai_err = ""
+        if isinstance(raw, str):
+            s = raw.strip()
+            if s.startswith("{") and ('"result"' in s or '"response"' in s or '"errorMessage"' in s):
+                try:
+                    parsed = json.loads(s)
+                    raw = parsed.get("result") or parsed.get("response") or ""
+                    ai_err = parsed.get("errorMessage") or ""
+                except Exception:
+                    pass
+        elif isinstance(raw, dict):
+            ai_err = raw.get("errorMessage") or ""
+            raw = raw.get("result") or raw.get("response") or ""
+        resp = raw or ""
         if not resp:
-            failures.append({"name": vname, "error": "Empty AI_QUERY response"})
+            failures.append({"name": vname, "error": f"Empty AI_QUERY response{(': ' + ai_err) if ai_err else ''}"})
             continue
         defn = _parse_single_json_safe(resp)
         if defn and defn.get("source"):
             defn.setdefault("name", vname)
             definitions.append(defn)
         else:
-            failures.append({"name": vname, "error": f"No valid definition parsed. Response prefix: {resp[:200]}"})
+            failures.append({"name": vname, "error": f"No valid definition parsed (len={len(resp)}, ends_ok={resp.rstrip().endswith('}')}). Prefix: {resp[:150]} ... Suffix: {resp[-80:]}"})
 
     return definitions, failures
 
@@ -9806,8 +9889,12 @@ def _run_sl_generation(
     max_views: int = None,
     materialize: bool = False,
     materialization_schedule: str = "every 6 hours",
+    max_tokens: int = 0,
 ):
-    """Background thread for in-app metric view generation (two-phase)."""
+    """Background thread for in-app metric view generation (two-phase).
+
+    ``max_tokens`` caps per-view generation output (0 -> _SL_GEN_MAX_TOKENS).
+    """
     from datetime import datetime as _dt
 
     task = _sl_tasks[task_id]
@@ -9970,7 +10057,7 @@ def _run_sl_generation(
         definitions = []
         if plan_views:
             task.update({"stage": "generating", "planned": len(plan_views)})
-            definitions, failures = _batch_generate_views(plan_views, questions, context, model)
+            definitions, failures = _batch_generate_views(plan_views, questions, context, model, max_tokens=max_tokens)
             logger.info("Phase 2 batch: %d succeeded, %d failed", len(definitions), len(failures))
 
             # Phase 2b: Retry failures with simplified prompts (no joins, basic aggs)
@@ -9979,7 +10066,7 @@ def _run_sl_generation(
                 failed_names = {f["name"] for f in failures}
                 failed_plans = [pv for pv in plan_views if pv.get("name") in failed_names]
                 retry_defs, retry_fails = _batch_generate_views(
-                    failed_plans, questions, context, model, simple=True,
+                    failed_plans, questions, context, model, simple=True, max_tokens=max_tokens,
                 )
                 definitions.extend(retry_defs)
                 logger.info("Phase 2b retry: %d recovered, %d still failed", len(retry_defs), len(retry_fails))
@@ -9987,6 +10074,34 @@ def _run_sl_generation(
                     task["phase2_failures"] = retry_fails
                 if retry_defs:
                     task["retry_recovered"] = len(retry_defs)
+
+        # Persist Phase 2/2b terminal failures to metric_view_definitions as
+        # status='failed'. WHY: the in-memory task object (phase2_failures) is lost
+        # on app restart and app logs aren't reachable with a PAT, so generation
+        # failures left no durable trace. Writing a 'failed' row (same shape as the
+        # success path below) makes the failure + reason queryable via SQL
+        # (SELECT ... WHERE status='failed'), matching how validation failures are
+        # already recorded.
+        terminal_failures = task.get("phase2_failures") or []
+        if terminal_failures:
+            plan_src = {pv.get("name"): pv.get("source", "") for pv in plan_views}
+            now_f = _dt.utcnow().isoformat()
+            proj_val_f = f"'{project_id}'" if project_id else "NULL"
+            for f in terminal_failures:
+                try:
+                    fid = str(_uuid.uuid4())
+                    fname = str(f.get("name", f"metric_view_{fid[:8]}")).replace("'", "''")
+                    fsrc = str(plan_src.get(f.get("name"), "")).replace("'", "''")
+                    ferr = f"generation failed (phase2): {str(f.get('error', ''))}".replace("'", "''")
+                    execute_sql(
+                        f"INSERT INTO {fq('metric_view_definitions')} VALUES "
+                        f"('{fid}', '{fname}', '{fsrc}', :json_def, '', "
+                        f"'failed', '{ferr}', NULL, '{now_f}', NULL, 1, NULL, {proj_val_f}, "
+                        f"NULL, NULL, NULL, NULL, NULL, NULL)",
+                        parameters=[StatementParameterListItem(name="json_def", value="{}")],
+                    )
+                except Exception as _e:
+                    logger.warning("Failed to persist phase2 failure '%s': %s", f.get("name"), _e)
 
         if not definitions:
             task.update({
