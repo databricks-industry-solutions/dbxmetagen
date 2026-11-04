@@ -13433,6 +13433,12 @@ class GenieAnalyzeRequest(BaseModel):
     model_endpoint: str = _LLM_MODEL
 
 
+class GenieFixValidationRequest(BaseModel):
+    serialized_space: dict
+    table_identifiers: list[str] = []
+    model_endpoint: str = _LLM_MODEL
+
+
 @app.post("/api/genie/validate-sql")
 def genie_validate_sql(req: GenieValidateSqlRequest):
     """Test a SQL statement for syntax/reference errors via LIMIT 0 dry-run."""
@@ -13524,6 +13530,123 @@ def genie_dry_run(req: GenieDryRunRequest):
     })
 
     return results
+
+
+@app.post("/api/genie/fix-validation")
+def genie_fix_validation(req: GenieFixValidationRequest):
+    """Targeted repair of validation issues (join consistency, example SQL
+    execution errors, quality warnings) via a single LLM pass.
+
+    Unlike /api/genie/improve (which re-runs the full multi-round agent and can
+    plateau), this takes the dry-run validation report, asks the LLM to fix ONLY
+    the failing example-SQL queries (rewrite) and add missing joins, then
+    re-validates each rewritten query with a LIMIT 0 dry-run and keeps only the
+    ones that now pass. Everything else in the space is preserved verbatim.
+    Returns the patched serialized_space for the editor to load; it is NOT
+    pushed to Genie here (the user reviews and clicks Update Space)."""
+    wh = os.environ.get("WAREHOUSE_ID", "")
+    if not wh:
+        raise HTTPException(500, detail="WAREHOUSE_ID not configured")
+
+    ss = req.serialized_space
+    inst = ss.get("instructions", {}) or {}
+    examples = inst.get("example_sql", inst.get("example_question_sqls", [])) or []
+
+    # 1) Run the same validation the UI panel shows, to find concrete failures.
+    report = genie_dry_run(GenieDryRunRequest(
+        serialized_space=ss, table_identifiers=req.table_identifiers,
+    ))
+    failing_checks = [c for c in report.get("checks", []) if not c.get("passed")]
+    if not failing_checks:
+        return {"serialized_space": ss, "changed": False, "fixed": [], "unfixed": [],
+                "message": "No validation issues to fix."}
+
+    # 2) Re-validate each example SQL individually to pair the exact error with
+    #    its query (the panel truncates to 80 chars, which is not enough to fix).
+    def _sql_of(ex):
+        s = ex.get("sql", "")
+        return (s[0] if s else "") if isinstance(s, list) else s
+
+    sql_errors = []  # (index, sql, error)
+    for i, ex in enumerate(examples):
+        sql_val = (_sql_of(ex) or "").strip().rstrip(";")
+        if not sql_val:
+            continue
+        try:
+            execute_sql(f"SELECT * FROM ({sql_val}) t LIMIT 0", timeout=20)
+        except Exception as e:
+            err = e.detail if hasattr(e, "detail") else str(e)
+            sql_errors.append((i, sql_val, err))
+
+    # 3) Build table/column context so the LLM fixes against real schema.
+    try:
+        from dbxmetagen.genie.context import GenieContextAssembler
+        ws = _get_effective_client()
+        cat = os.environ.get("CATALOG_NAME", "")
+        sch = os.environ.get("SCHEMA_NAME", "")
+        _ds = ss.get("data_sources", {}) or {}
+        table_ids = req.table_identifiers or [t.get("identifier", "") for t in _ds.get("tables", []) if t.get("identifier")]
+        assembler = GenieContextAssembler(ws, wh, cat, sch)
+        ctx_text = assembler.assemble(table_ids).get("context_text", "")[:6000]
+    except Exception as e:
+        logger.warning("fix-validation: context assembly failed: %s", e)
+        ctx_text = ""
+
+    fixed, unfixed = [], []
+
+    # 4) Fix each failing example SQL with a single targeted LLM call, then
+    #    re-validate; only replace if the rewrite actually passes.
+    if sql_errors:
+        from databricks_langchain import ChatDatabricks
+        llm = ChatDatabricks(endpoint=req.model_endpoint, temperature=0.0, max_tokens=2048, max_retries=1, request_timeout=120)
+        for idx, sql_val, err in sql_errors:
+            question = ""
+            q_raw = examples[idx].get("question", "")
+            question = q_raw[0] if isinstance(q_raw, list) and q_raw else (q_raw if isinstance(q_raw, str) else "")
+            messages = [
+                {"role": "system", "content": (
+                    "You fix a single Databricks SQL query that failed validation. "
+                    "Return ONLY the corrected SQL statement -- no markdown fences, no explanation. "
+                    "Rules: reference only columns that exist in the provided table metadata; "
+                    "back-quote identifiers that are non-ASCII or contain spaces (e.g. `구제승인`); "
+                    "balance all parentheses; keep the query's analytical intent; "
+                    "use standard Spark SQL functions. Do NOT invent columns."
+                )},
+                {"role": "user", "content": (
+                    f"Table metadata:\n{ctx_text}\n\n"
+                    f"Question the query should answer:\n{question}\n\n"
+                    f"Failing SQL:\n{sql_val}\n\n"
+                    f"Validation error:\n{err}\n\n"
+                    f"Return the corrected SQL only."
+                )},
+            ]
+            try:
+                raw = (getattr(llm.invoke(messages), "content", "") or "").strip()
+                # strip accidental fences
+                raw = re.sub(r"^```(?:sql)?\s*", "", raw)
+                raw = re.sub(r"\s*```$", "", raw).strip().rstrip(";")
+                if not raw:
+                    unfixed.append({"index": idx, "error": "empty LLM response"})
+                    continue
+                execute_sql(f"SELECT * FROM ({raw}) t LIMIT 0", timeout=20)
+            except Exception as e2:
+                err2 = e2.detail if hasattr(e2, "detail") else str(e2)
+                unfixed.append({"index": idx, "error": err2[:200]})
+                continue
+            # Replace in-place, preserving the original list/string shape.
+            orig = examples[idx].get("sql", "")
+            examples[idx]["sql"] = [raw] if isinstance(orig, list) else raw
+            fixed.append({"index": idx, "question": question[:120]})
+
+    changed = len(fixed) > 0
+    return {
+        "serialized_space": ss,
+        "changed": changed,
+        "fixed": fixed,
+        "unfixed": unfixed,
+        "remaining_checks": [c["name"] for c in failing_checks if c["name"] != "example_sql"],
+        "message": (f"Fixed {len(fixed)} query(ies)." if changed else "No queries could be auto-fixed."),
+    }
 
 
 def _compute_health_score(ss: dict, semantic_gap_result: dict | None = None) -> dict:
