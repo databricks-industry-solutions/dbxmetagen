@@ -553,6 +553,35 @@ def fq(table: str) -> str:
     return f"`{CATALOG}`.`{SCHEMA}`.`{table}`"
 
 
+# Optional timezone for user-facing timestamps that become FILE NAMES and version
+# identifiers (export files, DDL bundles), e.g. DISPLAY_TZ=Asia/Seoul so the names match
+# the users' local time. DB-stored timestamps stay UTC. Unset (default) keeps the
+# container's local time, i.e. the previous behavior.
+_DISPLAY_TZ = os.environ.get("DISPLAY_TZ", "").strip()
+
+
+def _display_now():
+    """Current time in DISPLAY_TZ, or the container's local time when unset."""
+    from datetime import datetime as _d
+    if _DISPLAY_TZ:
+        try:
+            from zoneinfo import ZoneInfo
+            return _d.now(ZoneInfo(_DISPLAY_TZ))
+        except Exception:
+            pass
+    return _d.now()
+
+
+def _file_ts() -> str:
+    """Timestamp for file names / version ids, in the display tz: YYYYmmdd_HHMMSS."""
+    return _display_now().strftime("%Y%m%d_%H%M%S")
+
+
+def _file_date() -> str:
+    """Date for file paths, in the display tz: YYYYmmdd."""
+    return _display_now().strftime("%Y%m%d")
+
+
 # Safe for use in LIKE/WHERE: alphanumeric, underscore, dot, hyphen, space, %
 _SAFE_IDENT_RE = re.compile(r"^[a-zA-Z0-9_.\- %]*$")
 
@@ -2121,8 +2150,8 @@ def generate_ddl(body: GenerateDDLBody):
     vol_path = None
     if stmts:
         from datetime import datetime
-        ts = datetime.now().strftime("%Y%m%d_%H%M%S")
-        current_date = datetime.now().strftime("%Y%m%d")
+        ts = _file_ts()
+        current_date = _file_date()
         volume_name = os.environ.get("VOLUME_NAME", "generated_metadata")
         ws = _get_effective_client()
         current_user = "app"
@@ -2630,8 +2659,8 @@ def generate_ddl_bundle(body: DDLBundleBody):
     vol_path = None
     if total_count > 0:
         from datetime import datetime
-        ts = datetime.now().strftime("%Y%m%d_%H%M%S")
-        current_date = datetime.now().strftime("%Y%m%d")
+        ts = _file_ts()
+        current_date = _file_date()
         volume_name = os.environ.get("VOLUME_NAME", "generated_metadata")
         ws = _get_effective_client()
         current_user = "app"
@@ -3008,8 +3037,8 @@ def export_to_volume(body: ExportVolumeRequest):
     if not rows:
         raise HTTPException(400, "No data to export")
 
-    ts = datetime.now().strftime("%Y%m%d_%H%M%S")
-    current_date = datetime.now().strftime("%Y%m%d")
+    ts = _file_ts()
+    current_date = _file_date()
     volume_name = os.environ.get("VOLUME_NAME", "generated_metadata")
     ws = _get_effective_client()
     current_user = "app"
@@ -3210,8 +3239,7 @@ async def import_reviewed_upload(file: UploadFile = File(...)):
         current_user = ws.current_user.me().user_name.split("@")[0]
     except Exception:
         pass
-    from datetime import datetime
-    current_date = datetime.now().strftime("%Y%m%d")
+    current_date = _file_date()
     vol_path = f"/Volumes/{CATALOG}/{SCHEMA}/{volume_name}/{current_user}/reviewed_outputs/{current_date}/{filename}"
     try:
         ws.files.upload(vol_path, io.BytesIO(content), overwrite=True)
