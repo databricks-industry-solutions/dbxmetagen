@@ -121,6 +121,21 @@ _AVAILABLE_MODELS = [
     "databricks-gpt-oss-120b",
 ]
 
+_OUTPUT_LANGUAGE = os.environ.get("OUTPUT_LANGUAGE", "").strip().lower()
+
+
+def _lang_directive() -> str:
+    """Output-language instruction appended to user-visible LLM prompts.
+    Empty (default) keeps English. Only natural-language prose is translated;
+    identifiers/SQL/formulas/JSON keys stay in English so queries don't break."""
+    if _OUTPUT_LANGUAGE in ("ko", "korean", "한국어"):
+        return ("\n\nIMPORTANT OUTPUT LANGUAGE: Write ALL natural-language text "
+                "(names, display names, descriptions, comments, questions, prose paragraphs) "
+                "in Korean (한국어). KEEP in English/unchanged: SQL expressions, column/table/view names, "
+                "formulas, JSON keys, format type values, enum/code literals, proper nouns "
+                "(FHIR R4, FIBO, OMOP, schema.org, etc.), and any identifier.")
+    return ""
+
 # Serving-endpoint names are a constrained identifier charset (letters, digits,
 # and _ . -). AI_QUERY's first arg is a literal that CANNOT be a bind parameter,
 # so a request-supplied model name is interpolated into SQL -- validate it here
@@ -9589,7 +9604,7 @@ CATALOG METADATA:
 QUESTIONS this view answers:
 {q_block}
 
-OUTPUT (one JSON object only, no array, no explanation):"""
+OUTPUT (one JSON object only, no array, no explanation):""" + _lang_directive()
 
 
 def _parse_single_json_safe(response: str) -> dict:
@@ -9639,7 +9654,7 @@ CATALOG METADATA:
 QUESTIONS this view should help answer:
 {q_block}
 
-OUTPUT (one JSON object only, no array, no explanation):"""
+OUTPUT (one JSON object only, no array, no explanation):""" + _lang_directive()
 
 
 def _batch_generate_views(
@@ -12223,7 +12238,7 @@ Generate exactly {count} questions that a BUSINESS LEADER would ask to track org
 - Prefer questions that decompose into a measure (SUM, AVG, COUNT) and dimensions (time, category, region)
 - Do NOT mention column names, table names, or SQL concepts -- use business language only
 {existing_block}
-Return ONLY a JSON array of strings, no other text."""
+Return ONLY a JSON array of strings, no other text.""" + _lang_directive()
     else:
         prompt = f"""You are a data analyst helping business users explore their data through a natural language SQL interface.
 {biz_ctx_block}
@@ -12237,7 +12252,7 @@ Generate exactly {count} questions that a BUSINESS USER would naturally ask. Rul
 - Focus on trends, comparisons, rankings, anomalies, and KPIs
 - Vary the question types: aggregations, time-series trends, top-N, filters, comparisons
 {existing_block}
-Return ONLY a JSON array of strings, no other text."""
+Return ONLY a JSON array of strings, no other text.""" + _lang_directive()
 
     llm = ChatDatabricks(endpoint=model_endpoint, temperature=0.7, max_tokens=2048)
     response = llm.invoke(prompt)
@@ -12377,7 +12392,7 @@ Generate exactly {req.count} questions that a BUSINESS LEADER would ask to track
 - Do NOT mention column names, table names, or SQL concepts -- use business language only
 - A business user who USES the data but doesn't know the data model should understand every question
 {existing_block}
-Return ONLY a JSON array of strings, no other text."""
+Return ONLY a JSON array of strings, no other text.""" + _lang_directive()
     elif mv_only:
         prompt = f"""You are a data analyst helping business users explore pre-defined metric views through a natural language SQL interface (Databricks Genie).
 {biz_ctx_block}
@@ -12394,7 +12409,7 @@ Generate exactly {req.count} questions that a BUSINESS USER would naturally ask 
 - Do NOT reference column names, table names, SQL concepts, or MEASURE() syntax -- use business language only
 - Do NOT ask about concepts not represented in the metric views (no products, orders, invoices unless those are actual measures/dimensions listed)
 {existing_block}
-Return ONLY a JSON array of strings, no other text."""
+Return ONLY a JSON array of strings, no other text.""" + _lang_directive()
     else:
         prompt = f"""You are a data analyst helping business users explore their data through a natural language SQL interface (Databricks Genie).
 {biz_ctx_block}
@@ -12411,7 +12426,7 @@ Generate exactly {req.count} questions that a BUSINESS USER would naturally ask.
 - Do NOT reference column names, table names, or technical schema details
 - A business user who USES the data but doesn't know the data model should understand every question
 {existing_block}
-Return ONLY a JSON array of strings, no other text."""
+Return ONLY a JSON array of strings, no other text.""" + _lang_directive()
 
     llm = ChatDatabricks(endpoint=req.model_endpoint, temperature=0.7, max_tokens=2048)
     response = llm.invoke(prompt)
@@ -13892,6 +13907,7 @@ def genie_analyze(req: GenieAnalyzeRequest):
                     "'Partially answerable' (score 1) means the data exists but joins or measures are missing. "
                     "'Unanswerable' (score 0) means the required tables or data are not in the space.\n"
                     "Output JSON in ```json``` fences: {\"questions\": [{\"question\": \"...\", \"score\": 0|1|2, \"reason\": \"...\"}]}"
+                    + _lang_directive()
                 )},
                 {"role": "user", "content": (
                     f"Genie space configuration:\n{space_config}\n\n"
@@ -13960,6 +13976,7 @@ def genie_analyze(req: GenieAnalyzeRequest):
                         "and are already queryable. Don't flag them as missing anything.\n"
                         "Focus suggestions on actionable gaps in the analytical tables and space configuration.\n"
                         "Output a JSON array of objects with keys: section, severity (high/medium/low), message, action."
+                        + _lang_directive()
                     )},
                     {"role": "user", "content": (
                         f"Analyze this Genie space for gaps.\n\nSpace summary:\n{space_summary}\n\n"
@@ -14972,7 +14989,7 @@ For each KPI provide:
 - domain: business domain (e.g. sales, finance, operations, clinical)
 - source_table: the EXACT short table name (last part after the last dot) containing the primary columns used. Must match one of the table names shown above.
 
-Return ONLY a JSON array of objects with keys: name, description, formula, domain, source_table. No other text."""
+Return ONLY a JSON array of objects with keys: name, description, formula, domain, source_table. No other text.""" + _lang_directive()
 
     llm = ChatDatabricks(endpoint=req.model_endpoint, temperature=0.6, max_tokens=4096)
     response = llm.invoke(prompt)
@@ -15123,10 +15140,13 @@ Write in plain prose, no headings, no bullet points.
 TABLE DESCRIPTIONS:
 {desc_block}
 
-Return ONLY the paragraph text."""
+Return ONLY the paragraph text.""" + _lang_directive()
 
     try:
-        llm = ChatDatabricks(endpoint=req.model_endpoint, temperature=0.3, max_tokens=512)
+        # 2048 (was 512): a 3-5 sentence paragraph fits 512 tokens in English, but
+        # Korean (OUTPUT_LANGUAGE=KO) is ~2-3x less token-efficient and got cut mid-
+        # sentence ("...형성하며,"). 2048 covers KO prose and matches sibling calls.
+        llm = ChatDatabricks(endpoint=req.model_endpoint, temperature=0.3, max_tokens=2048)
         text = (llm.invoke(prompt).content or "").strip()
     except Exception as e:
         logger.warning("suggest-business-context: LLM call failed: %s", e)

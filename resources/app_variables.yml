@@ -73,6 +73,19 @@ variables:
       [{"group_name": "account users", "level": "CAN_USE"}].
     type: complex
     default: []
+  output_language:
+    description: >-
+      Language for LLM-GENERATED natural-language output (metric-view comments,
+      business context, suggested questions, KPI names/descriptions). "ko" (or
+      "korean"/"한국어") makes the app append a Korean output directive to the
+      generation prompts; SQL/formulas/identifiers/JSON keys stay in English so
+      queries don't break. Any other value (default "en") keeps English output.
+      This is SEPARATE from the frontend EN/KO i18n toggle, which only translates
+      static UI strings -- it does NOT affect server-side LLM output. Override via
+      variable-overrides.json (e.g. "output_language": "ko").
+      Must be non-empty (empty values are stripped by the DAB SDK and the Apps
+      deploy then rejects the env entry).
+    default: "en"
   lakebase_catalog:
     description: "Lakebase catalog name for GraphRAG graph data"
     default: "dbxmetagen_graphrag"

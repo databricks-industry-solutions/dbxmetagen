@@ -150,6 +150,7 @@ class MetadataConfig:
             "ann_max_workers",
             "ann_max_nodes",
             "comment_style",
+            "output_language",
         ],
         "yaml_advanced_file_path": "../variables.advanced.yml",
         "yaml_advanced_variable_names": [
@@ -375,6 +376,10 @@ class MetadataConfig:
             raise ValueError(
                 f"comment_style must be one of {_VALID_COMMENT_STYLES}, got '{self.comment_style}'"
             )
+
+        # Output language for LLM-generated prose (empty = English). Only
+        # natural-language text is translated; SQL/identifiers stay English.
+        self.output_language = str(getattr(self, "output_language", "") or "").strip().lower()
 
         # Fallback for run_id if not provided via kwargs/YAML
         if not self.run_id:

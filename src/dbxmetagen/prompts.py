@@ -93,6 +93,28 @@ class Prompt(ABC):
             self._add_constraint_context()
         logger.debug("Instantiating chat completion response...")
 
+    def _lang_directive(self) -> str:
+        """Output-language instruction appended to the metadata-generation system
+        prompt. Mirrors the app's _lang_directive so comments, descriptions and
+        other prose honor config.output_language. Empty (default) keeps English;
+        SQL/identifiers/JSON keys stay English so DDL and parsing never break."""
+        lang = str(getattr(self.config, "output_language", "") or "").strip().lower()
+        if lang in ("ko", "korean", "한국어"):
+            return ("\n\nIMPORTANT OUTPUT LANGUAGE: Write ALL natural-language text "
+                    "(table/column descriptions, comments, prose) in Korean (한국어). "
+                    "KEEP in English/unchanged: SQL expressions, column/table names, "
+                    "JSON keys, enum/code literals, and any identifier.")
+        return ""
+
+    def _with_lang_directive(self, template: Dict[str, Any]) -> Dict[str, Any]:
+        """Append the output-language directive (if any) to the system message of a
+        comment template. No-op when output_language is unset."""
+        directive = self._lang_directive()
+        msgs = template.get("comment")
+        if directive and msgs and msgs[0].get("role") == "system":
+            msgs[0]["content"] += directive
+        return template
+
     def _add_lineage(self) -> None:
         """Fetch lineage (cached or live) and attach to prompt_content."""
         from dbxmetagen.processing import fetch_lineage  # avoid circular import
@@ -854,7 +876,7 @@ class CommentPrompt(Prompt):
         style = getattr(self.config, "comment_style", "standard")
         length_guideline = COMMENT_STYLE_GUIDELINES.get(style, COMMENT_STYLE_GUIDELINES["standard"])["data"]
         retail_example, healthcare_example = self._get_fewshot_examples(style)
-        return {
+        return self._with_lang_directive({
             "comment": [
                 {
                     "role": "system",
@@ -895,7 +917,7 @@ class CommentPrompt(Prompt):
                     "content": self._build_user_content(content, acro_content),
                 },
             ]
-        }
+        })
 
     @staticmethod
     def _get_fewshot_examples(style: str):
@@ -1112,7 +1134,7 @@ class CommentNoDataPrompt(Prompt):
         style = getattr(self.config, "comment_style", "standard")
         length_guideline = COMMENT_STYLE_GUIDELINES.get(style, COMMENT_STYLE_GUIDELINES["standard"])["nodata"]
         retail_example, healthcare_example = self._get_nodata_fewshot_examples(style)
-        return {
+        return self._with_lang_directive({
             "comment": [
                 {
                     "role": "system",
@@ -1153,7 +1175,7 @@ class CommentNoDataPrompt(Prompt):
                     "content": self._build_nodata_user_content(content, acro_content),
                 },
             ]
-        }
+        })
 
     @staticmethod
     def _get_nodata_fewshot_examples(style: str):
