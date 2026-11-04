@@ -154,20 +154,26 @@ Instead EVERY example must use a DIFFERENT analytical shape:
   - Multi-dimension: SELECT `dim1`, `dim2`, MEASURE(`x`) FROM mv GROUP BY ALL
 """
 
+# Genie best practice: example SQL should be a SMALL set of short, validated,
+# canonical patterns -- not an exhaustive query catalog. Too many examples hurt
+# generalization (Genie over-pattern-matches), inflate tokens/latency, and
+# propagate any bad example. Keep 2-3 per table covering the fundamental shapes;
+# richer semantics belong in measures/metric views (Phase 3) and instructions.
 _TABLE_PHASE2_PATTERNS = (
-    "Generate 10 diverse example_sql pairs. Each MUST use a different query structure:\n"
+    "Generate 2-3 example_sql pairs PER analytical table (not more). Keep them short, "
+    "canonical, and each a DIFFERENT fundamental structure:\n"
     "1. Simple aggregation -- SUM, COUNT, AVG with GROUP BY (non-parameterized)\n"
     "2. Multi-table JOIN using FK relationships from context (non-parameterized)\n"
     "   IMPORTANT: Use LEFT JOIN (not INNER JOIN) for all fact-to-dimension joins. INNER JOIN drops rows with NULL foreign keys.\n"
+    "   IMPORTANT: When the context marks a relationship as a COMPOSITE KEY, the ON clause MUST equate EVERY key column "
+    "(e.g. ON a.k1=b.k1 AND a.k2=b.k2). Joining on only part of a composite key (e.g. date alone, dropping the entity id) "
+    "produces a cartesian fan-out that broadcasts/multiplies counts -- never emit a partial-key join.\n"
     "3. Time-series trend -- GROUP BY date/month dimension (non-parameterized)\n"
-    "4. Filtered query with a :parameter for a categorical column (parameterized)\n"
-    "5. Top-N or ratio -- ranking or proportion calculation (parameterized with :limit or :date)\n"
-    "6. Window function -- running total, RANK, or LAG/LEAD comparison (non-parameterized)\n"
-    "7. CASE WHEN -- segmentation, bucketing, or conditional logic (non-parameterized)\n"
-    "8. Subquery or CTE -- derived metric or intermediate calculation (non-parameterized)\n"
-    "9. Multi-join across 3+ tables if available (non-parameterized)\n"
-    "10. Date comparison -- YoY, MoM, or period-over-period (parameterized with :date or :period)\n"
-    "CRITICAL: If any two examples share the same SELECT-GROUP BY-ORDER BY skeleton, the output is INVALID."
+    "Prefer breadth of TABLE coverage over depth of query variety: every analytical "
+    "table should appear in at least one example before adding a second example for any table. "
+    "Do NOT generate window-function/CTE/subquery showcase queries -- those belong in measures or "
+    "are better taught by metric views. CRITICAL: no two examples may share the same "
+    "SELECT-GROUP BY-ORDER BY skeleton."
 )
 
 _MV_ONLY_PHASE2_PATTERNS = (
@@ -300,6 +306,17 @@ Generate 3 NEW measures, 3 NEW filters, and 2 NEW expressions beyond the pre-bui
 - Filters: include time-based filters (last 30 days, YTD) for date columns.
 - Column refs use table.column format (e.g. `orders.amount`).
 - Do NOT duplicate anything already in pre-built snippets.
+- CRITICAL -- do NOT re-create a measure that a data-source METRIC VIEW already
+  exposes (a pre-built snippet above, or a measure listed under a metric view in
+  the context). Those canonical measures are authoritative; re-authoring the same
+  quantity here under a different alias produces a conflicting, often WRONG variant
+  that competes with the correct one. If the quantity already exists as an MV
+  measure, OMIT it -- only add measures that are genuinely absent.
+- CRITICAL -- a measure that counts distinct entities (users, accounts, orders, any
+  entity identified by a key column) MUST use COUNT(DISTINCT <key>), never COUNT(...)
+  or SUM(CASE ... THEN 1 ...). A plain COUNT over a joined/denormalized source
+  double-counts across the join fan-out and returns inflated or broadcast totals.
+  When replicating a conditional count, preserve DISTINCT on the entity key.
 - Output ONLY JSON. No explanation.
 """
 

@@ -114,6 +114,10 @@ _CASE_BARE_LITERAL = re.compile(
     re.IGNORECASE,
 )
 _CASE_SKIP = {"NULL", "TRUE", "FALSE"}
+# A CASE THEN/ELSE value that is a column reference (not a string literal):
+# qualified identifier (alias.col), backtick-quoted identifier, or a function
+# call. These must NOT be quoted -- quoting them turns the column into a constant.
+_CASE_COLUMN_REF = re.compile(r"^(?:`[^`]+`|[A-Za-z_]\w*\s*\(|[A-Za-z_]\w*\.)")
 
 
 def _fix_case_string_literals(sql: str) -> str:
@@ -130,6 +134,14 @@ def _fix_case_string_literals(sql: str) -> str:
         except ValueError:
             pass
         if value.startswith("'") or value.startswith('"'):
+            return m.group(0)
+        # Column reference, not a string literal: a qualified identifier
+        # (``source.guid``, ``t1.col``), a backtick-quoted identifier, or a
+        # function call (``COALESCE(...)``). Wrapping these in quotes turns the
+        # column into a constant string -- e.g. ``THEN source.guid`` became
+        # ``THEN 'source.guid'``, collapsing COUNT(DISTINCT ...) to 1. Only bare,
+        # unqualified tokens (``THEN Active``) are treated as literals to quote.
+        if _CASE_COLUMN_REF.match(value):
             return m.group(0)
         escaped = value.replace("'", "''")
         return f"{keyword} '{escaped}'"

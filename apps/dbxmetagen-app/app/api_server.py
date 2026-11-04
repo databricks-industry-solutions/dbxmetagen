@@ -12956,8 +12956,13 @@ def genie_create(req: GenieCreateRequest):
                 ds = transformed.get("data_sources", {})
                 table_ids = [t.get("identifier") for t in ds.get("tables", []) if t.get("identifier")]
                 table_ids += [m.get("identifier") for m in ds.get("metric_views", []) if m.get("identifier")]
-                config_str = json.dumps(transformed).replace("'", "''")
-                title_esc = req.title.replace("'", "''")
+                # Escape backslash BEFORE quote: Databricks SQL string literals
+                # interpret backslash escapes, so json.dumps's \n (two chars) would be
+                # un-escaped back into a raw newline on insert, producing control
+                # characters that break strict JSON parsing on read. Doubling the
+                # backslash preserves the literal \n inside the stored JSON.
+                config_str = json.dumps(transformed).replace("\\", "\\\\").replace("'", "''")
+                title_esc = req.title.replace("\\", "\\\\").replace("'", "''")
                 arr_literal = ",".join(f"'{t}'" for t in table_ids)
                 if result.get("updated"):
                     old_rows = execute_sql(
@@ -12970,8 +12975,8 @@ def genie_create(req: GenieCreateRequest):
                     # Save version snapshot before overwriting
                     try:
                         _ensure_genie_versions_table()
-                        old_cfg = (old_rows[0].get("config_json") or "{}").replace("'", "''") if old_rows else "{}"
-                        old_title = (old_rows[0].get("title") or "").replace("'", "''") if old_rows else ""
+                        old_cfg = (old_rows[0].get("config_json") or "{}").replace("\\", "\\\\").replace("'", "''") if old_rows else "{}"
+                        old_title = (old_rows[0].get("title") or "").replace("\\", "\\\\").replace("'", "''") if old_rows else ""
                         execute_sql(
                             f"INSERT INTO {fq('genie_space_versions')} "
                             f"(space_id, version, title, serialized_space_json, updated_at, updated_by) VALUES "
@@ -13779,9 +13784,9 @@ def genie_analyze(req: GenieAnalyzeRequest):
     ]
     if uncovered:
         suggestions.append({
-            "section": "example_sql", "severity": "medium",
+            "section": "example_sql", "severity": "low",
             "message": f"Analytical tables not referenced in any example SQL: {', '.join(uncovered)}",
-            "action": "Add example queries that use these tables",
+            "action": "First ensure these tables have measures/dimensions and (if relevant) a metric view -- governed semantics cover more questions than examples. Add 1-2 SHORT example queries per table only to teach join/filter patterns the semantics can't express. Keep examples few.",
         })
 
     # --- Document/pipeline tables without usage guidance ---
@@ -13823,8 +13828,17 @@ def genie_analyze(req: GenieAnalyzeRequest):
         })
 
     # --- Missing snippets ---
-    if not snip.get("measures"):
-        suggestions.append({"section": "measures", "severity": "medium", "message": "No measures defined", "action": "Add aggregate measures (COUNT, SUM, AVG)"})
+    # Semantic layer (measures / metric views) is Genie's PRIMARY lever for correct,
+    # reusable SQL generation -- prioritize it above example SQL (best practice:
+    # semantic P0 > examples P1 > instructions P2). Missing measures is high severity.
+    if not snip.get("measures") and not mv_entries:
+        suggestions.append({"section": "measures", "severity": "high",
+            "message": "No measures or metric views defined -- Genie has no governed semantics to generate reliable SQL",
+            "action": "Define reusable measures (COUNT, SUM, AVG, ratios) and/or a metric view FIRST. Governed semantics generalize far better than example queries; add examples only to teach patterns measures can't express."})
+    elif not snip.get("measures"):
+        suggestions.append({"section": "measures", "severity": "medium",
+            "message": "No standalone measures defined (metric views present)",
+            "action": "Add reusable measures (COUNT, SUM, AVG, ratios) for the analytical tables so Genie has governed semantics beyond the metric views."})
     if not filters_list:
         suggestions.append({"section": "filters", "severity": "low", "message": "No filters defined", "action": "Add common filter conditions"})
 
@@ -14057,10 +14071,25 @@ def genie_improve(req: GenieImproveRequest):
                 })
                 return
 
-            # Build refinement feedback from suggestions
-            feedback_lines = []
+            # Build refinement feedback from suggestions.
+            # Best-practice priority header: steer the agent to strengthen governed
+            # semantics (measures / metric views / column descriptions / synonyms)
+            # FIRST, then instructions, and use example SQL only to teach patterns the
+            # semantics can't express -- keeping examples few. Prevents the agent from
+            # defaulting to piling on example SQL (which hurts generalization).
+            feedback_lines = [
+                "IMPROVEMENT PRIORITY (follow this order): (1) governed SEMANTICS first "
+                "-- add/fix measures, metric-view usage, dimensions, column descriptions, "
+                "and synonyms; (2) targeted INSTRUCTIONS for edge cases semantics can't cover; "
+                "(3) EXAMPLE SQL last and SPARINGLY -- only short canonical patterns the "
+                "semantics can't express, 2-3 per table max. Do NOT add many example queries; "
+                "prefer governed measures/metric views because they generalize to unseen questions.",
+            ]
             routing_keywords: set[str] = set()
-            for s in suggestions:
+            # High severity first so the agent addresses semantic/structural gaps before
+            # low-severity example-SQL coverage nits.
+            _sev_rank = {"high": 0, "medium": 1, "low": 2}
+            for s in sorted(suggestions, key=lambda x: _sev_rank.get(x.get("severity", "medium"), 1)):
                 sev = s.get("severity", "medium")
                 feedback_lines.append(f"[{sev.upper()}] {s.get('message', '')} -- Action: {s.get('action', '')}")
                 section = s.get("section", "")
@@ -14283,12 +14312,16 @@ def _parse_serialized_space(raw) -> dict:
     if not isinstance(raw, str):
         return {}
     try:
-        parsed = json.loads(raw)
+        # strict=False tolerates raw control characters (literal \n/\t) inside
+        # string values. Older version snapshots stored multi-line instruction
+        # text with unescaped newlines, which the strict parser rejects -> an
+        # empty dict was returned and the version "failed to load" in the editor.
+        parsed = json.loads(raw, strict=False)
     except (json.JSONDecodeError, TypeError):
         return {}
     if isinstance(parsed, str):
         try:
-            parsed = json.loads(parsed)
+            parsed = json.loads(parsed, strict=False)
         except (json.JSONDecodeError, TypeError):
             return {}
     if isinstance(parsed, dict):
