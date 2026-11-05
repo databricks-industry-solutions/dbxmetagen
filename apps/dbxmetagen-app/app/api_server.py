@@ -3569,6 +3569,31 @@ def _validate_fk_columns(body: "FKAddBody") -> None:
                 "(likely a join-parse error); refusing to store.")
 
 
+def _measure_composite_pk_uniqueness(
+    src_table: str, dst_table: str, src_column: str, dst_column: str, join_condition: str,
+) -> Optional[float]:
+    """Exact uniqueness of a composite key's column COMBINATION: GREATEST of the
+    two tables' distinct-key ratios, the same semantics as the FK pipeline's
+    pk_uniqueness. Best-effort (None on failure); the pipeline re-measures on
+    its next run."""
+    from dbxmetagen.composite_keys import (
+        composite_key_pairs, composite_uniqueness_sql, quote_table_name, uniqueness_ratio,
+    )
+    pairs = composite_key_pairs(join_condition, src_column, dst_column)
+    if not pairs:
+        return None
+    ratios = []
+    for tbl, cols in ((src_table, [s for s, _ in pairs]), (dst_table, [d for _, d in pairs])):
+        try:
+            rows = execute_sql(composite_uniqueness_sql(quote_table_name(tbl), cols), timeout=30)
+            r = uniqueness_ratio(rows[0].get("total"), rows[0].get("distinct_keys")) if rows else None
+            if r is not None:
+                ratios.append(r)
+        except Exception as e:
+            logger.warning("composite uniqueness check failed for %s %s: %s", tbl, cols, e)
+    return max(ratios) if ratios else None
+
+
 class FKAddBody(BaseModel):
     src_column: str
     dst_column: str
@@ -3635,6 +3660,20 @@ def add_fk_prediction(body: FKAddBody):
             )
     except Exception as e:
         logger.warning("fk-add probe check failed (%s); defaulting is_fk=TRUE", e)
+    # pk_uniqueness must describe the key actually stored. A composite key gets
+    # the uniqueness of its column combination (measured now); a predicted row's
+    # single-column value (e.g. guid alone = 0.07) would otherwise raise a false
+    # fan-out warning until the next pipeline run. When a composite key is saved
+    # back as a single column, its composite value no longer applies -> NULL.
+    if is_composite:
+        measured = _measure_composite_pk_uniqueness(
+            body.src_table, body.dst_table, body.src_column, body.dst_column, body.join_condition,
+        )
+        pk_insert = f"{measured:.6f}" if measured is not None else "NULL"
+        pk_update = pk_insert
+    else:
+        pk_insert = "NULL"
+        pk_update = "CASE WHEN COALESCE(t.is_composite, FALSE) THEN NULL ELSE t.pk_uniqueness END"
     # MERGE (not INSERT) keyed on the full pair identity so re-saving the same
     # join UPDATES in place instead of appending a duplicate (the old INSERT grew
     # ~15 copies per pair across repeated ERD saves). created_at is preserved on
@@ -3649,15 +3688,15 @@ def add_fk_prediction(body: FKAddBody):
             t.final_confidence = 1.0, t.ai_confidence = 1.0,
             t.ai_reasoning = {reasoning}, t.is_fk = {is_fk_val},
             t.relationship_kind = '{kind}', t.is_composite = {str(is_composite).upper()},
-            t.join_condition = {join_condition},
+            t.join_condition = {join_condition}, t.pk_uniqueness = {pk_update},
             t.review_updated_at = current_timestamp(), t.updated_at = current_timestamp()
         WHEN NOT MATCHED THEN INSERT
             (src_column, dst_column, src_table, dst_table, final_confidence,
              ai_confidence, ai_reasoning, is_fk, relationship_kind, is_composite,
-             join_condition, review_updated_at, created_at, updated_at)
+             join_condition, pk_uniqueness, review_updated_at, created_at, updated_at)
             VALUES ('{src_col}', '{dst_col}', '{src_tbl}', '{dst_tbl}', 1.0,
                     1.0, {reasoning}, {is_fk_val}, '{kind}', {str(is_composite).upper()},
-                    {join_condition}, current_timestamp(), current_timestamp(), current_timestamp())
+                    {join_condition}, {pk_insert}, current_timestamp(), current_timestamp(), current_timestamp())
     """
     try:
         execute_sql(sql, timeout=45)
@@ -8783,9 +8822,13 @@ def _fetch_erd_inputs(tables: list[str]) -> tuple[list, list, dict, list]:
 
     fk_rows = []
     try:
+        # is_composite / join_condition let the recommender render a composite key
+        # as one multi-column edge instead of one edge per member column.
+        _ensure_fk_relationship_columns()
         fk_rows = execute_sql(
             f"SELECT src_table, src_column, dst_table, dst_column, final_confidence, "
-            f"is_fk, join_rate, pk_uniqueness, join_matched, ri_score FROM {fq('fk_predictions')} "
+            f"is_fk, join_rate, pk_uniqueness, join_matched, ri_score, is_composite, join_condition "
+            f"FROM {fq('fk_predictions')} "
             f"WHERE src_table != dst_table AND (src_table IN ({in_clause}) OR dst_table IN ({in_clause}))"
         ) or []
     except Exception as e:

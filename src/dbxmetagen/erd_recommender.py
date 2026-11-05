@@ -26,6 +26,8 @@ import re
 from dataclasses import dataclass, field, asdict
 from typing import Any, Optional
 
+from dbxmetagen.composite_keys import composite_key_pairs, render_composite_condition
+
 # Reuse the naming conventions already used by the LLM-context schema profiler so
 # the recommender and the generator agree on what "looks like" a fact/dim/mart.
 from dbxmetagen.semantic_layer import (
@@ -308,6 +310,27 @@ def _build_edges(fk_rows: list[dict]) -> list[ErdEdge]:
         except (TypeError, ValueError):
             continue
 
+    # Composite keys: one fk_predictions row (is_composite, join_condition) stands
+    # for the whole multi-column key. Emit it as ONE edge joined on every key
+    # column, and fold away the single-column rows of its member columns -- a join
+    # on one member alone (e.g. base_dt) is not the relationship and fans out.
+    composite_pairs: dict[tuple, list[tuple]] = {}
+    for fk in fk_rows or []:
+        if not _as_bool(fk.get("is_composite")):
+            continue
+        pairs = composite_key_pairs(fk.get("join_condition"), fk.get("src_column"), fk.get("dst_column"))
+        if pairs:
+            composite_pairs[_pair_key(fk)] = pairs
+    composite_members: dict[tuple, set] = {}
+    for (st, dt, _sc, _dc), pairs in composite_pairs.items():
+        members = composite_members.setdefault((st, dt), set())
+        members.update((s.lower(), d.lower()) for s, d in pairs)
+
+    def _is_composite_member(fk: dict) -> bool:
+        st, dt, sc, dc = _pair_key(fk)
+        return (sc, dc) in composite_members.get((st, dt), set()) or \
+            (dc, sc) in composite_members.get((dt, st), set())
+
     for fk in fk_rows or []:
         src_t = fk.get("src_table")
         dst_t = fk.get("dst_table")
@@ -316,6 +339,9 @@ def _build_edges(fk_rows: list[dict]) -> list[ErdEdge]:
         if not (src_t and dst_t and src_c and dst_c):
             continue
         if _pair_key(fk) in never_joins:
+            continue
+        pairs = composite_pairs.get(_pair_key(fk)) if _as_bool(fk.get("is_composite")) else None
+        if not pairs and _is_composite_member(fk):
             continue
         conf = float(fk.get("final_confidence") or 0.0)
         is_fk = _as_bool(fk.get("is_fk"))
@@ -331,19 +357,23 @@ def _build_edges(fk_rows: list[dict]) -> list[ErdEdge]:
             reasons.append("steward-confirmed FK")
         if fk.get("join_rate") is not None:
             reasons.append(f"join_rate={float(fk['join_rate']):.2f}")
+        if pairs:
+            reasons.append(f"composite key ({len(pairs)} columns)")
         pk_uniq = fk.get("pk_uniqueness")
         if pk_uniq is not None:
             reasons.append(f"pk_uniqueness={float(pk_uniq):.2f}")
         # Fan-out risk: the referenced (dst) side isn't a clean unique key, so the
         # join is not a safe many-to-one star join -- aggregating the source across
         # it can multiply rows and inflate measures. pk_uniqueness is GREATEST of
-        # both columns' cardinality ratios, so < PK_UNIQUENESS_MIN means neither
-        # side is near-unique.
+        # both sides' cardinality ratios (of the key combination for a composite
+        # key), so < PK_UNIQUENESS_MIN means neither side is near-unique.
         fanout = pk_uniq is not None and float(pk_uniq) < PK_UNIQUENESS_MIN
+        on = (render_composite_condition(pairs, "src", _short(dst_t)) if pairs
+              else f"src.{src_c} = {_short(dst_t)}.{dst_c}")
         edges.append(ErdEdge(
             src=src_t,
             dst=dst_t,
-            on=f"src.{src_c} = {_short(dst_t)}.{dst_c}",
+            on=on,
             confidence=1.0 if is_fk else round(conf, 3),
             source="confirmed" if confirmed else "predicted",
             reasons=reasons,

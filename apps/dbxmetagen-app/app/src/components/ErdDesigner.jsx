@@ -6,6 +6,7 @@ import {
 } from '@xyflow/react'
 import '@xyflow/react/dist/style.css'
 import dagre from 'dagre'
+import { parseOnPairs } from './erdJoin'
 import { InfoTip } from './ui'
 
 /**
@@ -74,10 +75,8 @@ function _withJoinCondition(data, targetTable) {
 // fully-qualified right side reported the CATALOG as the column). For a
 // composite `a.x = b.y AND a.z = b.w`, only the first pair is used for the label.
 function _parseOn(on) {
-  const m = /([\w.]+)\s*=\s*([\w.]+)/.exec(on || '')
-  if (!m) return { src_column: '', dst_column: '' }
-  const lastSeg = s => (s.split('.').pop() || '').trim()
-  return { src_column: lastSeg(m[1]), dst_column: lastSeg(m[2]) }
+  const [first] = parseOnPairs(on)
+  return first ? { src_column: first.src, dst_column: first.dst } : { src_column: '', dst_column: '' }
 }
 
 // --- Custom table node --------------------------------------------------------
@@ -301,6 +300,14 @@ export default function ErdDesigner({ tables, projectId, profileId, businessCont
       const parallelIndex = pairSeen[pk] || 0
       pairSeen[pk] = parallelIndex + 1
       const resolved = !!(cols.src_column && cols.dst_column)
+      const data = {
+        on: e.on, confidence: e.confidence, source: e.source, ...cols,
+        parallelIndex, parallelCount: pairCounts[pk] || 1, _resolved: resolved,
+      }
+      // A composite-key edge (`a = a AND b = b`) keeps its extra column pairs, so
+      // the editor shows them and Save re-sends is_composite + join_condition
+      // instead of overwriting the key with its first column only.
+      const extraPairs = parseOnPairs(e.on).slice(1)
       return {
         id: `${e.src}::${e.dst}::${i}`,
         source: e.src, target: e.dst,
@@ -309,10 +316,7 @@ export default function ErdDesigner({ tables, projectId, profileId, businessCont
         targetHandle: cols.dst_column || null,
         type: 'parallel',
         style: _edgeStyle(e.source),
-        data: {
-          on: e.on, confidence: e.confidence, source: e.source, ...cols,
-          parallelIndex, parallelCount: pairCounts[pk] || 1, _resolved: resolved,
-        },
+        data: extraPairs.length ? _withJoinCondition({ ...data, extra_pairs: extraPairs }, e.dst) : data,
       }
     })
     const keyCols = deriveKeyCols(flowNodes, flowEdges)

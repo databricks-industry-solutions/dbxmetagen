@@ -2209,3 +2209,83 @@ class TestValueOverlapGeneratorSmoke:
             p.get_value_overlap_candidates()
         emitted = captured.get("emitted", [])
         assert any(e[2] == "c.s.orders" and e[3] == "c.s.customers" for e in emitted)
+
+
+# --- TestCompositePkUniquenessMeasurement ---
+
+
+class TestCompositePkUniquenessMeasurement:
+    """run() measures composite keys after writing predictions: for each
+    is_composite row, the distinct-tuple ratio of the key COMBINATION on both
+    tables (GREATEST of the two), written to that row only."""
+
+    @staticmethod
+    def _spark(rows, results):
+        """spark.sql: 1st call lists composite rows; uniqueness queries pop
+        `results` in order; UPDATEs are recorded."""
+        from types import SimpleNamespace as NS
+        calls = []
+        results = list(results)
+
+        def _sql(sql):
+            calls.append(sql)
+            m = MagicMock()
+            if "WHERE is_composite = TRUE" in sql and sql.lstrip().startswith("SELECT src_table"):
+                m.collect.return_value = rows
+            elif "COUNT(DISTINCT" in sql:
+                total, distinct = results.pop(0)
+                m.collect.return_value = [NS(total=total, distinct_keys=distinct)]
+            return m
+
+        spark = MagicMock()
+        spark.sql.side_effect = _sql
+        return spark, calls
+
+    @staticmethod
+    def _row(join_condition="guid AND base_dt"):
+        from types import SimpleNamespace as NS
+        return NS(src_table="c.s.txn", dst_table="c.s.mst",
+                  src_column="c.s.txn.guid", dst_column="c.s.mst.guid",
+                  join_condition=join_condition)
+
+    def test_measures_key_combination_on_both_tables_and_updates_only_that_row(self):
+        spark, calls = self._spark([self._row()], [(1_400_000, 1_400_000), (1_400_000, 1_400_000)])
+        assert FKPredictor(spark, _cfg())._measure_composite_pk_uniqueness() == 1
+        queries = [c for c in calls if "COUNT(DISTINCT" in c]
+        assert len(queries) == 2
+        assert "COUNT(DISTINCT `guid`, `base_dt`)" in queries[0] and "`c`.`s`.`txn`" in queries[0]
+        assert "`c`.`s`.`mst`" in queries[1]
+        # Exact on Delta: no sampling (a sample overstates uniqueness).
+        assert all("TABLESAMPLE" not in q and "LIMIT" not in q for q in queries)
+        update = [c for c in calls if c.startswith("UPDATE")][0]
+        assert "SET pk_uniqueness = 1.000000" in update
+        assert "src_column = 'c.s.txn.guid'" in update and "dst_column = 'c.s.mst.guid'" in update
+        assert "is_composite = TRUE" in update
+
+    def test_greatest_of_the_two_sides(self):
+        spark, calls = self._spark([self._row()], [(100, 50), (100, 80)])
+        FKPredictor(spark, _cfg())._measure_composite_pk_uniqueness()
+        update = [c for c in calls if c.startswith("UPDATE")][0]
+        assert "SET pk_uniqueness = 0.800000" in update
+
+    def test_federation_uses_a_limit_sample(self):
+        cfg = _cfg()
+        cfg.federation_mode = True
+        spark, calls = self._spark([self._row()], [(10, 10), (10, 10)])
+        FKPredictor(spark, cfg)._measure_composite_pk_uniqueness()
+        assert all("LIMIT" in c for c in calls if "COUNT(DISTINCT" in c)
+
+    def test_unparseable_condition_is_skipped(self):
+        spark, calls = self._spark([self._row("source.id = d.id AND d.active = 1")], [])
+        assert FKPredictor(spark, _cfg())._measure_composite_pk_uniqueness() == 0
+        assert not any("COUNT(DISTINCT" in c or c.startswith("UPDATE") for c in calls)
+
+    def test_failure_is_non_fatal(self):
+        spark = MagicMock()
+        spark.sql.side_effect = Exception("boom")
+        assert FKPredictor(spark, _cfg())._measure_composite_pk_uniqueness() == 0
+
+    def test_run_measures_after_writing_predictions(self):
+        import inspect
+        src = inspect.getsource(FKPredictor.run)
+        assert src.index("self.write_predictions(") < src.index("self._measure_composite_pk_uniqueness()")
