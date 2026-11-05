@@ -258,15 +258,18 @@ class GenieContextAssembler:
 
         applied_mvs = [mv for mv in metric_views if mv.get("status") == "applied"]
         unapplied_mvs = [mv for mv in metric_views if mv.get("status") != "applied"]
-        mv_warnings.append(
-            f"[diag] metric view query returned {len(metric_views)} rows: "
-            f"{len(applied_mvs)} applied, {len(unapplied_mvs)} unapplied. "
-            + "; ".join(
+        # Developer diagnostic (metric-view names/schemas/status). This is debug detail,
+        # not a user-facing quality warning, so log it instead of appending to
+        # mv_warnings (which surfaces in the UI). Keeps the Genie result panel clean.
+        logger.debug(
+            "metric view query returned %d rows: %d applied, %d unapplied. %s",
+            len(metric_views), len(applied_mvs), len(unapplied_mvs),
+            "; ".join(
                 f"{mv.get('metric_view_name')}(status={mv.get('status')}, "
                 f"deployed_schema={mv.get('deployed_schema')}, "
                 f"source_table={mv.get('source_table')})"
                 for mv in metric_views
-            )
+            ),
         )
         if metric_view_names and unapplied_mvs:
             unapplied_names = [mv["metric_view_name"] for mv in unapplied_mvs]
@@ -1088,10 +1091,24 @@ class GenieContextAssembler:
             # "source.a = <dst_short>.x AND source.b = <dst_short>.y" (the ERD uses
             # the dst table's short name as the alias). Only the generic "source."
             # prefix needs rewriting to the real src short name for Genie.
+            #
+            # Guard against a malformed join_condition that carries only the key
+            # column name(s) without an equality predicate (e.g. "guid AND base_dt"
+            # instead of "source.guid = dst.guid AND source.base_dt = dst.base_dt").
+            # Such a string has no "=", so downstream splitting on AND yields bare
+            # tokens that collapse into broken SQL like "guidbase_dt". When the
+            # composite predicate lacks "=", fall back to the single-column equality
+            # built from src_column/dst_column rather than emitting an unusable join.
             composite = fk.get("join_condition") if fk.get("is_composite") else None
-            if composite:
+            if composite and "=" in composite:
                 sql = _rewrite_alias_prefix(composite, "source", src_short)
             else:
+                if composite and "=" not in composite:
+                    logger.warning(
+                        "Composite join_condition for %s->%s lacks '=' (%r); "
+                        "falling back to single-column equality",
+                        fk.get("src_table"), fk.get("dst_table"), composite,
+                    )
                 src_col = fk["src_column"].split(".")[-1]
                 dst_col = fk["dst_column"].split(".")[-1]
                 sql = f"{src_short}.{src_col} = {dst_short}.{dst_col}"

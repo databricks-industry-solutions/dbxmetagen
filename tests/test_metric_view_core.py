@@ -110,6 +110,33 @@ class TestDropBrokenMeasures:
         _drop_broken_measures(defn)
         assert defn == {}
 
+    def test_dedups_literal_quote_swap(self):
+        # Hallucination: a second measure faked by only toggling a numeric
+        # literal's quoting (au_flag = 1 vs au_flag = '1') -> identical results.
+        defn = {"measures": [
+            {"name": "Standard AU", "expr": "COUNT(DISTINCT CASE WHEN source.au_flag = 1 THEN source.guid END)"},
+            {"name": "Business AU", "expr": "COUNT(DISTINCT CASE WHEN source.au_flag = '1' THEN source.guid END)"},
+        ]}
+        _drop_broken_measures(defn)
+        assert len(defn["measures"]) == 1
+
+    def test_keeps_distinct_string_literals(self):
+        # Different literal VALUES are genuinely different measures -- keep both.
+        defn = {"measures": [
+            {"name": "Completed", "expr": "COUNT(CASE WHEN status = 'completed' THEN 1 END)"},
+            {"name": "Cancelled", "expr": "COUNT(CASE WHEN status = 'cancelled' THEN 1 END)"},
+        ]}
+        _drop_broken_measures(defn)
+        assert len(defn["measures"]) == 2
+
+    def test_keeps_distinct_numeric_literals(self):
+        defn = {"measures": [
+            {"name": "Level 1", "expr": "COUNT(CASE WHEN lvl = 1 THEN 1 END)"},
+            {"name": "Level 2", "expr": "COUNT(CASE WHEN lvl = 2 THEN 1 END)"},
+        ]}
+        _drop_broken_measures(defn)
+        assert len(defn["measures"]) == 2
+
 
 class TestDropPlaceholderDimensions:
     def test_drops_placeholder(self):
@@ -542,6 +569,25 @@ class TestCleanJoinsDropsUnjoinable:
 
     def test_keeps_using_only_join(self):
         joins = [{"name": "y", "source": "c.s.y", "using": ["a", "b"]}]
+        assert len(_clean_joins_for_yaml(joins)) == 1
+
+    def test_drops_degenerate_self_join(self):
+        # on-clause references only 'source' on both sides -> joins nothing
+        joins = [{"name": "y", "source": "c.s.y", "on": "source.guid = source.guid"}]
+        assert _clean_joins_for_yaml(joins) == []
+
+    def test_keeps_join_referencing_own_alias(self):
+        joins = [{"name": "y", "source": "c.s.y", "on": "source.guid = y.guid"}]
+        assert len(_clean_joins_for_yaml(joins)) == 1
+
+    def test_keeps_join_with_composite_own_alias(self):
+        joins = [{"name": "y", "source": "c.s.y",
+                  "on": "source.guid = y.guid AND source.base_dt = y.base_dt"}]
+        assert len(_clean_joins_for_yaml(joins)) == 1
+
+    def test_unqualified_on_left_alone(self):
+        # bare columns (no alias.) -> can't judge; keep and let dry-run decide
+        joins = [{"name": "y", "source": "c.s.y", "using": None, "on": "guid = guid"}]
         assert len(_clean_joins_for_yaml(joins)) == 1
 
 

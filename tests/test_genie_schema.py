@@ -115,6 +115,25 @@ class TestFixCaseStringLiterals:
         sql = "SELECT col FROM tbl"
         assert _fix_case_string_literals(sql) == sql
 
+    def test_qualified_column_not_quoted(self):
+        # Regression: a column reference in THEN/ELSE must NOT be quoted.
+        # Quoting it (THEN 'source.guid') turns the column into a constant,
+        # collapsing COUNT(DISTINCT CASE WHEN ... THEN col) to 1.
+        sql = "COUNT(DISTINCT CASE WHEN source.au_flag = 1 THEN source.guid ELSE NULL END)"
+        result = _fix_case_string_literals(sql)
+        assert "'source.guid'" not in result
+        assert "THEN source.guid" in result
+
+    def test_qualified_column_else_not_quoted(self):
+        sql = "CASE WHEN x = 1 THEN t1.col ELSE t2.col END"
+        result = _fix_case_string_literals(sql)
+        assert "'t1.col'" not in result and "'t2.col'" not in result
+
+    def test_function_call_not_quoted(self):
+        sql = "CASE WHEN x = 1 THEN COALESCE(a, b) ELSE NULL END"
+        result = _fix_case_string_literals(sql)
+        assert "'COALESCE" not in result
+
 
 # ---------------------------------------------------------------------------
 # 2. Helper Utilities

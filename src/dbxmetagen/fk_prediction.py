@@ -77,6 +77,9 @@ _FEDERATION_MAX_WORKERS = 4
 # Re-exported here for existing importers of dbxmetagen.fk_prediction.
 from dbxmetagen.fk_constants import JOIN_KEY, FOREIGN_KEY, NOT_JOIN_KEY_SQL  # noqa: E402,F401
 from dbxmetagen.databricks_utils import quote_fqn  # noqa: E402
+from dbxmetagen.composite_keys import (  # noqa: E402
+    composite_key_pairs, composite_uniqueness_sql, uniqueness_ratio,
+)
 
 
 def _not_join_key():
@@ -2338,6 +2341,76 @@ class FKPredictor:
     # ------------------------------------------------------------------
     # Step 5: Write predictions
     # ------------------------------------------------------------------
+    def _measure_composite_pk_uniqueness(self) -> int:
+        """Set pk_uniqueness on composite-key rows from the key COMBINATION.
+
+        pk_uniqueness is computed per single column (GREATEST of the two columns'
+        cardinality ratios). For a composite key such as (guid, base_dt) that is
+        the anchor column alone (guid = 0.07), so the ERD flagged a fan-out even
+        though the key as a whole is unique. For each is_composite row, count the
+        distinct key tuples on both tables and store GREATEST of the two ratios,
+        the same semantics as the single-column value.
+
+        Rows for the member columns on their own (e.g. base_dt -> base_dt) keep
+        their single-column value: joining on base_dt alone really does fan out.
+        Counts are exact on Delta and use a LIMIT sample on federated sources, as
+        in cardinality_analysis. Non-fatal; returns the number of rows updated.
+        """
+        target = self.config.fq(self.config.predictions_table)
+        try:
+            rows = self.spark.sql(
+                f"SELECT src_table, dst_table, src_column, dst_column, join_condition "
+                f"FROM {target} WHERE is_composite = TRUE"
+            ).collect()
+        except Exception as e:
+            logger.warning("Composite pk_uniqueness measurement skipped: %s", e)
+            return 0
+
+        def _lit(v: str) -> str:
+            return "'" + str(v).replace("'", "''") + "'"
+
+        limit = _FEDERATION_SAMPLE_ROWS if self.config.federation_mode else None
+        updated = 0
+        for r in rows:
+            pairs = composite_key_pairs(r.join_condition, r.src_column, r.dst_column)
+            if not pairs:
+                logger.warning(
+                    "Composite FK %s -> %s: cannot parse join_condition %r; "
+                    "pk_uniqueness left as is", r.src_table, r.dst_table, r.join_condition,
+                )
+                continue
+            ratios = []
+            for tbl, cols in ((r.src_table, [s for s, _ in pairs]),
+                              (r.dst_table, [d for _, d in pairs])):
+                try:
+                    res = self.spark.sql(
+                        composite_uniqueness_sql(quote_fqn(tbl), cols, limit)
+                    ).collect()[0]
+                    ratio = uniqueness_ratio(res.total, res.distinct_keys)
+                    if ratio is not None:
+                        ratios.append(ratio)
+                except Exception as e:
+                    logger.warning("Composite uniqueness query failed for %s %s: %s", tbl, cols, e)
+            if not ratios:
+                continue
+            value = max(ratios)
+            try:
+                self.spark.sql(
+                    f"UPDATE {target} SET pk_uniqueness = {value:.6f} "
+                    f"WHERE src_table = {_lit(r.src_table)} AND dst_table = {_lit(r.dst_table)} "
+                    f"AND src_column = {_lit(r.src_column)} AND dst_column = {_lit(r.dst_column)} "
+                    f"AND is_composite = TRUE"
+                )
+                updated += 1
+                logger.info(
+                    "Composite key %s -> %s on %s: pk_uniqueness=%.4f",
+                    r.src_table, r.dst_table, [s for s, _ in pairs], value,
+                )
+            except Exception as e:
+                logger.warning("Composite pk_uniqueness update failed for %s -> %s: %s",
+                               r.src_table, r.dst_table, e)
+        return updated
+
     def write_predictions(self, df: DataFrame, sweep_stale: bool = False) -> int:
         """Write FK predictions to output table via MERGE (preserves existing predictions).
 
@@ -3010,6 +3083,10 @@ class FKPredictor:
             n_declared = judged.filter(F.col("source_rank") == SR_DECLARED).count()
 
         n_preds = self.write_predictions(judged, sweep_stale=sweep_stale)
+        # write_predictions re-stamps the single-column pk_uniqueness on every
+        # re-predicted pair, including composite-key anchor rows; measure the key
+        # combination for those rows so the fan-out check sees the real value.
+        self._measure_composite_pk_uniqueness()
         if n_declared > 0 and n_preds == 0:
             raise RuntimeError(
                 f"FK prediction wrote 0 rows but {n_declared} OWL-declared candidates were judged"

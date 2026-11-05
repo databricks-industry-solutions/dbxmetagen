@@ -654,6 +654,59 @@ class TestFanoutDetection:
         assert "fan out" in rec.sufficiency.fanout_warnings[0]
 
 
+class TestCompositeKeyEdges:
+    """A composite key (one is_composite row + join_condition) is ONE edge joined
+    on every key column, judged by the key combination's uniqueness; the
+    single-column rows of its member columns are folded away."""
+
+    TXN, MST = "c.s.user_txn", "c.s.user_mst"
+
+    def _rows(self, composite_uniq=1.0, cond="guid AND base_dt"):
+        return [
+            _fk(self.TXN, "guid", self.MST, "guid", conf=0.81, is_fk=True,
+                pk_uniqueness=composite_uniq, is_composite=True, join_condition=cond),
+            # The member column's own predicted row: a join on base_dt alone.
+            _fk(self.TXN, "base_dt", self.MST, "base_dt", conf=0.65, is_fk=True,
+                pk_uniqueness=0.00001),
+        ]
+
+    def test_one_edge_on_all_key_columns(self):
+        edges = _build_edges(self._rows())
+        assert len(edges) == 1
+        assert edges[0].on == "src.guid = user_mst.guid AND src.base_dt = user_mst.base_dt"
+        assert "composite key (2 columns)" in edges[0].reasons
+
+    def test_unique_composite_key_is_not_fanout(self):
+        edge = _build_edges(self._rows(composite_uniq=1.0))[0]
+        assert edge.fanout_risk is False and edge.cardinality == "many_to_one"
+
+    def test_non_unique_composite_key_is_still_fanout(self):
+        edge = _build_edges(self._rows(composite_uniq=0.5))[0]
+        assert edge.fanout_risk is True
+
+    def test_canonical_condition_and_reverse_member_row(self):
+        rows = self._rows(cond="source.guid = user_mst.guid AND source.base_dt = user_mst.base_dt")
+        # A member row predicted in the opposite direction is folded too.
+        rows.append(_fk(self.MST, "base_dt", self.TXN, "base_dt", conf=0.6, is_fk=True, pk_uniqueness=0.00001))
+        assert len(_build_edges(rows)) == 1
+
+    def test_other_columns_between_the_same_tables_are_kept(self):
+        rows = self._rows() + [_fk(self.TXN, "country_cd", self.MST, "country_cd", conf=0.9, pk_uniqueness=0.95)]
+        ons = sorted(e.on for e in _build_edges(rows))
+        assert ons == ["src.country_cd = user_mst.country_cd",
+                       "src.guid = user_mst.guid AND src.base_dt = user_mst.base_dt"]
+
+    def test_unparseable_condition_falls_back_to_single_column(self):
+        rows = self._rows(cond="source.guid = m.guid AND m.active = 1")
+        ons = sorted(e.on for e in _build_edges(rows))
+        assert ons == ["src.base_dt = user_mst.base_dt", "src.guid = user_mst.guid"]
+
+    def test_recommend_erd_has_no_false_fanout_warning(self):
+        rec = recommend_erd([self.TXN, self.MST], fk_rows=self._rows(),
+                            profiling_by_table={self.TXN: [_num_col("amount")]})
+        assert rec.sufficiency.fanout_warnings == []
+
+
 class TestKeyMeasureIsDataDrivenNotNameBased:
     """Key-vs-measure classification must generalize across ALL schemas: it comes
     from FK participation + type/uniqueness, NEVER from column-name vocabulary.

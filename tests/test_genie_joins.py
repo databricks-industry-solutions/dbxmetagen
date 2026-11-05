@@ -895,3 +895,45 @@ class TestMergePrebuiltDataSourcesMVPreservation:
         prebuilt = {"tables": [], "metric_views": []}
         out = _merge_prebuilt_data_sources(dict(prior), prebuilt)
         assert out["data_sources"]["metric_views"] == []
+
+
+class TestBuildJoinSpecsCompositeGuard:
+    """_build_join_specs must emit a valid '=' predicate even when a composite
+    join_condition is malformed (key names only, no equality -- the bug that
+    produced 'guidbase_dt')."""
+
+    def _asm(self):
+        return object.__new__(GenieContextAssembler)
+
+    def test_malformed_composite_falls_back_to_single_equality(self):
+        fk = {
+            "src_table": "cat.sch.user_txn",
+            "dst_table": "cat.sch.user_mst",
+            "src_column": "guid", "dst_column": "guid",
+            "is_composite": True, "join_condition": "guid AND base_dt",
+        }
+        specs = self._asm()._build_join_specs([fk])
+        assert len(specs) == 1
+        sql = specs[0]["sql"][0]
+        assert "=" in sql
+        assert sql == "user_txn.guid = user_mst.guid"
+
+    def test_valid_composite_preserved(self):
+        fk = {
+            "src_table": "cat.sch.biz", "dst_table": "cat.sch.mst",
+            "src_column": "guid", "dst_column": "guid", "is_composite": True,
+            "join_condition": "source.guid = mst.guid AND source.base_dt = mst.base_dt",
+        }
+        specs = self._asm()._build_join_specs([fk])
+        assert len(specs) == 1
+        sql = specs[0]["sql"][0]
+        assert sql == "biz.guid = mst.guid AND biz.base_dt = mst.base_dt"
+
+    def test_single_key_unchanged(self):
+        fk = {
+            "src_table": "cat.sch.orders", "dst_table": "cat.sch.customers",
+            "src_column": "cust_id", "dst_column": "id",
+            "is_composite": False, "join_condition": None,
+        }
+        specs = self._asm()._build_join_specs([fk])
+        assert specs[0]["sql"][0] == "orders.cust_id = customers.id"

@@ -74,8 +74,26 @@ _SELF_DIV_RE = re.compile(
 )
 
 
+def _dedup_literal_norm(expr: str) -> str:
+    """Normalize an expr for duplicate detection so a measure that only swapped a
+    numeric literal's quoting (e.g. ``flag = 1`` vs ``flag = '1'``) is recognized
+    as the SAME expression. This catches a common LLM hallucination: copying one
+    measure (e.g. "Standard AU" = COUNT(... au_flag = 1 ...)) and faking a second
+    (e.g. "Business AU" = COUNT(... au_flag = '1' ...)) by only toggling the quote,
+    which yields two measures with identical results. Only quote-vs-unquote of the
+    SAME numeric value collapses; different values ('1' vs '2', 'A' vs 'B') stay
+    distinct, so legitimately different conditional measures are preserved."""
+    s = re.sub(r"\s+", " ", expr.strip()).upper()
+    # Strip quotes around pure-integer literals: '1' -> 1, "0" -> 0.
+    s = re.sub(r"'(\d+)'", r"\1", s)
+    s = re.sub(r'"(\d+)"', r"\1", s)
+    return s
+
+
 def _drop_broken_measures(defn: dict) -> None:
-    """Remove self-dividing share measures (always=1.0) and deduplicate identical exprs."""
+    """Remove self-dividing share measures (always=1.0) and deduplicate identical
+    exprs. Deduplication is literal-normalized so a measure faked by swapping only
+    a numeric literal's quoting is caught as a duplicate (see _dedup_literal_norm)."""
     measures = defn.get("measures", [])
     if not measures:
         return
@@ -86,7 +104,7 @@ def _drop_broken_measures(defn: dict) -> None:
         expr = re.sub(r"\s+", " ", m.get("expr", "").strip())
         if _SELF_DIV_RE.search(expr):
             continue
-        norm = expr.upper()
+        norm = _dedup_literal_norm(expr)
         if norm in seen_exprs:
             continue
         seen_exprs.add(norm)
@@ -989,6 +1007,25 @@ class _IndentYamlDumper(yaml.Dumper):
 # be stripped before serialization or the CREATE VIEW dry-run rejects the YAML.
 _JOIN_SPEC_KEYS = ("name", "source", "on", "using", "cardinality", "rely")
 
+_JOIN_ON_ALIAS_RE = re.compile(r"\b([A-Za-z_]\w*)\.")
+
+
+def _is_degenerate_join_on(on: str, join_alias: str) -> bool:
+    """True if an ``on`` clause never references the joined table's own alias.
+
+    A join whose ``on`` is e.g. ``source.guid = source.guid`` (both sides on the
+    parent/source) joins nothing and makes the view reject with
+    METRIC_VIEW_AMBIGUOUS_JOIN_CRITERIA. An LLM emits this when it tries to pull a
+    column that does not actually live in the joined table. Qualify-less terms
+    (bare columns) are left alone -- only drop when the alias is wholly absent.
+    """
+    if not on or not join_alias:
+        return False
+    quals = {m.group(1).lower() for m in _JOIN_ON_ALIAS_RE.finditer(on)}
+    if not quals:
+        return False  # no qualified refs at all; let dry-run decide
+    return join_alias.lower() not in quals
+
 
 def _clean_joins_for_yaml(joins: list) -> list:
     """Whitelist join dicts to spec-valid keys and recurse into nested joins.
@@ -997,6 +1034,8 @@ def _clean_joins_for_yaml(joins: list) -> list:
     the non-default 'one_to_many' (a fan-out fact source). Joins are LEFT OUTER by
     spec; there is no join-type key to emit. A join that ends up with neither an
     'on' nor a 'using' is unjoinable YAML (CREATE VIEW rejects it) -- drop it.
+    A join whose 'on' never references its own alias is degenerate (e.g.
+    ``source.x = source.x``) and is dropped before it reaches dry-run.
     """
     out = []
     for j in joins or []:
@@ -1011,6 +1050,13 @@ def _clean_joins_for_yaml(joins: list) -> list:
                 clean["joins"] = nested
         if not clean.get("on") and not clean.get("using"):
             logger.warning("Dropping join '%s' with no on/using clause", clean.get("name", "?"))
+            continue
+        j_alias = clean.get("name") or (clean.get("source", "").split(".")[-1])
+        if clean.get("on") and _is_degenerate_join_on(clean["on"], j_alias):
+            logger.warning(
+                "Dropping degenerate join '%s': on-clause '%s' never references its own alias",
+                j_alias, clean["on"],
+            )
             continue
         out.append(clean)
     return out

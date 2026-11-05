@@ -469,12 +469,56 @@ class TestFkVsJoinKey:
         path = _os.path.join(APP_DIR, "api_server.py")
         with open(path) as f:
             src = f.read()
-        # Scope to the fk-add function body.
+        # Scope to the fk-add function body (up to the next section banner).
         start = src.index("def add_fk_prediction(")
-        body = src[start:start + 4000]
+        body = src[start:src.index("\n# ----", start)]
         assert "MERGE INTO" in body
         assert "WHEN MATCHED THEN UPDATE" in body
         assert "_validate_fk_columns(body)" in body
+
+    def test_add_fk_prediction_stores_composite_uniqueness(self):
+        # A composite key must not keep the predicted single-column value (a
+        # false fan-out); both MERGE branches write the measured pk_uniqueness.
+        import os as _os
+        with open(_os.path.join(APP_DIR, "api_server.py")) as f:
+            src = f.read()
+        start = src.index("def add_fk_prediction(")
+        body = src[start:src.index("\n# ----", start)]
+        assert "_measure_composite_pk_uniqueness(" in body
+        assert "t.pk_uniqueness = {pk_update}" in body
+        assert "{pk_insert}, current_timestamp()" in body
+
+    def test_measure_composite_pk_uniqueness(self, monkeypatch):
+        seen = []
+
+        def fake_execute_sql(sql, **kw):
+            seen.append(sql)
+            # execute_sql returns strings for numeric columns
+            return [{"total": "100", "distinct_keys": "100" if "`txn`" in sql else "40"}]
+
+        monkeypatch.setattr(api_server, "execute_sql", fake_execute_sql)
+        v = api_server._measure_composite_pk_uniqueness(
+            "c.s.txn", "c.s.mst", "guid", "guid", "guid AND base_dt")
+        assert v == 1.0
+        assert len(seen) == 2 and all("COUNT(DISTINCT `guid`, `base_dt`)" in s for s in seen)
+        assert "FROM `c`.`s`.`txn`" in seen[0] and "FROM `c`.`s`.`mst`" in seen[1]
+
+    def test_measure_composite_pk_uniqueness_is_best_effort(self, monkeypatch):
+        def boom(sql, **kw):
+            raise RuntimeError("warehouse down")
+
+        monkeypatch.setattr(api_server, "execute_sql", boom)
+        assert api_server._measure_composite_pk_uniqueness(
+            "c.s.txn", "c.s.mst", "guid", "guid", "guid AND base_dt") is None
+        # Not a composite key -> nothing to measure.
+        assert api_server._measure_composite_pk_uniqueness(
+            "c.s.txn", "c.s.mst", "guid", "guid", "source.guid = mst.guid") is None
+
+    def test_fetch_erd_inputs_selects_composite_columns(self):
+        import inspect as _inspect
+        src = _inspect.getsource(api_server._fetch_erd_inputs)
+        assert "is_composite, join_condition" in src
+        assert "_ensure_fk_relationship_columns()" in src
 
     def test_fetch_fk_rows_excludes_join_keys(self):
         import inspect as _inspect
