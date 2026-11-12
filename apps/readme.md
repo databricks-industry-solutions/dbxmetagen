@@ -6,15 +6,6 @@ The main application for this repository. Provides a full-featured UI for metada
 
 See [dbxmetagen-app/](dbxmetagen-app/) for details.
 
-## uc-metadata-assistant (legacy — unmaintained, kept for reference)
+## uc-metadata-assistant (removed)
 
-> **NOTE:** This is a legacy standalone prototype. It is **not part of the dbxmetagen product**, is
-> **not maintained** (last updated early 2026), does **not** use the `dbxmetagen` library, and is
-> **not** wired into the DAB deployment pipeline — `databricks bundle deploy` never touches it. It is
-> **intentionally retained for reference only**; do not treat it as a live or supported deployment
-> path. For all real use, deploy **dbxmetagen-app** above.
-
-A self-contained Flask app for simpler metadata generation and governance use cases. If used, it must
-be configured and deployed entirely independently.
-
-See [uc-metadata-assistant/](uc-metadata-assistant/) for its (unmaintained) setup instructions.
+The legacy standalone Flask prototype that used to live here has been removed from this branch. It was never part of the dbxmetagen product or the DAB deployment. It is preserved on the `main_uc_metadata_assistant_archive` branch for reference.
