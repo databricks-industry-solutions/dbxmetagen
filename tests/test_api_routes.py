@@ -90,6 +90,52 @@ class TestSafeBundlePath:
 
 
 # ---------------------------------------------------------------------------
+# _check_bundle_key — user-supplied bundle keys used as path segments
+# ---------------------------------------------------------------------------
+class TestBundleKeyValidation:
+    @pytest.mark.parametrize("key", ["general", "fhir_r4", "my-bundle", "My Ontology", "v2.1"])
+    def test_accepts_plain_keys(self, key):
+        assert api_server._is_safe_bundle_key(key)
+        assert api_server._check_bundle_key(key) == key
+
+    @pytest.mark.parametrize("key", ["", "../general", "a/b", "..", "a\\b", ".hidden", "x\x00y", "/etc/passwd"])
+    def test_rejects_traversal_keys(self, key):
+        assert not api_server._is_safe_bundle_key(key)
+        with pytest.raises(api_server.HTTPException) as ei:
+            api_server._check_bundle_key(key)
+        assert ei.value.status_code == 400
+
+    def test_resolve_local_rejects_traversal(self):
+        with pytest.raises(api_server.HTTPException):
+            api_server._resolve_bundle_path_local("../../etc/secrets")
+
+    def test_resolve_local_accepts_yaml_suffix(self):
+        assert api_server._resolve_bundle_path_local("general.yaml").endswith("general.yaml")
+
+    @pytest.mark.parametrize("call", [
+        lambda: api_server._load_bundle_from_volume("../x"),
+        lambda: api_server._delete_bundle_from_volume("../x"),
+        lambda: api_server._save_bundle_to_volume("../x", "a: 1"),
+        lambda: api_server._save_source_to_volume("../x", b"", ".owl"),
+        lambda: api_server._upload_tier_files_to_volume("../x", "/tmp"),
+    ])
+    def test_volume_helpers_reject_before_touching_volume(self, call, monkeypatch):
+        client = MagicMock()
+        monkeypatch.setattr(api_server, "_get_effective_client", lambda: client)
+        with pytest.raises(api_server.HTTPException):
+            call()
+        client.files.assert_not_called()
+        assert not client.files.method_calls
+
+
+def test_no_wildcard_cors_middleware():
+    """The UI is same-origin; the API must not register a CORS middleware."""
+    assert not hasattr(api_server, "CORSMiddleware")
+    added = [c.args[0] for c in api_server.app.add_middleware.call_args_list if c.args]
+    assert all(getattr(m, "__name__", "") != "CORSMiddleware" for m in added)
+
+
+# ---------------------------------------------------------------------------
 # _compute_config_errors — required-config validation surfaced to the UI (DP-2)
 # ---------------------------------------------------------------------------
 class TestComputeConfigErrors:
