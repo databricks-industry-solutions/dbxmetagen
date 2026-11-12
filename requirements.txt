@@ -37,7 +37,7 @@ cachetools==7.1.4
     # via
     #   mlflow-skinny
     #   mlflow-tracing
-certifi==2026.6.17
+certifi==2026.10.18
     # via
     #   httpcore
     #   httpx
@@ -122,7 +122,7 @@ frozenlist==1.8.0
     #   aiosignal
 gitdb==4.0.12
     # via gitpython
-gitpython==3.1.51
+gitpython==3.2.1
     # via mlflow-skinny
 google-auth==2.56.0
     # via databricks-sdk
@@ -132,7 +132,7 @@ googleapis-common-protos==1.75.0
     #   grpcio-status
 graphene==3.4.3
     # via mlflow
-graphql-core==3.2.11
+graphql-core==3.2.12
     # via
     #   graphene
     #   graphql-relay
@@ -350,7 +350,7 @@ pyarrow==23.0.1
     # via
     #   databricks-connect
     #   mlflow
-pyasn1==0.6.4
+pyasn1==0.6.5
     # via pyasn1-modules
 pyasn1-modules==0.4.2
     # via google-auth
