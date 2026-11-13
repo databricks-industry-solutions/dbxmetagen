@@ -36,13 +36,14 @@ import OntologyBuilder from './components/OntologyBuilder'
 import SyncOps from './components/SyncOps'
 import GettingStarted from './components/GettingStarted'
 import Home from './components/Home'
+import UCPages from './components/UCPages'
 const COMPONENTS = {
   home: Home,
   guide: GettingStarted,
   agent: AgentChat, jobs: BatchJobs, metadata: MetadataReview,
   entities: EntityBrowser, semantic: SemanticLayer, genie: GenieBuilder,
   analyst: AnalystChat, context: CustomerContext, ontologyBuilder: OntologyBuilder,
-  syncops: SyncOps,
+  syncops: SyncOps, pages: UCPages,
 }
 
 const NAV_CAT_COLORS = {
@@ -82,6 +83,10 @@ const MORE_NAV = {
     // 'guide' intentionally omitted from More — reachable via the header "?" button.
   ],
 }
+
+// Opt-in tools appended to "More" only when /api/config enables them (default-off features
+// must not add nav noise for deployments that never turned them on).
+const PAGES_NAV_ITEM = { id: 'pages', label: 'Generate UC Pages', desc: 'Draft and publish Unity Catalog Pages from a prompt + your metadata', beta: true }
 
 // Interactive tour (react-joyride) is hidden until it's polished; re-enable by
 // flipping this flag. Roadmapped in docs/CONSOLIDATED_ROADMAP.md.
@@ -333,6 +338,8 @@ export default function App() {
   // Certified-asset apply policy (#247); deployment-wide, from /api/config.
   const [certifiedApplyPolicy, setCertifiedApplyPolicy] = useState('warn')
   const [configErrors, setConfigErrors] = useState([])
+  const [pagesEnabled, setPagesEnabled] = useState(false)
+  const moreNav = pagesEnabled ? { ...MORE_NAV, items: [...MORE_NAV.items, PAGES_NAV_ITEM] } : MORE_NAV
   const [dark, setDark] = useState(() => {
     if (typeof window !== 'undefined') {
       const saved = localStorage.getItem('dbxmetagen-dark')
@@ -389,6 +396,7 @@ export default function App() {
         // Apply the deploy default only when the user has made no explicit choice.
         setViewModeState(prev => prev ?? (data.default_view_mode === 'simplified' ? 'simplified' : 'advanced'))
         if (['warn', 'block', 'allow'].includes(data.certified_apply_policy)) setCertifiedApplyPolicy(data.certified_apply_policy)
+        setPagesEnabled(data.enable_uc_pages === true)
       }
     })
   }, [])
@@ -517,7 +525,7 @@ export default function App() {
           {!simplified && (
             <>
               <div className="w-px h-6 bg-slate-200 dark:bg-dbx-navy-400/40 mx-0.5 flex-shrink-0" />
-              <NavDropdown cat={MORE_NAV} activeTab={activeTab} onSelect={setActiveTab} dataTour="nav-more" />
+              <NavDropdown cat={moreNav} activeTab={activeTab} onSelect={setActiveTab} dataTour="nav-more" />
             </>
           )}
         </div>

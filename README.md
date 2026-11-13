@@ -13,6 +13,7 @@
 - **Domain classification**: Categorize tables into business domains and subdomains
 - **Customer context**: Inject domain-specific knowledge into prompts, scoped by catalog/schema/table/pattern
 - **Metadata review**: Human-in-the-loop review, edit, and apply workflow; the governance centerpiece
+- **UC Pages (opt-in)**: Plan, write and publish governed business-concept Pages with claim-level provenance and quality scoring (see [Dashboard App](#dashboard-app))
 
 **2. Knowledge platform**: ontology, profiling, join keys, vector indexes, and knowledge graph
 
@@ -593,6 +594,14 @@ The app is in `apps/dbxmetagen-app/` and provides a FastAPI backend with a React
 - **Entity Browser** -- Entity-first navigation with conformance view
 
 **Permissions model:** The app uses two separate identities. The **app service principal** (SPN) controls what the app UI can *read* -- it needs SELECT on your catalog to browse tables, coverage, metadata, and graph data. The **job run identity** controls what jobs can *write* -- jobs run as the identity you **deploy as** (the user or service principal that runs `databricks bundle deploy`; DAB auto-types it), and need CREATE TABLE, ALTER TABLE, and SET TAGS on the target catalog. To run jobs as a service principal, deploy as that SP; to run them as a *different* SP than the deployer, see the advanced path in [docs/PERMISSIONS.md](docs/PERMISSIONS.md). This means a user can see metadata in the app even if they don't have permission to generate or apply it, and conversely, the app SPN doesn't need write access to your tables. UC grants for the app SPN are applied by `scripts/grant_app_permissions.sh` (run after each deploy). See [docs/PERMISSIONS.md](docs/PERMISSIONS.md) for the full permissions reference including OBO mode, Vector Search, and end-user access.
+
+**Generate UC Pages (opt-in, `enable_uc_pages=true`):** Draft Unity Catalog [Pages](https://docs.databricks.com/aws/en/uc-semantics/pages), the governed definitions of business concepts that Genie treats as authoritative, from a prompt plus everything dbxmetagen already knows about a scope. A Page covers **one** concept: an entity, a term or acronym, the *meaning* of a metric (the calculation stays in its metric view, which the Page links), a business rule, or a process. Table documentation belongs in UC wikis and grouping belongs in Domains; data-product overview Pages are available as an explicit opt-in.
+
+- **Plan → curate → write → review → publish.** The planner proposes candidate concepts with triage flags (duplicate, table-shaped, low evidence, conflicting sources). You select, rename, re-kind, merge or discard, then write only what you approved.
+- **Provenance.** Every input is citable evidence with an authority class: *human* (customer context, acronyms, ingested documents, steward-reviewed metadata), *governed* (deployed metric views, confirmed relationships) or *inferred* (AI-generated metadata). Each statement records the evidence it rests on. Candidates backed only by inferred evidence are shown but not selected, because a published Page outranks the tables it describes in Genie.
+- **Editable system of record.** Plans, drafts, quality scores, provenance and UC sync state live in `page_runs`, `page_drafts`, `page_evidence`, `page_sources`/`page_source_chunks` and `uc_pages_log` in the results schema. Edit them in the app or with SQL.
+- **Objective quality.** Deterministic checks (definition form, conciseness, citation coverage, assets in scope, PII) plus an independent reviewer model (`uc_pages_judge_model`, a single endpoint or an averaged panel), with one automatic revision pass that is kept only if it scores higher.
+- **Safe publishing.** Draft by default; links to tables, metric views, related Pages and source URLs are reconciled on every publish; Pages edited in UC since the last publish are never silently overwritten. The publishing identity needs Page permissions on the target Domain (and the `knowledge` OAuth scope under OBO).
 
 **Deep Analysis Agent:** Natural-language queries using a LangGraph GraphRAG pipeline that combines Vector Search retrieval, multi-hop graph traversal via Lakebase, FK/KB lookups, and LLM-generated data queries. Results include MLflow trace links for observability.
 

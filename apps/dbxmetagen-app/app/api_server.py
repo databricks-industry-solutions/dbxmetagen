@@ -446,6 +446,11 @@ _ENABLE_CONTEXT_VS = os.environ.get("ENABLE_CONTEXT_VECTOR_INDEX", "false").stri
 _CC_VS_INDEX_SUFFIX = os.environ.get("CONTEXT_VECTOR_INDEX", "customer_context_vs_index")
 _CC_VS_EMBED_MODEL = os.environ.get("EMBEDDING_MODEL", "databricks-gte-large-en")
 
+# UC Pages generation (opt-in, default-off). Prompted Page proposals grounded in persisted
+# dbxmetagen context, published via the public Pages REST API only on explicit user action.
+# Capability-gated at runtime (Domains/Pages reachable?). See src/dbxmetagen/uc_pages.py.
+_ENABLE_UC_PAGES = os.environ.get("ENABLE_UC_PAGES", "false").strip().lower() == "true"
+
 # Upload guardrail: a hard ceiling on any ingested file so an egregiously large upload (a
 # multi-GB dump, a 10M-line text file) can't exhaust the single app container's memory. Chosen
 # generous -- real glossaries / data dictionaries are far smaller -- so it only blocks abuse.
@@ -974,6 +979,7 @@ def get_config():
         "enable_governed_tags": _ENABLE_GOVERNED_TAGS and bool(_GOVERNED_DOMAIN_TAG),
         "governed_domain_tag_name": _GOVERNED_DOMAIN_TAG,
         "enable_context_vector_index": _ENABLE_CONTEXT_VS,
+        "enable_uc_pages": _ENABLE_UC_PAGES,
         "max_upload_mb": _MAX_UPLOAD_MB,
         "version": pkg_version,
     }
@@ -18220,6 +18226,15 @@ def metric_view_agent_stream(req: dict):
         stream_metric_view_agent(question, history, session_id),
         media_type="text/event-stream",
     )
+
+
+# ---------------------------------------------------------------------------
+# UC Pages generation (opt-in, ENABLE_UC_PAGES). Router + logic live outside this module:
+# pages_routes.py (API) and src/dbxmetagen/uc_pages*.py (library). Mounted before the SPA catch-all.
+# ---------------------------------------------------------------------------
+from pages_routes import router as _uc_pages_router  # noqa: E402
+
+app.include_router(_uc_pages_router)
 
 
 # ---------------------------------------------------------------------------
