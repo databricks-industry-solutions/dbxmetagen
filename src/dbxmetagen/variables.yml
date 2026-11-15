@@ -436,3 +436,9 @@ variables:
   enable_agent_mcp:
     description: "Mount a custom MCP server at /mcp exposing the metadata AGENT (metadata_agent_query + deep_analysis_submit/poll) so another agent can delegate whole metadata questions. Off by default. Runs under the invoking user's identity via OBO (set enable_obo=true + user_api_scopes). See docs/MCP_SERVERS.md."
     default: false
+  enable_uc_pages:
+    description: "Opt-in: enable the app's 'Generate UC Pages' tool. A prompt plus the scope's accumulated context (business context, acronyms, ingested documents, generated comments, ontology, FKs, metric views) is planned into candidate concepts you curate, then written with claim-level provenance, quality-scored, and stored in editable page_* tables in the results schema. Only an explicit Publish writes to Unity Catalog (Draft by default) via the Pages REST API, with table, metric-view, related-Page and source links. Capability-gated: shows a clear message if Pages/Domains are unavailable or the identity lacks permission."
+    default: false
+  uc_pages_judge_model:
+    description: "Serving endpoint(s) for the Pages quality reviewer, comma-separated for a panel whose scores are averaged (e.g. 'databricks-gpt-5-5,databricks-claude-sonnet-4-6'). Prefer a different model family than llm_model to avoid self-preference bias. 'none' = use llm_model."
+    default: "none"
