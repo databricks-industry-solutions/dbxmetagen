@@ -397,6 +397,26 @@ def test_publish_detects_uc_side_edits():
     assert up.publish(api, [p], metastore_id="ms", force=True)[0]["status"] == "ok"
 
 
+def test_published_hash_matches_what_uc_holds_when_response_omits_fields():
+    # The create response omits synonyms; the draft's synonyms need sanitizing (its
+    # own name, a case duplicate). The hash must match what a later GET returns.
+    class SparseApi(FakeApi):
+        def __call__(self, method, path, query=None, body=None):
+            out = super().__call__(method, path, query, body)
+            if method == "POST" and path == up.PAGES_PATH:
+                self.sent = body
+                return {"name": out["name"], "state": out["state"]}
+            return out
+
+    api = SparseApi()
+    p = _page(synonyms=["Allergy", "s", "S"])
+    res = up.publish(api, [p], metastore_id="ms")[0]
+    stored = {k: api.sent[k] for k in ("display_name", "description", "body", "synonyms")}
+    again = FakeApi(uc_body=stored)
+    p2 = {**p, "uc_page_name": res["uc_page_name"], "published_hash": res["published_hash"]}
+    assert up.publish(again, [p2], metastore_id="ms")[0]["status"] == "ok"
+
+
 def test_draft_republish_never_demotes_published():
     path, q, body = up.build_update(_page(uc_page_name="pages/p1"), "DRAFT")
     assert "state" not in q["update_mask"] and "state" not in body and "domain" not in body

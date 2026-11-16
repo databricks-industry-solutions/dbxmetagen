@@ -1294,8 +1294,11 @@ def publish(
                 res["action"] = "create"
             res["uc_page_name"] = page.get("name") or p.get("uc_page_name") or ""
             res["uc_state"] = page.get("state") or normalize_state(state)
-            res["published_hash"] = content_hash(page.get("display_name", p["display_name"]), page.get("description", p.get("description")),
-                                                 page.get("body", p.get("body")), page.get("synonyms", p.get("synonyms")))
+            # Hash what UC now holds: the response, else the (sanitized, clipped) body we
+            # sent -- not the raw draft, which would mismatch on the next GET and flag the
+            # page as edited in UC when nobody touched it.
+            sent = build_create_body(p, state)
+            res["published_hash"] = content_hash(*(page.get(k, sent[k]) for k in UPDATE_FIELDS))
             res["status"] = "ok"
             names_by_id[pid] = res["uc_page_name"]
         except Exception as exc:
