@@ -1115,7 +1115,11 @@ def revise_pages(*, llm: Llm, pages: List[Dict[str, Any]], issues_by_page: Dict[
         if not parsed.get("body"):
             revised[p["page_id"]] = {**p, "revision_error": err or "no body"}
             continue
-        base = {k: v for k, v in p.items() if k not in ("body", "body_cited", "provenance", "citation_stats")}
+        # evidence_ids/evidence_level are rebuilt from what the revision cites: keeping
+        # the first draft's would let a revision that removed unsupported claims keep
+        # claiming their evidence (and its authority level).
+        base = {k: v for k, v in p.items()
+                if k not in ("body", "body_cited", "provenance", "citation_stats", "evidence_ids", "evidence_level")}
         base["synonyms"] = []  # the revision decides synonyms afresh (drops invented ones)
         revised[p["page_id"]] = finalize_written_page(base, parsed, evidence, p.get("offered_evidence_ids") or p.get("evidence_ids") or [])
     return [revised.get(p["page_id"], p) for p in pages]

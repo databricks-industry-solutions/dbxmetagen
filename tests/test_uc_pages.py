@@ -187,6 +187,19 @@ def test_write_and_revise_with_fake_llm(evidence):
     assert rev[0]["body"].startswith("## Definition")
 
 
+def test_revision_evidence_reflects_what_the_revision_cites(evidence):
+    cand = up.normalize_plan(_plan(_cand()), ctx=CTX, evidence=evidence, domains=DOMAINS)[0]
+    first = {"display_name": "No Known Allergies", "description": "A documented negative assertion. [E1]",
+             "body": "## Definition\nA documented negative. [E1]\n## Rule\nAn unsupported claim. [E2]"}
+    revised = {"display_name": "No Known Allergies", "description": "A documented negative assertion. [E1]",
+               "body": "## Definition\nA documented negative. [E1]"}
+    pages = up.write_pages(llm=lambda ps: [(json.dumps(first), None) for _ in ps], candidates=[cand], evidence=evidence)
+    assert "E2" in pages[0]["evidence_ids"]
+    rev = up.revise_pages(llm=lambda ps: [(json.dumps(revised), None) for _ in ps], pages=pages,
+                          issues_by_page={pages[0]["page_id"]: ["Unsupported claim"]}, evidence=evidence)
+    assert "E2" not in rev[0]["evidence_ids"] and "E1" in rev[0]["evidence_ids"]
+
+
 def test_llm_retry_on_bad_output():
     seq = iter([[("not json", None)], [('{"body": "x"}', None)]])
     out = up._call_with_retry(lambda ps: next(seq), ["p"], ok=lambda t: bool(up.extract_json(t).get("body")))
