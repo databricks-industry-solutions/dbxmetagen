@@ -174,13 +174,12 @@ def publish_drafts(*, run_sql, fq, api_do, page_ids: List[str], state: str = "DR
     """Publish drafts to UC, then persist UC names/links/hashes and an audit row per page."""
     drafts = us.list_drafts(run_sql, fq, page_ids=page_ids)
     account = up.account_id(api_do)
-    # Every draft that has EVER been published still has its UC page, whatever its
-    # status now: a rewrite resets it to 'drafted', a UC-side edit marks it
-    # 'edited_in_uc', and discarding never deletes the UC page. Filtering to
+    # A page that was published keeps its UC page when a rewrite resets it to
+    # 'drafted' or a UC-side edit marks it 'edited_in_uc'. Filtering to
     # status='published' dropped those targets from desired_links, so
     # reconcile_links DELETEd existing relation links to them on republish.
-    known = {d["page_id"]: d["uc_page_name"]
-             for d in us.list_drafts(run_sql, fq, include_discarded=True, limit=2000) if d.get("uc_page_name")}
+    # Discarded drafts are left out on purpose: links to a rejected page go.
+    known = us.page_names(run_sql, fq)
     src_urls = {}
     for d in drafts:
         chunk_ids = [r["source_ref"] for r in us.get_evidence(run_sql, fq, d["page_id"]) if r.get("evidence_type") == "source_doc"]
