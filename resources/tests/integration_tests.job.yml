@@ -480,6 +480,29 @@ resources:
             - pypi:
                 package: "nest-asyncio>=1.6.0,<2"
 
+        - task_key: test_30_column_knowledge_base
+          max_retries: 1
+          depends_on:
+            - task_key: test_01_widget_parsing
+          job_cluster_key: e2e_ml_cluster
+          notebook_task:
+            notebook_path: ../../notebooks/integration_tests/test_30_column_knowledge_base.py
+            base_parameters:
+              catalog_name: "{{job.parameters.test_catalog}}"
+              test_schema: "{{job.parameters.test_schema}}"
+          libraries:
+            - whl: ../../dist/*.whl
+            - pypi:
+                package: databricks-langchain==0.4.0
+            - pypi:
+                package: openai==1.56.1
+            - pypi:
+                package: openpyxl==3.1.5
+            - pypi:
+                package: deprecated==1.2.13
+            - pypi:
+                package: "nest-asyncio>=1.6.0,<2"
+
         - task_key: test_12_knowledge_graph
           max_retries: 1
           depends_on:

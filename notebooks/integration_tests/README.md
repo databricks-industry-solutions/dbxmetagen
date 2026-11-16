@@ -126,6 +126,7 @@ You can run individual test notebooks in Databricks:
 
 #### Wave D: ETL Pipeline Tests
 - `test_11_knowledge_base.py`: Knowledge base ETL from metadata_generation_log
+- `test_30_column_knowledge_base.py`: Column knowledge base build (single MERGE + information_schema types, steward-win, scoping); own schema, always dropped
 - `test_12_knowledge_graph.py`: Graph node/edge creation and relationship logic
 - `test_13_profiling.py`: Profiling pipeline (statistics, pattern detection, entropy)
 - `test_14_ontology.py`: Ontology entity discovery and classification
