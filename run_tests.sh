@@ -97,6 +97,7 @@ else
     for venv in "$ROOT/.venv" "${MAIN_CHECKOUT:+$MAIN_CHECKOUT/.venv}"; do
         if [ -n "$venv" ] && [ -x "$venv/bin/python" ] && "$venv/bin/python" -c "import pytest" >/dev/null 2>&1; then
             PYTEST="$(printf '%q' "$venv/bin/python") -m pytest"
+            VENV_USED="$venv"
             break
         fi
     done
@@ -111,6 +112,18 @@ else
 fi
 export PYTHONPATH="$ROOT/src${PYTHONPATH:+:$PYTHONPATH}"
 
+# An existing venv is not re-synced. When it belongs to another checkout (git
+# worktrees share the main checkout's), say if that checkout's dependencies differ
+# from this one's -- the tests could then fail, or pass, against the wrong versions.
+if [ -n "${VENV_USED:-}" ]; then
+    VENV_ROOT="$(dirname "$VENV_USED")"
+    # Ignore the version line: every release bumps it without changing dependencies.
+    if [ "$VENV_ROOT" != "$ROOT" ] && ! cmp -s <(grep -v '^version *=' "$ROOT/pyproject.toml") \
+                                              <(grep -v '^version *=' "$VENV_ROOT/pyproject.toml"); then
+        STALE_VENV_HINT="this branch's pyproject.toml differs from the one $VENV_USED was synced for"
+    fi
+fi
+
 # Track test results
 CORE_TESTS_PASSED=0
 DDL_TESTS_PASSED=0
@@ -124,6 +137,10 @@ echo -e "${BLUE}╔════════════════════�
 echo -e "${BLUE}║       dbxmetagen Unit Test Runner             ║${NC}"
 echo -e "${BLUE}╔════════════════════════════════════════════════╗${NC}"
 echo -e "Using: ${PYTEST}"
+if [ -n "${STALE_VENV_HINT:-}" ]; then
+    echo -e "${YELLOW}Warning: ${STALE_VENV_HINT}; dependencies may be out of date.${NC}"
+    echo -e "${YELLOW}  Run 'uv sync' there, or set DBXMETAGEN_PYTEST to a matching pytest.${NC}"
+fi
 echo ""
 
 # Function to run tests and capture results
