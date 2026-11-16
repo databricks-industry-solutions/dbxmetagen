@@ -119,7 +119,6 @@ You can run individual test notebooks in Databricks:
 - `test_08_reviewed_ddl.py`: Full review workflow: generate -> export TSV -> edit -> reimport -> verify
 - `test_09_pi_classification_none.py`: Non-PI data correctly gets `classification=None`
 - `test_20_summarizer_bleedthrough.py`: Clinical-trials-like table doesn't get bleedthrough from summarizer few-shot examples
-- `test_21_mode_all.py`: Verify `mode="all"` produces comment, PI, and domain metadata from a single invocation
 
 #### Wave C: Concurrent Table Claiming
 - `test_10_concurrent_setup.py`: Creates test tables for concurrent processing
@@ -130,8 +129,14 @@ You can run individual test notebooks in Databricks:
 - `test_12_knowledge_graph.py`: Graph node/edge creation and relationship logic
 - `test_13_profiling.py`: Profiling pipeline (statistics, pattern detection, entropy)
 - `test_14_ontology.py`: Ontology entity discovery and classification
-- `test_15_graph_validation.py`: Full graph state validation (nodes, edges, security levels)
 - `test_16_analytics_pipeline.py`: Embeddings -> similarity edges (chains after test_12)
+- `test_22_metric_view_deploy.py`: Metric view deploy location tracking
+- `test_23_fk_prediction.py`: FK prediction
+- `test_24_semantic_layer.py`: Semantic layer (metric view) generation
+- `test_25_vector_index_build.py`: Vector index document population
+- `test_26_data_quality.py`: Data quality scoring
+- `test_27_serverless_smoke.py`: Analytics pipeline smoke test on serverless
+- `test_vs_endpoint_lifecycle.py`: Vector Search endpoint create/delete lifecycle
 
 #### Wave E: E2E Cluster Compatibility
 - `test_e2e_serverless.py`: Full pipeline on Photon runtime
@@ -139,7 +144,12 @@ You can run individual test notebooks in Databricks:
 - `test_e2e_standard_cluster.py`: Full pipeline on standard runtime (DBR 16.4)
 
 #### Not in Job
-- `test_apply_ddl_integration.py`: Legacy standalone script, superseded by test_02/test_03
+These exist but no job runs them; run them by hand when touching their area.
+- `test_15_graph_validation.py`: Full graph state validation. Disabled: same_domain edge generation changed and its assertions need a rewrite
+- `test_19_domain_classification.py`: Domain classification pipeline
+- `test_28_customer_context_quote_roundtrip.py`: customer_context quote round-trip (issue #212)
+- `test_29_customer_context_builder_live.py`: customer_context production builder against a live warehouse; needs the app's dependencies on the cluster
+- `test_ontology_vector_retrieval.py`: Ontology vector retrieval
 
 ### Configuration
 Integration tests use the **production `variables.yml`** file (located at repo root) with test-specific overrides for catalog, schema, and table names.

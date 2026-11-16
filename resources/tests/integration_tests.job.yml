@@ -575,7 +575,7 @@ resources:
                 package: "nest-asyncio>=1.6.0,<2"
 
         # test_15_graph_validation skipped -- same_domain edge generation
-        # changed; assertions need rewrite. Tracked as ON-7.
+        # changed; assertions need rewrite.
 
         - task_key: test_22_metric_view_deploy
           max_retries: 1
