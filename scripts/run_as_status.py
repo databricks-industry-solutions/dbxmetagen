@@ -31,15 +31,21 @@ def status(bundle: dict) -> str:
     deployer = ((bundle.get("workspace") or {}).get("current_user") or {}).get("userName") or ""
     if ra.get("service_principal_name"):
         kind, ident = "service_principal_name", ra["service_principal_name"]
-    elif ra.get("user_name") and ra["user_name"] != deployer:
+    elif ra.get("user_name"):
         kind, ident = "user_name", ra["user_name"]
     else:
+        return ""
+    # Running as the deployer is what jobs do anyway (a user, or a service principal
+    # deploying from CI, whose userName is its application id). Case-insensitive:
+    # the CLI and an override may differ only in case.
+    if ident.strip().lower() == deployer.strip().lower():
         return ""
     jobs = (bundle.get("resources") or {}).get("jobs")
     if not isinstance(jobs, dict) or not jobs:
         state = "unknown"
     else:
-        used = any(((j or {}).get("run_as") or {}).get(kind) == ident for j in jobs.values())
+        used = any(str(((j or {}).get("run_as") or {}).get(kind) or "").lower() == ident.lower()
+                   for j in jobs.values())
         state = "used" if used else "ignored"
     return f"{ident}\t{kind}\t{state}"
 

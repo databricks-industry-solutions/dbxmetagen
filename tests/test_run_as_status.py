@@ -52,3 +52,14 @@ def test_main_prints_one_line(monkeypatch, capsys):
     monkeypatch.setattr(sys, "stdin", io.StringIO(json.dumps(_bundle({"service_principal_name": SP}, {"a": {}}))))
     main()
     assert capsys.readouterr().out == f"{SP}\tservice_principal_name\tignored\n"
+
+
+def test_sp_override_equal_to_deploying_sp_prints_nothing():
+    # CI deploys as the SP and the old prod override names that same SP.
+    b = _bundle({"service_principal_name": SP}, {"a": {}})
+    b["workspace"]["current_user"]["userName"] = SP
+    assert status(b) == ""
+
+
+def test_user_override_differing_only_in_case_prints_nothing():
+    assert status(_bundle({"user_name": "Deployer@Example.com"}, {"a": {}})) == ""
