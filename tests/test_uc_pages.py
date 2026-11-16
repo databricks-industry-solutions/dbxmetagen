@@ -502,3 +502,42 @@ def test_baseline_steps_down_on_truncation(evidence):
     attempts = []
     pages = ev.baseline_pages(llm=llm, evidence=evidence, prompt="p", max_pages=12, attempts=attempts)
     assert calls == [12, 6, 3] and len(pages) == 1 and attempts[0]["parsed_pages"] == 0
+
+
+def test_publish_drafts_keeps_links_to_pages_no_longer_marked_published(monkeypatch):
+    # A related page that was published, then rewritten ('drafted'), edited in UC
+    # ('edited_in_uc') or discarded still exists in UC. It must stay in the name
+    # map, otherwise desired_links drops the relation and reconcile_links DELETEs
+    # the existing link on the next republish of the page that points at it.
+    rows = [
+        {"page_id": "a", "uc_page_name": "pages/a", "status": "published"},
+        {"page_id": "b", "uc_page_name": "pages/b", "status": "drafted"},
+        {"page_id": "c", "uc_page_name": "pages/c", "status": "edited_in_uc"},
+        {"page_id": "d", "uc_page_name": "pages/d", "status": "discarded"},
+        {"page_id": "e", "uc_page_name": None, "status": "drafted"},  # never published
+    ]
+    seen = {}
+
+    def fake_list_drafts(run_sql, fq, *, page_ids=None, status="", include_discarded=False, limit=500, **kw):
+        if page_ids:
+            return [r for r in rows if r["page_id"] in page_ids]
+        out = [r for r in rows if (not status or r["status"] == status)
+               and (include_discarded or r["status"] != "discarded")]
+        return out
+
+    def fake_publish(api_do, drafts, **kw):
+        seen["known"] = kw["known_page_names"]
+        return [{"status": "error"} for _ in drafts]
+
+    monkeypatch.setattr(pp.us, "list_drafts", fake_list_drafts)
+    monkeypatch.setattr(pp.us, "get_evidence", lambda *a, **k: [])
+    monkeypatch.setattr(pp.us, "source_urls", lambda *a, **k: [])
+    monkeypatch.setattr(pp.us, "upsert_drafts", lambda *a, **k: None)
+    monkeypatch.setattr(pp.us, "write_log", lambda *a, **k: None)
+    monkeypatch.setattr(pp.up, "account_id", lambda api_do: "acct")
+    monkeypatch.setattr(pp.up, "publish", fake_publish)
+    monkeypatch.setattr(pp.up, "audit_rows", lambda *a, **k: [])
+
+    pp.publish_drafts(run_sql=None, fq=None, api_do=None, page_ids=["a"], metastore_id="m",
+                      now="t", request_id="r")
+    assert seen["known"] == {"a": "pages/a", "b": "pages/b", "c": "pages/c", "d": "pages/d"}
