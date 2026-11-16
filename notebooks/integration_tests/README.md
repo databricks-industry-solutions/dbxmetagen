@@ -152,6 +152,9 @@ These exist but no job runs them; run them by hand when touching their area.
 - `test_29_customer_context_builder_live.py`: customer_context production builder against a live warehouse; needs the app's dependencies on the cluster
 - `test_ontology_vector_retrieval.py`: Ontology vector retrieval
 
+#### Cleanup
+- `cleanup_test_schemas.py`: last task of the job (`run_if: ALL_DONE`). Drops the timestamped schemas (`kb_test_<ts>`, `fk_test_<ts>`, ...) that failed tests leave behind: only schemas this identity created, during this run or more than 24 hours ago. Add a new test's schema prefix to its `PREFIXES` list.
+
 ### Configuration
 Integration tests use the **production `variables.yml`** file (located at repo root) with test-specific overrides for catalog, schema, and table names.
 
