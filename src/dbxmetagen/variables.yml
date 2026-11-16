@@ -215,6 +215,11 @@ variables:
 
       Only the PROD target should run jobs as an SP. dev and demo are development-mode
       targets where DAB requires the deploying user, so leave run_as omitted there.
+
+      Upgrading: older releases applied this variable to EVERY job. If you set it and
+      no job references it, every job runs as the deployer; deploy.sh and
+      grant_app_permissions.sh print a warning saying so. Delete the override to
+      silence it, or add the per-job run_as described above.
     type: complex
     default:
       user_name: ${workspace.current_user.userName}
