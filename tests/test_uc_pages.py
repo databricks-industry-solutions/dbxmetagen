@@ -241,6 +241,12 @@ def test_citation_checks_from_stats():
     assert not r["citation_coverage"]["pass"] and not r["citations_valid"]["pass"] and not r["has_human_evidence"]["pass"]
 
 
+def test_citation_checks_not_applicable_without_stats():
+    # A user-edited page has evidence but no citation stats: not "0/0 cited".
+    r = uq.deterministic_checks({**GOOD, "evidence_ids": ["E1"]}, evidence_ids=["E1"], evidence_by_id={})
+    assert r["citation_coverage"]["applicable"] is False and r["citations_valid"]["applicable"] is False
+
+
 def test_revision_issues_and_judge_parse():
     j = uq.parse_judge('```json\n{"scores":{"faithfulness":2,"definition_quality":9,"usefulness":"x","human_context_fidelity":null,"granularity":4},'
                        '"unsupported_claims":["NKDA invented"]}\n```')

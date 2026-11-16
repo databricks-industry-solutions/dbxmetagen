@@ -150,8 +150,11 @@ def deterministic_checks(page: Dict[str, Any], *, scope_tables: Optional[Iterabl
         put("assets_in_scope", not bad, f"Out-of-scope references: {', '.join(bad[:5])}" if bad else "")
     else:
         put("assets_in_scope", True, "", applicable=False)
+    # Citations can only be judged from the writer's citation stats. A user-edited
+    # body has none (citations are stripped on edit), so the checks do not apply
+    # rather than failing as "0/0 statements cited".
     stats = page.get("citation_stats") or {}
-    if evidence_ids is not None or stats:
+    if stats:
         invalid = stats.get("invalid_ids") or []
         put("citations_valid", not invalid, f"Unknown evidence ids: {', '.join(invalid[:5])}" if invalid else "")
         lines, cited = stats.get("content_lines", 0), stats.get("cited_lines", 0)
