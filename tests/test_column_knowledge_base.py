@@ -146,58 +146,83 @@ class TestInformationSchemaScoping:
 
 
 class TestInformationSchemaFallback:
-    """An information_schema failure degrades to NULL types, never fails the KB."""
+    """An unreadable information_schema degrades to NULL types, never fails the KB."""
 
-    def _builder(self, sql_side_effect):
+    def _builder(self, sql_side_effect, pairs=(("cat_a", "sch_a"),)):
         spark = MagicMock()
         spark.sql.side_effect = sql_side_effect
         cfg = ColumnKnowledgeBaseConfig(catalog_name="c", schema_name="s")
         b = ColumnKnowledgeBaseBuilder(spark, cfg)
         b.create_target_table = MagicMock()
-        b._corpus_catalog_schema_pairs = MagicMock(return_value=[("cat_a", "sch_a")])
+        b._corpus_catalog_schema_pairs = MagicMock(return_value=list(pairs))
         return b, spark
 
     @staticmethod
-    def _count_result():
+    def _ok():
         m = MagicMock()
         m.collect.return_value = [{"cnt": 3}]
         return m
+
+    @staticmethod
+    def _is_merge(q):
+        return q.lstrip().startswith("MERGE")
+
+    @staticmethod
+    def _is_probe(q):
+        return q.lstrip().startswith("SELECT 1 FROM system.information_schema.columns")
 
     def test_no_types_variant_never_touches_information_schema(self):
         b = ColumnKnowledgeBaseBuilder(MagicMock(), ColumnKnowledgeBaseConfig(catalog_name="c", schema_name="s"))
         q = b.build_merge_sql([("cat_a", "sch_a")], include_types=False)
         assert "information_schema" not in q
-        # same CTE name and columns, so the rest of the MERGE is unchanged
         assert "types AS (" in q and "LEFT JOIN types USING (table_name, column_name)" in q
         assert "COALESCE(source.data_type, target.data_type)" in q
 
-    def test_info_schema_failure_retries_once_without_types(self):
+    def test_unreadable_information_schema_retries_without_types(self):
         merges = []
 
         def sql(q):
-            if q.lstrip().startswith("MERGE"):
+            if self._is_merge(q):
                 merges.append(q)
                 if "system.information_schema.columns" in q:
                     raise Exception("PERMISSION_DENIED: system.information_schema")
-            return self._count_result()
+            elif self._is_probe(q):
+                raise Exception("PERMISSION_DENIED: system.information_schema")
+            return self._ok()
 
         b, _ = self._builder(sql)
         result = b.run()
-        assert len(merges) == 2
-        assert "system.information_schema.columns" in merges[0]
-        assert "information_schema" not in merges[1]
-        assert result["types_included"] is False
+        assert len(merges) == 2 and "information_schema" not in merges[1]
+        assert result["types_missing_catalogs"] == ["cat_a"]
 
-    def test_error_not_caused_by_info_schema_still_raises(self):
+    def test_one_unreadable_catalog_keeps_types_for_the_others(self):
+        merges = []
+
         def sql(q):
-            if q.lstrip().startswith("MERGE"):
+            if self._is_merge(q):
+                merges.append(q)
+                if "table_catalog = 'fed'" in q:
+                    raise Exception("cannot describe foreign catalog fed")
+            elif self._is_probe(q) and "table_catalog = 'fed'" in q:
+                raise Exception("cannot describe foreign catalog fed")
+            return self._ok()
+
+        b, _ = self._builder(sql, pairs=[("main", "sales"), ("fed", "x")])
+        result = b.run()
+        assert len(merges) == 2
+        assert "table_catalog = 'main'" in merges[1] and "table_catalog = 'fed'" not in merges[1]
+        assert result["types_missing_catalogs"] == ["fed"]
+
+    def test_error_not_caused_by_info_schema_raises_without_a_second_merge(self):
+        def sql(q):
+            if self._is_merge(q):
                 raise Exception("TABLE_OR_VIEW_NOT_FOUND: metadata_generation_log")
-            return self._count_result()
+            return self._ok()  # every catalog probes fine
 
         b, spark = self._builder(sql)
         with pytest.raises(Exception, match="TABLE_OR_VIEW_NOT_FOUND"):
             b.run()
-        assert sum(1 for c in spark.sql.call_args_list if c[0][0].lstrip().startswith("MERGE")) == 2
+        assert sum(1 for c in spark.sql.call_args_list if self._is_merge(c[0][0])) == 1
 
     def test_concurrency_conflict_retries_with_types_kept(self, monkeypatch):
         import dbxmetagen.column_knowledge_base as ckb
@@ -205,15 +230,32 @@ class TestInformationSchemaFallback:
         merges = []
 
         def sql(q):
-            if q.lstrip().startswith("MERGE"):
+            if self._is_merge(q):
                 merges.append(q)
                 if len(merges) == 1:
                     raise Exception("DELTA_CONCURRENT_APPEND: conflicting commit")
-            return self._count_result()
+            return self._ok()
 
         b, _ = self._builder(sql)
-        assert b.run()["types_included"] is True
+        assert b.run()["types_missing_catalogs"] == []
         assert len(merges) == 2 and all("system.information_schema.columns" in q for q in merges)
+
+    def test_exhausted_concurrency_retries_raise_not_fall_back(self, monkeypatch):
+        import dbxmetagen.column_knowledge_base as ckb
+        monkeypatch.setattr(ckb.time, "sleep", lambda s: None)
+
+        def sql(q):
+            if self._is_merge(q):
+                raise Exception("DELTA_CONCURRENT_APPEND: conflicting commit")
+            return self._ok()
+
+        b, spark = self._builder(sql)
+        with pytest.raises(Exception, match="DELTA_CONCURRENT_APPEND"):
+            b.run()
+        merges = [c[0][0] for c in spark.sql.call_args_list if self._is_merge(c[0][0])]
+        assert len(merges) == ckb._MERGE_MAX_RETRIES + 1
+        assert all("system.information_schema.columns" in q for q in merges)
+        assert not any(self._is_probe(c[0][0]) for c in spark.sql.call_args_list)
 
 
 class TestBuildColumnKnowledgeBase:

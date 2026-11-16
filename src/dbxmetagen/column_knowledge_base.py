@@ -126,6 +126,29 @@ class ColumnKnowledgeBaseBuilder:
             groups.append(f"(table_catalog = '{cat_esc}' AND table_schema IN ({in_list}))")
         return " OR ".join(groups)
 
+    def _probe_information_schema(self, pairs: List[tuple]) -> tuple:
+        """Split ``pairs`` by whether each catalog's information_schema is readable.
+
+        One cheap ``LIMIT 1`` query per catalog, with the same pushdown-safe
+        predicate the MERGE uses. Only runs after a MERGE failure.
+        Returns ``(readable_pairs, unreadable_catalogs)``.
+        """
+        by_catalog: Dict[str, List[tuple]] = {}
+        for cat, sch in pairs:
+            by_catalog.setdefault(cat, []).append((cat, sch))
+        readable, unreadable = [], []
+        for cat, cat_pairs in by_catalog.items():
+            try:
+                self.spark.sql(
+                    "SELECT 1 FROM system.information_schema.columns "
+                    f"WHERE {self._info_schema_predicate(cat_pairs)} LIMIT 1"
+                ).collect()
+                readable.extend(cat_pairs)
+            except Exception as e:
+                logger.warning("information_schema unreadable for catalog %s: %s", cat, str(e)[:200])
+                unreadable.append(cat)
+        return readable, unreadable
+
     def build_merge_sql(self, pairs: List[tuple], include_types: bool = True) -> str:
         r"""Build the ENTIRE column-KB build as a single declarative MERGE.
 
@@ -296,33 +319,48 @@ class ColumnKnowledgeBaseBuilder:
 
         pairs = self._corpus_catalog_schema_pairs()
 
-        # Concurrency conflicts are retried with backoff. Any OTHER failure gets
-        # ONE retry without the information_schema type lookup: an unreadable
+        # Concurrency conflicts are retried with backoff, then raised. Any OTHER
+        # failure probes information_schema per catalog: an unreadable
         # system.information_schema (run identity lacks access, a foreign catalog
-        # the metastore cannot describe, a transient metastore error) must not
-        # fail the KB -- downstream ontology/graph tasks depend on it. If the
-        # retry fails too, the error is not information_schema's, so it raises.
+        # the metastore cannot describe) must not fail the KB, which downstream
+        # ontology/graph tasks depend on. The MERGE is retried with types for the
+        # catalogs that probe fine (NULL data_type/nullable for the rest). If every
+        # catalog probes fine, the error is not information_schema's, so it raises.
+        types_pairs = pairs
         include_types = True
+        skipped_catalogs: List[str] = []
+        probed = False
         conflicts = 0
         while True:
             try:
-                self.spark.sql(self.build_merge_sql(pairs, include_types=include_types))
+                self.spark.sql(self.build_merge_sql(types_pairs, include_types=include_types))
                 break
             except Exception as e:
                 err = str(e)
-                if conflicts < _MERGE_MAX_RETRIES and ("Concurrent" in err or "DELTA_CONCURRENT" in err):
+                if "Concurrent" in err or "DELTA_CONCURRENT" in err:
+                    if conflicts >= _MERGE_MAX_RETRIES:
+                        raise
                     wait = _MERGE_BACKOFF_SECONDS[conflicts]
                     conflicts += 1
                     logger.warning("MERGE conflict (attempt %d), retrying in %ds: %s", conflicts, wait, err[:200])
                     time.sleep(wait)
-                elif include_types:
-                    include_types = False
-                    logger.warning(
-                        "Column KB MERGE failed with the information_schema type lookup; retrying "
-                        "without it (data_type/nullable left as previously known): %s", err[:300],
-                    )
-                else:
+                    continue
+                if not include_types or probed:
                     raise
+                probed = True
+                healthy, failed = self._probe_information_schema(types_pairs)
+                if not failed:
+                    raise
+                skipped_catalogs = failed
+                if healthy:
+                    types_pairs = healthy
+                else:
+                    include_types = False
+                logger.warning(
+                    "Column KB MERGE failed and information_schema is unreadable for catalog(s) %s; "
+                    "retrying with data_type/nullable left as previously known for those: %s",
+                    failed, err[:300],
+                )
 
         # staged_count = distinct corpus columns this run produced. Cheap log-only
         # query (no information_schema); kept for the run-summary metric.
@@ -344,7 +382,12 @@ class ColumnKnowledgeBaseBuilder:
 
         logger.info(f"Column knowledge base build complete. Total records: {total_records}")
 
-        return {"staged_count": staged_count, "total_records": total_records, "types_included": include_types}
+        return {
+            "staged_count": staged_count,
+            "total_records": total_records,
+            # Catalogs whose columns got no data_type/nullable this run (see above).
+            "types_missing_catalogs": skipped_catalogs,
+        }
 
     def bootstrap(self, table_names: List[str]) -> int:
         """Populate column KB from information_schema with zero LLM calls.
