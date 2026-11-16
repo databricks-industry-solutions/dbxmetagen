@@ -606,7 +606,14 @@ else:
             # revert every job to running as its creator -- reintroducing PERMISSION_DENIED
             # on tasks like build_knowledge_base. Notebook 02 stays the authoritative
             # setter; this just keeps run_as sticky across 01-only re-runs.
-            existing_run_as = getattr(existing_jobs[name].settings, "run_as", None)
+            # Read it with jobs.get: jobs.list() never returns settings.run_as (only
+            # run_as_user_name), so reading it from the list entry was always None.
+            try:
+                existing_run_as = w.jobs.get(job_id=jid).settings.run_as
+            except Exception as e:
+                existing_run_as = None
+                print(f"  WARNING: could not read run_as of {name} (id={jid}); it will reset "
+                      f"to the deploying user unless Notebook 02 sets it again: {e}")
             if existing_run_as:
                 settings.run_as = existing_run_as
             w.jobs.reset(job_id=jid, new_settings=settings)

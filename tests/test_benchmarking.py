@@ -68,3 +68,28 @@ def test_disables_instead_of_failing_when_fallback_also_fails():
     with patch.object(benchmarking, "mlflow", m), \
             patch.object(benchmarking, "SparkSession", _spark()):
         assert benchmarking.setup_benchmarking(_config()) is None
+
+
+
+def test_fallback_ends_the_run_it_already_started():
+    # start_run succeeds, then resolving the experiment name fails (no notebook_path,
+    # get_experiment raises). Like real MLflow, the fake refuses a second start_run
+    # while a run is active, so the fallback must end_run first.
+    m = MagicMock()
+    state = {"run": None}
+
+    def start_run():
+        if state["run"] is not None:
+            raise Exception("Run with UUID abc is already active")
+        state["run"] = SimpleNamespace(info=SimpleNamespace(start_time=123, experiment_id="1"))
+
+    m.start_run.side_effect = start_run
+    m.end_run.side_effect = lambda: state.update(run=None)
+    m.active_run.side_effect = lambda: state["run"]
+    m.get_experiment.side_effect = Exception("PERMISSION_DENIED")
+
+    with patch.object(benchmarking, "mlflow", m), \
+            patch.object(benchmarking, "SparkSession", _spark("sp-123")):
+        result = benchmarking.setup_benchmarking(_config(notebook_path=""))
+    assert result == ("/Users/sp-123/dbxmetagen_benchmarks", 123)
+    m.end_run.assert_called_once()
