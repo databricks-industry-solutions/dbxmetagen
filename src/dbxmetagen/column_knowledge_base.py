@@ -126,7 +126,7 @@ class ColumnKnowledgeBaseBuilder:
             groups.append(f"(table_catalog = '{cat_esc}' AND table_schema IN ({in_list}))")
         return " OR ".join(groups)
 
-    def build_merge_sql(self, pairs: List[tuple]) -> str:
+    def build_merge_sql(self, pairs: List[tuple], include_types: bool = True) -> str:
         r"""Build the ENTIRE column-KB build as a single declarative MERGE.
 
         The operation is a pivot of ``metadata_generation_log`` into one row per
@@ -142,8 +142,31 @@ class ColumnKnowledgeBaseBuilder:
         Steward-win semantics are preserved: when ``target.review_updated_at``
         is newer than the source, the reviewed ``comment``/``classification``/
         ``classification_type``/``confidence`` are frozen.
+
+        ``include_types=False`` replaces the ``types`` CTE with an empty relation
+        of the same shape that never references information_schema. ``run()``
+        uses it as a fallback so an unreadable information_schema degrades to
+        NULL ``data_type``/``nullable`` (previously known values are kept by the
+        COALESCE in the UPDATE) instead of failing the whole build.
         """
-        info_pred = self._info_schema_predicate(pairs)
+        if include_types:
+            types_sql = f"""
+                SELECT
+                    LOWER(CONCAT(table_catalog, '.', table_schema, '.', table_name)) AS table_name,
+                    column_name,
+                    data_type,
+                    CASE WHEN is_nullable = 'YES' THEN true ELSE false END AS nullable
+                FROM system.information_schema.columns
+                WHERE {self._info_schema_predicate(pairs)}"""
+        else:
+            types_sql = """
+                SELECT
+                    CAST(NULL AS STRING) AS table_name,
+                    CAST(NULL AS STRING) AS column_name,
+                    CAST(NULL AS STRING) AS data_type,
+                    CAST(NULL AS BOOLEAN) AS nullable
+                FROM (SELECT 1) AS _no_types
+                WHERE 1 = 0"""
         return f"""
         MERGE INTO {self.config.fully_qualified_target} AS target
         USING (
@@ -194,14 +217,7 @@ class ColumnKnowledgeBaseBuilder:
                     WHERE metadata_type = 'pi'
                 ) WHERE rn = 1
             ),
-            types AS (
-                SELECT
-                    LOWER(CONCAT(table_catalog, '.', table_schema, '.', table_name)) AS table_name,
-                    column_name,
-                    data_type,
-                    CASE WHEN is_nullable = 'YES' THEN true ELSE false END AS nullable
-                FROM system.information_schema.columns
-                WHERE {info_pred}
+            types AS ({types_sql}
             )
             SELECT
                 CONCAT_WS('.', cols.table_name, cols.column_name) AS column_id,
@@ -279,18 +295,32 @@ class ColumnKnowledgeBaseBuilder:
         self.create_target_table()
 
         pairs = self._corpus_catalog_schema_pairs()
-        merge_sql = self.build_merge_sql(pairs)
 
-        for attempt in range(_MERGE_MAX_RETRIES + 1):
+        # Concurrency conflicts are retried with backoff. Any OTHER failure gets
+        # ONE retry without the information_schema type lookup: an unreadable
+        # system.information_schema (run identity lacks access, a foreign catalog
+        # the metastore cannot describe, a transient metastore error) must not
+        # fail the KB -- downstream ontology/graph tasks depend on it. If the
+        # retry fails too, the error is not information_schema's, so it raises.
+        include_types = True
+        conflicts = 0
+        while True:
             try:
-                self.spark.sql(merge_sql)
+                self.spark.sql(self.build_merge_sql(pairs, include_types=include_types))
                 break
             except Exception as e:
                 err = str(e)
-                if attempt < _MERGE_MAX_RETRIES and ("Concurrent" in err or "DELTA_CONCURRENT" in err):
-                    wait = _MERGE_BACKOFF_SECONDS[attempt]
-                    logger.warning("MERGE conflict (attempt %d), retrying in %ds: %s", attempt + 1, wait, err[:200])
+                if conflicts < _MERGE_MAX_RETRIES and ("Concurrent" in err or "DELTA_CONCURRENT" in err):
+                    wait = _MERGE_BACKOFF_SECONDS[conflicts]
+                    conflicts += 1
+                    logger.warning("MERGE conflict (attempt %d), retrying in %ds: %s", conflicts, wait, err[:200])
                     time.sleep(wait)
+                elif include_types:
+                    include_types = False
+                    logger.warning(
+                        "Column KB MERGE failed with the information_schema type lookup; retrying "
+                        "without it (data_type/nullable left as previously known): %s", err[:300],
+                    )
                 else:
                     raise
 
@@ -314,7 +344,7 @@ class ColumnKnowledgeBaseBuilder:
 
         logger.info(f"Column knowledge base build complete. Total records: {total_records}")
 
-        return {"staged_count": staged_count, "total_records": total_records}
+        return {"staged_count": staged_count, "total_records": total_records, "types_included": include_types}
 
     def bootstrap(self, table_names: List[str]) -> int:
         """Populate column KB from information_schema with zero LLM calls.
