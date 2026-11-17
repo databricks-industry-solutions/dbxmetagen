@@ -186,28 +186,21 @@ GRANT_ARGS=(-t "$TARGET" -p "$PROFILE")
 # The Jobs API refuses to create a job whose run_as SP the deployer lacks the
 # "Service Principal: User" role on, so grant_app_permissions.sh must set that up
 # BEFORE the deploy (it also grants the jobs SP; the app SP is handled post-deploy).
-# run_as_status.py prints "<identity> <kind> <used|ignored|unknown>" (tab-separated)
-# when var.run_as is set to something other than the deploying user.
-_run_as_line=$(databricks bundle validate -t "$TARGET" -p "$PROFILE" "${DEPLOY_VARS[@]}" --output json 2>/dev/null \
-    | python3 scripts/run_as_status.py 2>/dev/null || echo "")
+# Resolve the bundle once for the identity checks (scripts/bundle_identity_check.py):
+# the jobs-SP to grant before deploying, plus warnings for settings that silently
+# misbehave (an ignored run_as override, an alert_email that is not an email
+# address, an SP deploy nobody else can open). Warnings never stop the deploy.
+_bundle_json=$(databricks bundle validate -t "$TARGET" -p "$PROFILE" "${DEPLOY_VARS[@]}" --output json 2>/dev/null || echo "")
+_run_as_line=$(printf '%s' "$_bundle_json" | python3 scripts/bundle_identity_check.py 2>/dev/null || echo "")
+_deploy_warnings=$(printf '%s' "$_bundle_json" | python3 scripts/bundle_identity_check.py --warnings --target "$TARGET" 2>/dev/null || echo "")
 IFS=$'\t' read -r _run_as_id _run_as_kind _run_as_state <<< "$_run_as_line"
 _run_as_sp=""
-_run_as_ignored=""
-if [ "$_run_as_state" = "ignored" ]; then
-    # Older releases applied var.run_as to EVERY job. Jobs now omit run_as and run as
-    # the deploying identity; the variable only applies to jobs that reference it.
-    # Warn (and repeat at the end) rather than fail, so existing deploys keep working.
-    _run_as_ignored="${_run_as_kind} '${_run_as_id}'"
-    echo "" >&2
-    echo "WARNING: run_as is set to ${_run_as_ignored}, but no job uses it." >&2
-    echo "  Jobs no longer apply var.run_as automatically: every job will run as you (the deployer)." >&2
-    echo "  If that is what you want, delete \"run_as\" from your variable overrides" >&2
-    echo "  (.databricks/bundle/${TARGET}/variable-overrides.json) to silence this." >&2
-    echo "  To keep a different job identity, add  run_as: \${var.run_as}  to the job(s) in" >&2
-    echo "  resources/jobs/*.yml that should run as it (see run_as in variables.yml)." >&2
-    echo "  To run jobs as a service principal the simple way, deploy AS that service principal." >&2
-elif [ "$_run_as_kind" = "service_principal_name" ]; then
+if [ "$_run_as_kind" = "service_principal_name" ] && [ "$_run_as_state" != "ignored" ]; then
     _run_as_sp="$_run_as_id"
+fi
+if [ -n "$_deploy_warnings" ]; then
+    echo "" >&2
+    echo "$_deploy_warnings" >&2
 fi
 if [ -n "$_run_as_sp" ]; then
     echo ""
@@ -246,6 +239,8 @@ scripts/grant_app_permissions.sh "${GRANT_ARGS[@]}"
 
 echo ""
 echo "=== Deployment complete ==="
-if [ -n "$_run_as_ignored" ]; then
-    echo "WARNING: run_as (${_run_as_ignored}) was ignored -- jobs run as the deploying identity. See above." >&2
+if [ -n "$_deploy_warnings" ]; then
+    echo "" >&2
+    echo "Reminder -- deploy warnings (details above):" >&2
+    echo "$_deploy_warnings" | grep '^WARNING' >&2
 fi

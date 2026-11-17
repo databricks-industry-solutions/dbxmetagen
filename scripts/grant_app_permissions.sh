@@ -119,18 +119,18 @@ done
 
 # Jobs identity: the run_as complex variable. Only a service_principal_name needs
 # grants here; the default (deploying user) already holds its own privileges.
-# run_as_status.py reports whether any job actually uses it: jobs omit run_as by
-# default (they run as the deployer), so an override no job references is ignored.
+# bundle_identity_check.py: the jobs-SP to grant (only if a job actually runs as
+# it -- jobs omit run_as by default and run as the deployer), plus warnings for
+# settings that silently misbehave.
 JOBS_SP_ID=""
-RUN_AS_IGNORED=""
+GRANT_WARNINGS=""
 if [ -n "${SUMMARY}" ]; then
-    _run_as_line=$(echo "${SUMMARY}" | python3 "${REPO_ROOT}/scripts/run_as_status.py" 2>/dev/null || echo "")
+    _run_as_line=$(echo "${SUMMARY}" | python3 "${REPO_ROOT}/scripts/bundle_identity_check.py" 2>/dev/null || echo "")
     IFS=$'\t' read -r _run_as_id _run_as_kind _run_as_state <<< "$_run_as_line"
-    if [ "$_run_as_state" = "ignored" ]; then
-        RUN_AS_IGNORED="${_run_as_kind} '${_run_as_id}'"
-    elif [ "$_run_as_kind" = "service_principal_name" ]; then
+    if [ "$_run_as_kind" = "service_principal_name" ] && [ "$_run_as_state" != "ignored" ]; then
         JOBS_SP_ID="$_run_as_id"
     fi
+    GRANT_WARNINGS=$(echo "${SUMMARY}" | python3 "${REPO_ROOT}/scripts/bundle_identity_check.py" --warnings --target "$TARGET" 2>/dev/null || echo "")
 fi
 
 echo "  App:       ${APP_NAME}"
@@ -138,13 +138,9 @@ echo "  Catalog:   ${CATALOG}"
 echo "  Schema:    ${SCHEMA}"
 echo "  Warehouse: ${WAREHOUSE_ID}"
 [ -n "${JOBS_SP_ID}" ] && echo "  Jobs run_as SP: ${JOBS_SP_ID}"
-if [ -n "${RUN_AS_IGNORED}" ]; then
+if [ -n "${GRANT_WARNINGS}" ]; then
     echo "" >&2
-    echo "WARNING: run_as is set to ${RUN_AS_IGNORED}, but no job uses it -- jobs run as the" >&2
-    echo "  deploying identity. Older releases applied run_as to every job; this one does not." >&2
-    echo "  Skipping the jobs-identity grants. Either delete \"run_as\" from your variable" >&2
-    echo "  overrides, or add  run_as: \${var.run_as}  to the job(s) that should run as it" >&2
-    echo "  (see run_as in variables.yml)." >&2
+    echo "${GRANT_WARNINGS}" >&2
 fi
 
 # --- Jobs run_as SP: deployer needs the Service Principal: User role on it ---
