@@ -39,9 +39,15 @@ try:
     import api_server  # noqa: E402  -- the shipped app module
     from databricks.sdk import WorkspaceClient
     from databricks.sdk.service.sql import StatementParameterListItem
-except Exception as exc:  # app deps absent (e.g. lib-only cluster) -> skip, don't fail
-    print(f"SKIP: could not import api_server (app deps missing?): {type(exc).__name__}: {exc}")
-    api_server = None
+except Exception as exc:
+    # A skip here used to let the notebook finish green without asserting anything.
+    # This test exercises the shipped app module, so missing app deps are a setup
+    # error: install the app's dependencies (apps/dbxmetagen-app/app/requirements.txt.template)
+    # on the cluster.
+    raise RuntimeError(
+        f"could not import api_server ({type(exc).__name__}: {exc}); install the app's "
+        "dependencies (apps/dbxmetagen-app/app/requirements.txt.template) on this cluster"
+    ) from exc
 
 # COMMAND ----------
 

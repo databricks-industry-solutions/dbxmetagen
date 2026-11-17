@@ -647,7 +647,26 @@ def print_test_result(test_name, passed, error=None):
     print("=" * 80)
 
 
-def verify_metadata_log_for_mode(spark, catalog, schema, table_name, mode):
+def server_now(spark):
+    """Current time on the Spark session clock, as a SQL timestamp literal string.
+
+    Capture this BEFORE running main() and pass it as ``since=`` to the verifiers
+    below, so they only accept rows written by this run. The default 1-hour window
+    also accepts rows left by an earlier run of the same test, and compares against
+    the driver's clock, which need not match the session time zone.
+    """
+    ts = spark.sql("SELECT current_timestamp() AS ts").collect()[0]["ts"]
+    return ts.strftime("%Y-%m-%d %H:%M:%S.%f")
+
+
+def _window_start(since):
+    from datetime import datetime, timedelta
+    if since:
+        return since, "since this run started"
+    return (datetime.now() - timedelta(hours=1)).strftime("%Y-%m-%d %H:%M:%S"), "in last hour"
+
+
+def verify_metadata_log_for_mode(spark, catalog, schema, table_name, mode, since=None):
     """Verify metadata_generation_log has mode-specific entry with content validation.
 
     Args:
@@ -669,16 +688,13 @@ def verify_metadata_log_for_mode(spark, catalog, schema, table_name, mode):
     simple_table_name = table_name.split(".")[-1] if "." in table_name else table_name
 
     try:
-        # Query for mode-specific entry from last hour
-        one_hour_ago = (datetime.now() - timedelta(hours=1)).strftime(
-            "%Y-%m-%d %H:%M:%S"
-        )
+        window_start, window_desc = _window_start(since)
         log_df = spark.sql(
             f"""
             SELECT * FROM {catalog}.{schema}.metadata_generation_log
             WHERE table_name = '{simple_table_name}'
             AND metadata_type = '{mode}'
-            AND _created_at >= '{one_hour_ago}'
+            AND _created_at >= TIMESTAMP '{window_start}'
             ORDER BY _created_at DESC
             LIMIT 1
             """
@@ -687,7 +703,7 @@ def verify_metadata_log_for_mode(spark, catalog, schema, table_name, mode):
         if log_df.count() == 0:
             raise TestFailure(
                 f"No metadata_generation_log entry found for table '{simple_table_name}' "
-                f"with mode '{mode}' in last hour"
+                f"with mode '{mode}' {window_desc}"
             )
 
         row = log_df.first()
@@ -735,7 +751,7 @@ def verify_metadata_log_for_mode(spark, catalog, schema, table_name, mode):
         raise TestFailure(f"metadata_generation_log table does not exist: {e}")
 
 
-def verify_control_table_entry(spark, catalog, schema, control_table_name, table_name):
+def verify_control_table_entry(spark, catalog, schema, control_table_name, table_name, since=None):
     """Verify control table has entry for the processed table.
 
     Args:
@@ -762,14 +778,12 @@ def verify_control_table_entry(spark, catalog, schema, control_table_name, table
             raise TestFailure(f"Control table does not exist: {control_table_full}")
 
         # Query for table entry
-        one_hour_ago = (datetime.now() - timedelta(hours=1)).strftime(
-            "%Y-%m-%d %H:%M:%S"
-        )
+        window_start, window_desc = _window_start(since)
         control_df = spark.sql(
             f"""
             SELECT * FROM {control_table_full}
             WHERE table_name = '{table_name}'
-            AND _updated_at >= '{one_hour_ago}'
+            AND _updated_at >= TIMESTAMP '{window_start}'
             ORDER BY _updated_at DESC
             LIMIT 1
             """
@@ -777,7 +791,7 @@ def verify_control_table_entry(spark, catalog, schema, control_table_name, table
 
         if control_df.count() == 0:
             raise TestFailure(
-                f"No control table entry found for '{table_name}' in last hour"
+                f"No control table entry found for '{table_name}' {window_desc}"
             )
 
         row = control_df.first()
@@ -792,7 +806,7 @@ def verify_control_table_entry(spark, catalog, schema, control_table_name, table
         raise TestFailure(f"Error querying control table: {e}")
 
 
-def verify_mode_differentiation(spark, catalog, schema, table_name):
+def verify_mode_differentiation(spark, catalog, schema, table_name, since=None):
     """Verify all three modes produced different outputs in metadata_generation_log.
 
     Args:
@@ -810,9 +824,7 @@ def verify_mode_differentiation(spark, catalog, schema, table_name):
     simple_table_name = table_name.split(".")[-1] if "." in table_name else table_name
 
     try:
-        one_hour_ago = (datetime.now() - timedelta(hours=1)).strftime(
-            "%Y-%m-%d %H:%M:%S"
-        )
+        window_start, _ = _window_start(since)
 
         # Query for all mode entries
         all_modes_df = spark.sql(
@@ -820,7 +832,7 @@ def verify_mode_differentiation(spark, catalog, schema, table_name):
             SELECT metadata_type, column_content, _created_at
             FROM {catalog}.{schema}.metadata_generation_log
             WHERE table_name = '{simple_table_name}'
-            AND _created_at >= '{one_hour_ago}'
+            AND _created_at >= TIMESTAMP '{window_start}'
             ORDER BY _created_at DESC
             """
         )

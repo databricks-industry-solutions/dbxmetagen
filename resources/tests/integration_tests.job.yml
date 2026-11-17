@@ -22,6 +22,9 @@ resources:
   jobs:
     integration_tests:
       name: "dbxmetagen_integration_tests_${bundle.target}"
+      # One run at a time: cleanup_test_schemas relies on it (it drops this run's
+      # leftover schemas, identified as created after this run started).
+      max_concurrent_runs: 1
 
       email_notifications:
         on_failure:
@@ -480,6 +483,29 @@ resources:
             - pypi:
                 package: "nest-asyncio>=1.6.0,<2"
 
+        - task_key: test_30_column_knowledge_base
+          max_retries: 1
+          depends_on:
+            - task_key: test_01_widget_parsing
+          job_cluster_key: e2e_ml_cluster
+          notebook_task:
+            notebook_path: ../../notebooks/integration_tests/test_30_column_knowledge_base.py
+            base_parameters:
+              catalog_name: "{{job.parameters.test_catalog}}"
+              test_schema: "{{job.parameters.test_schema}}"
+          libraries:
+            - whl: ../../dist/*.whl
+            - pypi:
+                package: databricks-langchain==0.4.0
+            - pypi:
+                package: openai==1.56.1
+            - pypi:
+                package: openpyxl==3.1.5
+            - pypi:
+                package: deprecated==1.2.13
+            - pypi:
+                package: "nest-asyncio>=1.6.0,<2"
+
         - task_key: test_12_knowledge_graph
           max_retries: 1
           depends_on:
@@ -575,7 +601,7 @@ resources:
                 package: "nest-asyncio>=1.6.0,<2"
 
         # test_15_graph_validation skipped -- same_domain edge generation
-        # changed; assertions need rewrite. Tracked as ON-7.
+        # changed; assertions need rewrite.
 
         - task_key: test_22_metric_view_deploy
           max_retries: 1
@@ -788,6 +814,35 @@ resources:
       # ------------------------------------------------------------------
       # Cluster definitions
       # ------------------------------------------------------------------
+
+        # Runs last, even when tests fail: drops the timestamped schemas that failed
+        # tests left behind (only this identity's, only this run's or > 24h old).
+        - task_key: cleanup_test_schemas
+          run_if: ALL_DONE
+          depends_on:
+            - task_key: test_17_federation_mode
+            - task_key: test_18_comment_overrides
+            - task_key: test_vs_endpoint_lifecycle
+            - task_key: test_20_summarizer_bleedthrough
+            - task_key: test_08_reviewed_ddl
+            - task_key: test_07_permissions
+            - task_key: test_10_concurrent_validate
+            - task_key: test_30_column_knowledge_base
+            - task_key: test_22_metric_view_deploy
+            - task_key: test_23_fk_prediction
+            - task_key: test_24_semantic_layer
+            - task_key: test_25_vector_index_build
+            - task_key: test_26_data_quality
+            - task_key: test_27_serverless_smoke
+            - task_key: test_e2e_serverless
+            - task_key: test_e2e_ml_cluster
+            - task_key: test_e2e_standard_cluster
+          job_cluster_key: fast_test_cluster
+          notebook_task:
+            notebook_path: ../../notebooks/integration_tests/cleanup_test_schemas.py
+            base_parameters:
+              catalog_name: "{{job.parameters.test_catalog}}"
+              run_started_at: "{{job.start_time.iso_datetime}}"
 
       job_clusters:
         # Fast tests -- config/parsing only, no LLM
