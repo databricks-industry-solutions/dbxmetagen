@@ -119,17 +119,18 @@ done
 
 # Jobs identity: the run_as complex variable. Only a service_principal_name needs
 # grants here; the default (deploying user) already holds its own privileges.
+# bundle_identity_check.py: the jobs-SP to grant (only if a job actually runs as
+# it -- jobs omit run_as by default and run as the deployer), plus warnings for
+# settings that silently misbehave.
 JOBS_SP_ID=""
+GRANT_WARNINGS=""
 if [ -n "${SUMMARY}" ]; then
-    JOBS_SP_ID=$(echo "${SUMMARY}" | python3 -c "
-import sys, json
-try:
-    v = json.load(sys.stdin).get('variables', {}).get('run_as', {})
-    ra = v.get('value', v.get('default')) or {}
-    print(ra.get('service_principal_name', '') if isinstance(ra, dict) else '')
-except Exception:
-    print('')
-" 2>/dev/null || echo "")
+    _run_as_line=$(echo "${SUMMARY}" | python3 "${REPO_ROOT}/scripts/bundle_identity_check.py" 2>/dev/null || echo "")
+    IFS=$'\t' read -r _run_as_id _run_as_kind _run_as_state <<< "$_run_as_line"
+    if [ "$_run_as_kind" = "service_principal_name" ] && [ "$_run_as_state" != "ignored" ]; then
+        JOBS_SP_ID="$_run_as_id"
+    fi
+    GRANT_WARNINGS=$(echo "${SUMMARY}" | python3 "${REPO_ROOT}/scripts/bundle_identity_check.py" --warnings --target "$TARGET" 2>/dev/null || echo "")
 fi
 
 echo "  App:       ${APP_NAME}"
@@ -137,6 +138,10 @@ echo "  Catalog:   ${CATALOG}"
 echo "  Schema:    ${SCHEMA}"
 echo "  Warehouse: ${WAREHOUSE_ID}"
 [ -n "${JOBS_SP_ID}" ] && echo "  Jobs run_as SP: ${JOBS_SP_ID}"
+if [ -n "${GRANT_WARNINGS}" ]; then
+    echo "" >&2
+    echo "${GRANT_WARNINGS}" >&2
+fi
 
 # --- Jobs run_as SP: deployer needs the Service Principal: User role on it ---
 # Granted via the workspace proxy of the account access-control rule-set API.

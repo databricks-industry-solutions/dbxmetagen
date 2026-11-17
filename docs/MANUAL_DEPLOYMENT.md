@@ -125,21 +125,24 @@ cp variable-overrides.example.json .databricks/bundle/dev/variable-overrides.jso
 ```
 
 Optional keys you may add: `vs_endpoint_name`, `enable_obo`, `node_type`,
-`budget_policy_id`. To apply a **cluster policy**, override the whole
-`metadata_job_cluster` (and/or `lakebase_job_cluster`) complex variable and add
-`policy_id` + `apply_policy_default_values` -- see the example in `databricks.yml`
-(a bare `policy_id` string is intentionally not a variable: the v1.8.0+ direct
-deploy engine rejects an empty `policy_id`, so the whole cluster block is
-substituted instead). For a service-principal run identity or OBO scopes, add the
-complex variables (see `example.env` for all keys). `run_as` sets the identity the
-**jobs** run as (the app stays owned by the deployer); the SP must already exist,
-and the deployer must hold the *Service Principal: User* role on it **before** deploying
-(workspace admins are not exempt; `scripts/grant_app_permissions.sh` grants it, or use
-Settings > Identity and access > Service principals > the SP > Permissions):
+`budget_policy_id`, `alert_email` (where job failure alerts go; defaults to the
+deploying identity). To apply a **cluster policy**, set the plain string `policy_id`
+to your policy ID (requires Databricks CLI >= 1.10.0; empty means policy-free).
+
+**Job identity.** Jobs omit `run_as` and run as the identity that deploys. To run them
+as a service principal, deploy **as** that SP -- see
+[Deploying to production as a service principal](../README.md#deploying-to-production-as-a-service-principal-cicd)
+in the README; set `alert_email` and `app_permissions` when you do. Setting a `run_as`
+override on its own does **not** change job identity. Only for the advanced "deploy
+as X, run jobs as a different SP Y" path do you add `run_as: ${var.run_as}` to the
+job(s) in `resources/jobs/*.yml` and set `run_as` to Y; the deployer must then hold
+the *Service Principal: User* role on Y **before** deploying (workspace admins are not
+exempt; `scripts/grant_app_permissions.sh` grants it).
+
+OBO scopes and app access are complex variables (see `example.env` for all keys):
 
 ```json
 {
-  "run_as": { "service_principal_name": "your-spn-uuid" },
   "enable_obo": true,
   "user_api_scopes": ["files.files", "serving.serving-endpoints", "sql.statement-execution", "dashboards.genie"],
   "app_permissions": [{ "group_name": "your_group", "level": "CAN_USE" }]
@@ -264,7 +267,7 @@ GRANT READ VOLUME ON SCHEMA `<catalog>`.`<schema>` TO `<SPN_UUID>`;
 GRANT WRITE VOLUME ON SCHEMA `<catalog>`.`<schema>` TO `<SPN_UUID>`;
 ```
 
-### If jobs run as a service principal (`run_as` override)
+### If jobs run as a different service principal (advanced `run_as`)
 
 The jobs SP gets the app SP's privileges plus a few create privileges: run the same
 statements again with `<SPN_UUID>` replaced by the `run_as` service principal's

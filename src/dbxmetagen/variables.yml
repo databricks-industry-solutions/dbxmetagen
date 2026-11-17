@@ -179,7 +179,10 @@ variables:
       deploying user for backward compatibility; override to a team distribution
       list (a real email address, NOT a Unity Catalog group name -- Databricks job
       email notifications do not accept group names) in variable-overrides.json so
-      operational failure alerts are not tied to a named individual.
+      operational failure alerts are not tied to a named individual. ALWAYS set it
+      when deploying as a service principal: the default is then the SP's
+      application id, not an email address, so alerts would reach nobody
+      (deploy.sh and grant_app_permissions.sh warn).
     default: ${var.current_user}
   run_as:
     description: >-
@@ -215,6 +218,11 @@ variables:
 
       Only the PROD target should run jobs as an SP. dev and demo are development-mode
       targets where DAB requires the deploying user, so leave run_as omitted there.
+
+      Upgrading: older releases applied this variable to EVERY job. If you set it and
+      no job references it, every job runs as the deployer; deploy.sh and
+      grant_app_permissions.sh print a warning saying so. Delete the override to
+      silence it, or add the per-job run_as described above.
     type: complex
     default:
       user_name: ${workspace.current_user.userName}

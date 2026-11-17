@@ -246,6 +246,17 @@ def list_drafts(run_sql: RunSql, fq: Fq, *, run_id: str = "", status: str = "", 
     return [decode_draft(r) for r in rows]
 
 
+def page_names(run_sql: RunSql, fq: Fq) -> Dict[str, str]:
+    """page_id -> UC page name for every draft that has a UC page, except discarded ones.
+
+    Used to resolve related-page links on publish. Not limited by recency, and only
+    the two columns, so a large drafts table cannot push an older published page out.
+    """
+    rows = run_sql(f"SELECT page_id, uc_page_name FROM {fq(DRAFTS)} "
+                   f"WHERE uc_page_name IS NOT NULL AND uc_page_name != '' AND status != 'discarded'", {})
+    return {r["page_id"]: r["uc_page_name"] for r in rows if r.get("page_id")}
+
+
 def list_runs(run_sql: RunSql, fq: Fq, limit: int = 50) -> List[Dict[str, Any]]:
     return run_sql(
         f"SELECT run_id, max(prompt) AS prompt, max(scope_catalog) AS scope_catalog, max(scope_schema) AS scope_schema, "

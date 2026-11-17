@@ -187,6 +187,19 @@ def test_write_and_revise_with_fake_llm(evidence):
     assert rev[0]["body"].startswith("## Definition")
 
 
+def test_revision_evidence_reflects_what_the_revision_cites(evidence):
+    cand = up.normalize_plan(_plan(_cand()), ctx=CTX, evidence=evidence, domains=DOMAINS)[0]
+    first = {"display_name": "No Known Allergies", "description": "A documented negative assertion. [E1]",
+             "body": "## Definition\nA documented negative. [E1]\n## Rule\nAn unsupported claim. [E2]"}
+    revised = {"display_name": "No Known Allergies", "description": "A documented negative assertion. [E1]",
+               "body": "## Definition\nA documented negative. [E1]"}
+    pages = up.write_pages(llm=lambda ps: [(json.dumps(first), None) for _ in ps], candidates=[cand], evidence=evidence)
+    assert "E2" in pages[0]["evidence_ids"]
+    rev = up.revise_pages(llm=lambda ps: [(json.dumps(revised), None) for _ in ps], pages=pages,
+                          issues_by_page={pages[0]["page_id"]: ["Unsupported claim"]}, evidence=evidence)
+    assert "E2" not in rev[0]["evidence_ids"] and "E1" in rev[0]["evidence_ids"]
+
+
 def test_llm_retry_on_bad_output():
     seq = iter([[("not json", None)], [('{"body": "x"}', None)]])
     out = up._call_with_retry(lambda ps: next(seq), ["p"], ok=lambda t: bool(up.extract_json(t).get("body")))
@@ -239,6 +252,12 @@ def test_citation_checks_from_stats():
     page = {**GOOD, "citation_stats": {"cited_lines": 3, "content_lines": 10, "invalid_ids": ["E7"]}, "evidence_ids": []}
     r = uq.deterministic_checks(page, evidence_ids=[], evidence_by_id={})
     assert not r["citation_coverage"]["pass"] and not r["citations_valid"]["pass"] and not r["has_human_evidence"]["pass"]
+
+
+def test_citation_checks_not_applicable_without_stats():
+    # A user-edited page has evidence but no citation stats: not "0/0 cited".
+    r = uq.deterministic_checks({**GOOD, "evidence_ids": ["E1"]}, evidence_ids=["E1"], evidence_by_id={})
+    assert r["citation_coverage"]["applicable"] is False and r["citations_valid"]["applicable"] is False
 
 
 def test_revision_issues_and_judge_parse():
@@ -378,6 +397,26 @@ def test_publish_detects_uc_side_edits():
     assert up.publish(api, [p], metastore_id="ms", force=True)[0]["status"] == "ok"
 
 
+def test_published_hash_matches_what_uc_holds_when_response_omits_fields():
+    # The create response omits synonyms; the draft's synonyms need sanitizing (its
+    # own name, a case duplicate). The hash must match what a later GET returns.
+    class SparseApi(FakeApi):
+        def __call__(self, method, path, query=None, body=None):
+            out = super().__call__(method, path, query, body)
+            if method == "POST" and path == up.PAGES_PATH:
+                self.sent = body
+                return {"name": out["name"], "state": out["state"]}
+            return out
+
+    api = SparseApi()
+    p = _page(synonyms=["Allergy", "s", "S"])
+    res = up.publish(api, [p], metastore_id="ms")[0]
+    stored = {k: api.sent[k] for k in ("display_name", "description", "body", "synonyms")}
+    again = FakeApi(uc_body=stored)
+    p2 = {**p, "uc_page_name": res["uc_page_name"], "published_hash": res["published_hash"]}
+    assert up.publish(again, [p2], metastore_id="ms")[0]["status"] == "ok"
+
+
 def test_draft_republish_never_demotes_published():
     path, q, body = up.build_update(_page(uc_page_name="pages/p1"), "DRAFT")
     assert "state" not in q["update_mask"] and "state" not in body and "domain" not in body
@@ -502,3 +541,42 @@ def test_baseline_steps_down_on_truncation(evidence):
     attempts = []
     pages = ev.baseline_pages(llm=llm, evidence=evidence, prompt="p", max_pages=12, attempts=attempts)
     assert calls == [12, 6, 3] and len(pages) == 1 and attempts[0]["parsed_pages"] == 0
+
+
+def test_publish_drafts_keeps_links_to_pages_no_longer_marked_published(monkeypatch):
+    # A related page that was published, then rewritten ('drafted') or edited in
+    # UC ('edited_in_uc') still exists in UC and must stay in the name map;
+    # otherwise reconcile_links DELETEs the existing link on republish.
+    seen = {}
+
+    def fake_publish(api_do, drafts, **kw):
+        seen["known"] = kw["known_page_names"]
+        return [{"status": "error"} for _ in drafts]
+
+    monkeypatch.setattr(pp.us, "list_drafts", lambda *a, **k: [{"page_id": "a", "uc_page_name": "pages/a"}])
+    monkeypatch.setattr(pp.us, "page_names", lambda run_sql, fq: {"a": "pages/a", "b": "pages/b"})
+    monkeypatch.setattr(pp.us, "get_evidence", lambda *a, **k: [])
+    monkeypatch.setattr(pp.us, "source_urls", lambda *a, **k: [])
+    monkeypatch.setattr(pp.us, "upsert_drafts", lambda *a, **k: None)
+    monkeypatch.setattr(pp.us, "write_log", lambda *a, **k: None)
+    monkeypatch.setattr(pp.up, "account_id", lambda api_do: "acct")
+    monkeypatch.setattr(pp.up, "publish", fake_publish)
+    monkeypatch.setattr(pp.up, "audit_rows", lambda *a, **k: [])
+
+    pp.publish_drafts(run_sql=None, fq=None, api_do=None, page_ids=["a"], metastore_id="m",
+                      now="t", request_id="r")
+    assert seen["known"] == {"a": "pages/a", "b": "pages/b"}
+
+
+def test_page_names_query_is_unlimited_and_excludes_discarded():
+    captured = {}
+
+    def run_sql(sql, params):
+        captured["sql"] = sql
+        return [{"page_id": "a", "uc_page_name": "pages/a"}, {"page_id": "b", "uc_page_name": "pages/b"}]
+
+    names = us.page_names(run_sql, lambda t: f"c.s.{t}")
+    assert names == {"a": "pages/a", "b": "pages/b"}
+    q = captured["sql"]
+    assert "status != 'discarded'" in q and "uc_page_name IS NOT NULL" in q
+    assert "LIMIT" not in q.upper() and "SELECT page_id, uc_page_name" in q

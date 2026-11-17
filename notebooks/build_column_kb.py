@@ -48,6 +48,10 @@ result = build_column_knowledge_base(
 print(f"Column knowledge base build complete")
 print(f"  Staged columns: {result['staged_count']}")
 print(f"  Total records: {result['total_records']}")
+if result.get("types_missing_catalogs"):
+    print(f"  WARNING: information_schema was unreadable for {result['types_missing_catalogs']}; "
+          "data_type/nullable for those catalogs' columns were left as previously known (NULL if new). "
+          "Grant the job identity access to system.information_schema to fill them in.")
 
 # COMMAND ----------
 

@@ -456,8 +456,24 @@ elif not app_spn_uuid:
 # COMMAND ----------
 
 if not run_jobs_as_app_sp:
-    print("run_jobs_as_app_sp=false -- leaving jobs to run as the deploying user "
-          "(set the widget to 'true' to run them as the app SP)")
+    # Never switch job identity here: the widget defaults to false, so a routine
+    # re-run would silently move an SP-run deployment back to the deployer. Notebook
+    # 01 keeps an existing run_as, so report the truth instead.
+    _still_sp = []
+    for res_name, jid in bound_job_ids.items():
+        try:
+            ra = w.jobs.get(job_id=jid).settings.run_as
+            if app_spn_uuid and ra and ra.service_principal_name == app_spn_uuid:
+                _still_sp.append(res_name)
+        except Exception:
+            pass
+    if _still_sp:
+        print(f"run_jobs_as_app_sp=false, but {len(_still_sp)} job(s) still run as the app SP from an "
+              f"earlier run with it set to true: {', '.join(sorted(_still_sp))}. Leaving them unchanged; "
+              "to run them as a user, change 'Run as' in the Jobs UI.")
+    else:
+        print("run_jobs_as_app_sp=false -- jobs run as the deploying user "
+              "(set the widget to 'true' to run them as the app SP)")
 elif app_spn_uuid and bound_job_ids:
     # The jobs' notebooks live under repo_path and their wheel in volume_path, both
     # readable only by the deployer so far. Running as the SP needs read access to

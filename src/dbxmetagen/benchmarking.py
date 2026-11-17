@@ -45,6 +45,10 @@ def setup_benchmarking(config):
             identity = SparkSession.builder.getOrCreate().sql("SELECT current_user()").first()[0]
             experiment_name = f"/Users/{identity}/dbxmetagen_benchmarks"
             print(f"Benchmarking: default experiment not usable ({e}); using {experiment_name}")
+            # start_run may have succeeded before the failure (e.g. get_experiment
+            # raised); end it, or the start_run below fails with "already active".
+            if mlflow.active_run():
+                mlflow.end_run()
             mlflow.set_experiment(experiment_name)
             mlflow.start_run()
         except Exception as e2:

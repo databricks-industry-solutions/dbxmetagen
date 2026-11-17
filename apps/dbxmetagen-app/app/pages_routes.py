@@ -121,11 +121,22 @@ def _probe(refresh: bool = False) -> dict:
     return _status_cache[key][1]
 
 
+# Results schemas whose Pages tables are known to exist. Every list/refresh call
+# ensures them; without this each request ran six CREATE TABLE IF NOT EXISTS
+# round-trips on the warehouse before its own query. Keyed by the fully qualified
+# drafts table, so a different catalog/schema is still ensured.
+_TABLES_ENSURED: set = set()
+
+
 def _ensure_tables():
+    key = _fq(us.DRAFTS)
+    if key in _TABLES_ENSURED:
+        return
     try:
         us.ensure_tables(_run_sql, _fq)
     except Exception as exc:
         raise HTTPException(500, detail=f"Could not create the Pages tables in the results schema: {exc}")
+    _TABLES_ENSURED.add(key)
 
 
 def _view(d: dict) -> dict:

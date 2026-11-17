@@ -186,15 +186,22 @@ GRANT_ARGS=(-t "$TARGET" -p "$PROFILE")
 # The Jobs API refuses to create a job whose run_as SP the deployer lacks the
 # "Service Principal: User" role on, so grant_app_permissions.sh must set that up
 # BEFORE the deploy (it also grants the jobs SP; the app SP is handled post-deploy).
-_run_as_sp=$(databricks bundle validate -t "$TARGET" -p "$PROFILE" "${DEPLOY_VARS[@]}" --output json 2>/dev/null | python3 -c "
-import sys, json
-try:
-    v = json.load(sys.stdin).get('variables', {}).get('run_as', {})
-    ra = v.get('value', v.get('default')) or {}
-    print(ra.get('service_principal_name', '') if isinstance(ra, dict) else '')
-except Exception:
-    print('')
-" 2>/dev/null || echo "")
+# Resolve the bundle once for the identity checks (scripts/bundle_identity_check.py):
+# the jobs-SP to grant before deploying, plus warnings for settings that silently
+# misbehave (an ignored run_as override, an alert_email that is not an email
+# address, an SP deploy nobody else can open). Warnings never stop the deploy.
+_bundle_json=$(databricks bundle validate -t "$TARGET" -p "$PROFILE" "${DEPLOY_VARS[@]}" --output json 2>/dev/null || echo "")
+_run_as_line=$(printf '%s' "$_bundle_json" | python3 scripts/bundle_identity_check.py 2>/dev/null || echo "")
+_deploy_warnings=$(printf '%s' "$_bundle_json" | python3 scripts/bundle_identity_check.py --warnings --target "$TARGET" 2>/dev/null || echo "")
+IFS=$'\t' read -r _run_as_id _run_as_kind _run_as_state <<< "$_run_as_line"
+_run_as_sp=""
+if [ "$_run_as_kind" = "service_principal_name" ] && [ "$_run_as_state" != "ignored" ]; then
+    _run_as_sp="$_run_as_id"
+fi
+if [ -n "$_deploy_warnings" ]; then
+    echo "" >&2
+    echo "$_deploy_warnings" >&2
+fi
 if [ -n "$_run_as_sp" ]; then
     echo ""
     echo "=== grant_app_permissions.sh (pre-deploy: jobs run_as SP ${_run_as_sp}) ==="
@@ -232,3 +239,8 @@ scripts/grant_app_permissions.sh "${GRANT_ARGS[@]}"
 
 echo ""
 echo "=== Deployment complete ==="
+if [ -n "$_deploy_warnings" ]; then
+    echo "" >&2
+    echo "Reminder -- deploy warnings (details above):" >&2
+    echo "$_deploy_warnings" | grep '^WARNING' >&2
+fi
