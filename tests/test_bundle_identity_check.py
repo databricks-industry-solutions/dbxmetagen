@@ -72,9 +72,14 @@ def test_sp_deploy_with_defaults_warns_about_alerts_and_app_access():
 
 
 def test_sp_deploy_fully_configured_has_no_warnings():
-    b = _bundle(jobs={"a": {}}, deployer=SP, alert_email="data-team@example.com",
+    b = _bundle(jobs={"a": {}}, deployer=SP, alert_email="ops@example.com",
                 app_permissions=[{"group_name": "analysts", "level": "CAN_USE"}])
     assert warnings(b, "prod") == []
+
+
+def test_placeholder_alert_email_warns():
+    w = warnings(_bundle(jobs={"a": {}}, alert_email="data-team@example.com"), "prod")
+    assert len(w) == 1 and "placeholder" in w[0]
 
 
 def test_empty_alert_email_warns():

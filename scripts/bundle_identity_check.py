@@ -46,6 +46,15 @@ def _is_email(value: str) -> bool:
     return "@" in value and "." in value.split("@")[-1]
 
 
+# Placeholder addresses shipped in the README and override templates. Copied
+# verbatim, they would silently swallow every alert.
+_PLACEHOLDER_EMAILS = {"data-team@example.com", "user1@example.com"}
+
+
+def _is_placeholder(value: str) -> bool:
+    return value.strip().lower() in _PLACEHOLDER_EMAILS
+
+
 def status(bundle: dict) -> str:
     ra = _value(bundle, "run_as") or {}
     if not isinstance(ra, dict):
@@ -88,7 +97,12 @@ def warnings(bundle: dict, target: str = "<target>") -> List[str]:
         )
 
     alert = str(_value(bundle, "alert_email") or "").strip()
-    if not _is_email(alert):
+    if _is_email(alert) and _is_placeholder(alert):
+        out.append(
+            f"WARNING: alert_email is the placeholder '{alert}', so job failure alerts will reach\n"
+            f"  nobody. Set a real team address in {overrides}."
+        )
+    elif not _is_email(alert):
         shown = f"'{alert}'" if alert else "empty"
         out.append(
             f"WARNING: alert_email is {shown}, which is not an email address, so job failure alerts\n"
