@@ -118,12 +118,12 @@ The default job-cluster `node_type` is `i3.2xlarge` (an **AWS** type). On anothe
 
 ### Step 3 — Deploy (pick one path)
 
-All three paths are **equivalent, fully-supported peers**: the same bundle, the same `artifacts.build` wheel hook, the same **24 jobs + app**. Pick the one that matches your environment. Anything that applies *after* the deploy — starting the app, grants, OBO — is in [After deploy](#after-deploy) and is the same for all paths.
+All three paths are **equivalent, fully-supported peers**: the same bundle, the same `artifacts.build` wheel hook, the same **25 jobs + app**. Pick the one that matches your environment. Anything that applies *after* the deploy — starting the app, grants, OBO — is in [After deploy](#after-deploy) and is the same for all paths.
 
 #### Path A — CLI (recommended)
 
 ```bash
-databricks bundle deploy -t dev -p <your-profile>                # build wheel + register all 24 jobs & the app
+databricks bundle deploy -t dev -p <your-profile>                # build wheel + register all 25 jobs & the app
 databricks bundle run    -t dev -p <your-profile> dbxmetagen_app # deploy app source + start the app
 ```
 
@@ -160,7 +160,7 @@ The bundle editor's **Deploy** button is a first-class peer to the CLI — same 
 
 #### Fallback — Notebook deployment pipeline
 
-If you can run **neither** the CLI nor the UI, deploy the app + **core jobs (8 of 24)** from Databricks notebooks via the Python SDK. Some dashboard features are unavailable. See [`notebook_deployment_pipeline/README.md`](notebook_deployment_pipeline/README.md). (This is different from the library-only [Partial Install](#partial-install-notebook-only) below.)
+If you can run **neither** the CLI nor the UI, deploy the app + **core jobs (8 of 25)** from Databricks notebooks via the Python SDK. Some dashboard features are unavailable. See [`notebook_deployment_pipeline/README.md`](notebook_deployment_pipeline/README.md). (This is different from the library-only [Partial Install](#partial-install-notebook-only) below.)
 
 ### Your first run
 
@@ -188,6 +188,55 @@ The items below apply to **all paths** and are each **optional**:
   - Scopes are declared for you (`files.files`, `serving.serving-endpoints`, `sql.statement-execution`, `dashboards.genie`), so no scope wrangling is needed. Declaring scopes requires the workspace's user-token-passthrough feature; if a target lacks it, override `user_api_scopes` to `[]` to opt out.
 - **Advanced overrides** (cluster policy, serverless budget, `run_as` SP, app permissions, OBO scopes, Lakebase): copy `variable-overrides.advanced.example.json` into `.databricks/bundle/<target>/variable-overrides.json` (CLI) or paste the same keys into the UI's ⋮ **Configure variable overrides** editor.
 - **Recommended: attach a budget policy.** dbxmetagen's jobs run LLM calls and analytics at whatever scale you point them at, so cost can grow quickly on a large catalog. Set `budget_policy_id` (serverless) and/or `policy_id` (classic job clusters) via the overrides above so every run carries cost-attribution tags and stays within your governance/cost guardrails. Pair this with the "start small, then scale up" guidance so you can measure cost before scaling.
+
+### Deploying to production as a service principal (CI/CD)
+
+For production and CI/CD, deploy the `prod` target **as a service principal (SP)**. Jobs omit `run_as`, so they automatically run as the identity that deploys -- the SP -- with no `run_as` configuration. (`dev` and `demo` are development-mode targets; deploy those as a user.)
+
+**1. Prepare the service principal.** Create it (Settings > Identity and access > Service principals) and generate an OAuth secret for it. The SP needs:
+- On the output catalog/schema: `USE CATALOG`, `USE SCHEMA`, `CREATE TABLE`, `CREATE VOLUME`, `CREATE FUNCTION`, `CREATE MATERIALIZED VIEW`, `SELECT`, `MODIFY` -- automatic if the SP owns the schema (for example, it created it). To run the grants script it must also be able to grant on that catalog and schema (owner or `MANAGE`).
+- `SELECT` on the source tables you document (plus `MODIFY` and `APPLY TAG` to apply DDL), access to the model endpoint, and `CAN_USE` on the SQL warehouse (the grants script runs its `GRANT`s there).
+
+See [docs/PERMISSIONS.md](docs/PERMISSIONS.md) for the full list and for moving an existing user-owned deployment to an SP.
+
+**2. Authenticate the CLI as the SP** (OAuth machine-to-machine). In CI, set environment variables:
+
+```bash
+export DATABRICKS_HOST=https://<your-workspace-host>
+export DATABRICKS_CLIENT_ID=<sp-application-id>
+export DATABRICKS_CLIENT_SECRET=<sp-oauth-secret>   # from your CI secret store
+```
+
+or add a profile to `~/.databrickscfg` with `host`, `client_id`, and `client_secret` and pass `-p <profile>`. The runner also needs the Databricks CLI >= 1.10.0, `uv`, and access to PyPI (or set `UV_INDEX_URL` to your mirror) to build the wheel.
+
+**3. Set the prod overrides** in `.databricks/bundle/prod/variable-overrides.json` (in CI, write the file from your pipeline). Besides the three required values, set these two -- with an SP deploy their defaults do not work:
+
+```json
+{
+  "catalog_name": "my_catalog",
+  "schema_name": "metadata_results",
+  "warehouse_id": "0123456789abcdef",
+  "alert_email": "data-team@example.com",
+  "app_permissions": [{ "group_name": "data-analysts", "level": "CAN_USE" }]
+}
+```
+
+- `alert_email` receives every job's failure alert. It defaults to the deploying identity, which for an SP is its application id, so alerts would reach nobody.
+- `app_permissions` controls who can open the app. The deploying identity gets `CAN_MANAGE`; with the default `[]`, an SP deploy leaves only the SP and workspace admins able to open it.
+
+`deploy.sh` and `scripts/grant_app_permissions.sh` print a warning for each of these when it is unset.
+
+**4. Deploy:**
+
+```bash
+databricks bundle deploy -t prod
+databricks bundle run    -t prod dbxmetagen_app
+scripts/grant_app_permissions.sh -t prod
+```
+
+The bundle lands under `/Workspace/Users/<sp-application-id>/.bundle/dbxmetagen/prod`; the SP owns the app and the jobs, the jobs run as the SP, and the app's own service principal can run them (`CAN_MANAGE_RUN`). Workspace admins can see the jobs; to let a team view them too, add an entry such as `- group_name: <your-group>` / `level: CAN_VIEW` to the `permissions:` list of the `prod` target in `databricks.yml`.
+
+**Running jobs as a different SP than the deployer** (for example, deploying as a user but running jobs as an SP) is an advanced path: see `run_as` in `variables.yml` and [docs/PERMISSIONS.md](docs/PERMISSIONS.md).
 
 ## Partial Install (Notebook Only)
 

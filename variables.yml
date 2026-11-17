@@ -179,7 +179,10 @@ variables:
       deploying user for backward compatibility; override to a team distribution
       list (a real email address, NOT a Unity Catalog group name -- Databricks job
       email notifications do not accept group names) in variable-overrides.json so
-      operational failure alerts are not tied to a named individual.
+      operational failure alerts are not tied to a named individual. ALWAYS set it
+      when deploying as a service principal: the default is then the SP's
+      application id, not an email address, so alerts would reach nobody
+      (deploy.sh and grant_app_permissions.sh warn).
     default: ${var.current_user}
   run_as:
     description: >-

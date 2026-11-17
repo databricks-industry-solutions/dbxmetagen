@@ -184,9 +184,9 @@ The app declares `user_api_scopes` on EVERY deploy (default in `app_variables.ym
 
 ### Who can open the app
 
-`permission_groups` and `permission_users` in your `.env` file control **who can open the Databricks App** in the workspace. These generate `CAN_USE` entries in the DAB app resource definition.
+`app_permissions`, a JSON list in your variable overrides, controls **who can open the Databricks App**, for example `[{"group_name": "data-analysts", "level": "CAN_USE"}]`. The deploying identity always gets `CAN_MANAGE`. With the default `[]`, a deploy **as a service principal** leaves only the SP and workspace admins able to open the app, so set it for SP deploys (`deploy.sh` and `grant_app_permissions.sh` warn when it is empty). The older `permission_groups` / `permission_users` settings no longer control app access.
 
-These settings do **not** grant Unity Catalog access to the underlying tables. They only control the app-level ACL.
+This setting does **not** grant Unity Catalog access to the underlying tables. It only controls the app-level ACL.
 
 ### UC access for end users
 
@@ -210,5 +210,5 @@ To automatically grant groups/users `SELECT` after metadata generation, set `gra
 | Jobs (15 bound jobs) | `CAN_MANAGE_RUN` (via DAB) | `CAN_MANAGE` (bundle owner) | N/A | N/A |
 | VS endpoint | `CAN_USE` (manual or deploy script) | N/A | N/A | N/A |
 | Model serving endpoint | Not needed | Access required for `AI_QUERY` | N/A | N/A |
-| Databricks App | N/A | N/A | `CAN_USE` (via `permission_groups` / `permission_users`) | `CAN_USE` (via `permission_groups` / `permission_users`) |
+| Databricks App | N/A | N/A | `CAN_USE` (via `app_permissions`) | `CAN_USE` (via `app_permissions`) |
 | Source tables (to be documented) | Not needed | `SELECT` | N/A | N/A |
