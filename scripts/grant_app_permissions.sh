@@ -378,11 +378,12 @@ if [ "$SKIP_VS" = false ]; then
             VS_ACL="${VS_ACL:+${VS_ACL}, }{\"service_principal_name\": \"${sp}\", \"permission_level\": \"CAN_USE\"}"
         done
         echo "  Granting CAN_USE on VS endpoint '${VS_ENDPOINT}' (id=${VS_EP_ID}) to:${SPN_APP_ID:+ app SPN}${JOBS_SP_ID:+ jobs SP}..."
-        databricks api patch "/api/2.0/permissions/vector-search-endpoints/${VS_EP_ID}" \
-            --profile "$PROFILE" \
-            --json "{\"access_control_list\": [${VS_ACL}]}" 2>&1 || \
+        if ! databricks api patch "/api/2.0/permissions/vector-search-endpoints/${VS_EP_ID}" \
+                --profile "$PROFILE" \
+                --json "{\"access_control_list\": [${VS_ACL}]}" 2>&1; then
             echo "  WARNING: Could not grant VS endpoint permissions (may need manual grant)"
             PROBLEMS+=("CAN_USE on Vector Search endpoint ${VS_ENDPOINT}")
+        fi
     else
         echo "  WARNING: Could not resolve VS endpoint numeric ID -- grant CAN_USE manually"
         PROBLEMS+=("CAN_USE on Vector Search endpoint ${VS_ENDPOINT} (endpoint not found or not visible)")
