@@ -44,6 +44,8 @@ set -e
 TARGET="dev"
 PROFILE="DEFAULT"
 SKIP_VS=false
+ALLOW_FAILURES=false
+PROBLEMS=()   # every grant that did not apply; reported at the end
 
 usage() {
     cat <<'EOF'
@@ -51,6 +53,7 @@ Usage: scripts/grant_app_permissions.sh [OPTIONS]
   -t, --target TARGET    Bundle target (default: dev)
   -p, --profile PROFILE  Databricks CLI profile (default: DEFAULT)
       --no-vs            Skip Vector Search endpoint provisioning + grant
+      --allow-failures   Exit 0 even if some grants fail (default: exit 1 so CI notices)
   -h, --help             Show this help
 EOF
 }
@@ -60,6 +63,7 @@ while [[ $# -gt 0 ]]; do
         -t|--target)  TARGET="$2"; shift 2 ;;
         -p|--profile) PROFILE="$2"; shift 2 ;;
         --no-vs)      SKIP_VS=true; shift ;;
+        --allow-failures) ALLOW_FAILURES=true; shift ;;
         -h|--help)    usage; exit 0 ;;
         *) echo "Unknown option: $1 (use --help)"; exit 1 ;;
     esac
@@ -211,6 +215,7 @@ except Exception:
         fi
     fi
     if [ "${ROLE_OK}" = false ]; then
+        PROBLEMS+=("Service Principal: User role on jobs SP ${JOBS_SP_ID} for the deployer")
         echo "  WARNING: grant it manually, or bundle deploy will fail with PERMISSION_DENIED:" >&2
         echo "    Settings > Identity and access > Service principals > ${JOBS_SP_ID} > Permissions" >&2
         echo "    > Grant access > <deploying user> : Service Principal: User" >&2
@@ -341,6 +346,7 @@ if [ -n "${GOVERNED_DOMAIN_TAG_NAME:-}" ]; then
     done
 fi
 if [ "${GRANT_FAIL}" -eq 1 ]; then
+    PROBLEMS+=("one or more Unity Catalog GRANT statements (see FAILED above)")
     echo ""
     echo "WARNING: One or more GRANT statements failed. The app will still start, but some"
     echo "         features may not work. Re-run this script or grant manually via the UI."
@@ -376,8 +382,10 @@ if [ "$SKIP_VS" = false ]; then
             --profile "$PROFILE" \
             --json "{\"access_control_list\": [${VS_ACL}]}" 2>&1 || \
             echo "  WARNING: Could not grant VS endpoint permissions (may need manual grant)"
+            PROBLEMS+=("CAN_USE on Vector Search endpoint ${VS_ENDPOINT}")
     else
         echo "  WARNING: Could not resolve VS endpoint numeric ID -- grant CAN_USE manually"
+        PROBLEMS+=("CAN_USE on Vector Search endpoint ${VS_ENDPOINT} (endpoint not found or not visible)")
     fi
 else
     echo ""
@@ -401,12 +409,22 @@ if [ -n "${RUN_AS_SP}" ]; then
         echo "  Granted CAN_READ on ${ROOT_PATH} to ${RUN_AS_SP}"
     else
         echo "  WARNING: could not grant CAN_READ on ${ROOT_PATH}; jobs will fail to open their notebooks." >&2
+        PROBLEMS+=("CAN_READ on bundle folder ${ROOT_PATH} for ${RUN_AS_SP}")
         echo "    Grant it manually: Workspace > ${ROOT_PATH} > Share > ${RUN_AS_SP} : Can Read" >&2
     fi
 fi
 
 echo ""
-echo "=== Grants complete ==="
+if [ "${#PROBLEMS[@]}" -eq 0 ]; then
+    echo "=== Grants complete ==="
+else
+    echo "=== Grants finished with ${#PROBLEMS[@]} problem(s) ===" >&2
+    for p in "${PROBLEMS[@]}"; do echo "  - ${p}" >&2; done
+    echo "  Fix the privileges above (or grant manually: docs/MANUAL_DEPLOYMENT.md), then re-run." >&2
+fi
 if [ -z "${SPN_APP_ID}" ]; then
     echo "  (app not deployed yet: re-run this script after bundle deploy to grant the app SP)"
+fi
+if [ "${#PROBLEMS[@]}" -gt 0 ] && [ "${ALLOW_FAILURES}" = false ]; then
+    exit 1
 fi

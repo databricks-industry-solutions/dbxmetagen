@@ -20,6 +20,8 @@
 #                          DEFAULT is NO rebuild -- the built dist/ is committed and shipped as-is.
 #       --no-frontend      No-op (kept for backward compatibility): the frontend build is already skipped by default, so this just runs the default. Never errors.
 #       --no-vs            Skip Vector Search endpoint provisioning + grant
+#       --no-grants        Do not run scripts/grant_app_permissions.sh (grant manually instead)
+#       --allow-grant-failures  Finish with exit 0 even if some grants fail (default: exit 1)
 #   -h, --help             Show this help
 set -e
 
@@ -36,6 +38,8 @@ PROFILE="DEFAULT"
 SKIP_APP=false
 SKIP_FRONTEND=true   # default: do NOT rebuild the frontend (dist/ is committed); pass --yes-frontend to force
 SKIP_VS=false
+SKIP_GRANTS=false
+ALLOW_GRANT_FAILURES=false
 DEPLOY_VARS=()   # bundle-variable overrides forwarded from a legacy {target}.env, if present
 
 while [[ $# -gt 0 ]]; do
@@ -46,8 +50,10 @@ while [[ $# -gt 0 ]]; do
         --yes-frontend) SKIP_FRONTEND=false; shift ;;
         --no-frontend) SKIP_FRONTEND=true; shift ;;   # backward-compat no-op: SKIP_FRONTEND already defaults to true
         --no-vs)       SKIP_VS=true; shift ;;
+        --no-grants)   SKIP_GRANTS=true; shift ;;
+        --allow-grant-failures) ALLOW_GRANT_FAILURES=true; shift ;;
         --permissions) echo "Note: --permissions is no longer needed; grants run automatically below."; shift ;;
-        -h|--help)     sed -n '15,23p' "$0" | sed 's/^# \{0,1\}//'; exit 0 ;;
+        -h|--help)     sed -n '15,25p' "$0" | sed 's/^# \{0,1\}//'; exit 0 ;;
         *)             echo "Unknown option: $1 (use --help)"; exit 1 ;;
     esac
 done
@@ -202,10 +208,11 @@ if [ -n "$_deploy_warnings" ]; then
     echo "" >&2
     echo "$_deploy_warnings" >&2
 fi
-if [ -n "$_run_as_sp" ]; then
+if [ -n "$_run_as_sp" ] && [ "$SKIP_GRANTS" = false ]; then
     echo ""
     echo "=== grant_app_permissions.sh (pre-deploy: jobs run_as SP ${_run_as_sp}) ==="
-    scripts/grant_app_permissions.sh "${GRANT_ARGS[@]}"
+    # Setup pass only (the app may not exist yet); the post-deploy pass reports failures.
+    scripts/grant_app_permissions.sh "${GRANT_ARGS[@]}" --allow-failures
 fi
 
 echo ""
@@ -233,9 +240,17 @@ if [ "$SKIP_APP" = false ]; then
 fi
 
 # --- Post-deploy UC + Vector Search grants (idempotent) ---
-echo ""
-echo "=== grant_app_permissions.sh ==="
-scripts/grant_app_permissions.sh "${GRANT_ARGS[@]}"
+_grants_rc=0
+if [ "$SKIP_GRANTS" = true ]; then
+    echo ""
+    echo "=== Skipping grant_app_permissions.sh (--no-grants) ==="
+    echo "  Grant the app SP its Unity Catalog and Vector Search access yourself:"
+    echo "  scripts/grant_app_permissions.sh -t ${TARGET} -p ${PROFILE}, or docs/MANUAL_DEPLOYMENT.md."
+else
+    echo ""
+    echo "=== grant_app_permissions.sh ==="
+    scripts/grant_app_permissions.sh "${GRANT_ARGS[@]}" || _grants_rc=$?
+fi
 
 echo ""
 echo "=== Deployment complete ==="
@@ -243,4 +258,14 @@ if [ -n "$_deploy_warnings" ]; then
     echo "" >&2
     echo "Reminder -- deploy warnings (details above):" >&2
     echo "$_deploy_warnings" | grep '^WARNING' >&2
+fi
+if [ "$_grants_rc" -ne 0 ]; then
+    echo "" >&2
+    if [ "$ALLOW_GRANT_FAILURES" = true ]; then
+        echo "Some grants failed (see above); continuing because of --allow-grant-failures." >&2
+    else
+        echo "Deploy finished, but some grants failed (see above). Fix them and re-run" >&2
+        echo "scripts/grant_app_permissions.sh, or pass --allow-grant-failures / --no-grants." >&2
+        exit "$_grants_rc"
+    fi
 fi
