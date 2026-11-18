@@ -92,14 +92,12 @@ targets:
   dev:
     mode: development
     default: true
-    run_as: ${var.run_as}
     permissions:
       - user_name: ${var.deploying_user}
         level: CAN_MANAGE
 
   demo:
     mode: development
-    run_as: ${var.run_as}
     permissions:
       - user_name: ${var.deploying_user}
         level: CAN_MANAGE
@@ -107,8 +105,24 @@ targets:
   prod:
     mode: production
     workspace:
+      # Must be under /Workspace -- see var.current_working_directory. A bare
+      # /Users/... path deploys jobs fine but the APP deploy rejects it with
+      # "Source code path must be a valid workspace path".
       root_path: ${var.current_working_directory}
-    run_as: ${var.run_as}
+    # No run_as anywhere -- not at the target level, and not on the jobs
+    # (resources/jobs/*.yml). A target run_as would apply to EVERY resource, and DAB
+    # rejects an app whose run_as differs from the deploying identity ("apps do not
+    # support a setting a run_as user that is different from the owner"). Omitting
+    # run_as on the jobs too lets DAB type the deploying identity automatically --
+    # correctly for a user OR a service principal. A hardcoded user_name: <sp-app-id>
+    # made an SP-deployed prod bundle fail with "cannot be set as run_as", and an
+    # empty run_as object fails with "run_as object must have user_name or
+    # service_principal_name fields filled", so only omission is safe (#264).
+    #
+    # So: jobs run as the deploying identity. To run jobs as a service principal,
+    # deploy as that SP (jobs follow automatically). For the advanced "deploy as X,
+    # run jobs as a different SP Y" pattern, add `run_as: ${var.run_as}` back to the
+    # job(s) and set var.run_as to Y -- see variables.yml.
     permissions:
       - user_name: ${var.current_user}
         level: CAN_MANAGE

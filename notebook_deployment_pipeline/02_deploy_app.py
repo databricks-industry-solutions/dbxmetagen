@@ -31,6 +31,7 @@ dbutils.widgets.text("app_name", "dbxmetagen-app", "App Name")
 dbutils.widgets.text("vs_endpoint_name", "dbxmetagen-vs", "Vector Search Endpoint")
 dbutils.widgets.dropdown("enable_obo", "false", ["false", "true"], "Enable OBO")
 dbutils.widgets.dropdown("mode", "deploy", ["deploy", "destroy"], "Mode")
+dbutils.widgets.dropdown("run_jobs_as_app_sp", "false", ["false", "true"], "Run jobs as app SP")
 
 catalog_name = dbutils.widgets.get("catalog_name")
 schema_name = dbutils.widgets.get("schema_name")
@@ -41,6 +42,7 @@ app_name = dbutils.widgets.get("app_name")
 vs_endpoint_name = dbutils.widgets.get("vs_endpoint_name").strip() or "dbxmetagen-vs"
 enable_obo = dbutils.widgets.get("enable_obo")
 mode = dbutils.widgets.get("mode")
+run_jobs_as_app_sp = dbutils.widgets.get("run_jobs_as_app_sp") == "true"
 
 assert catalog_name, "catalog_name is required"
 assert warehouse_id, "warehouse_id is required"
@@ -430,6 +432,96 @@ if app_spn_uuid and bound_job_ids:
         print(f"  Granted CAN_MANAGE_RUN on {res_name} (id={jid})")
 elif not app_spn_uuid:
     print("WARNING: Could not resolve app SPN -- skipping job ACLs")
+
+# COMMAND ----------
+
+# MAGIC %md
+# MAGIC ### (Opt-in) Set jobs to run as the app service principal
+# MAGIC
+# MAGIC DISABLED BY DEFAULT. Jobs run as the deploying user unless the
+# MAGIC `run_jobs_as_app_sp` widget is set to `true` -- this preserves the historical
+# MAGIC behavior (deployer is the job runner) so existing deployments are unchanged.
+# MAGIC
+# MAGIC When enabled: Notebook 01 creates the jobs without a `run_as` (the app SPN does
+# MAGIC not exist yet), so they default to the deploying user. Now that the SPN exists
+# MAGIC and holds the UC grants below, repoint each job's `run_as` at it -- otherwise the
+# MAGIC jobs keep executing as the deployer (who should not hold MODIFY on the output
+# MAGIC tables) and serverless tasks like `build_knowledge_base` fail with
+# MAGIC `PERMISSION_DENIED ... does not have MODIFY on Table ... column_knowledge_base`.
+# MAGIC
+# MAGIC Idempotent (safe to re-run). Requires the deployer to be able to act as the SPN
+# MAGIC (Service Principal "User" role) or be a workspace admin; a failure here is
+# MAGIC warned, not fatal -- fall back to setting "Run as" in the Jobs UI.
+
+# COMMAND ----------
+
+if not run_jobs_as_app_sp:
+    # Never switch job identity here: the widget defaults to false, so a routine
+    # re-run would silently move an SP-run deployment back to the deployer. Notebook
+    # 01 keeps an existing run_as, so report the truth instead.
+    _still_sp = []
+    for res_name, jid in bound_job_ids.items():
+        try:
+            ra = w.jobs.get(job_id=jid).settings.run_as
+            if app_spn_uuid and ra and ra.service_principal_name == app_spn_uuid:
+                _still_sp.append(res_name)
+        except Exception:
+            pass
+    if _still_sp:
+        print(f"run_jobs_as_app_sp=false, but {len(_still_sp)} job(s) still run as the app SP from an "
+              f"earlier run with it set to true: {', '.join(sorted(_still_sp))}. Leaving them unchanged; "
+              "to run them as a user, change 'Run as' in the Jobs UI.")
+    else:
+        print("run_jobs_as_app_sp=false -- jobs run as the deploying user "
+              "(set the widget to 'true' to run them as the app SP)")
+elif app_spn_uuid and bound_job_ids:
+    # The jobs' notebooks live under repo_path and their wheel in volume_path, both
+    # readable only by the deployer so far. Running as the SP needs read access to
+    # both, or every task fails with "Unable to access the notebook ...".
+    from databricks.sdk.service.iam import AccessControlRequest, PermissionLevel
+    try:
+        repo_id = w.workspace.get_status(repo_path).object_id
+        w.permissions.update(
+            request_object_type="directories",
+            request_object_id=str(repo_id),
+            access_control_list=[AccessControlRequest(
+                service_principal_name=app_spn_uuid,
+                permission_level=PermissionLevel.CAN_READ)])
+        print(f"  Granted CAN_READ on {repo_path} to app SPN")
+    except Exception as e:
+        print(f"  WARNING: could not grant CAN_READ on {repo_path} (grant it via Share): {e}")
+    _vol = volume_path.split("/")  # /Volumes/<catalog>/<schema>/<volume>/...
+    if len(_vol) >= 5 and _vol[1] == "Volumes":
+        for stmt in [
+            f"GRANT USE CATALOG ON CATALOG `{_vol[2]}` TO `{app_spn_uuid}`",
+            f"GRANT USE SCHEMA ON SCHEMA `{_vol[2]}`.`{_vol[3]}` TO `{app_spn_uuid}`",
+            f"GRANT READ VOLUME ON VOLUME `{_vol[2]}`.`{_vol[3]}`.`{_vol[4]}` TO `{app_spn_uuid}`",
+        ]:
+            state = w.statement_execution.execute_statement(
+                warehouse_id=warehouse_id, statement=stmt, wait_timeout="30s").status.state.value
+            print(f"  [{state}] {stmt}")
+
+    # The jobs create objects the app never does (output volume, MCP functions,
+    # materialized metric views), so the app SP needs these on top of its app grants.
+    for stmt in [
+        f"GRANT CREATE VOLUME ON SCHEMA `{catalog_name}`.`{schema_name}` TO `{app_spn_uuid}`",
+        f"GRANT CREATE FUNCTION ON SCHEMA `{catalog_name}`.`{schema_name}` TO `{app_spn_uuid}`",
+        f"GRANT CREATE MATERIALIZED VIEW ON SCHEMA `{catalog_name}`.`{schema_name}` TO `{app_spn_uuid}`",
+    ]:
+        state = w.statement_execution.execute_statement(
+            warehouse_id=warehouse_id, statement=stmt, wait_timeout="30s").status.state.value
+        print(f"  [{state}] {stmt}")
+
+    run_as_settings = jobs_svc.JobSettings(
+        run_as=jobs_svc.JobRunAs(service_principal_name=app_spn_uuid))
+    for res_name, jid in bound_job_ids.items():
+        try:
+            w.jobs.update(job_id=jid, new_settings=run_as_settings)
+            print(f"  Set run_as=app SPN on {res_name} (id={jid})")
+        except Exception as e:
+            print(f"  WARNING: could not set run_as on {res_name} (id={jid}): {e}")
+elif not app_spn_uuid:
+    print("WARNING: Could not resolve app SPN -- jobs will run as the deploying user")
 
 # COMMAND ----------
 

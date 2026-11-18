@@ -9,11 +9,17 @@ dbxmetagen uses two separate identities at runtime: the **app service principal*
 | Identity | Created by | Used for |
 |----------|-----------|----------|
 | **App Service Principal** | Auto-created by Databricks Apps on first deploy | Dashboard UI: browsing metadata, triggering jobs, SQL queries, Vector Search, agent chat |
-| **Job Owner / Deployer** | The user (or `run_as` SP) who ran `databricks bundle deploy` | Job execution: metadata generation, DDL writes, `ALTER TABLE`, `SET TAGS`, `AI_QUERY` calls |
+| **Job run identity** | The **deploying identity** (auto-typed), or a different service principal via the advanced path | Job execution: metadata generation, DDL writes, `ALTER TABLE`, `SET TAGS`, `AI_QUERY` calls |
 
 The app SPN is a **read-heavy** identity -- it needs `SELECT` to browse and `MODIFY` / `CREATE TABLE` only because the UI writes to control tables (metric view definitions, agent state, semantic layer questions). The deployer identity is a **write-heavy** identity that creates and modifies tables in the target catalog during job runs.
 
-In `dev` / `demo` targets, jobs run as the **job owner** (whoever created the job via `bundle deploy`). Every target sets `run_as: ${var.run_as}` in `databricks.yml`; the `run_as` variable defaults to the deploying user and can be overridden to a service principal (e.g. in `variable-overrides.json`) to pin job execution.
+Jobs **omit** `run_as` entirely -- it is set neither per job (`resources/jobs/*.yml`) nor at the target level (`databricks.yml`). A target-level `run_as` would also apply to the app, and DAB rejects an app whose `run_as` differs from the deploying identity. With `run_as` omitted, DAB types the **deploying identity** automatically -- correctly whether you deploy as a user *or* a service principal. (This is deliberate: a static `user_name` default broke SP deploys with `cannot be set as run_as`, and an empty `{}` fails with `run_as object must have user_name or service_principal_name fields filled` -- only omission auto-types both.)
+
+**To run jobs as a service principal, there are two ways:**
+
+1. **Deploy as that SP (recommended).** The jobs run as it automatically -- no `run_as` config at all. The SP needs the output-schema privileges below; if it is the catalog/schema owner (e.g. it created them) that is automatic, otherwise grant them explicitly (the same grants `grant_app_permissions.sh` applies to the app SP).
+
+2. **Advanced -- deploy as X, run jobs as a different SP Y** (e.g. deploy as a user but run jobs as the app SP). Add `run_as: ${var.run_as}` back to the job resource(s) you want, then set `{"run_as": {"service_principal_name": "<Y-application-id>"}}` in `variable-overrides.json` (CLI) or the UI's **Configure variable overrides** editor (only the jobs you added the line to run as Y; the rest stay as the deployer). X must hold the **Service Principal: User** role on Y **before** the deploy -- workspace admins are not exempt, and without it the Jobs API rejects the job with `PERMISSION_DENIED ... must have 'servicePrincipal.user' role`. `scripts/grant_app_permissions.sh` detects an SP `run_as`, grants X that role (if X is Y's manager or an admin), gives Y the same output-schema and Vector Search permissions as the app SP plus the create privileges only jobs need (`CREATE VOLUME`, `CREATE FUNCTION`, `CREATE MATERIALIZED VIEW`), and grants Y `CAN_READ` on the bundle's workspace folder (`root_path`) -- the job notebooks and wheel live in the deployer's folder, so without it the job fails with `Unable to access the notebook ... lacks the required permissions`. Because the role must exist before the deploy, run the script once **before** the first advanced deploy as well as after (`deploy.sh` does both). Source-table access is not granted by the script. Prefer a dedicated SP over the app's own SP: the app SP is recreated (new id) if the app is deleted and recreated.
 
 ---
 
@@ -96,9 +102,45 @@ In most setups the deployer is a catalog admin on the metadata catalog, which co
 
 | Target | Job identity |
 |--------|-------------|
-| `dev` | Job owner (the user who ran `bundle deploy`) |
-| `demo` | Job owner (the user who ran `bundle deploy`) |
-| `prod` | `run_as: ${var.run_as}` in `databricks.yml` (defaults to `${var.current_user}`; override to an SP) |
+| `dev` / `demo` / `prod` | The **deploying identity** -- jobs omit `run_as`, so DAB auto-types the user or SP you deploy as. (Advanced: add `run_as` back to a job + set `var.run_as` to run it as a *different* SP.) |
+
+### Running jobs as a service principal (checklist)
+
+When jobs run as the **deploying identity** (the default -- including when you
+deploy *as* a service principal) the deployer already owns the bundle folder, the
+notebook MLflow experiments and the tables, so most of this is automatic; the one
+thing to check is that a deploying SP can write to the output schema (it is, if the
+SP owns/created it -- otherwise grant the output-schema privileges below). The
+checklist applies in full to the **advanced path**, where the job identity (Y) is a
+service principal **different from the deployer** (X):
+
+| Item | Handled by | Notes |
+|------|-----------|-------|
+| Deployer holds **Service Principal: User** on the SP | `grant_app_permissions.sh` (run **before** the first deploy; `deploy.sh` does) | Admins are not exempt. Without it every job create fails with `must have 'servicePrincipal.user' role`. |
+| Output schema + Vector Search (same as the app SP) | `grant_app_permissions.sh` | `USE CATALOG`, `USE SCHEMA`, `CREATE TABLE`, `SELECT`, `MODIFY`, `READ/WRITE VOLUME`, VS `CAN_USE`. |
+| Job-only create privileges on the output schema | `grant_app_permissions.sh` | `CREATE VOLUME` (generated_metadata volume), `CREATE FUNCTION` (MCP functions), `CREATE MATERIALIZED VIEW` (materialized metric views). The app never creates these, so the app SP doesn't need them. |
+| **Can Read** on the bundle folder (`root_path`) | `grant_app_permissions.sh` (after each deploy) | Job notebooks and the wheel live in the deployer's folder. Without it: `Unable to access the notebook ...`. `bundle validate` then warns the folder has a permission not configured in the bundle -- expected. |
+| MLflow benchmarking | Automatic | The notebook experiment belongs to the deployer; benchmarking falls back to `/Users/<sp-id>/dbxmetagen_benchmarks` (visible to admins, or share it), or disables itself -- it never fails the job. |
+| Genie space created by `semantic_layer_job` | Automatic | Owned by the SP; shared `CAN_MANAGE` with the `genie_space_manager` job parameter (defaults to the deployer). |
+| **Source tables** | Manual | `SELECT` on every table you generate metadata for; to apply DDL also `MODIFY` and `APPLY TAG`. |
+| **Lakebase** (`sync_graph_lakebase_job`) | Manual | `CREATE CATALOG` on the metastore (for the Lakebase catalog) and access to the database instance. |
+| Cluster / budget policies | Manual, only if set | `CAN_USE` on `policy_id` / `budget_policy_id`. |
+| Notebook deployment path (`run_jobs_as_app_sp=true`) | Notebook 02 | Grants the app SP `CAN_READ` on `repo_path` and `READ VOLUME` on `volume_path`. |
+
+**Switching an existing deployment to an SP.** Tables, metric views and functions
+created earlier are owned by the deployer. The SP can write to them (`MODIFY`),
+but operations that need **ownership** -- `DROP TABLE` (cleanup job),
+`CREATE OR REPLACE` (similarity / cluster analysis tables, metric views) and
+schema-changing overwrites -- fail until ownership moves to the SP or to a group
+that contains it, for example:
+
+```sql
+-- once per existing object in the output schema
+ALTER TABLE `<catalog>`.`<schema>`.`<table>` OWNER TO `<sp-application-id>`;
+ALTER VIEW  `<catalog>`.`<schema>`.`<metric_view>` OWNER TO `<sp-application-id>`;
+```
+
+New objects are created (and owned) by the SP, so a fresh deployment needs no migration.
 
 ---
 
@@ -142,9 +184,9 @@ The app declares `user_api_scopes` on EVERY deploy (default in `app_variables.ym
 
 ### Who can open the app
 
-`permission_groups` and `permission_users` in your `.env` file control **who can open the Databricks App** in the workspace. These generate `CAN_USE` entries in the DAB app resource definition.
+`app_permissions`, a JSON list in your variable overrides, controls **who can open the Databricks App**, for example `[{"group_name": "data-analysts", "level": "CAN_USE"}]`. The deploying identity always gets `CAN_MANAGE`. With the default `[]`, a deploy **as a service principal** leaves only the SP and workspace admins able to open the app, so set it for SP deploys (`deploy.sh` and `grant_app_permissions.sh` warn when it is empty). The older `permission_groups` / `permission_users` settings no longer control app access.
 
-These settings do **not** grant Unity Catalog access to the underlying tables. They only control the app-level ACL.
+This setting does **not** grant Unity Catalog access to the underlying tables. It only controls the app-level ACL.
 
 ### UC access for end users
 
@@ -168,5 +210,5 @@ To automatically grant groups/users `SELECT` after metadata generation, set `gra
 | Jobs (15 bound jobs) | `CAN_MANAGE_RUN` (via DAB) | `CAN_MANAGE` (bundle owner) | N/A | N/A |
 | VS endpoint | `CAN_USE` (manual or deploy script) | N/A | N/A | N/A |
 | Model serving endpoint | Not needed | Access required for `AI_QUERY` | N/A | N/A |
-| Databricks App | N/A | N/A | `CAN_USE` (via `permission_groups` / `permission_users`) | `CAN_USE` (via `permission_groups` / `permission_users`) |
+| Databricks App | N/A | N/A | `CAN_USE` (via `app_permissions`) | `CAN_USE` (via `app_permissions`) |
 | Source tables (to be documented) | Not needed | `SELECT` | N/A | N/A |

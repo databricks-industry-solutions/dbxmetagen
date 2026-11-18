@@ -21,7 +21,6 @@ from cachetools import TTLCache, cached
 from fastapi import Body, FastAPI, HTTPException, Query, Request, UploadFile, File, Form
 from fastapi.responses import JSONResponse, StreamingResponse
 from fastapi.staticfiles import StaticFiles
-from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel, Field
 from databricks.sdk import WorkspaceClient
 from databricks.sdk.service.sql import StatementParameterListItem
@@ -446,6 +445,11 @@ _ENABLE_CONTEXT_VS = os.environ.get("ENABLE_CONTEXT_VECTOR_INDEX", "false").stri
 _CC_VS_INDEX_SUFFIX = os.environ.get("CONTEXT_VECTOR_INDEX", "customer_context_vs_index")
 _CC_VS_EMBED_MODEL = os.environ.get("EMBEDDING_MODEL", "databricks-gte-large-en")
 
+# UC Pages generation (opt-in, default-off). Prompted Page proposals grounded in persisted
+# dbxmetagen context, published via the public Pages REST API only on explicit user action.
+# Capability-gated at runtime (Domains/Pages reachable?). See src/dbxmetagen/uc_pages.py.
+_ENABLE_UC_PAGES = os.environ.get("ENABLE_UC_PAGES", "false").strip().lower() == "true"
+
 # Upload guardrail: a hard ceiling on any ingested file so an egregiously large upload (a
 # multi-GB dump, a 10M-line text file) can't exhaust the single app container's memory. Chosen
 # generous -- real glossaries / data dictionaries are far smaller -- so it only blocks abuse.
@@ -861,12 +865,8 @@ async def lifespan(app: FastAPI):
 
 
 app = FastAPI(title="dbxmetagen API", version="0.8.11", lifespan=lifespan)
-app.add_middleware(
-    CORSMiddleware,
-    allow_origins=["*"],
-    allow_methods=["*"],
-    allow_headers=["*"],
-)
+# No CORSMiddleware: the React UI is served from this same origin (and local dev
+# goes through the Vite /api proxy), so cross-origin browser access is never needed.
 
 from starlette.middleware.base import BaseHTTPMiddleware
 from starlette.requests import Request
@@ -974,6 +974,7 @@ def get_config():
         "enable_governed_tags": _ENABLE_GOVERNED_TAGS and bool(_GOVERNED_DOMAIN_TAG),
         "governed_domain_tag_name": _GOVERNED_DOMAIN_TAG,
         "enable_context_vector_index": _ENABLE_CONTEXT_VS,
+        "enable_uc_pages": _ENABLE_UC_PAGES,
         "max_upload_mb": _MAX_UPLOAD_MB,
         "version": pkg_version,
     }
@@ -1481,7 +1482,9 @@ def run_job(req: JobRunRequest):
         # volume path via resolve_bundle_path(); passing the raw path here
         # pollutes provenance and breaks bundle-scoped filtering/idempotency.
         params["ontology_bundle"] = req.ontology_bundle
-        if _load_bundle_from_volume(req.ontology_bundle) is not None:
+        # ontology_bundle may legitimately be a path (handled job-side); only probe the
+        # Volume for plain bundle keys.
+        if _is_safe_bundle_key(req.ontology_bundle) and _load_bundle_from_volume(req.ontology_bundle) is not None:
             params["ontology_config_path"] = f"{_volume_bundle_prefix()}/{req.ontology_bundle}.yaml"
     if req.domain_config:
         params["domain_config_path"] = _resolve_domain_config_path(req.domain_config)
@@ -3794,6 +3797,7 @@ async def import_ontology(
     """Import a custom OWL/TTL file, generate bundle YAML + tier indexes, persist to UC Volume."""
     import tempfile
 
+    _check_bundle_key(bundle_name)
     content = await file.read()
     _IMPORT_EXTS = {".ttl", ".owl", ".rdf", ".jsonld", ".nt", ".n3", ".nq", ".trig"}
     suffix = ".owl"
@@ -3935,6 +3939,28 @@ def _safe_bundle_path(bundle_dir: str, bundle_name: str) -> Optional[str]:
     return joined
 
 
+def _check_bundle_key(bundle_key: str) -> str:
+    """Reject bundle keys that could escape the bundle directory / Volume prefix.
+
+    Bundle keys become filesystem and UC Volume path segments. Deliberately a
+    denylist (separators, '..', leading dot, NUL) rather than a strict allowlist so
+    previously-imported custom bundles with unusual-but-harmless names keep working.
+    """
+    if not _is_safe_bundle_key(bundle_key):
+        raise HTTPException(400, detail=f"Invalid bundle name: {bundle_key!r}")
+    return bundle_key
+
+
+def _is_safe_bundle_key(bundle_key: str) -> bool:
+    return bool(bundle_key) and not (
+        "/" in bundle_key
+        or "\\" in bundle_key
+        or "\x00" in bundle_key
+        or ".." in bundle_key
+        or bundle_key.startswith(".")
+    )
+
+
 def _volume_bundle_prefix() -> str:
     """Return the Volume path prefix for custom ontology bundles."""
     volume_name = os.environ.get("VOLUME_NAME", "generated_metadata")
@@ -3948,6 +3974,7 @@ def _save_bundle_to_volume(bundle_key: str, yaml_content: str) -> str:
     jobs read from, so a failed write means the bundle is unusable downstream
     and must not be reported as a success.
     """
+    _check_bundle_key(bundle_key)
     vol_path = f"{_volume_bundle_prefix()}/{bundle_key}.yaml"
     ws = _get_effective_client()
     ws.files.upload(vol_path, io.BytesIO(yaml_content.encode("utf-8")), overwrite=True)
@@ -4002,6 +4029,7 @@ def _list_volume_bundles() -> list[dict]:
 
 def _load_bundle_from_volume(bundle_key: str) -> Optional[dict]:
     """Load a custom bundle YAML from the UC Volume. Returns parsed dict or None."""
+    _check_bundle_key(bundle_key)
     vol_path = f"{_volume_bundle_prefix()}/{bundle_key}.yaml"
     try:
         ws = _get_effective_client()
@@ -4013,6 +4041,7 @@ def _load_bundle_from_volume(bundle_key: str) -> Optional[dict]:
 
 def _delete_bundle_from_volume(bundle_key: str) -> bool:
     """Delete a custom bundle from the UC Volume."""
+    _check_bundle_key(bundle_key)
     vol_path = f"{_volume_bundle_prefix()}/{bundle_key}.yaml"
     try:
         ws = _get_effective_client()
@@ -4024,6 +4053,7 @@ def _delete_bundle_from_volume(bundle_key: str) -> bool:
 
 def _save_source_to_volume(bundle_key: str, content: bytes, suffix: str) -> Optional[str]:
     """Persist the original OWL/TTL source file to the volume for provenance."""
+    _check_bundle_key(bundle_key)
     vol_path = f"{_volume_bundle_prefix()}/{bundle_key}/source{suffix}"
     try:
         ws = _get_effective_client()
@@ -4036,6 +4066,7 @@ def _save_source_to_volume(bundle_key: str, content: bytes, suffix: str) -> Opti
 
 def _upload_tier_files_to_volume(bundle_key: str, local_subdir: str) -> int:
     """Upload generated tier index files from local subdir to volume. Returns count uploaded."""
+    _check_bundle_key(bundle_key)
     from pathlib import Path
     uploaded = 0
     try:
@@ -4218,6 +4249,7 @@ def _list_bundles_local() -> list[dict]:
 
 def _resolve_bundle_path_local(bundle_name: str) -> str:
     """Resolve a bundle key to its YAML path."""
+    _check_bundle_key(bundle_name.removesuffix(".yaml"))
     filename = f"{bundle_name}.yaml" if not bundle_name.endswith(".yaml") else bundle_name
     bd = _find_bundle_dir()
     if bd:
@@ -4248,6 +4280,7 @@ def get_ontology_bundles():
 @app.post("/api/ontology/bundles/{bundle_key}/rebuild-indexes")
 def rebuild_bundle_indexes(bundle_key: str):
     """Regenerate tier index files for an existing ontology bundle."""
+    _check_bundle_key(bundle_key)
     bd = _find_bundle_dir()
     if not bd:
         return JSONResponse({"error": "Bundle directory not found"}, status_code=500)
@@ -18220,6 +18253,15 @@ def metric_view_agent_stream(req: dict):
         stream_metric_view_agent(question, history, session_id),
         media_type="text/event-stream",
     )
+
+
+# ---------------------------------------------------------------------------
+# UC Pages generation (opt-in, ENABLE_UC_PAGES). Router + logic live outside this module:
+# pages_routes.py (API) and src/dbxmetagen/uc_pages*.py (library). Mounted before the SPA catch-all.
+# ---------------------------------------------------------------------------
+from pages_routes import router as _uc_pages_router  # noqa: E402
+
+app.include_router(_uc_pages_router)
 
 
 # ---------------------------------------------------------------------------

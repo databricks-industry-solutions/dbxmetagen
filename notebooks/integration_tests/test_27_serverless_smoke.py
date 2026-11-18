@@ -124,7 +124,7 @@ print(f"Ontology result: {ontology_result}")
 # Verify ontology actually produced entities from the healthcare data
 entity_count = spark.sql(f"SELECT COUNT(*) AS cnt FROM {fq('ontology_entities')}").collect()[0].cnt
 print(f"Ontology entities created: {entity_count}")
-assert entity_count >= 0, f"Ontology entity query failed"
+assert entity_count > 0, f"build_ontology produced no ontology_entities from the healthcare fixture tables"
 
 # Verify ontology_column_properties was written (even if empty, table must exist and be queryable)
 col_props = spark.sql(f"SELECT COUNT(*) AS cnt FROM {fq('ontology_column_properties')}").collect()[0].cnt

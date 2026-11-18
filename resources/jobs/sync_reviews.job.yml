@@ -10,7 +10,7 @@ resources:
 
       email_notifications:
         on_failure:
-          - ${var.current_user}
+          - ${var.alert_email}
 
       # Job parameters for DDL sync
       parameters:

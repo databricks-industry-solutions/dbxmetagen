@@ -66,70 +66,196 @@ class TestColumnKnowledgeBaseBuilder:
         assert "column_knowledge_base" in call_arg
         assert "column_id STRING NOT NULL" in call_arg
     
-    def test_extract_column_comments_filters_correctly(self, builder, mock_spark):
-        # Create mock DataFrame
-        mock_df = MagicMock()
-        mock_df.filter.return_value = mock_df
-        mock_df.withColumn.return_value = mock_df
-        mock_df.select.return_value = mock_df
-        
-        result = builder.extract_column_comments(mock_df)
-        
-        # Verify filter was called
-        mock_df.filter.assert_called()
-    
-    def test_extract_pi_data_filters_correctly(self, builder, mock_spark):
-        mock_df = MagicMock()
-        mock_df.filter.return_value = mock_df
-        mock_df.withColumn.return_value = mock_df
-        mock_df.select.return_value = mock_df
-        
-        result = builder.extract_pi_data(mock_df)
-        
-        mock_df.filter.assert_called()
-
-
 class TestColumnMergeSQLGeneration:
-    """Test that column KB MERGE respects review_updated_at."""
+    """The single build_merge_sql statement must preserve steward-win semantics."""
 
     def setup_method(self):
-        self.mock_spark = MagicMock()
-        self.mock_spark.sql.return_value.collect.return_value = [{"cnt": 0}]
         self.config = ColumnKnowledgeBaseConfig(
             catalog_name="test_cat", schema_name="test_sch"
         )
+        self.builder = ColumnKnowledgeBaseBuilder(MagicMock(), self.config)
+        self.merge_sql = self.builder.build_merge_sql([("cat_a", "sch_a")])
 
-    def _get_merge_sql(self):
-        builder = ColumnKnowledgeBaseBuilder(self.mock_spark, self.config)
-        mock_df = MagicMock()
-        builder.merge_to_target(mock_df)
-        for c in self.mock_spark.sql.call_args_list:
-            sql = c[0][0]
-            if "MERGE INTO" in sql:
-                return sql
-        return None
+    def test_is_single_merge_statement(self):
+        # One declarative MERGE -- not a multi-step pipeline. Exactly one MERGE
+        # and exactly one read of the (slow) system info_schema view.
+        assert self.merge_sql.count("MERGE INTO") == 1
+        assert self.merge_sql.count("system.information_schema.columns") == 1
+        # no temp-table materialization machinery
+        assert "temp_ckb" not in self.merge_sql
+
+    def test_latest_wins_via_row_number(self):
+        # comment + PI are "most recent per column" via ROW_NUMBER windows
+        assert "ROW_NUMBER() OVER" in self.merge_sql
+        assert "metadata_type = 'comment'" in self.merge_sql
+        assert "metadata_type = 'pi'" in self.merge_sql
 
     def test_merge_preserves_reviewed_comment(self):
-        merge_sql = self._get_merge_sql()
-        assert merge_sql is not None
-        assert "target.review_updated_at IS NOT NULL" in merge_sql
-        assert "target.review_updated_at > source.updated_at" in merge_sql
-        assert "THEN target.comment" in merge_sql
+        assert "target.review_updated_at IS NOT NULL" in self.merge_sql
+        assert "target.review_updated_at > source.updated_at" in self.merge_sql
+        assert "THEN target.comment" in self.merge_sql
 
     def test_merge_preserves_reviewed_classification(self):
-        merge_sql = self._get_merge_sql()
-        assert merge_sql is not None
-        assert "THEN target.classification" in merge_sql
+        assert "THEN target.classification" in self.merge_sql
 
     def test_merge_preserves_reviewed_classification_type(self):
-        merge_sql = self._get_merge_sql()
-        assert merge_sql is not None
-        assert "THEN target.classification_type" in merge_sql
+        assert "THEN target.classification_type" in self.merge_sql
 
     def test_merge_preserves_reviewed_confidence(self):
-        merge_sql = self._get_merge_sql()
-        assert merge_sql is not None
-        assert "THEN target.confidence" in merge_sql
+        assert "THEN target.confidence" in self.merge_sql
+
+
+class TestInformationSchemaScoping:
+    """information_schema reads must be scoped to the corpus, not whole-catalog."""
+
+    def setup_method(self):
+        self.config = ColumnKnowledgeBaseConfig(
+            catalog_name="test_cat", schema_name="test_sch"
+        )
+        self.builder = ColumnKnowledgeBaseBuilder(MagicMock(), self.config)
+
+    def test_info_schema_is_schema_scoped_and_pushdown_safe(self):
+        """The info_schema read must filter by BOTH catalog and schema, join on a
+        lowercased key, and keep predicate columns BARE (LOWER() on a predicate
+        column defeats pushdown -- measured 10x slower)."""
+        q = self.builder.build_merge_sql([("cat_a", "sch_a")])
+        assert "table_schema IN (" in q, "must scope by schema, not catalog-only"
+        assert "table_catalog = 'cat_a'" in q
+        assert "LOWER(CONCAT" in q, "join key lowercased to match LOWER(`table`)"
+        assert "LOWER(table_catalog)" not in q, "LOWER() on predicate defeats pushdown"
+        assert "LOWER(table_schema)" not in q, "LOWER() on predicate defeats pushdown"
+
+    def test_empty_corpus_yields_no_unbounded_scan(self):
+        """No pairs -> a false predicate, never an unfiltered info_schema scan."""
+        q = self.builder.build_merge_sql([])
+        assert "1=0" in q
+
+    def test_schemas_batched_into_one_query_per_catalog(self):
+        """Many schemas in one catalog must become ONE `table_schema IN (...)`
+        group, not one query per schema. system.information_schema.columns has a
+        large fixed per-query cost, so per-schema queries multiply runtime
+        (measured: 11 schemas = ~52s vs ~6s for a single IN-list query)."""
+        q = self.builder.build_merge_sql([
+            ("cat_a", "sch_a"), ("cat_a", "sch_b"), ("cat_a", "sch_c"),
+        ])
+        # exactly one info_schema read, one IN-list, all three schemas present
+        assert q.count("system.information_schema.columns") == 1
+        assert q.count("table_schema IN (") == 1
+        for s in ("sch_a", "sch_b", "sch_c"):
+            assert f"'{s}'" in q
+
+
+class TestInformationSchemaFallback:
+    """An unreadable information_schema degrades to NULL types, never fails the KB."""
+
+    def _builder(self, sql_side_effect, pairs=(("cat_a", "sch_a"),)):
+        spark = MagicMock()
+        spark.sql.side_effect = sql_side_effect
+        cfg = ColumnKnowledgeBaseConfig(catalog_name="c", schema_name="s")
+        b = ColumnKnowledgeBaseBuilder(spark, cfg)
+        b.create_target_table = MagicMock()
+        b._corpus_catalog_schema_pairs = MagicMock(return_value=list(pairs))
+        return b, spark
+
+    @staticmethod
+    def _ok():
+        m = MagicMock()
+        m.collect.return_value = [{"cnt": 3}]
+        return m
+
+    @staticmethod
+    def _is_merge(q):
+        return q.lstrip().startswith("MERGE")
+
+    @staticmethod
+    def _is_probe(q):
+        return q.lstrip().startswith("SELECT 1 FROM system.information_schema.columns")
+
+    def test_no_types_variant_never_touches_information_schema(self):
+        b = ColumnKnowledgeBaseBuilder(MagicMock(), ColumnKnowledgeBaseConfig(catalog_name="c", schema_name="s"))
+        q = b.build_merge_sql([("cat_a", "sch_a")], include_types=False)
+        assert "information_schema" not in q
+        assert "types AS (" in q and "LEFT JOIN types USING (table_name, column_name)" in q
+        assert "COALESCE(source.data_type, target.data_type)" in q
+
+    def test_unreadable_information_schema_retries_without_types(self):
+        merges = []
+
+        def sql(q):
+            if self._is_merge(q):
+                merges.append(q)
+                if "system.information_schema.columns" in q:
+                    raise Exception("PERMISSION_DENIED: system.information_schema")
+            elif self._is_probe(q):
+                raise Exception("PERMISSION_DENIED: system.information_schema")
+            return self._ok()
+
+        b, _ = self._builder(sql)
+        result = b.run()
+        assert len(merges) == 2 and "information_schema" not in merges[1]
+        assert result["types_missing_catalogs"] == ["cat_a"]
+
+    def test_one_unreadable_catalog_keeps_types_for_the_others(self):
+        merges = []
+
+        def sql(q):
+            if self._is_merge(q):
+                merges.append(q)
+                if "table_catalog = 'fed'" in q:
+                    raise Exception("cannot describe foreign catalog fed")
+            elif self._is_probe(q) and "table_catalog = 'fed'" in q:
+                raise Exception("cannot describe foreign catalog fed")
+            return self._ok()
+
+        b, _ = self._builder(sql, pairs=[("main", "sales"), ("fed", "x")])
+        result = b.run()
+        assert len(merges) == 2
+        assert "table_catalog = 'main'" in merges[1] and "table_catalog = 'fed'" not in merges[1]
+        assert result["types_missing_catalogs"] == ["fed"]
+
+    def test_error_not_caused_by_info_schema_raises_without_a_second_merge(self):
+        def sql(q):
+            if self._is_merge(q):
+                raise Exception("TABLE_OR_VIEW_NOT_FOUND: metadata_generation_log")
+            return self._ok()  # every catalog probes fine
+
+        b, spark = self._builder(sql)
+        with pytest.raises(Exception, match="TABLE_OR_VIEW_NOT_FOUND"):
+            b.run()
+        assert sum(1 for c in spark.sql.call_args_list if self._is_merge(c[0][0])) == 1
+
+    def test_concurrency_conflict_retries_with_types_kept(self, monkeypatch):
+        import dbxmetagen.column_knowledge_base as ckb
+        monkeypatch.setattr(ckb.time, "sleep", lambda s: None)
+        merges = []
+
+        def sql(q):
+            if self._is_merge(q):
+                merges.append(q)
+                if len(merges) == 1:
+                    raise Exception("DELTA_CONCURRENT_APPEND: conflicting commit")
+            return self._ok()
+
+        b, _ = self._builder(sql)
+        assert b.run()["types_missing_catalogs"] == []
+        assert len(merges) == 2 and all("system.information_schema.columns" in q for q in merges)
+
+    def test_exhausted_concurrency_retries_raise_not_fall_back(self, monkeypatch):
+        import dbxmetagen.column_knowledge_base as ckb
+        monkeypatch.setattr(ckb.time, "sleep", lambda s: None)
+
+        def sql(q):
+            if self._is_merge(q):
+                raise Exception("DELTA_CONCURRENT_APPEND: conflicting commit")
+            return self._ok()
+
+        b, spark = self._builder(sql)
+        with pytest.raises(Exception, match="DELTA_CONCURRENT_APPEND"):
+            b.run()
+        merges = [c[0][0] for c in spark.sql.call_args_list if self._is_merge(c[0][0])]
+        assert len(merges) == ckb._MERGE_MAX_RETRIES + 1
+        assert all("system.information_schema.columns" in q for q in merges)
+        assert not any(self._is_probe(c[0][0]) for c in spark.sql.call_args_list)
 
 
 class TestBuildColumnKnowledgeBase:
