@@ -180,7 +180,7 @@ That's the core loop. From here, run **PI** and **domain** modes and the analyti
 The items below apply to **all paths** and are each **optional**:
 
 - **One-step deploy (`app_lifecycle`).** By default (`{}`) `bundle deploy` registers the app but doesn't start it — safe on **both** deploy engines. To make a single `bundle deploy` also push the app source and start it, set `app_lifecycle` to `{"started": true}` in your overrides. **This works only on the direct engine** (workspace UI and fresh CLI). A bundle whose state came from an older `deploy.sh`/CLI run stays on the **terraform** engine (the CLI does not auto-migrate), which rejects `started` at build time — leave it `{}` there. That's why `{}` is the default: it keeps every existing deploy working unchanged.
-- **Grants (only if needed).** `scripts/grant_app_permissions.sh -t dev -p <your-profile>` grants the app service principal UC access and provisions a Vector Search endpoint — things DAB can't do natively. **Skip it** if you're not using OBO and the app SP already has catalog access. In the UI, run it from a workspace **web terminal**, or grant manually — see [`docs/MANUAL_DEPLOYMENT.md`](docs/MANUAL_DEPLOYMENT.md).
+- **Grants (only if needed).** `scripts/grant_app_permissions.sh -t dev -p <your-profile>` grants the app service principal UC access and provisions a Vector Search endpoint — things DAB can't do natively. **Skip it** if you're not using OBO and the app SP already has catalog access. In the UI, run it from a workspace **web terminal**, or grant manually — see [`docs/MANUAL_DEPLOYMENT.md`](docs/MANUAL_DEPLOYMENT.md). It exits non-zero if any grant fails (so CI notices) and lists what failed; pass `--allow-failures` to exit 0 anyway. `deploy.sh` runs it for you; pass `./deploy.sh --no-grants` to skip it (and grant yourself), or `--allow-grant-failures` to finish with exit 0 when some grants fail.
 - **Jobs only:** run just `bundle deploy` (CLI) or the bundle **Deploy** (UI) and skip the app start + grants.
 - **Multiple instances in one workspace.** The app is a **singleton by name**. To run more than one target/instance in the same workspace, set `app_name_suffix` (e.g. `-dev`) in your overrides — it's appended to both the app name and the job-name prefix, so instances don't overwrite each other.
 - **On-Behalf-Of (OBO) user auth** — off by default; skip if `enable_obo=false`:
@@ -224,7 +224,7 @@ or add a profile to `~/.databrickscfg` with `host`, `client_id`, and `client_sec
 - `alert_email` receives every job's failure alert. It defaults to the deploying identity, which for an SP is its application id, so alerts would reach nobody.
 - `app_permissions` controls who can open the app. The deploying identity gets `CAN_MANAGE`; with the default `[]`, an SP deploy leaves only the SP and workspace admins able to open it.
 
-`deploy.sh` and `scripts/grant_app_permissions.sh` print a warning for each of these when it is unset.
+`deploy.sh` and `scripts/grant_app_permissions.sh` print a warning for each of these when it is unset. The grants script exits non-zero if any grant fails, so a CI run fails visibly; the SP needs the right to grant on the output catalog and schema for it to succeed.
 
 **4. Deploy:**
 
