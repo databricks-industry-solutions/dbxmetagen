@@ -6582,10 +6582,41 @@ def get_coverage_tables(catalog: Optional[str] = None, schema: Optional[str] = N
         return execute_sql(q_simple)
 
 
+def _coverage_scope(catalog: Optional[str]):
+    """Return (kb_where, like) for coverage queries.
+
+    Coverage is about SOURCE tables, and their catalog is independent of the
+    OUTPUT catalog the app's results tables live in (CATALOG). Defaulting the
+    filter to CATALOG made every run whose sources sit in another catalog
+    (the common case: results in a dedicated catalog/schema) report
+    "no metadata generated" with a fully populated knowledge base.
+
+    No catalog -> everything in this deployment's results schema (all source
+    catalogs). An explicit catalog -> filter to it, as before.
+    ``like(col)`` is a SQL predicate restricting a fully-qualified table-name
+    column to the scope.
+    """
+    if not catalog:
+        return "", (lambda col: "TRUE")
+    esc = str(catalog).replace("\\", "\\\\").replace("'", "''")
+    return (
+        f"WHERE LOWER(catalog) = LOWER('{esc}')",
+        lambda col: f"{col} LIKE '{esc}.%'",
+    )
+
+
 @app.get("/api/coverage/holistic")
 def get_coverage_holistic(catalog: Optional[str] = None):
-    """Single endpoint returning all metadata-type coverage counts."""
-    cat = catalog or CATALOG
+    return _coverage_holistic(catalog)
+
+
+def _coverage_holistic(catalog: Optional[str] = None):
+    """Single endpoint returning all metadata-type coverage counts.
+
+    ``catalog`` filters to one SOURCE catalog; omitted = every source catalog
+    with metadata in this deployment's results schema (see _coverage_scope).
+    """
+    kb_where, like = _coverage_scope(catalog)
     result = {
         "total_tables": 0, "profiled": 0, "with_comments": 0,
         "with_pii": 0, "with_domain": 0, "with_ontology": 0,
@@ -6609,7 +6640,7 @@ def get_coverage_holistic(catalog: Optional[str] = None):
                    SUM(CASE WHEN has_pii = true OR has_phi = true THEN 1 ELSE 0 END) as with_pii,
                    SUM(CASE WHEN domain IS NOT NULL AND domain != '' THEN 1 ELSE 0 END) as with_domain
             FROM {fq('table_knowledge_base')}
-            WHERE LOWER(catalog) = LOWER('{cat}')
+            {kb_where}
         """)
         if rows:
             r = rows[0]
@@ -6625,11 +6656,16 @@ def get_coverage_holistic(catalog: Optional[str] = None):
     # system.information_schema) it leaves total_tables at 0 WITHOUT zeroing the
     # KB-derived signal above. (Catalog-local information_schema is the SP-safe form --
     # tracked as part of the broader "SP-safe metadata reads" sweep.)
+    if catalog:
+        inv_scope = f"table_catalog = '{str(catalog).replace(chr(39), chr(39) * 2)}'"
+    else:
+        # Every source catalog that has metadata here; empty KB -> 0 tables.
+        inv_scope = f"table_catalog IN (SELECT DISTINCT catalog FROM {fq('table_knowledge_base')})"
     try:
         trows = execute_sql(f"""
             SELECT COUNT(*) as total_tables
             FROM system.information_schema.tables
-            WHERE table_catalog = '{cat}'
+            WHERE {inv_scope}
               AND table_schema NOT IN ('information_schema','__internal')
               AND table_type IN {_ALL_TYPES}
               AND NOT table_name RLIKE '^(__|event_log_[0-9a-f]{{8}}_)'
@@ -6638,7 +6674,6 @@ def get_coverage_holistic(catalog: Optional[str] = None):
             result["total_tables"] = int(trows[0].get("total_tables") or 0)
     except Exception as e:
         logger.warning("holistic: total_tables inventory query failed: %s", e)
-    cat_like = f"{cat}.%"
     try:
         onto = execute_sql(f"""
             SELECT COUNT(DISTINCT entity_type) as type_cnt,
@@ -6646,7 +6681,7 @@ def get_coverage_holistic(catalog: Optional[str] = None):
                    COUNT(DISTINCT t.tbl) as tbl_cnt
             FROM {fq('ontology_entities')}
             LATERAL VIEW EXPLODE(source_tables) t AS tbl
-            WHERE t.tbl LIKE '{cat_like}'
+            WHERE {like('t.tbl')}
         """)
         if onto:
             result["entity_type_count"] = int(onto[0].get("type_cnt") or 0)
@@ -6655,27 +6690,27 @@ def get_coverage_holistic(catalog: Optional[str] = None):
     except Exception as e:
         logger.warning("holistic: ontology query failed: %s", e)
     try:
-        fks = execute_sql(f"SELECT COUNT(*) as cnt FROM {fq('fk_predictions')} WHERE final_confidence >= 0.5 AND (src_table LIKE '{cat_like}' OR dst_table LIKE '{cat_like}')")
+        fks = execute_sql(f"SELECT COUNT(*) as cnt FROM {fq('fk_predictions')} WHERE final_confidence >= 0.5 AND ({like('src_table')} OR {like('dst_table')})")
         result["fk_count"] = int(fks[0]["cnt"]) if fks else 0
     except Exception as e:
         logger.warning("holistic: fk_count query failed: %s", e)
     try:
         fk_tbls = execute_sql(f"""SELECT COUNT(DISTINCT t) as cnt FROM (
-            SELECT src_table AS t FROM {fq('fk_predictions')} WHERE final_confidence >= 0.5 AND src_table LIKE '{cat_like}'
+            SELECT src_table AS t FROM {fq('fk_predictions')} WHERE final_confidence >= 0.5 AND {like('src_table')}
             UNION
-            SELECT dst_table AS t FROM {fq('fk_predictions')} WHERE final_confidence >= 0.5 AND dst_table LIKE '{cat_like}'
+            SELECT dst_table AS t FROM {fq('fk_predictions')} WHERE final_confidence >= 0.5 AND {like('dst_table')}
         )""")
         result["with_fk"] = int(fk_tbls[0]["cnt"]) if fk_tbls else 0
     except Exception as e:
         logger.warning("holistic: fk_tables query failed: %s", e)
     try:
-        mvs = execute_sql(f"SELECT status, COUNT(*) as cnt FROM {fq('metric_view_definitions')} WHERE source_table LIKE '{cat_like}' GROUP BY status")
+        mvs = execute_sql(f"SELECT status, COUNT(*) as cnt FROM {fq('metric_view_definitions')} WHERE {like('source_table')} GROUP BY status")
         result["metric_view_statuses"] = {r["status"]: int(r["cnt"]) for r in mvs} if mvs else {}
         result["metric_views"] = sum(result["metric_view_statuses"].values())
     except Exception as e:
         logger.warning("holistic: metric_views query failed: %s", e)
     try:
-        docs = execute_sql(f"SELECT doc_type, COUNT(*) AS cnt FROM {fq('metadata_documents')} WHERE table_name LIKE '{cat_like}' GROUP BY doc_type")
+        docs = execute_sql(f"SELECT doc_type, COUNT(*) AS cnt FROM {fq('metadata_documents')} WHERE {like('table_name')} GROUP BY doc_type")
         result["vs_by_type"] = {r["doc_type"]: int(r["cnt"]) for r in docs} if docs else {}
         result["vs_documents"] = sum(result["vs_by_type"].values())
     except Exception as e:
@@ -6685,13 +6720,17 @@ def get_coverage_holistic(catalog: Optional[str] = None):
 
 @app.get("/api/coverage/review-summary")
 def get_coverage_review_summary(catalog: Optional[str] = None):
-    """Count tables by review_status in table_knowledge_base."""
-    cat = catalog or CATALOG
+    return _coverage_review_summary(catalog)
+
+
+def _coverage_review_summary(catalog: Optional[str] = None):
+    """Count tables by review_status in table_knowledge_base (scope: _coverage_scope)."""
+    _, like = _coverage_scope(catalog)
     try:
         rows = execute_sql(f"""
             SELECT COALESCE(review_status, 'unreviewed') AS status, COUNT(*) AS cnt
             FROM {fq('table_knowledge_base')}
-            WHERE table_name LIKE '{cat}.%'
+            WHERE {like('table_name')}
             GROUP BY 1
         """)
         return rows or []
