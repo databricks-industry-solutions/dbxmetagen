@@ -104,6 +104,12 @@ class TestIsOutputWriteDenied:
     def test_modify_denial_on_output_is_fatal(self):
         assert is_output_write_denied(Exception(DENIED_MODIFY), "out_cat", "out_sch")
 
+    def test_insert_denial_wording_matches(self):
+        # Exact wording UC returns for a zero-row INSERT into a read-only table.
+        e = Exception("BAD_REQUEST PERMISSION_DENIED: Principal 'someone' does not have "
+                      "INSERT on Table 'out_cat.out_sch.metadata_generation_log'.")
+        assert is_output_write_denied(e, "out_cat", "out_sch")
+
     def test_backticked_names_match(self):
         e = Exception("PERMISSION_DENIED: User does not have MODIFY on `out_cat`.`out_sch`.`t`")
         assert is_output_write_denied(e, "out_cat", "out_sch")

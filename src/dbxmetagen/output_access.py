@@ -33,6 +33,12 @@ _PERMISSION_MARKERS = (
 # source table is a per-table problem and must NOT abort the run.
 _WRITE_PRIVILEGES = (
     "MODIFY",
+    # UC names the specific operation in table-write denials, e.g.
+    # "PERMISSION_DENIED: Principal 'x' does not have INSERT on Table 'c.s.t'".
+    "INSERT",
+    "UPDATE",
+    "DELETE",
+    "MERGE",
     "CREATE TABLE",
     "CREATE SCHEMA",
     "CREATE VOLUME",
