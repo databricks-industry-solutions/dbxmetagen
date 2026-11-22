@@ -1,5 +1,4 @@
 import React, { useState, useEffect } from 'react'
-import { cachedFetchObj, TTL } from '../apiCache'
 import { PageHeader, SkeletonCards } from './ui'
 
 function CompletionBar({ label, value, total, color, sub }) {
@@ -26,18 +25,13 @@ function CompletionBar({ label, value, total, color, sub }) {
 export function CoverageSummary({ catalog }) {
   const [holistic, setHolistic] = useState(null)
   const [reviewSummary, setReviewSummary] = useState(null)
-  const [resolvedCatalog, setResolvedCatalog] = useState(catalog || '')
+  // No catalog = every SOURCE catalog with metadata in this deployment. Do NOT
+  // default to the app's output catalog (config.catalog_name): results live
+  // there, but the source tables usually don't, so that showed zero coverage.
+  const resolvedCatalog = catalog || ''
 
   useEffect(() => {
-    if (catalog) { setResolvedCatalog(catalog); return }
-    cachedFetchObj('/api/config', {}, TTL.CONFIG).then(({ data: cfg }) => {
-      if (cfg?.catalog_name) setResolvedCatalog(cfg.catalog_name)
-    })
-  }, [catalog])
-
-  useEffect(() => {
-    if (!resolvedCatalog) return
-    const catParam = `?catalog=${encodeURIComponent(resolvedCatalog)}`
+    const catParam = resolvedCatalog ? `?catalog=${encodeURIComponent(resolvedCatalog)}` : ''
     setHolistic(null)
     setReviewSummary(null)
     fetch(`/api/coverage/holistic${catParam}`)
@@ -141,9 +135,6 @@ export default function Coverage() {
 
   useEffect(() => {
     fetch('/api/catalogs').then(r => r.ok ? r.json() : []).then(setCatalogs).catch(() => {})
-    cachedFetchObj('/api/config', {}, TTL.CONFIG).then(({ data: cfg }) => {
-      if (cfg?.catalog_name) setSelectedCatalog(cfg.catalog_name)
-    })
   }, [])
 
   return (
@@ -153,19 +144,14 @@ export default function Coverage() {
         {catalogs.length > 0 && (
           <select value={selectedCatalog} onChange={e => setSelectedCatalog(e.target.value)}
             className="px-3 py-1.5 text-sm rounded-lg border border-slate-300 dark:border-dbx-navy-400 bg-white dark:bg-dbx-navy-600 text-slate-700 dark:text-slate-200">
+            <option value="">All source catalogs</option>
             {catalogs.map(c => <option key={c} value={c}>{c}</option>)}
           </select>
         )}
       </div>
-      {!selectedCatalog ? (
-        <div className="card p-8 text-center">
-          <p className="text-sm text-slate-500 dark:text-slate-400">Select a catalog above to view coverage.</p>
-        </div>
-      ) : (
-        <div className="card p-6">
-          <CoverageSummary catalog={selectedCatalog} />
-        </div>
-      )}
+      <div className="card p-6">
+        <CoverageSummary catalog={selectedCatalog} />
+      </div>
     </div>
   )
 }
