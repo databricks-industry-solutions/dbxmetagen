@@ -48,7 +48,7 @@ function TaskProgress({ tasks }) {
           if (t.result === 'SUCCESS') bg = 'bg-emerald-500'
           if (t.result === 'FAILED') bg = 'bg-red-500'
           if (t.result === 'EXCLUDED') bg = 'bg-slate-300 dark:bg-dbx-navy-400'
-          return <div key={t.task_key} className={`h-2.5 flex-1 rounded-full ${bg}`} title={`${t.task_key}: ${t.state}${t.result ? ' / ' + t.result : ''}`} />
+          return <div key={t.task_key} className={`h-2.5 flex-1 rounded-full ${bg}`} title={`${t.task_key}: ${t.state}${t.result ? ' / ' + t.result : ''}${t.attempts > 1 ? ` (attempt ${t.attempts})` : ''}`} />
         })}
       </div>
     </div>
@@ -101,7 +101,10 @@ export default function RunEntry({ run, onCancel }) {
           {run.tasks.map(t => (
             <div key={t.task_key} className="flex items-center justify-between text-xs px-3 py-1.5 bg-dbx-oat-light dark:bg-dbx-navy-500/50 rounded-lg">
               <span className="font-mono text-slate-600 dark:text-slate-300">{t.task_key}</span>
-              {stateBadge(t.state, t.result)}
+              <span className="flex items-center gap-2">
+                {t.attempts > 1 && <span className="text-slate-400">{t.attempts} attempts</span>}
+                {stateBadge(t.state, t.result)}
+              </span>
             </div>
           ))}
         </div>

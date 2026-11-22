@@ -3355,7 +3355,7 @@ def summarize_table_content(table_df, config, table_name):
     raise ValueError("No table rows found during summarization...")
 
 
-def setup_ddl(config: MetadataConfig) -> None:
+def setup_ddl(config: MetadataConfig) -> Optional[str]:
     """
     Creates a schema volume if it does not already exist.
 
@@ -3377,6 +3377,8 @@ def setup_ddl(config: MetadataConfig) -> None:
         spark.sql(volume_sql)
         review_output_path = f"/Volumes/{config.catalog_name}/{config.schema_name}/{config.volume_name}/{sanitize_user_identifier(config.current_user)}/reviewed_outputs/"
         os.makedirs(review_output_path, exist_ok=True)
+        return review_output_path
+    return None
 
 
 def create_tables(config: MetadataConfig) -> None:
@@ -3745,6 +3747,21 @@ def generate_and_persist_metadata(config: Any) -> None:
             logger.error(
                 "[generate_and_persist_metadata] Error for %s: %s", table, concise_error
             )
+            # A write denial on the OUTPUT location (e.g. a grant revoked mid-run)
+            # will fail every remaining table the same way, after their LLM calls.
+            # Stop the run instead. Source-table read errors stay per-table.
+            from dbxmetagen.output_access import OutputAccessError, is_output_write_denied
+            if is_output_write_denied(e, config.catalog_name, config.schema_name):
+                if config.control_table:
+                    try:
+                        mark_table_failed(table, config, concise_error)
+                    except Exception:
+                        pass
+                raise OutputAccessError(
+                    f"FATAL: lost write access to output {config.catalog_name}."
+                    f"{config.schema_name} while processing {table}; stopping the run "
+                    f"instead of failing every remaining table.\nUnderlying error: {concise_error}"
+                ) from e
 
             log_dict = {
                 "full_table_name": table,
