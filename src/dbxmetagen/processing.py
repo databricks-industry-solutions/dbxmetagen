@@ -3747,21 +3747,6 @@ def generate_and_persist_metadata(config: Any) -> None:
             logger.error(
                 "[generate_and_persist_metadata] Error for %s: %s", table, concise_error
             )
-            # A write denial on the OUTPUT location (e.g. a grant revoked mid-run)
-            # will fail every remaining table the same way, after their LLM calls.
-            # Stop the run instead. Source-table read errors stay per-table.
-            from dbxmetagen.output_access import OutputAccessError, is_output_write_denied
-            if is_output_write_denied(e, config.catalog_name, config.schema_name):
-                if config.control_table:
-                    try:
-                        mark_table_failed(table, config, concise_error)
-                    except Exception:
-                        pass
-                raise OutputAccessError(
-                    f"FATAL: lost write access to output {config.catalog_name}."
-                    f"{config.schema_name} while processing {table}; stopping the run "
-                    f"instead of failing every remaining table.\nUnderlying error: {concise_error}"
-                ) from e
 
             log_dict = {
                 "full_table_name": table,

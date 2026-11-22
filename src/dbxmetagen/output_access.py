@@ -9,9 +9,6 @@ burned the whole run's LLM budget and the job still ended SUCCESS.
 
 ``verify_output_access`` runs once before the per-table loop and raises
 ``OutputAccessError`` (fatal, never caught) when any output write would fail.
-``is_output_write_denied`` lets the per-table loop escalate a write denial on
-the output location that slips past the preflight, such as a grant revoked
-mid-run, instead of logging it once per table.
 """
 
 import logging
@@ -25,26 +22,6 @@ _PERMISSION_MARKERS = (
     "INSUFFICIENT_PERMISSIONS",
     "INSUFFICIENT_PRIVILEGES",
     "DOES NOT HAVE",
-    "ACCESS DENIED",
-    "NOT AUTHORIZED",
-    "FORBIDDEN",
-)
-# Privileges that are only ever needed to WRITE output. A missing SELECT on a
-# source table is a per-table problem and must NOT abort the run.
-_WRITE_PRIVILEGES = (
-    "MODIFY",
-    # UC names the specific operation in table-write denials, e.g.
-    # "PERMISSION_DENIED: Principal 'x' does not have INSERT on Table 'c.s.t'".
-    "INSERT",
-    "UPDATE",
-    "DELETE",
-    "MERGE",
-    "CREATE TABLE",
-    "CREATE SCHEMA",
-    "CREATE VOLUME",
-    "WRITE VOLUME",
-    "WRITE_VOLUME",
-    "CREATE_TABLE",
 )
 
 
@@ -59,23 +36,6 @@ def _q(name: str) -> str:
 def _is_permission_error(exc: BaseException) -> bool:
     msg = str(exc).upper()
     return any(m in msg for m in _PERMISSION_MARKERS)
-
-
-def is_output_write_denied(exc: BaseException, catalog_name: str, schema_name: str) -> bool:
-    """True if ``exc`` is a write-privilege denial on the output catalog.schema.
-
-    Deliberately narrow: it needs a permission marker, a write privilege, and
-    the output ``catalog.schema`` all in the message. A read denial on a source
-    table, even one in the same schema, stays a normal per-table failure.
-    """
-    if isinstance(exc, OutputAccessError):
-        return True
-    if not _is_permission_error(exc):
-        return False
-    msg = str(exc).upper().replace("`", "")
-    if not any(p in msg for p in _WRITE_PRIVILEGES):
-        return False
-    return f"{catalog_name}.{schema_name}".upper() in msg
 
 
 def _fail(what: str, fq: str, exc: BaseException, hint: str) -> None:

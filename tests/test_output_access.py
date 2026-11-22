@@ -7,7 +7,6 @@ import pytest
 
 from dbxmetagen.output_access import (
     OutputAccessError,
-    is_output_write_denied,
     verify_output_access,
 )
 
@@ -98,37 +97,3 @@ class TestVerifyOutputAccess:
         with pytest.raises(OutputAccessError, match="WRITE VOLUME"):
             verify_output_access(_spark(), _cfg(volume_name="vol"),
                                  str(tmp_path / "does_not_exist"))
-
-
-class TestIsOutputWriteDenied:
-    def test_modify_denial_on_output_is_fatal(self):
-        assert is_output_write_denied(Exception(DENIED_MODIFY), "out_cat", "out_sch")
-
-    def test_insert_denial_wording_matches(self):
-        # Exact wording UC returns for a zero-row INSERT into a read-only table.
-        e = Exception("BAD_REQUEST PERMISSION_DENIED: Principal 'someone' does not have "
-                      "INSERT on Table 'out_cat.out_sch.metadata_generation_log'.")
-        assert is_output_write_denied(e, "out_cat", "out_sch")
-
-    def test_backticked_names_match(self):
-        e = Exception("PERMISSION_DENIED: User does not have MODIFY on `out_cat`.`out_sch`.`t`")
-        assert is_output_write_denied(e, "out_cat", "out_sch")
-
-    def test_source_read_denial_is_not_fatal(self):
-        e = Exception("[INSUFFICIENT_PERMISSIONS] User does not have SELECT on Table 'src.raw.t'")
-        assert not is_output_write_denied(e, "out_cat", "out_sch")
-
-    def test_select_denial_inside_output_schema_is_not_fatal(self):
-        e = Exception("[INSUFFICIENT_PERMISSIONS] User does not have SELECT on Table 'out_cat.out_sch.t'")
-        assert not is_output_write_denied(e, "out_cat", "out_sch")
-
-    def test_write_denial_on_other_schema_is_not_fatal(self):
-        e = Exception("PERMISSION_DENIED: User does not have MODIFY on Table 'other.sch.t'")
-        assert not is_output_write_denied(e, "out_cat", "out_sch")
-
-    def test_non_permission_error_is_not_fatal(self):
-        assert not is_output_write_denied(Exception("LLM timeout out_cat.out_sch MODIFY"),
-                                          "out_cat", "out_sch")
-
-    def test_output_access_error_always_fatal(self):
-        assert is_output_write_denied(OutputAccessError("x"), "a", "b")
