@@ -91,3 +91,16 @@ def test_join_validate_collects_distinct_pairs_not_confidences():
         p.join_validate(judged)
     cols = judged.filter.return_value.select.call_args.args
     assert cols == ("col_a", "col_b", "table_a", "table_b")
+
+
+def test_dedup_is_orientation_independent():
+    """The source-rank dedup and the evidence propagation must key on the UNORDERED
+    pair, so (child, parent) from value-overlap and (a, b) from embeddings merge."""
+    import inspect
+    from dbxmetagen.fk_prediction import FKPredictor
+    src = inspect.getsource(FKPredictor.run)
+    assert 'F.least(F.col("col_a"), F.col("col_b"))' in src
+    assert 'sim_w = Window.partitionBy("_pair_lo", "_pair_hi")' in src
+    assert 'dedup_w = Window.partitionBy("_pair_lo", "_pair_hi")' in src
+    assert 'Window.partitionBy("col_a", "col_b").orderBy(' not in src
+    assert '"_data_overlap", F.max("_data_overlap").over(sim_w)' in src

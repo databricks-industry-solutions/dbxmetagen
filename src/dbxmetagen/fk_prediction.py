@@ -2981,10 +2981,22 @@ class FKPredictor:
             F.expr(f"table_a != table_b OR source_rank = {SR_DECLARED}")
         )
 
+        # Dedup on the UNORDERED pair. Generators disagree on orientation: most emit
+        # col_a <= col_b, value-overlap emits (child, parent) and declared FKs emit
+        # (fk, referenced). Partitioning on the ordered (col_a, col_b) let the same
+        # physical pair survive twice -- e.g. (sv.usubjid, subjects.usubjid) from
+        # value-overlap beside (subjects.usubjid, sv.usubjid) from embeddings --
+        # while pairs whose child sorted first collided and lost their overlap
+        # evidence. The winning row keeps its own orientation (declared FKs keep
+        # their real direction); _enforce_direction decides the rest later.
+        candidates = candidates.withColumn(
+            "_pair_lo", F.least(F.col("col_a"), F.col("col_b"))
+        ).withColumn("_pair_hi", F.greatest(F.col("col_a"), F.col("col_b")))
+
         # Propagate max embedding similarities before source-rank dedup.
         # Name-based and other non-embedding sources hardcode col_similarity=0.0;
         # without this, the embedding signal is lost when they win the dedup.
-        sim_w = Window.partitionBy("col_a", "col_b")
+        sim_w = Window.partitionBy("_pair_lo", "_pair_hi")
         candidates = candidates.withColumn(
             "col_similarity",
             F.coalesce(F.max("col_similarity").over(sim_w), F.lit(0.0)),
@@ -3001,7 +3013,7 @@ class FKPredictor:
                 "_data_overlap", F.max("_data_overlap").over(sim_w)
             )
 
-        dedup_w = Window.partitionBy("col_a", "col_b").orderBy(
+        dedup_w = Window.partitionBy("_pair_lo", "_pair_hi").orderBy(
             F.col("source_rank").asc(),
             F.col("col_similarity").desc(),
             F.col("query_hit_count").desc(),
@@ -3011,7 +3023,7 @@ class FKPredictor:
         candidates = (
             candidates.withColumn("_rn", F.row_number().over(dedup_w))
             .filter(F.col("_rn") == 1)
-            .drop("_rn")
+            .drop("_rn", "_pair_lo", "_pair_hi")
         )
         candidates = candidates.fillna(
             0.0, subset=["col_similarity", "table_similarity", "query_hit_count"]
