@@ -1265,64 +1265,120 @@ class FKPredictor:
     # ------------------------------------------------------------------
     # Step 1d: Ontology entity match (optional)
     # ------------------------------------------------------------------
+    # entity_match weights (see add_entity_match).
+    ENTITY_MATCH_COLUMN_REF = 1.0      # col_a references B's primary entity (or vice versa)
+    ENTITY_MATCH_PRIMARY_REL = 0.6     # ontology relationship between the two primary entities
+    ENTITY_MATCH_SAME_PRIMARY = 0.4    # both tables have the same primary entity type
+
+    def _table_columns(self, table: str) -> set:
+        try:
+            return {c.lower() for c in self.spark.table(table).columns}
+        except Exception:
+            return set()
+
     def add_entity_match(self, candidates: DataFrame) -> DataFrame:
-        """Join ontology_entities + ontology_relationships to score entity alignment.
-        0.25 for inter-entity relationship, 0.1 for same-entity (self-referential FK support)."""
+        """Score how well the two tables' ontology entities support the pair.
+
+        Returns EXACTLY one output row per input row. Every lookup below joins to at
+        most one row: one primary entity per table, a DISTINCT (table, column, type)
+        reference constrained to the other table's single primary type, and DISTINCT
+        relationship pairs. (The previous version joined every entity of table A with
+        every entity of table B, turning each candidate into n_a x n_b rows -- 9-16x
+        on real schemas -- each with a different score, AI call and prompt label.)
+
+        entity_match (max of):
+          1.0  column-level reference: col_a is bound to a *referenced* entity whose
+               type is table B's primary entity (or col_b -> table A's primary). This
+               is the direct FK signal, e.g. cm.usubjid references Person and
+               subjects is the Person table.
+          0.6  table-level: an ontology relationship links the two primary entities.
+               Relationships derived from earlier FK predictions (source='fk_inferred')
+               are ignored, so past predictions can't boost themselves.
+          0.4  both tables have the same primary entity type.
+        Two tables that merely both *reference* the same entity (siblings such as
+        cm and ex, both referencing Person) get no boost.
+        entity_type_a / entity_type_b are the primary entity types.
+        """
         ont = self.config.fq(self.config.ontology_entities_table)
         ont_rels = self.config.fq(self.config.ontology_relationships_table)
-        try:
-            self.spark.sql(f"SELECT 1 FROM {ont} LIMIT 1").collect()
-        except Exception:
+        ent_cols = self._table_columns(ont)
+        if not ent_cols:
             return candidates.withColumn("entity_match", F.lit(0.0)) \
                 .withColumn("entity_type_a", F.lit(None).cast("string")) \
                 .withColumn("entity_type_b", F.lit(None).cast("string"))
+        rel_cols = self._table_columns(ont_rels)
+        has_roles = "entity_role" in ent_cols
+        has_src_cols = "source_columns" in ent_cols and has_roles
         candidates.createOrReplaceTempView("fk_cand")
 
-        has_rels = False
-        try:
-            self.spark.sql(f"SELECT 1 FROM {ont_rels} LIMIT 1").collect()
-            has_rels = True
-        except Exception:
-            pass
-
-        rels_cte = ""
-        rel_join = ""
-        rel_case = "0.0"
-        if has_rels:
-            rels_cte = f""",
-            ent_rels AS (
-                SELECT DISTINCT src_entity_type, dst_entity_type
-                FROM {ont_rels} WHERE confidence >= 0.4
-            )"""
-            rel_join = """
-            LEFT JOIN ent_rels r1
-                ON ta.entity_type = r1.src_entity_type AND tb.entity_type = r1.dst_entity_type
-            LEFT JOIN ent_rels r2
-                ON ta.entity_type = r2.dst_entity_type AND tb.entity_type = r2.src_entity_type"""
-            rel_case = "CASE WHEN r1.src_entity_type IS NOT NULL OR r2.src_entity_type IS NOT NULL THEN 1.0 ELSE 0.0 END"
-
-        df = self.spark.sql(f"""
-            WITH table_entity AS (
-                SELECT EXPLODE(source_tables) AS table_name, entity_type
+        role_order = (
+            "CASE WHEN entity_role = 'primary' THEN 0 ELSE 1 END, " if has_roles else ""
+        )
+        ctes = [f"""ent AS (
+                SELECT EXPLODE(source_tables) AS table_name, entity_type, confidence
+                       {", entity_role, source_columns" if has_src_cols else (", entity_role" if has_roles else "")}
                 FROM {ont} WHERE confidence >= 0.4
-            ){rels_cte}
-            SELECT c.*,
-                ta.entity_type AS entity_type_a,
-                tb.entity_type AS entity_type_b,
-                CASE
-                    WHEN ta.entity_type IS NOT NULL AND tb.entity_type IS NOT NULL THEN
-                        GREATEST(
-                            {rel_case},
-                            CASE WHEN ta.entity_type = tb.entity_type THEN 0.4 ELSE 0.0 END
-                        )
-                    ELSE 0.0
-                END AS entity_match
-            FROM fk_cand c
-            LEFT JOIN table_entity ta ON c.table_a = ta.table_name
-            LEFT JOIN table_entity tb ON c.table_b = tb.table_name
-            {rel_join}
-        """)
-        return df
+            )""", f"""prim AS (
+                SELECT table_name, entity_type FROM (
+                    SELECT table_name, entity_type, ROW_NUMBER() OVER (
+                        PARTITION BY table_name
+                        ORDER BY {role_order}confidence DESC, entity_type
+                    ) AS _rn FROM ent
+                ) WHERE _rn = 1
+            )"""]
+        joins = [
+            "LEFT JOIN prim pa ON c.table_a = pa.table_name",
+            "LEFT JOIN prim pb ON c.table_b = pb.table_name",
+        ]
+        terms = [
+            f"CASE WHEN pa.entity_type IS NOT NULL AND pa.entity_type = pb.entity_type "
+            f"THEN {self.ENTITY_MATCH_SAME_PRIMARY} ELSE 0.0 END"
+        ]
+        if has_src_cols:
+            ctes.append("""refcols AS (
+                SELECT DISTINCT table_name, LOWER(col) AS col_short, entity_type
+                FROM ent LATERAL VIEW EXPLODE(source_columns) x AS col
+                WHERE COALESCE(entity_role, 'referenced') = 'referenced' AND col IS NOT NULL
+            )""")
+            joins += [
+                "LEFT JOIN refcols ra ON ra.table_name = c.table_a "
+                "AND ra.col_short = LOWER(ELEMENT_AT(SPLIT(c.col_a, '\\\\.'), -1)) "
+                "AND ra.entity_type = pb.entity_type",
+                "LEFT JOIN refcols rb ON rb.table_name = c.table_b "
+                "AND rb.col_short = LOWER(ELEMENT_AT(SPLIT(c.col_b, '\\\\.'), -1)) "
+                "AND rb.entity_type = pa.entity_type",
+            ]
+            terms.append(
+                f"CASE WHEN ra.col_short IS NOT NULL OR rb.col_short IS NOT NULL "
+                f"THEN {self.ENTITY_MATCH_COLUMN_REF} ELSE 0.0 END"
+            )
+        if {"src_entity_type", "dst_entity_type"} <= rel_cols:
+            not_inferred = (
+                "AND COALESCE(source, '') != 'fk_inferred'" if "source" in rel_cols else ""
+            )
+            ctes.append(f"""ent_rels AS (
+                SELECT DISTINCT src_entity_type, dst_entity_type
+                FROM {ont_rels} WHERE confidence >= 0.4 {not_inferred}
+            )""")
+            joins += [
+                "LEFT JOIN ent_rels r1 ON pa.entity_type = r1.src_entity_type "
+                "AND pb.entity_type = r1.dst_entity_type",
+                "LEFT JOIN ent_rels r2 ON pa.entity_type = r2.dst_entity_type "
+                "AND pb.entity_type = r2.src_entity_type",
+            ]
+            terms.append(
+                f"CASE WHEN r1.src_entity_type IS NOT NULL OR r2.src_entity_type IS NOT NULL "
+                f"THEN {self.ENTITY_MATCH_PRIMARY_REL} ELSE 0.0 END"
+            )
+        score = terms[0] if len(terms) == 1 else f"GREATEST({', '.join(terms)})"
+        nl = chr(10)
+        sql = (
+            "WITH " + ("," + nl).join(ctes) + nl
+            + "SELECT c.*, pa.entity_type AS entity_type_a, pb.entity_type AS entity_type_b, "
+            + f"CAST({score} AS DOUBLE) AS entity_match" + nl
+            + "FROM fk_cand c" + nl + nl.join(joins)
+        )
+        return self.spark.sql(sql)
 
     # ------------------------------------------------------------------
     # Step 1d: Lineage-based candidate boosting
@@ -2163,7 +2219,7 @@ class FKPredictor:
         """Batch join validation using UNION ALL to minimize round-trips."""
         rows = (
             judged.filter(F.col("ai_confidence") > 0)
-            .select("col_a", "col_b", "table_a", "table_b", "ai_confidence")
+            .select("col_a", "col_b", "table_a", "table_b")  # one stats row per PAIR
             .distinct()
             .collect()
         )
@@ -2936,6 +2992,14 @@ class FKPredictor:
             "table_similarity",
             F.coalesce(F.max("table_similarity").over(sim_w), F.lit(0.0)),
         )
+        # Same for value-overlap evidence: the overlap generator has the lowest
+        # source rank, so when embeddings also find the pair (they do for any
+        # same-name columns) the dedup keeps the embedding row and the containment
+        # signal was silently dropped -- exactly the name-free keys it exists for.
+        if "_data_overlap" in candidates.columns:
+            candidates = candidates.withColumn(
+                "_data_overlap", F.max("_data_overlap").over(sim_w)
+            )
 
         dedup_w = Window.partitionBy("col_a", "col_b").orderBy(
             F.col("source_rank").asc(),
