@@ -2858,12 +2858,47 @@ class FKPredictor:
             out.append(item)
         return out
 
+    _DEBUG_COLUMNS = (
+        ("col_a", "string"), ("col_b", "string"), ("table_a", "string"), ("table_b", "string"),
+        ("source_rank", "int"), ("entity_type_a", "string"), ("entity_type_b", "string"),
+        ("entity_match", "double"), ("_data_overlap", "double"), ("col_similarity", "double"),
+        ("rule_score", "double"), ("skip_ai", "boolean"), ("ai_is_fk", "boolean"),
+        ("_ai_confidence_raw", "double"), ("ai_confidence", "double"), ("ai_reasoning", "string"),
+        ("join_rate", "double"), ("join_matched", "long"), ("ri_score", "double"),
+        ("_card_ratio_a", "double"), ("_card_ratio_b", "double"),
+    )
+
+    def _write_debug_rows(self, judged: DataFrame, below: Optional[DataFrame]) -> None:
+        """Diagnostics only: overwrite `fk_prediction_debug` with every row that
+        reached the AI stage (stage='judged', after join validation and direction
+        enforcement, i.e. exactly what write_predictions sees) plus every row that
+        fell below rule_score_min_for_ai (stage='below_floor'). One row per
+        candidate ROW, not per pair, so duplicated pairs are visible as such."""
+        def _shape(df: DataFrame, stage: str) -> DataFrame:
+            cols = [F.lit(stage).alias("stage")]
+            for name, dtype in self._DEBUG_COLUMNS:
+                src = F.col(name) if name in df.columns else F.lit(None)
+                cols.append(src.cast(dtype).alias(name.lstrip("_")))
+            return df.select(*cols)
+
+        try:
+            out = _shape(judged, "judged")
+            if below is not None:
+                out = out.unionByName(_shape(below, "below_floor"))
+            out = out.withColumn("run_ts", F.current_timestamp())
+            target = self.config.fq("fk_prediction_debug")
+            out.write.mode("overwrite").option("overwriteSchema", "true").saveAsTable(target)
+            logger.warning("Diagnostics: wrote FK debug rows to %s", target)
+        except Exception as e:  # diagnostics must never fail the run
+            logger.warning("Diagnostics: could not write FK debug rows: %s", e)
+
     def run(self, sweep_stale: bool = False) -> Dict[str, Any]:
         """Execute the full FK prediction pipeline."""
         logger.info("Starting FK prediction pipeline")
         diag = self.config.diagnostics
         stage_counts: Dict[str, int] = {}
         below_min_rule: List[Dict[str, Any]] = []
+        below = None
         self._ensure_output_tables()
 
         if not self._compute_incremental_state():
@@ -3043,6 +3078,9 @@ class FKPredictor:
         # Materialize once to avoid re-executing AI_QUERY on every downstream action
         _schema = judged.schema
         judged = self.spark.createDataFrame(judged.collect(), schema=_schema)
+        if diag:
+            # Keep the judge's raw confidence: join_validate rescales ai_confidence.
+            judged = judged.withColumn("_ai_confidence_raw", F.col("ai_confidence"))
 
         ai_positive = judged.filter(F.col("ai_is_fk") == True).count()
         ai_negative = judged.filter(F.col("ai_is_fk") == False).count()
@@ -3072,6 +3110,8 @@ class FKPredictor:
             judged = judged.withColumn("ri_score", F.lit(0.5))
 
         judged = self._enforce_direction(judged)
+        if diag:
+            self._write_debug_rows(judged, below)
 
         n_declared = 0
         if "source_rank" in judged.columns:

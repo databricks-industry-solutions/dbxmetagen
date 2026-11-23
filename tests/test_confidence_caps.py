@@ -84,3 +84,25 @@ class TestFkRejectedPairs:
 
     def test_diagnostics_off_by_default(self):
         assert self._predictor().config.diagnostics is False
+
+
+class TestFkDebugDump:
+    def test_debug_rows_written_with_fixed_schema_and_never_raise(self):
+        from dbxmetagen.fk_prediction import FKPredictionConfig, FKPredictor
+        p = FKPredictor(MagicMock(), FKPredictionConfig(catalog_name="cat", schema_name="sch", diagnostics=True))
+        judged = MagicMock()
+        judged.columns = ["col_a", "col_b", "rule_score", "ai_confidence"]
+        p._write_debug_rows(judged, None)  # MagicMock pipeline; must not raise
+        judged.select.assert_called_once()
+        out = judged.select.return_value.withColumn.return_value
+        out.write.mode.assert_called_once_with("overwrite")
+        target = out.write.mode.return_value.option.return_value.saveAsTable.call_args[0][0]
+        assert target.endswith("fk_prediction_debug")
+
+    def test_debug_write_failure_is_swallowed(self):
+        from dbxmetagen.fk_prediction import FKPredictionConfig, FKPredictor
+        p = FKPredictor(MagicMock(), FKPredictionConfig(catalog_name="cat", schema_name="sch", diagnostics=True))
+        judged = MagicMock()
+        judged.columns = []
+        judged.select.side_effect = RuntimeError("boom")
+        p._write_debug_rows(judged, None)
