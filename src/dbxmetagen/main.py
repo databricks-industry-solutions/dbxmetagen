@@ -14,6 +14,11 @@ from dbxmetagen.processing import (
     table_exists_uc,
 )
 from dbxmetagen.config import MetadataConfig
+from dbxmetagen.output_access import (
+    OutputAccessError,
+    require_output_location,
+    verify_output_access,
+)
 from dbxmetagen.deterministic_pi import ensure_spacy_model
 from dbxmetagen.benchmarking import log_token_usage, setup_benchmarking
 from dbxmetagen.databricks_utils import (
@@ -111,9 +116,30 @@ def seed_customer_context(config):
 
 
 def initialize_infrastructure(config):
-    """Initialize DDL directories, tables, and queue."""
-    setup_ddl(config)
-    create_tables(config)
+    """Initialize DDL directories, tables, and queue.
+
+    The output location is verified writable BEFORE the queue is built and any
+    table is processed. A missing or read-only output catalog/schema/volume is
+    fatal (OutputAccessError) instead of failing again for every table after
+    its LLM calls have already run.
+    """
+    spark = SparkSession.builder.getOrCreate()
+    require_output_location(config)
+    try:
+        review_output_path = setup_ddl(config)
+        create_tables(config)
+    except OutputAccessError:
+        raise
+    except Exception as e:
+        raise OutputAccessError(
+            f"FATAL: could not create the output schema/volume/control table in "
+            f"{config.catalog_name}.{config.schema_name}. Metadata generation was "
+            "stopped before any table was processed. Make sure the catalog exists and "
+            "the identity running this job has USE CATALOG, USE SCHEMA, CREATE SCHEMA "
+            "(if the schema doesn't exist yet), CREATE TABLE, MODIFY, and CREATE/WRITE "
+            f"VOLUME there.\nUnderlying error: {str(e).split('JVM stacktrace:')[0].strip()}"
+        ) from e
+    verify_output_access(spark, config, review_output_path)
     seed_customer_context(config)
     config.table_names = setup_queue(config)
     if config.control_table:

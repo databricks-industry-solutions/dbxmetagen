@@ -1504,6 +1504,30 @@ def run_job(req: JobRunRequest):
     return {"run_id": run.run_id}
 
 
+def _latest_task_attempts(run_tasks):
+    """Collapse task retries to one entry per task_key.
+
+    The Jobs API lists every attempt of a retried task as its own entry under
+    ``run.tasks`` (same task_key, increasing attempt_number). Rendering them
+    as-is gave a failing run one progress bar per retry. Keep the latest
+    attempt (highest attempt_number; ties broken by start_time) in the order
+    each task first appears, paired with that task's total attempt count.
+    """
+    latest, counts, order = {}, {}, []
+    for t in run_tasks or []:
+        if t is None:
+            continue
+        key = t.task_key
+        counts[key] = counts.get(key, 0) + 1
+        rank = (getattr(t, "attempt_number", None) or 0, getattr(t, "start_time", None) or 0)
+        if key not in latest:
+            order.append(key)
+            latest[key] = (rank, t)
+        elif rank >= latest[key][0]:
+            latest[key] = (rank, t)
+    return [(latest[k][1], counts[k]) for k in order]
+
+
 @app.get("/api/jobs/{run_id}/status")
 def get_run_status(run_id: int):
     """Get status of a job run with task-level detail."""
@@ -1515,7 +1539,7 @@ def get_run_status(run_id: int):
         raise HTTPException(502, detail=f"Failed to fetch run {run_id}: {e}")
 
     tasks = []
-    for t in run.tasks or []:
+    for t, attempts in _latest_task_attempts(run.tasks):
         ts = t.state if t else None
         tasks.append(
             {
@@ -1526,6 +1550,7 @@ def get_run_status(run_id: int):
                     else "UNKNOWN"
                 ),
                 "result": ts.result_state.value if ts and ts.result_state else None,
+                "attempts": attempts,
             }
         )
 
