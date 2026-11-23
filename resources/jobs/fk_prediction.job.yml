@@ -53,6 +53,8 @@ resources:
           default: ""
         - name: sweep_stale_edges
           default: "false"
+        - name: fk_diagnostics
+          default: "false"
 
       tasks:
         - task_key: predict_foreign_keys
@@ -63,6 +65,7 @@ resources:
           notebook_task:
             notebook_path: ../../notebooks/predict_foreign_keys.py
             base_parameters:
+              fk_diagnostics: "{{job.parameters.fk_diagnostics}}"
               catalog_name: "{{job.parameters.catalog_name}}"
               schema_name: "{{job.parameters.schema_name}}"
               column_similarity_threshold: "{{job.parameters.column_similarity_threshold}}"

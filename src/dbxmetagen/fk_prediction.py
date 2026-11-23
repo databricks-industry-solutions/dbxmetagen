@@ -13,7 +13,7 @@ import re
 import threading
 import warnings
 from dataclasses import dataclass, field
-from typing import Any, Dict, Optional, Tuple
+from typing import Any, Dict, Optional, Tuple, List
 
 from pyspark.sql import DataFrame, SparkSession
 from pyspark.sql import functions as F
@@ -83,6 +83,15 @@ def _not_join_key():
     """Column predicate: row is a true FK (kind is NULL/legacy or 'foreign_key'),
     excluding rows explicitly tagged as a non-constraint 'join_key'."""
     return F.col("relationship_kind").isNull() | (F.col("relationship_kind") != F.lit(JOIN_KEY))
+
+
+def _uniqueness_ratio(distinct_count, row_count) -> float:
+    """distinct/rows, capped at 1.0.
+
+    Profiling's distinct_count is approximate, so a truly unique column can come
+    out slightly above its row count (seen: 9,405 distinct over 9,029 rows).
+    """
+    return min(1.0, distinct_count / row_count)
 
 
 def _dtype_exclusion_sql() -> str:
@@ -252,6 +261,11 @@ class FKPredictionConfig:
     fk_data_overlap_weight: float = 0.25                # rule_score contribution
     fk_data_overlap_max_candidates: int = 2000          # global emitted-pair ceiling
     fk_mirror_uniqueness_threshold: float = 0.95        # both card ratios >= this on a low-trust pair -> 1:1 table mirror, veto
+    # Diagnostics: when on, run() adds per-stage candidate counts and the pairs that
+    # fell below rule_score_min_for_ai to its result. Costs extra Spark actions, so
+    # it's off by default. The AI-rejected pairs list is always returned (cheap).
+    diagnostics: bool = False
+    rejected_pairs_limit: int = 50
 
     def __post_init__(self):
         if self.federation_mode and self.apply_ddl:
@@ -1638,7 +1652,7 @@ class FKPredictor:
             dc = profiled_distinct.get(r.col_id)
             rc = profiled_row_counts.get(r.tbl_id)
             if dc is not None and rc and rc > 0:
-                col_stats[r.col_id] = dc / rc
+                col_stats[r.col_id] = _uniqueness_ratio(dc, rc)
             else:
                 unprofiled_by_table.setdefault(r.tbl_id, []).append((r.col_id, col_short))
 
@@ -2817,9 +2831,39 @@ class FKPredictor:
             ) COMMENT 'Generated FK DDL statements'
         """)
 
+    @staticmethod
+    def _short_col(fq_col) -> str:
+        """`cat.sch.table.col` -> `table.col` for readable diagnostics."""
+        parts = str(fq_col or "").split(".")
+        return ".".join(parts[-2:])
+
+    def _pair_rows(self, df: DataFrame, order_col: str, limit: int) -> List[Dict[str, Any]]:
+        """Up to `limit` candidate pairs as plain dicts, highest `order_col` first."""
+        if limit <= 0:
+            return []
+        wanted = ["col_a", "col_b", "rule_score", "ai_confidence", "ai_reasoning", "source_rank"]
+        cols = [c for c in wanted if c in df.columns]
+        rows = df.select(*cols).orderBy(F.col(order_col).desc_nulls_last()).limit(limit).collect()
+        out = []
+        for r in rows:
+            d = r.asDict()
+            item = {"pair": f"{self._short_col(d.get('col_a'))} <-> {self._short_col(d.get('col_b'))}"}
+            for k in ("rule_score", "ai_confidence"):
+                if d.get(k) is not None:
+                    item[k] = round(float(d[k]), 3)
+            if d.get("source_rank") is not None:
+                item["source_rank"] = int(d["source_rank"])
+            if d.get("ai_reasoning"):
+                item["ai_reasoning"] = str(d["ai_reasoning"])[:200]
+            out.append(item)
+        return out
+
     def run(self, sweep_stale: bool = False) -> Dict[str, Any]:
         """Execute the full FK prediction pipeline."""
         logger.info("Starting FK prediction pipeline")
+        diag = self.config.diagnostics
+        stage_counts: Dict[str, int] = {}
+        below_min_rule: List[Dict[str, Any]] = []
         self._ensure_output_tables()
 
         if not self._compute_incremental_state():
@@ -2887,6 +2931,7 @@ class FKPredictor:
             logger.info("FK candidates scoped to table_names: %s", self.config.table_names)
 
         total_cand = candidates.count()
+        stage_counts["candidates_after_dedup"] = total_cand
         if total_cand == 0:
             logger.info("No FK candidates found")
             return {"candidates": 0, "ai_query_rows": 0, "predictions": 0, "edges": 0, "ddl_applied": 0}
@@ -2902,6 +2947,10 @@ class FKPredictor:
         candidates = self.add_domain_signal(candidates)
         candidates = self.add_pk_signal(candidates)
         candidates = self.rule_score(candidates)
+        if diag:
+            # Each signal step joins onto the candidates; a count that grows past
+            # candidates_after_dedup means a join fanned out (duplicate pairs).
+            stage_counts["candidates_after_signals"] = candidates.count()
 
         # Global strict: a pair whose BOTH sides are generic column names
         # (id x id, status x type) must carry corroboration to survive -- a
@@ -2915,6 +2964,8 @@ class FKPredictor:
             | (F.coalesce(_entity_sig, F.lit(0.0)) > 0)
         )
         _drop = (F.coalesce(F.col("_both_generic"), F.lit(0.0)) > 0) & (~_has_corroboration)
+        if diag:
+            stage_counts["dropped_generic_name"] = candidates.filter(_drop).count()
         _before = candidates.count()
         candidates = candidates.filter(~_drop).drop("_both_generic", "_table_name_match")
         _dropped = _before - candidates.count()
@@ -2939,6 +2990,14 @@ class FKPredictor:
         need_review = candidates.filter((~F.col("skip_ai")) & (F.col("rule_score") >= min_rule))
 
         ai_eligible = need_review.count()
+        stage_counts["ai_eligible"] = ai_eligible
+        stage_counts["ai_sent"] = min(ai_eligible, max_ai)
+        stage_counts["ai_overflow_heuristic"] = max(0, ai_eligible - max_ai)
+        if diag:
+            stage_counts["skip_ai"] = skip_llm.count()
+            below = candidates.filter((~F.col("skip_ai")) & (F.col("rule_score") < min_rule))
+            stage_counts["below_min_rule_score"] = below.count()
+            below_min_rule = self._pair_rows(below, "rule_score", self.config.rejected_pairs_limit)
         if self.config.dry_run:
             logger.info(
                 "DRY RUN: %d candidates, %d would be sent to AI_QUERY, %d heuristic",
@@ -2988,6 +3047,15 @@ class FKPredictor:
         ai_positive = judged.filter(F.col("ai_is_fk") == True).count()
         ai_negative = judged.filter(F.col("ai_is_fk") == False).count()
         logger.info("AI judgment: %d positive, %d negative", ai_positive, ai_negative)
+        stage_counts["ai_positive"] = ai_positive
+        stage_counts["ai_negative"] = ai_negative
+        # Pairs write_predictions will drop (ai_confidence below the threshold),
+        # including budget-overflow pairs (ai_reasoning = budget_overflow_heuristic).
+        # `judged` is materialized above, so this is cheap.
+        _thresh = self.config.confidence_threshold
+        _rej = judged.filter(F.coalesce(F.col("ai_confidence"), F.lit(0.0)) < _thresh)
+        stage_counts["rejected_below_confidence"] = _rej.count()
+        rejected_pairs = self._pair_rows(_rej, "rule_score", self.config.rejected_pairs_limit)
 
         try:
             judged = self.join_validate(judged)
@@ -3020,14 +3088,19 @@ class FKPredictor:
         if self.config.apply_ddl:
             n_ddl = self.apply_ddl(ddl_df)
 
-        return {
+        result = {
             "dry_run": False,
             "candidates": total_cand,
             "ai_query_rows": ai_eligible,
             "predictions": n_preds,
             "edges": n_edges,
             "ddl_applied": n_ddl,
+            "stage_counts": stage_counts,
+            "rejected_pairs": rejected_pairs,
         }
+        if diag:
+            result["below_min_rule_score_pairs"] = below_min_rule
+        return result
 
 
 
@@ -3066,6 +3139,7 @@ def predict_foreign_keys(
     fk_data_overlap_weight: float = 0.25,
     fk_data_overlap_max_candidates: int = 2000,
     fk_mirror_uniqueness_threshold: float = 0.95,
+    diagnostics: bool = False,
 ) -> Dict[str, Any]:
     """Convenience function to run FK prediction."""
     from dbxmetagen.processing import _check_federation_guard
@@ -3104,6 +3178,7 @@ def predict_foreign_keys(
         fk_data_overlap_weight=fk_data_overlap_weight,
         fk_data_overlap_max_candidates=fk_data_overlap_max_candidates,
         fk_mirror_uniqueness_threshold=fk_mirror_uniqueness_threshold,
+        diagnostics=diagnostics,
     )
     predictor = FKPredictor(spark, config)
     return predictor.run(sweep_stale=sweep_stale)
