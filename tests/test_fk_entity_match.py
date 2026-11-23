@@ -8,12 +8,17 @@ from unittest.mock import MagicMock
 
 ENT = "cat.sch.ontology_entities"
 RELS = "cat.sch.ontology_relationships"
+STATS = "cat.sch.column_profiling_stats"
+SNAPS = "cat.sch.profiling_snapshots"
 
 
-def _predictor(ent_cols, rel_cols):
+def _predictor(ent_cols, rel_cols, profiling=True):
     from dbxmetagen.fk_prediction import FKPredictionConfig, FKPredictor
     spark = MagicMock()
     cols = {ENT: ent_cols, RELS: rel_cols}
+    if profiling:
+        cols[STATS] = ["is_unique_candidate", "column_name", "table_name", "snapshot_id"]
+        cols[SNAPS] = ["snapshot_id", "table_name", "snapshot_time"]
 
     def _table(name):
         if name.replace("`", "") not in cols or cols[name.replace("`", "")] is None:
@@ -104,3 +109,23 @@ def test_dedup_is_orientation_independent():
     assert 'dedup_w = Window.partitionBy("_pair_lo", "_pair_hi")' in src
     assert 'Window.partitionBy("col_a", "col_b").orderBy(' not in src
     assert '"_data_overlap", F.max("_data_overlap").over(sim_w)' in src
+
+
+def test_column_reference_requires_both_ends_bound_and_a_key():
+    p, spark = _predictor(FULL_ENT, FULL_REL)
+    p.add_entity_match(MagicMock())
+    sql = _sql(spark)
+    # referenced column must be one of the other table's primary-entity columns ...
+    assert "primcols AS (" in sql
+    assert "(ra.col_short IS NOT NULL AND kb.col_short IS NOT NULL)" in sql
+    assert "(rb.col_short IS NOT NULL AND ka.col_short IS NOT NULL)" in sql
+    # ... and a profiled key (latest snapshot, is_unique_candidate)
+    assert "uniq AS (" in sql and "cs.is_unique_candidate = true" in sql
+    assert "EXISTS (SELECT 1 FROM uniq u" in sql
+
+
+def test_without_profiling_the_binding_alone_is_used():
+    p, spark = _predictor(FULL_ENT, FULL_REL, profiling=False)
+    p.add_entity_match(MagicMock())
+    sql = _sql(spark)
+    assert "primcols AS (" in sql and "uniq" not in sql

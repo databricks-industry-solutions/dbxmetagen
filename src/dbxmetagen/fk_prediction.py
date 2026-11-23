@@ -1319,8 +1319,8 @@ class FKPredictor:
                        {", entity_role, source_columns" if has_src_cols else (", entity_role" if has_roles else "")}
                 FROM {ont} WHERE confidence >= 0.4
             )""", f"""prim AS (
-                SELECT table_name, entity_type FROM (
-                    SELECT table_name, entity_type, ROW_NUMBER() OVER (
+                SELECT table_name, entity_type{", source_columns" if has_src_cols else ""} FROM (
+                    SELECT table_name, entity_type{", source_columns" if has_src_cols else ""}, ROW_NUMBER() OVER (
                         PARTITION BY table_name
                         ORDER BY {role_order}confidence DESC, entity_type
                     ) AS _rn FROM ent
@@ -1335,21 +1335,62 @@ class FKPredictor:
             f"THEN {self.ENTITY_MATCH_SAME_PRIMARY} ELSE 0.0 END"
         ]
         if has_src_cols:
+            # A column-level reference counts only when BOTH ends are bound: col_a is
+            # bound to a referenced entity of B's primary type AND col_b is one of B's
+            # primary entity's own columns (or the mirror image). Checking only the
+            # referencing side gave 1.0 to every column of B (cm.usubjid <->
+            # subjects.record_id / site_id / study_id).
             ctes.append("""refcols AS (
                 SELECT DISTINCT table_name, LOWER(col) AS col_short, entity_type
                 FROM ent LATERAL VIEW EXPLODE(source_columns) x AS col
                 WHERE COALESCE(entity_role, 'referenced') = 'referenced' AND col IS NOT NULL
             )""")
+            # The referenced column must also be a KEY, not just any attribute bound
+            # to the entity (Person's columns include sex and age). Use profiling's
+            # uniqueness flag when profiling exists; otherwise the binding alone.
+            stats_t = self.config.fq("column_profiling_stats")
+            snaps_t = self.config.fq("profiling_snapshots")
+            stats_cols = self._table_columns(stats_t)
+            key_filter = ""
+            if {"is_unique_candidate", "column_name", "table_name", "snapshot_id"} <= stats_cols \
+                    and self._table_columns(snaps_t):
+                ctes.append(f"""uniq AS (
+                    SELECT DISTINCT cs.table_name, LOWER(cs.column_name) AS col_short
+                    FROM {stats_t} cs
+                    INNER JOIN (
+                        SELECT snapshot_id, table_name FROM (
+                            SELECT snapshot_id, table_name, ROW_NUMBER() OVER (
+                                PARTITION BY table_name ORDER BY snapshot_time DESC) AS _rn
+                            FROM {snaps_t}
+                        ) WHERE _rn = 1
+                    ) l ON cs.snapshot_id = l.snapshot_id AND cs.table_name = l.table_name
+                    WHERE cs.is_unique_candidate = true
+                )""")
+                key_filter = (
+                    " AND EXISTS (SELECT 1 FROM uniq u WHERE u.table_name = prim.table_name"
+                    " AND u.col_short = LOWER(col))"
+                )
+            ctes.append(f"""primcols AS (
+                SELECT DISTINCT table_name, LOWER(col) AS col_short
+                FROM prim LATERAL VIEW EXPLODE(source_columns) x AS col
+                WHERE col IS NOT NULL{key_filter}
+            )""")
+            _short = "LOWER(ELEMENT_AT(SPLIT(c.{side}, '\\\\.'), -1))"
             joins += [
                 "LEFT JOIN refcols ra ON ra.table_name = c.table_a "
-                "AND ra.col_short = LOWER(ELEMENT_AT(SPLIT(c.col_a, '\\\\.'), -1)) "
+                f"AND ra.col_short = {_short.format(side='col_a')} "
                 "AND ra.entity_type = pb.entity_type",
                 "LEFT JOIN refcols rb ON rb.table_name = c.table_b "
-                "AND rb.col_short = LOWER(ELEMENT_AT(SPLIT(c.col_b, '\\\\.'), -1)) "
+                f"AND rb.col_short = {_short.format(side='col_b')} "
                 "AND rb.entity_type = pa.entity_type",
+                "LEFT JOIN primcols ka ON ka.table_name = c.table_a "
+                f"AND ka.col_short = {_short.format(side='col_a')}",
+                "LEFT JOIN primcols kb ON kb.table_name = c.table_b "
+                f"AND kb.col_short = {_short.format(side='col_b')}",
             ]
             terms.append(
-                f"CASE WHEN ra.col_short IS NOT NULL OR rb.col_short IS NOT NULL "
+                "CASE WHEN (ra.col_short IS NOT NULL AND kb.col_short IS NOT NULL) "
+                "OR (rb.col_short IS NOT NULL AND ka.col_short IS NOT NULL) "
                 f"THEN {self.ENTITY_MATCH_COLUMN_REF} ELSE 0.0 END"
             )
         if {"src_entity_type", "dst_entity_type"} <= rel_cols:
