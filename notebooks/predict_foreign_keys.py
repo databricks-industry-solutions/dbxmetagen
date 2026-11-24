@@ -44,6 +44,7 @@ dbutils.widgets.text("fk_data_overlap_min_containment_distinctive", "0.30", "Val
 dbutils.widgets.text("fk_data_overlap_min_distinct", "8", "Value-overlap small-domain veto (min distinct)")
 dbutils.widgets.text("fk_data_overlap_weight", "0.25", "Value-overlap rule_score weight")
 dbutils.widgets.text("fk_data_overlap_max_candidates", "2000", "Value-overlap global candidate ceiling")
+dbutils.widgets.text("fk_diagnostics", "false", "Diagnostics: print per-stage counts and pairs below the AI rule-score floor (extra Spark actions)")
 dbutils.widgets.text("fk_mirror_uniqueness_threshold", "0.95", "Mirror veto: both card ratios >= this on low-trust pair -> 1:1 mirror, not FK")
 dbutils.widgets.text("table_names", "", "Table Names")
 dbutils.widgets.dropdown("federation_mode", "false", ["true", "false"], "Federation Mode")
@@ -81,6 +82,7 @@ fk_data_overlap_min_distinct = int(dbutils.widgets.get("fk_data_overlap_min_dist
 fk_data_overlap_weight = float(dbutils.widgets.get("fk_data_overlap_weight"))
 fk_data_overlap_max_candidates = int(dbutils.widgets.get("fk_data_overlap_max_candidates"))
 fk_mirror_uniqueness_threshold = float(dbutils.widgets.get("fk_mirror_uniqueness_threshold"))
+fk_diagnostics = dbutils.widgets.get("fk_diagnostics").strip().lower() == "true"
 
 federation_mode = dbutils.widgets.get("federation_mode").lower() == "true"
 
@@ -142,6 +144,7 @@ _fk_kwargs = dict(
     fk_data_overlap_weight=fk_data_overlap_weight,
     fk_data_overlap_max_candidates=fk_data_overlap_max_candidates,
     fk_mirror_uniqueness_threshold=fk_mirror_uniqueness_threshold,
+    diagnostics=fk_diagnostics,
 )
 if system_column_patterns is not None:
     _fk_kwargs["system_column_patterns"] = system_column_patterns
@@ -164,3 +167,25 @@ else:
     print(f"  Predictions written: {result.get('predictions', 0)}")
     print(f"  Graph edges created: {result.get('edges', 0)}")
     print(f"  DDL applied: {result.get('ddl_applied', 0)}")
+
+    def _print_pairs(title, pairs):
+        if not pairs:
+            return
+        print(f"\n{title} (top {len(pairs)} by rule score):")
+        for p in pairs:
+            bits = [f"rule={p.get('rule_score')}"]
+            if "ai_confidence" in p:
+                bits.append(f"ai={p['ai_confidence']}")
+            if "source_rank" in p:
+                bits.append(f"src={p['source_rank']}")
+            line = f"  {p['pair']}  " + " ".join(bits)
+            if p.get("ai_reasoning"):
+                line += f"  | {p['ai_reasoning']}"
+            print(line)
+
+    if result.get("stage_counts"):
+        print("\nStage counts:")
+        for k, v in result["stage_counts"].items():
+            print(f"  {k}: {v}")
+    _print_pairs("Pairs below the confidence threshold (not written)", result.get("rejected_pairs"))
+    _print_pairs("Pairs below the AI rule-score floor (never judged)", result.get("below_min_rule_score_pairs"))

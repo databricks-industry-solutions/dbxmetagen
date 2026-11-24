@@ -13,7 +13,7 @@ import re
 import threading
 import warnings
 from dataclasses import dataclass, field
-from typing import Any, Dict, Optional, Tuple
+from typing import Any, Dict, Optional, Tuple, List
 
 from pyspark.sql import DataFrame, SparkSession
 from pyspark.sql import functions as F
@@ -83,6 +83,15 @@ def _not_join_key():
     """Column predicate: row is a true FK (kind is NULL/legacy or 'foreign_key'),
     excluding rows explicitly tagged as a non-constraint 'join_key'."""
     return F.col("relationship_kind").isNull() | (F.col("relationship_kind") != F.lit(JOIN_KEY))
+
+
+def _uniqueness_ratio(distinct_count, row_count) -> float:
+    """distinct/rows, capped at 1.0.
+
+    Profiling's distinct_count is approximate, so a truly unique column can come
+    out slightly above its row count (seen: 9,405 distinct over 9,029 rows).
+    """
+    return min(1.0, distinct_count / row_count)
 
 
 def _dtype_exclusion_sql() -> str:
@@ -252,6 +261,11 @@ class FKPredictionConfig:
     fk_data_overlap_weight: float = 0.25                # rule_score contribution
     fk_data_overlap_max_candidates: int = 2000          # global emitted-pair ceiling
     fk_mirror_uniqueness_threshold: float = 0.95        # both card ratios >= this on a low-trust pair -> 1:1 table mirror, veto
+    # Diagnostics: when on, run() adds per-stage candidate counts and the pairs that
+    # fell below rule_score_min_for_ai to its result. Costs extra Spark actions, so
+    # it's off by default. The AI-rejected pairs list is always returned (cheap).
+    diagnostics: bool = False
+    rejected_pairs_limit: int = 50
 
     def __post_init__(self):
         if self.federation_mode and self.apply_ddl:
@@ -1251,64 +1265,161 @@ class FKPredictor:
     # ------------------------------------------------------------------
     # Step 1d: Ontology entity match (optional)
     # ------------------------------------------------------------------
+    # entity_match weights (see add_entity_match).
+    ENTITY_MATCH_COLUMN_REF = 1.0      # col_a references B's primary entity (or vice versa)
+    ENTITY_MATCH_PRIMARY_REL = 0.6     # ontology relationship between the two primary entities
+    ENTITY_MATCH_SAME_PRIMARY = 0.4    # both tables have the same primary entity type
+
+    def _table_columns(self, table: str) -> set:
+        try:
+            return {c.lower() for c in self.spark.table(table).columns}
+        except Exception:
+            return set()
+
     def add_entity_match(self, candidates: DataFrame) -> DataFrame:
-        """Join ontology_entities + ontology_relationships to score entity alignment.
-        0.25 for inter-entity relationship, 0.1 for same-entity (self-referential FK support)."""
+        """Score how well the two tables' ontology entities support the pair.
+
+        Returns EXACTLY one output row per input row. Every lookup below joins to at
+        most one row: one primary entity per table, a DISTINCT (table, column, type)
+        reference constrained to the other table's single primary type, and DISTINCT
+        relationship pairs. (The previous version joined every entity of table A with
+        every entity of table B, turning each candidate into n_a x n_b rows -- 9-16x
+        on real schemas -- each with a different score, AI call and prompt label.)
+
+        entity_match (max of):
+          1.0  column-level reference: col_a is bound to a *referenced* entity whose
+               type is table B's primary entity (or col_b -> table A's primary). This
+               is the direct FK signal, e.g. cm.usubjid references Person and
+               subjects is the Person table.
+          0.6  table-level: an ontology relationship links the two primary entities.
+               Relationships derived from earlier FK predictions (source='fk_inferred')
+               are ignored, so past predictions can't boost themselves.
+          0.4  both tables have the same primary entity type.
+        Two tables that merely both *reference* the same entity (siblings such as
+        cm and ex, both referencing Person) get no boost.
+        entity_type_a / entity_type_b are the primary entity types.
+        """
         ont = self.config.fq(self.config.ontology_entities_table)
         ont_rels = self.config.fq(self.config.ontology_relationships_table)
-        try:
-            self.spark.sql(f"SELECT 1 FROM {ont} LIMIT 1").collect()
-        except Exception:
+        ent_cols = self._table_columns(ont)
+        if not ent_cols:
             return candidates.withColumn("entity_match", F.lit(0.0)) \
                 .withColumn("entity_type_a", F.lit(None).cast("string")) \
                 .withColumn("entity_type_b", F.lit(None).cast("string"))
+        rel_cols = self._table_columns(ont_rels)
+        has_roles = "entity_role" in ent_cols
+        has_src_cols = "source_columns" in ent_cols and has_roles
         candidates.createOrReplaceTempView("fk_cand")
 
-        has_rels = False
-        try:
-            self.spark.sql(f"SELECT 1 FROM {ont_rels} LIMIT 1").collect()
-            has_rels = True
-        except Exception:
-            pass
-
-        rels_cte = ""
-        rel_join = ""
-        rel_case = "0.0"
-        if has_rels:
-            rels_cte = f""",
-            ent_rels AS (
-                SELECT DISTINCT src_entity_type, dst_entity_type
-                FROM {ont_rels} WHERE confidence >= 0.4
-            )"""
-            rel_join = """
-            LEFT JOIN ent_rels r1
-                ON ta.entity_type = r1.src_entity_type AND tb.entity_type = r1.dst_entity_type
-            LEFT JOIN ent_rels r2
-                ON ta.entity_type = r2.dst_entity_type AND tb.entity_type = r2.src_entity_type"""
-            rel_case = "CASE WHEN r1.src_entity_type IS NOT NULL OR r2.src_entity_type IS NOT NULL THEN 1.0 ELSE 0.0 END"
-
-        df = self.spark.sql(f"""
-            WITH table_entity AS (
-                SELECT EXPLODE(source_tables) AS table_name, entity_type
+        role_order = (
+            "CASE WHEN entity_role = 'primary' THEN 0 ELSE 1 END, " if has_roles else ""
+        )
+        ctes = [f"""ent AS (
+                SELECT EXPLODE(source_tables) AS table_name, entity_type, confidence
+                       {", entity_role, source_columns" if has_src_cols else (", entity_role" if has_roles else "")}
                 FROM {ont} WHERE confidence >= 0.4
-            ){rels_cte}
-            SELECT c.*,
-                ta.entity_type AS entity_type_a,
-                tb.entity_type AS entity_type_b,
-                CASE
-                    WHEN ta.entity_type IS NOT NULL AND tb.entity_type IS NOT NULL THEN
-                        GREATEST(
-                            {rel_case},
-                            CASE WHEN ta.entity_type = tb.entity_type THEN 0.4 ELSE 0.0 END
-                        )
-                    ELSE 0.0
-                END AS entity_match
-            FROM fk_cand c
-            LEFT JOIN table_entity ta ON c.table_a = ta.table_name
-            LEFT JOIN table_entity tb ON c.table_b = tb.table_name
-            {rel_join}
-        """)
-        return df
+            )""", f"""prim AS (
+                SELECT table_name, entity_type{", source_columns" if has_src_cols else ""} FROM (
+                    SELECT table_name, entity_type{", source_columns" if has_src_cols else ""}, ROW_NUMBER() OVER (
+                        PARTITION BY table_name
+                        ORDER BY {role_order}confidence DESC, entity_type
+                    ) AS _rn FROM ent
+                ) WHERE _rn = 1
+            )"""]
+        joins = [
+            "LEFT JOIN prim pa ON c.table_a = pa.table_name",
+            "LEFT JOIN prim pb ON c.table_b = pb.table_name",
+        ]
+        terms = [
+            f"CASE WHEN pa.entity_type IS NOT NULL AND pa.entity_type = pb.entity_type "
+            f"THEN {self.ENTITY_MATCH_SAME_PRIMARY} ELSE 0.0 END"
+        ]
+        if has_src_cols:
+            # A column-level reference counts only when BOTH ends are bound: col_a is
+            # bound to a referenced entity of B's primary type AND col_b is one of B's
+            # primary entity's own columns (or the mirror image). Checking only the
+            # referencing side gave 1.0 to every column of B (cm.usubjid <->
+            # subjects.record_id / site_id / study_id).
+            ctes.append("""refcols AS (
+                SELECT DISTINCT table_name, LOWER(col) AS col_short, entity_type
+                FROM ent LATERAL VIEW EXPLODE(source_columns) x AS col
+                WHERE COALESCE(entity_role, 'referenced') = 'referenced' AND col IS NOT NULL
+            )""")
+            # The referenced column must also be a KEY, not just any attribute bound
+            # to the entity (Person's columns include sex and age). Use profiling's
+            # uniqueness flag when profiling exists; otherwise the binding alone.
+            stats_t = self.config.fq("column_profiling_stats")
+            snaps_t = self.config.fq("profiling_snapshots")
+            stats_cols = self._table_columns(stats_t)
+            key_filter = ""
+            if {"is_unique_candidate", "column_name", "table_name", "snapshot_id"} <= stats_cols \
+                    and self._table_columns(snaps_t):
+                ctes.append(f"""uniq AS (
+                    SELECT DISTINCT cs.table_name, LOWER(cs.column_name) AS col_short
+                    FROM {stats_t} cs
+                    INNER JOIN (
+                        SELECT snapshot_id, table_name FROM (
+                            SELECT snapshot_id, table_name, ROW_NUMBER() OVER (
+                                PARTITION BY table_name ORDER BY snapshot_time DESC) AS _rn
+                            FROM {snaps_t}
+                        ) WHERE _rn = 1
+                    ) l ON cs.snapshot_id = l.snapshot_id AND cs.table_name = l.table_name
+                    WHERE cs.is_unique_candidate = true
+                )""")
+                key_filter = (
+                    " AND EXISTS (SELECT 1 FROM uniq u WHERE u.table_name = prim.table_name"
+                    " AND u.col_short = LOWER(col))"
+                )
+            ctes.append(f"""primcols AS (
+                SELECT DISTINCT table_name, LOWER(col) AS col_short
+                FROM prim LATERAL VIEW EXPLODE(source_columns) x AS col
+                WHERE col IS NOT NULL{key_filter}
+            )""")
+            _short = "LOWER(ELEMENT_AT(SPLIT(c.{side}, '\\\\.'), -1))"
+            joins += [
+                "LEFT JOIN refcols ra ON ra.table_name = c.table_a "
+                f"AND ra.col_short = {_short.format(side='col_a')} "
+                "AND ra.entity_type = pb.entity_type",
+                "LEFT JOIN refcols rb ON rb.table_name = c.table_b "
+                f"AND rb.col_short = {_short.format(side='col_b')} "
+                "AND rb.entity_type = pa.entity_type",
+                "LEFT JOIN primcols ka ON ka.table_name = c.table_a "
+                f"AND ka.col_short = {_short.format(side='col_a')}",
+                "LEFT JOIN primcols kb ON kb.table_name = c.table_b "
+                f"AND kb.col_short = {_short.format(side='col_b')}",
+            ]
+            terms.append(
+                "CASE WHEN (ra.col_short IS NOT NULL AND kb.col_short IS NOT NULL) "
+                "OR (rb.col_short IS NOT NULL AND ka.col_short IS NOT NULL) "
+                f"THEN {self.ENTITY_MATCH_COLUMN_REF} ELSE 0.0 END"
+            )
+        if {"src_entity_type", "dst_entity_type"} <= rel_cols:
+            not_inferred = (
+                "AND COALESCE(source, '') != 'fk_inferred'" if "source" in rel_cols else ""
+            )
+            ctes.append(f"""ent_rels AS (
+                SELECT DISTINCT src_entity_type, dst_entity_type
+                FROM {ont_rels} WHERE confidence >= 0.4 {not_inferred}
+            )""")
+            joins += [
+                "LEFT JOIN ent_rels r1 ON pa.entity_type = r1.src_entity_type "
+                "AND pb.entity_type = r1.dst_entity_type",
+                "LEFT JOIN ent_rels r2 ON pa.entity_type = r2.dst_entity_type "
+                "AND pb.entity_type = r2.src_entity_type",
+            ]
+            terms.append(
+                f"CASE WHEN r1.src_entity_type IS NOT NULL OR r2.src_entity_type IS NOT NULL "
+                f"THEN {self.ENTITY_MATCH_PRIMARY_REL} ELSE 0.0 END"
+            )
+        score = terms[0] if len(terms) == 1 else f"GREATEST({', '.join(terms)})"
+        nl = chr(10)
+        sql = (
+            "WITH " + ("," + nl).join(ctes) + nl
+            + "SELECT c.*, pa.entity_type AS entity_type_a, pb.entity_type AS entity_type_b, "
+            + f"CAST({score} AS DOUBLE) AS entity_match" + nl
+            + "FROM fk_cand c" + nl + nl.join(joins)
+        )
+        return self.spark.sql(sql)
 
     # ------------------------------------------------------------------
     # Step 1d: Lineage-based candidate boosting
@@ -1638,7 +1749,7 @@ class FKPredictor:
             dc = profiled_distinct.get(r.col_id)
             rc = profiled_row_counts.get(r.tbl_id)
             if dc is not None and rc and rc > 0:
-                col_stats[r.col_id] = dc / rc
+                col_stats[r.col_id] = _uniqueness_ratio(dc, rc)
             else:
                 unprofiled_by_table.setdefault(r.tbl_id, []).append((r.col_id, col_short))
 
@@ -2149,7 +2260,7 @@ class FKPredictor:
         """Batch join validation using UNION ALL to minimize round-trips."""
         rows = (
             judged.filter(F.col("ai_confidence") > 0)
-            .select("col_a", "col_b", "table_a", "table_b", "ai_confidence")
+            .select("col_a", "col_b", "table_a", "table_b")  # one stats row per PAIR
             .distinct()
             .collect()
         )
@@ -2817,9 +2928,74 @@ class FKPredictor:
             ) COMMENT 'Generated FK DDL statements'
         """)
 
+    @staticmethod
+    def _short_col(fq_col) -> str:
+        """`cat.sch.table.col` -> `table.col` for readable diagnostics."""
+        parts = str(fq_col or "").split(".")
+        return ".".join(parts[-2:])
+
+    def _pair_rows(self, df: DataFrame, order_col: str, limit: int) -> List[Dict[str, Any]]:
+        """Up to `limit` candidate pairs as plain dicts, highest `order_col` first."""
+        if limit <= 0:
+            return []
+        wanted = ["col_a", "col_b", "rule_score", "ai_confidence", "ai_reasoning", "source_rank"]
+        cols = [c for c in wanted if c in df.columns]
+        rows = df.select(*cols).orderBy(F.col(order_col).desc_nulls_last()).limit(limit).collect()
+        out = []
+        for r in rows:
+            d = r.asDict()
+            item = {"pair": f"{self._short_col(d.get('col_a'))} <-> {self._short_col(d.get('col_b'))}"}
+            for k in ("rule_score", "ai_confidence"):
+                if d.get(k) is not None:
+                    item[k] = round(float(d[k]), 3)
+            if d.get("source_rank") is not None:
+                item["source_rank"] = int(d["source_rank"])
+            if d.get("ai_reasoning"):
+                item["ai_reasoning"] = str(d["ai_reasoning"])[:200]
+            out.append(item)
+        return out
+
+    _DEBUG_COLUMNS = (
+        ("col_a", "string"), ("col_b", "string"), ("table_a", "string"), ("table_b", "string"),
+        ("source_rank", "int"), ("entity_type_a", "string"), ("entity_type_b", "string"),
+        ("entity_match", "double"), ("_data_overlap", "double"), ("col_similarity", "double"),
+        ("rule_score", "double"), ("skip_ai", "boolean"), ("ai_is_fk", "boolean"),
+        ("_ai_confidence_raw", "double"), ("ai_confidence", "double"), ("ai_reasoning", "string"),
+        ("join_rate", "double"), ("join_matched", "long"), ("ri_score", "double"),
+        ("_card_ratio_a", "double"), ("_card_ratio_b", "double"),
+    )
+
+    def _write_debug_rows(self, judged: DataFrame, below: Optional[DataFrame]) -> None:
+        """Diagnostics only: overwrite `fk_prediction_debug` with every row that
+        reached the AI stage (stage='judged', after join validation and direction
+        enforcement, i.e. exactly what write_predictions sees) plus every row that
+        fell below rule_score_min_for_ai (stage='below_floor'). One row per
+        candidate ROW, not per pair, so duplicated pairs are visible as such."""
+        def _shape(df: DataFrame, stage: str) -> DataFrame:
+            cols = [F.lit(stage).alias("stage")]
+            for name, dtype in self._DEBUG_COLUMNS:
+                src = F.col(name) if name in df.columns else F.lit(None)
+                cols.append(src.cast(dtype).alias(name.lstrip("_")))
+            return df.select(*cols)
+
+        try:
+            out = _shape(judged, "judged")
+            if below is not None:
+                out = out.unionByName(_shape(below, "below_floor"))
+            out = out.withColumn("run_ts", F.current_timestamp())
+            target = self.config.fq("fk_prediction_debug")
+            out.write.mode("overwrite").option("overwriteSchema", "true").saveAsTable(target)
+            logger.warning("Diagnostics: wrote FK debug rows to %s", target)
+        except Exception as e:  # diagnostics must never fail the run
+            logger.warning("Diagnostics: could not write FK debug rows: %s", e)
+
     def run(self, sweep_stale: bool = False) -> Dict[str, Any]:
         """Execute the full FK prediction pipeline."""
         logger.info("Starting FK prediction pipeline")
+        diag = self.config.diagnostics
+        stage_counts: Dict[str, int] = {}
+        below_min_rule: List[Dict[str, Any]] = []
+        below = None
         self._ensure_output_tables()
 
         if not self._compute_incremental_state():
@@ -2846,10 +3022,22 @@ class FKPredictor:
             F.expr(f"table_a != table_b OR source_rank = {SR_DECLARED}")
         )
 
+        # Dedup on the UNORDERED pair. Generators disagree on orientation: most emit
+        # col_a <= col_b, value-overlap emits (child, parent) and declared FKs emit
+        # (fk, referenced). Partitioning on the ordered (col_a, col_b) let the same
+        # physical pair survive twice -- e.g. (sv.usubjid, subjects.usubjid) from
+        # value-overlap beside (subjects.usubjid, sv.usubjid) from embeddings --
+        # while pairs whose child sorted first collided and lost their overlap
+        # evidence. The winning row keeps its own orientation (declared FKs keep
+        # their real direction); _enforce_direction decides the rest later.
+        candidates = candidates.withColumn(
+            "_pair_lo", F.least(F.col("col_a"), F.col("col_b"))
+        ).withColumn("_pair_hi", F.greatest(F.col("col_a"), F.col("col_b")))
+
         # Propagate max embedding similarities before source-rank dedup.
         # Name-based and other non-embedding sources hardcode col_similarity=0.0;
         # without this, the embedding signal is lost when they win the dedup.
-        sim_w = Window.partitionBy("col_a", "col_b")
+        sim_w = Window.partitionBy("_pair_lo", "_pair_hi")
         candidates = candidates.withColumn(
             "col_similarity",
             F.coalesce(F.max("col_similarity").over(sim_w), F.lit(0.0)),
@@ -2857,8 +3045,16 @@ class FKPredictor:
             "table_similarity",
             F.coalesce(F.max("table_similarity").over(sim_w), F.lit(0.0)),
         )
+        # Same for value-overlap evidence: the overlap generator has the lowest
+        # source rank, so when embeddings also find the pair (they do for any
+        # same-name columns) the dedup keeps the embedding row and the containment
+        # signal was silently dropped -- exactly the name-free keys it exists for.
+        if "_data_overlap" in candidates.columns:
+            candidates = candidates.withColumn(
+                "_data_overlap", F.max("_data_overlap").over(sim_w)
+            )
 
-        dedup_w = Window.partitionBy("col_a", "col_b").orderBy(
+        dedup_w = Window.partitionBy("_pair_lo", "_pair_hi").orderBy(
             F.col("source_rank").asc(),
             F.col("col_similarity").desc(),
             F.col("query_hit_count").desc(),
@@ -2868,7 +3064,7 @@ class FKPredictor:
         candidates = (
             candidates.withColumn("_rn", F.row_number().over(dedup_w))
             .filter(F.col("_rn") == 1)
-            .drop("_rn")
+            .drop("_rn", "_pair_lo", "_pair_hi")
         )
         candidates = candidates.fillna(
             0.0, subset=["col_similarity", "table_similarity", "query_hit_count"]
@@ -2887,6 +3083,7 @@ class FKPredictor:
             logger.info("FK candidates scoped to table_names: %s", self.config.table_names)
 
         total_cand = candidates.count()
+        stage_counts["candidates_after_dedup"] = total_cand
         if total_cand == 0:
             logger.info("No FK candidates found")
             return {"candidates": 0, "ai_query_rows": 0, "predictions": 0, "edges": 0, "ddl_applied": 0}
@@ -2902,6 +3099,10 @@ class FKPredictor:
         candidates = self.add_domain_signal(candidates)
         candidates = self.add_pk_signal(candidates)
         candidates = self.rule_score(candidates)
+        if diag:
+            # Each signal step joins onto the candidates; a count that grows past
+            # candidates_after_dedup means a join fanned out (duplicate pairs).
+            stage_counts["candidates_after_signals"] = candidates.count()
 
         # Global strict: a pair whose BOTH sides are generic column names
         # (id x id, status x type) must carry corroboration to survive -- a
@@ -2915,6 +3116,8 @@ class FKPredictor:
             | (F.coalesce(_entity_sig, F.lit(0.0)) > 0)
         )
         _drop = (F.coalesce(F.col("_both_generic"), F.lit(0.0)) > 0) & (~_has_corroboration)
+        if diag:
+            stage_counts["dropped_generic_name"] = candidates.filter(_drop).count()
         _before = candidates.count()
         candidates = candidates.filter(~_drop).drop("_both_generic", "_table_name_match")
         _dropped = _before - candidates.count()
@@ -2939,6 +3142,14 @@ class FKPredictor:
         need_review = candidates.filter((~F.col("skip_ai")) & (F.col("rule_score") >= min_rule))
 
         ai_eligible = need_review.count()
+        stage_counts["ai_eligible"] = ai_eligible
+        stage_counts["ai_sent"] = min(ai_eligible, max_ai)
+        stage_counts["ai_overflow_heuristic"] = max(0, ai_eligible - max_ai)
+        if diag:
+            stage_counts["skip_ai"] = skip_llm.count()
+            below = candidates.filter((~F.col("skip_ai")) & (F.col("rule_score") < min_rule))
+            stage_counts["below_min_rule_score"] = below.count()
+            below_min_rule = self._pair_rows(below, "rule_score", self.config.rejected_pairs_limit)
         if self.config.dry_run:
             logger.info(
                 "DRY RUN: %d candidates, %d would be sent to AI_QUERY, %d heuristic",
@@ -2984,10 +3195,22 @@ class FKPredictor:
         # Materialize once to avoid re-executing AI_QUERY on every downstream action
         _schema = judged.schema
         judged = self.spark.createDataFrame(judged.collect(), schema=_schema)
+        if diag:
+            # Keep the judge's raw confidence: join_validate rescales ai_confidence.
+            judged = judged.withColumn("_ai_confidence_raw", F.col("ai_confidence"))
 
         ai_positive = judged.filter(F.col("ai_is_fk") == True).count()
         ai_negative = judged.filter(F.col("ai_is_fk") == False).count()
         logger.info("AI judgment: %d positive, %d negative", ai_positive, ai_negative)
+        stage_counts["ai_positive"] = ai_positive
+        stage_counts["ai_negative"] = ai_negative
+        # Pairs write_predictions will drop (ai_confidence below the threshold),
+        # including budget-overflow pairs (ai_reasoning = budget_overflow_heuristic).
+        # `judged` is materialized above, so this is cheap.
+        _thresh = self.config.confidence_threshold
+        _rej = judged.filter(F.coalesce(F.col("ai_confidence"), F.lit(0.0)) < _thresh)
+        stage_counts["rejected_below_confidence"] = _rej.count()
+        rejected_pairs = self._pair_rows(_rej, "rule_score", self.config.rejected_pairs_limit)
 
         try:
             judged = self.join_validate(judged)
@@ -3004,6 +3227,8 @@ class FKPredictor:
             judged = judged.withColumn("ri_score", F.lit(0.5))
 
         judged = self._enforce_direction(judged)
+        if diag:
+            self._write_debug_rows(judged, below)
 
         n_declared = 0
         if "source_rank" in judged.columns:
@@ -3020,14 +3245,19 @@ class FKPredictor:
         if self.config.apply_ddl:
             n_ddl = self.apply_ddl(ddl_df)
 
-        return {
+        result = {
             "dry_run": False,
             "candidates": total_cand,
             "ai_query_rows": ai_eligible,
             "predictions": n_preds,
             "edges": n_edges,
             "ddl_applied": n_ddl,
+            "stage_counts": stage_counts,
+            "rejected_pairs": rejected_pairs,
         }
+        if diag:
+            result["below_min_rule_score_pairs"] = below_min_rule
+        return result
 
 
 
@@ -3066,6 +3296,7 @@ def predict_foreign_keys(
     fk_data_overlap_weight: float = 0.25,
     fk_data_overlap_max_candidates: int = 2000,
     fk_mirror_uniqueness_threshold: float = 0.95,
+    diagnostics: bool = False,
 ) -> Dict[str, Any]:
     """Convenience function to run FK prediction."""
     from dbxmetagen.processing import _check_federation_guard
@@ -3104,6 +3335,7 @@ def predict_foreign_keys(
         fk_data_overlap_weight=fk_data_overlap_weight,
         fk_data_overlap_max_candidates=fk_data_overlap_max_candidates,
         fk_mirror_uniqueness_threshold=fk_mirror_uniqueness_threshold,
+        diagnostics=diagnostics,
     )
     predictor = FKPredictor(spark, config)
     return predictor.run(sweep_stale=sweep_stale)
