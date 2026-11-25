@@ -261,6 +261,7 @@ class FKPredictionConfig:
     fk_data_overlap_weight: float = 0.25                # rule_score contribution
     fk_data_overlap_max_candidates: int = 2000          # global emitted-pair ceiling
     fk_mirror_uniqueness_threshold: float = 0.95        # both card ratios >= this on a low-trust pair -> 1:1 table mirror, veto
+    skip_ai_min_parent_uniqueness: float = 0.95         # column-property pairs bypass the AI only if one side is this unique
     # Diagnostics: when on, run() adds per-stage candidate counts and the pairs that
     # fell below rule_score_min_for_ai to its result. Costs extra Spark actions, so
     # it's off by default. The AI-rejected pairs list is always returned (cheap).
@@ -399,6 +400,20 @@ class FKPredictor:
 
     def _with_skip_ai_flags(self, df: DataFrame) -> DataFrame:
         qmin = self.config.skip_ai_query_min_observations
+        if self.config.federation_mode:
+            # Federated profiling stores no distinct counts (COUNT(DISTINCT) does not
+            # push down), so the uniqueness ratios here are 0.0 or a 0.5 fallback rather
+            # than evidence. Keep the previous behavior instead of sending every
+            # column-property pair to the AI.
+            col_prop_key_side = F.lit(True)
+        else:
+            col_prop_key_side = (
+                F.greatest(
+                    F.coalesce(F.col("_card_ratio_a"), F.lit(0.0)),
+                    F.coalesce(F.col("_card_ratio_b"), F.lit(0.0)),
+                )
+                >= F.lit(self.config.skip_ai_min_parent_uniqueness)
+            )
         return df.withColumn(
             "skip_ai",
             # Declared catalog FKs are ground truth; skip AI only when the
@@ -410,7 +425,14 @@ class FKPredictor:
                 (F.col("source_rank") == F.lit(SR_DECLARED))
                 & F.lit(self.config.skip_ai_for_declared_fk)
             )
-            | (F.col("source_rank") == F.lit(SR_COL_PROP))
+            | (
+                # Column-property pairs bypass the AI only when one side looks like a
+                # key (not checked in federation mode, see above). Two non-unique
+                # columns (child -> child, e.g. two tables that both reference orders)
+                # are not an FK, so they go to normal AI review.
+                (F.col("source_rank") == F.lit(SR_COL_PROP))
+                & col_prop_key_side
+            )
             | (
                 (F.col("source_rank") == F.lit(SR_QUERY))
                 & (F.col("query_hit_count") >= F.lit(qmin))
@@ -1615,6 +1637,20 @@ class FKPredictor:
             "samples_a", F.lit(None).cast("array<string>")
         ).withColumn("samples_b", F.lit(None).cast("array<string>"))
 
+    def _sample_sql(self, table: str, selects: str, shorts: List[str], limit: int) -> str:
+        """Value-sample query. A bare LIMIT returns whatever rows the scan yields first,
+        which can change between runs; on Delta, take a fixed REPEATABLE sample and
+        order it by a hash so the same rows come back every run. Federation keeps the
+        plain LIMIT (no remote full scan)."""
+        if self.config.federation_mode:
+            return f"SELECT {selects} FROM {quote_fqn(table)} LIMIT {limit}"
+        order = "xxhash64(" + ", ".join(f"`{s}`" for s in shorts) + ")"
+        return (
+            f"SELECT {selects} FROM {quote_fqn(table)} "
+            f"TABLESAMPLE ({self.config.cardinality_sample_rows} ROWS) REPEATABLE (42) "
+            f"ORDER BY {order} LIMIT {limit}"
+        )
+
     def _sample_from_source(self, candidates: DataFrame) -> DataFrame:
         """Sample values from source tables, batched per-table to minimize SQL calls."""
         rows = (
@@ -1647,7 +1683,7 @@ class FKPredictor:
             result = {}
             try:
                 tbl_rows = self.spark.sql(
-                    f"SELECT {selects} FROM {quote_fqn(tbl_id)} LIMIT {n * 3}"
+                    self._sample_sql(tbl_id, selects, [short for _, short in unique_cols], n * 3)
                 ).collect()
                 for fq_id, short in col_list:
                     vals = list({getattr(r, short) for r in tbl_rows if getattr(r, short, None) is not None})[:n]
@@ -2620,10 +2656,18 @@ class FKPredictor:
             F.col("dst_column").asc(),
         )
         out = out.withColumn("_fk_rank", F.row_number().over(wc))
+        out = out.withColumn("_demoted", resolvable & (F.col("_fk_rank") > 1))
+        # Halve a demoted row's confidence as well. Many readers (vector index,
+        # ontology, UC pages, app counts) filter on final_confidence >= 0.5 and
+        # ignore is_fk, so a demoted row that kept 0.8-0.9 still surfaced as an FK.
+        # Halving keeps the ranking and always lands below 0.5.
         out = out.withColumn(
-            "is_fk",
-            F.when(resolvable & (F.col("_fk_rank") > 1), F.lit(False)).otherwise(F.col("is_fk")),
-        ).drop("_fk_rank")
+            "is_fk", F.when(F.col("_demoted"), F.lit(False)).otherwise(F.col("is_fk"))
+        ).withColumn(
+            "final_confidence",
+            F.when(F.col("_demoted"), F.col("final_confidence") * F.lit(0.5))
+            .otherwise(F.col("final_confidence")),
+        ).drop("_fk_rank", "_demoted")
         if "_source_rank" in out.columns:
             out = out.drop("_source_rank")
 
