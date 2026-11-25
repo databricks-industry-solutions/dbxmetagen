@@ -41,3 +41,28 @@ def test_delta_sample_is_repeatable_and_ordered():
 def test_federation_sample_keeps_plain_limit():
     sql = _predictor(federation_mode=True)._sample_sql("c.s.t", "CAST(`a` AS STRING) AS `a`", ["a"], 15)
     assert sql.endswith("LIMIT 15") and "TABLESAMPLE" not in sql and "ORDER BY" not in sql
+
+
+def _skip_flags_with_fake_f(federation_mode):
+    from unittest.mock import patch
+    fake_f = MagicMock()
+    fake_f.col.return_value.__ge__.return_value = MagicMock()
+    fake_f.col.return_value.__gt__.return_value = MagicMock()
+    fake_f.greatest.return_value.__ge__.return_value = MagicMock()
+    with patch("dbxmetagen.fk_prediction.F", fake_f):
+        _predictor(federation_mode=federation_mode)._with_skip_ai_flags(MagicMock())
+    return fake_f
+
+
+def test_key_side_check_applies_on_delta():
+    f = _skip_flags_with_fake_f(federation_mode=False)
+    f.greatest.assert_called_once()
+    f.lit.assert_any_call(0.95)
+
+
+def test_key_side_check_skipped_in_federation_mode():
+    # Federated profiling has no distinct counts, so uniqueness is not evidence there:
+    # column-property pairs keep skipping the AI as before.
+    f = _skip_flags_with_fake_f(federation_mode=True)
+    f.greatest.assert_not_called()
+    f.lit.assert_any_call(True)

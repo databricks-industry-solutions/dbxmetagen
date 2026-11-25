@@ -400,6 +400,20 @@ class FKPredictor:
 
     def _with_skip_ai_flags(self, df: DataFrame) -> DataFrame:
         qmin = self.config.skip_ai_query_min_observations
+        if self.config.federation_mode:
+            # Federated profiling stores no distinct counts (COUNT(DISTINCT) does not
+            # push down), so the uniqueness ratios here are 0.0 or a 0.5 fallback rather
+            # than evidence. Keep the previous behavior instead of sending every
+            # column-property pair to the AI.
+            col_prop_key_side = F.lit(True)
+        else:
+            col_prop_key_side = (
+                F.greatest(
+                    F.coalesce(F.col("_card_ratio_a"), F.lit(0.0)),
+                    F.coalesce(F.col("_card_ratio_b"), F.lit(0.0)),
+                )
+                >= F.lit(self.config.skip_ai_min_parent_uniqueness)
+            )
         return df.withColumn(
             "skip_ai",
             # Declared catalog FKs are ground truth; skip AI only when the
@@ -413,16 +427,11 @@ class FKPredictor:
             )
             | (
                 # Column-property pairs bypass the AI only when one side looks like a
-                # key. Two non-unique columns (child -> child, e.g. two tables that both
-                # reference orders) are not an FK, so they go to normal AI review.
+                # key (not checked in federation mode, see above). Two non-unique
+                # columns (child -> child, e.g. two tables that both reference orders)
+                # are not an FK, so they go to normal AI review.
                 (F.col("source_rank") == F.lit(SR_COL_PROP))
-                & (
-                    F.greatest(
-                        F.coalesce(F.col("_card_ratio_a"), F.lit(0.0)),
-                        F.coalesce(F.col("_card_ratio_b"), F.lit(0.0)),
-                    )
-                    >= F.lit(self.config.skip_ai_min_parent_uniqueness)
-                )
+                & col_prop_key_side
             )
             | (
                 (F.col("source_rank") == F.lit(SR_QUERY))
