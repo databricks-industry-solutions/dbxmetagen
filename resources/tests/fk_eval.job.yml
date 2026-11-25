@@ -1,0 +1,51 @@
+resources:
+  jobs:
+    fk_eval_job:
+      name: "${var.app_name}${var.app_name_suffix}_fk_eval"
+      budget_policy_id: ${var.budget_policy_id}
+
+      permissions:
+        - service_principal_name: ${resources.apps.dbxmetagen_app.service_principal_client_id}
+          level: CAN_MANAGE_RUN
+
+      email_notifications:
+        on_failure:
+          - ${var.current_user}
+
+      parameters:
+        - name: catalog_name
+          default: ${var.catalog_name}
+        - name: eval_schema
+          default: uat_eval
+        - name: results_schema
+          default: ${var.catalog_name}.${var.schema_name}
+        - name: scenarios
+          default: "uat_star_retail,uat_snowflake_health,uat_fk_hard,uat_fk_suffixless,uat_fk_patterns"
+        - name: display_threshold
+          default: "0.7"
+        - name: run_label
+          default: ""
+        - name: write_results
+          default: "true"
+
+      tasks:
+        - task_key: score_fk_predictions
+          max_retries: 0
+          environment_key: default
+          notebook_task:
+            notebook_path: ../../notebooks/evaluation/fk_eval.py
+            base_parameters:
+              catalog_name: "{{job.parameters.catalog_name}}"
+              eval_schema: "{{job.parameters.eval_schema}}"
+              results_schema: "{{job.parameters.results_schema}}"
+              scenarios: "{{job.parameters.scenarios}}"
+              display_threshold: "{{job.parameters.display_threshold}}"
+              run_label: "{{job.parameters.run_label}}"
+              write_results: "{{job.parameters.write_results}}"
+
+      environments:
+        - environment_key: default
+          spec:
+            environment_version: "2"
+            dependencies:
+              - ../../dist/*.whl
