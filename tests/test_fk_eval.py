@@ -78,3 +78,11 @@ def test_pooled_and_report():
     assert (tot.gold, tot.tp, tot.fn) == (4, 3, 1)
     rep = format_report([a, b])
     assert "ALL" in rep and "MISS  orders.customer_id -> customers.customer_id" in rep
+
+
+def test_null_gold_label_means_ambiguous():
+    gold = GOLD + [g("orders.status", "lines.status", fk=None)]
+    s = score_fk("x", gold, [p("orders.status", "lines.status"),
+                             p("lines.order_id", "orders.order_id")])
+    assert s.fp == 0 and s.trap_fp == 0      # ambiguous prediction not penalized
+    assert s.gold == 2 and s.tp == 1         # nor counted as a recall target

@@ -3,7 +3,8 @@
 Gold rows come from the UAT builder's ``uat_expected_fk`` table:
 ``(scenario, src_table, src_column, dst_table, dst_column, expected_is_fk)``.
 ``expected_is_fk=True`` rows are real FKs (recall targets); ``False`` rows are
-explicit traps that must NOT be predicted.
+explicit traps that must NOT be predicted; ``NULL``/``None`` rows are ambiguous
+(the label is genuinely unclear) and are excluded from both recall and FPs.
 
 Matching is UNDIRECTED (a reversed prediction still counts as found) and
 direction is reported separately, so a direction bug can't masquerade as a
@@ -85,17 +86,21 @@ def score_fk(
     ``gold_rows``: dicts with src_table, src_column, dst_table, dst_column, expected_is_fk.
     ``prediction_rows``: dicts with src_table, src_column, dst_table, dst_column, is_fk,
     final_confidence (fk_predictions rows already filtered to the scenario).
-    ``ambiguous``: pairs excluded from both FP and recall (labels genuinely unclear).
+    ``ambiguous``: extra pairs excluded from both FP and recall, on top of gold rows
+    whose ``expected_is_fk`` is None.
     """
+    amb = {_key(a.lower(), b.lower()) for a, b in ambiguous}
     gold_dir: Dict[Key, Pair] = {}
     traps = set()
     for g in gold_rows:
         a, b = _short(g["src_table"], g["src_column"]), _short(g["dst_table"], g["dst_column"])
-        if bool(g.get("expected_is_fk")):
+        label = g.get("expected_is_fk")
+        if label is None:
+            amb.add(_key(a, b))
+        elif bool(label):
             gold_dir[_key(a, b)] = (a, b)
         else:
             traps.add(_key(a, b))
-    amb = {_key(a.lower(), b.lower()) for a, b in ambiguous}
 
     pred_dir: Dict[Key, Pair] = {}
     best_conf: Dict[Key, Tuple[float, Pair]] = {}

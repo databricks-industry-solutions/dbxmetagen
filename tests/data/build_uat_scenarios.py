@@ -326,6 +326,8 @@ def build_snowflake_health():
     gold_fk.append((schema, "dim_facility", "health_system_id", "dim_health_system", "health_system_id", True))
     gold_fk.append((schema, "fct_encounter", "patient_id", "dim_patient", "patient_id", True))
     gold_fk.append((schema, "fct_encounter", "facility_id", "dim_facility", "facility_id", True))
+    gold_fk.append((schema, "patient_facility_bridge", "patient_id", "dim_patient", "patient_id", True))
+    gold_fk.append((schema, "patient_facility_bridge", "facility_id", "dim_facility", "facility_id", True))
     for t in ["dim_health_system", "dim_facility", "dim_patient",
               "patient_facility_bridge", "fct_encounter"]:
         gold_domain.append((schema, t, "Healthcare", "Clinical Operations", "snowflake health schema"))
@@ -672,6 +674,9 @@ def build_fk_patterns():
         ("order_items", "order_id", "invoices", "order_id", F_),           # child-to-child
         ("order_items", "order_id", "order_totals_mixed", "order_id", F_),  # mixed-grain decoy
         ("invoices", "order_id", "order_totals_mixed", "order_id", F_),
+        # The decoy's order-grain rows really are a subset of orders, so the reverse
+        # direction is defensible either way: ambiguous (excluded from scoring).
+        ("order_totals_mixed", "order_id", "orders", "order_id", None),
     ]:
         gold_fk.append((schema,) + row)
 
@@ -1017,7 +1022,8 @@ for schema, rows in scenario_readmes.items():
 print(f"Wrote _scenario_readme to {len(scenario_readmes)} schemas")
 
 # Gold expectations -> <catalog>.uat_eval (eval_expected_* shape, with a `scenario` column
-# so the eval_e2e scoring harness can filter per schema).
+# so the eval_e2e scoring harness can filter per schema). uat_expected_fk.expected_is_fk:
+# true = real FK, false = trap, NULL = ambiguous (excluded from scoring).
 ensure_schema(eval_schema)
 
 
