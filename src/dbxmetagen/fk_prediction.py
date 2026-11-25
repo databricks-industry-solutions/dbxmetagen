@@ -94,6 +94,22 @@ def _uniqueness_ratio(distinct_count, row_count) -> float:
     return min(1.0, distinct_count / row_count)
 
 
+def _profiled_uniqueness(distinct_count, row_count) -> Optional[float]:
+    """Uniqueness ratio from profiling stats, or None when profiling doesn't know it.
+
+    A distinct_count of 0 on a non-empty table means "not measured": federated
+    profiling stores 0 for every column because COUNT(DISTINCT) does not push down.
+    Reading it as a real 0 made every federated column look non-unique (no mirror
+    veto, no direction signal, and no pk_uniqueness credit in final_confidence).
+    None sends the column to cardinality_analysis's own sample (1,000 rows under
+    federation). A genuinely all-null column also lands here; re-sampling costs one
+    query per table and still yields 0.
+    """
+    if not distinct_count or not row_count or row_count <= 0:
+        return None
+    return _uniqueness_ratio(distinct_count, row_count)
+
+
 def _dtype_exclusion_sql() -> str:
     """SQL IN-list for data types that can never be foreign keys."""
     return ", ".join(f"'{d}'" for d in _FK_EXCLUDED_DTYPES)
@@ -1746,10 +1762,11 @@ class FKPredictor:
         unprofiled_by_table: dict = {}
         for r in all_cols:
             col_short = r.col_id.split(".")[-1]
-            dc = profiled_distinct.get(r.col_id)
-            rc = profiled_row_counts.get(r.tbl_id)
-            if dc is not None and rc and rc > 0:
-                col_stats[r.col_id] = _uniqueness_ratio(dc, rc)
+            ratio = _profiled_uniqueness(
+                profiled_distinct.get(r.col_id), profiled_row_counts.get(r.tbl_id)
+            )
+            if ratio is not None:
+                col_stats[r.col_id] = ratio
             else:
                 unprofiled_by_table.setdefault(r.tbl_id, []).append((r.col_id, col_short))
 
