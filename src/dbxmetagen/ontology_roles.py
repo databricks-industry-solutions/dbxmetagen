@@ -130,6 +130,22 @@ LABEL_COLUMN_NAMES: frozenset[str] = frozenset({
 })
 
 
+def is_technical_column(col: str) -> bool:
+    """True for ingestion/lineage/technical columns that never represent a business entity.
+
+    Deliberately conservative, so real attributes aren't lost:
+    - a leading underscore, the near-universal convention for technical columns
+      (Delta ``_rescued_data``/``_metadata``, ``_fivetran_*``, ``_airbyte_*``,
+      ``_dlt_*``, ingestion ``_source_file``/``_source_table``); FK prediction
+      already excludes these via its ``^_`` system-column pattern;
+    - the existing AUDIT_COLUMN_NAMES list and the ``etl_`` prefix.
+    Timestamps like created_at/updated_at are NOT included: they are legitimate
+    temporal attributes of an entity.
+    """
+    c = (col or "").strip().lower()
+    return c.startswith("_") or c in AUDIT_COLUMN_NAMES or c.startswith("etl_")
+
+
 def infer_role_from_column_name(
     col: str,
     entity_name: str,

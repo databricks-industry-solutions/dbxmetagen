@@ -21,7 +21,6 @@ from cachetools import TTLCache, cached
 from fastapi import Body, FastAPI, HTTPException, Query, Request, UploadFile, File, Form
 from fastapi.responses import JSONResponse, StreamingResponse
 from fastapi.staticfiles import StaticFiles
-from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel, Field
 from databricks.sdk import WorkspaceClient
 from databricks.sdk.service.sql import StatementParameterListItem
@@ -446,6 +445,11 @@ _ENABLE_CONTEXT_VS = os.environ.get("ENABLE_CONTEXT_VECTOR_INDEX", "false").stri
 _CC_VS_INDEX_SUFFIX = os.environ.get("CONTEXT_VECTOR_INDEX", "customer_context_vs_index")
 _CC_VS_EMBED_MODEL = os.environ.get("EMBEDDING_MODEL", "databricks-gte-large-en")
 
+# UC Pages generation (opt-in, default-off). Prompted Page proposals grounded in persisted
+# dbxmetagen context, published via the public Pages REST API only on explicit user action.
+# Capability-gated at runtime (Domains/Pages reachable?). See src/dbxmetagen/uc_pages.py.
+_ENABLE_UC_PAGES = os.environ.get("ENABLE_UC_PAGES", "false").strip().lower() == "true"
+
 # Upload guardrail: a hard ceiling on any ingested file so an egregiously large upload (a
 # multi-GB dump, a 10M-line text file) can't exhaust the single app container's memory. Chosen
 # generous -- real glossaries / data dictionaries are far smaller -- so it only blocks abuse.
@@ -861,12 +865,8 @@ async def lifespan(app: FastAPI):
 
 
 app = FastAPI(title="dbxmetagen API", version="0.8.11", lifespan=lifespan)
-app.add_middleware(
-    CORSMiddleware,
-    allow_origins=["*"],
-    allow_methods=["*"],
-    allow_headers=["*"],
-)
+# No CORSMiddleware: the React UI is served from this same origin (and local dev
+# goes through the Vite /api proxy), so cross-origin browser access is never needed.
 
 from starlette.middleware.base import BaseHTTPMiddleware
 from starlette.requests import Request
@@ -974,6 +974,7 @@ def get_config():
         "enable_governed_tags": _ENABLE_GOVERNED_TAGS and bool(_GOVERNED_DOMAIN_TAG),
         "governed_domain_tag_name": _GOVERNED_DOMAIN_TAG,
         "enable_context_vector_index": _ENABLE_CONTEXT_VS,
+        "enable_uc_pages": _ENABLE_UC_PAGES,
         "max_upload_mb": _MAX_UPLOAD_MB,
         "version": pkg_version,
     }
@@ -1481,7 +1482,9 @@ def run_job(req: JobRunRequest):
         # volume path via resolve_bundle_path(); passing the raw path here
         # pollutes provenance and breaks bundle-scoped filtering/idempotency.
         params["ontology_bundle"] = req.ontology_bundle
-        if _load_bundle_from_volume(req.ontology_bundle) is not None:
+        # ontology_bundle may legitimately be a path (handled job-side); only probe the
+        # Volume for plain bundle keys.
+        if _is_safe_bundle_key(req.ontology_bundle) and _load_bundle_from_volume(req.ontology_bundle) is not None:
             params["ontology_config_path"] = f"{_volume_bundle_prefix()}/{req.ontology_bundle}.yaml"
     if req.domain_config:
         params["domain_config_path"] = _resolve_domain_config_path(req.domain_config)
@@ -1501,6 +1504,30 @@ def run_job(req: JobRunRequest):
     return {"run_id": run.run_id}
 
 
+def _latest_task_attempts(run_tasks):
+    """Collapse task retries to one entry per task_key.
+
+    The Jobs API lists every attempt of a retried task as its own entry under
+    ``run.tasks`` (same task_key, increasing attempt_number). Rendering them
+    as-is gave a failing run one progress bar per retry. Keep the latest
+    attempt (highest attempt_number; ties broken by start_time) in the order
+    each task first appears, paired with that task's total attempt count.
+    """
+    latest, counts, order = {}, {}, []
+    for t in run_tasks or []:
+        if t is None:
+            continue
+        key = t.task_key
+        counts[key] = counts.get(key, 0) + 1
+        rank = (getattr(t, "attempt_number", None) or 0, getattr(t, "start_time", None) or 0)
+        if key not in latest:
+            order.append(key)
+            latest[key] = (rank, t)
+        elif rank >= latest[key][0]:
+            latest[key] = (rank, t)
+    return [(latest[k][1], counts[k]) for k in order]
+
+
 @app.get("/api/jobs/{run_id}/status")
 def get_run_status(run_id: int):
     """Get status of a job run with task-level detail."""
@@ -1512,7 +1539,7 @@ def get_run_status(run_id: int):
         raise HTTPException(502, detail=f"Failed to fetch run {run_id}: {e}")
 
     tasks = []
-    for t in run.tasks or []:
+    for t, attempts in _latest_task_attempts(run.tasks):
         ts = t.state if t else None
         tasks.append(
             {
@@ -1523,6 +1550,7 @@ def get_run_status(run_id: int):
                     else "UNKNOWN"
                 ),
                 "result": ts.result_state.value if ts and ts.result_state else None,
+                "attempts": attempts,
             }
         )
 
@@ -3794,6 +3822,7 @@ async def import_ontology(
     """Import a custom OWL/TTL file, generate bundle YAML + tier indexes, persist to UC Volume."""
     import tempfile
 
+    _check_bundle_key(bundle_name)
     content = await file.read()
     _IMPORT_EXTS = {".ttl", ".owl", ".rdf", ".jsonld", ".nt", ".n3", ".nq", ".trig"}
     suffix = ".owl"
@@ -3935,6 +3964,28 @@ def _safe_bundle_path(bundle_dir: str, bundle_name: str) -> Optional[str]:
     return joined
 
 
+def _check_bundle_key(bundle_key: str) -> str:
+    """Reject bundle keys that could escape the bundle directory / Volume prefix.
+
+    Bundle keys become filesystem and UC Volume path segments. Deliberately a
+    denylist (separators, '..', leading dot, NUL) rather than a strict allowlist so
+    previously-imported custom bundles with unusual-but-harmless names keep working.
+    """
+    if not _is_safe_bundle_key(bundle_key):
+        raise HTTPException(400, detail=f"Invalid bundle name: {bundle_key!r}")
+    return bundle_key
+
+
+def _is_safe_bundle_key(bundle_key: str) -> bool:
+    return bool(bundle_key) and not (
+        "/" in bundle_key
+        or "\\" in bundle_key
+        or "\x00" in bundle_key
+        or ".." in bundle_key
+        or bundle_key.startswith(".")
+    )
+
+
 def _volume_bundle_prefix() -> str:
     """Return the Volume path prefix for custom ontology bundles."""
     volume_name = os.environ.get("VOLUME_NAME", "generated_metadata")
@@ -3948,6 +3999,7 @@ def _save_bundle_to_volume(bundle_key: str, yaml_content: str) -> str:
     jobs read from, so a failed write means the bundle is unusable downstream
     and must not be reported as a success.
     """
+    _check_bundle_key(bundle_key)
     vol_path = f"{_volume_bundle_prefix()}/{bundle_key}.yaml"
     ws = _get_effective_client()
     ws.files.upload(vol_path, io.BytesIO(yaml_content.encode("utf-8")), overwrite=True)
@@ -4002,6 +4054,7 @@ def _list_volume_bundles() -> list[dict]:
 
 def _load_bundle_from_volume(bundle_key: str) -> Optional[dict]:
     """Load a custom bundle YAML from the UC Volume. Returns parsed dict or None."""
+    _check_bundle_key(bundle_key)
     vol_path = f"{_volume_bundle_prefix()}/{bundle_key}.yaml"
     try:
         ws = _get_effective_client()
@@ -4013,6 +4066,7 @@ def _load_bundle_from_volume(bundle_key: str) -> Optional[dict]:
 
 def _delete_bundle_from_volume(bundle_key: str) -> bool:
     """Delete a custom bundle from the UC Volume."""
+    _check_bundle_key(bundle_key)
     vol_path = f"{_volume_bundle_prefix()}/{bundle_key}.yaml"
     try:
         ws = _get_effective_client()
@@ -4024,6 +4078,7 @@ def _delete_bundle_from_volume(bundle_key: str) -> bool:
 
 def _save_source_to_volume(bundle_key: str, content: bytes, suffix: str) -> Optional[str]:
     """Persist the original OWL/TTL source file to the volume for provenance."""
+    _check_bundle_key(bundle_key)
     vol_path = f"{_volume_bundle_prefix()}/{bundle_key}/source{suffix}"
     try:
         ws = _get_effective_client()
@@ -4036,6 +4091,7 @@ def _save_source_to_volume(bundle_key: str, content: bytes, suffix: str) -> Opti
 
 def _upload_tier_files_to_volume(bundle_key: str, local_subdir: str) -> int:
     """Upload generated tier index files from local subdir to volume. Returns count uploaded."""
+    _check_bundle_key(bundle_key)
     from pathlib import Path
     uploaded = 0
     try:
@@ -4218,6 +4274,7 @@ def _list_bundles_local() -> list[dict]:
 
 def _resolve_bundle_path_local(bundle_name: str) -> str:
     """Resolve a bundle key to its YAML path."""
+    _check_bundle_key(bundle_name.removesuffix(".yaml"))
     filename = f"{bundle_name}.yaml" if not bundle_name.endswith(".yaml") else bundle_name
     bd = _find_bundle_dir()
     if bd:
@@ -4248,6 +4305,7 @@ def get_ontology_bundles():
 @app.post("/api/ontology/bundles/{bundle_key}/rebuild-indexes")
 def rebuild_bundle_indexes(bundle_key: str):
     """Regenerate tier index files for an existing ontology bundle."""
+    _check_bundle_key(bundle_key)
     bd = _find_bundle_dir()
     if not bd:
         return JSONResponse({"error": "Bundle directory not found"}, status_code=500)
@@ -6549,10 +6607,41 @@ def get_coverage_tables(catalog: Optional[str] = None, schema: Optional[str] = N
         return execute_sql(q_simple)
 
 
+def _coverage_scope(catalog: Optional[str]):
+    """Return (kb_where, like) for coverage queries.
+
+    Coverage is about SOURCE tables, and their catalog is independent of the
+    OUTPUT catalog the app's results tables live in (CATALOG). Defaulting the
+    filter to CATALOG made every run whose sources sit in another catalog
+    (the common case: results in a dedicated catalog/schema) report
+    "no metadata generated" with a fully populated knowledge base.
+
+    No catalog -> everything in this deployment's results schema (all source
+    catalogs). An explicit catalog -> filter to it, as before.
+    ``like(col)`` is a SQL predicate restricting a fully-qualified table-name
+    column to the scope.
+    """
+    if not catalog:
+        return "", (lambda col: "TRUE")
+    esc = str(catalog).replace("\\", "\\\\").replace("'", "''")
+    return (
+        f"WHERE LOWER(catalog) = LOWER('{esc}')",
+        lambda col: f"{col} LIKE '{esc}.%'",
+    )
+
+
 @app.get("/api/coverage/holistic")
 def get_coverage_holistic(catalog: Optional[str] = None):
-    """Single endpoint returning all metadata-type coverage counts."""
-    cat = catalog or CATALOG
+    return _coverage_holistic(catalog)
+
+
+def _coverage_holistic(catalog: Optional[str] = None):
+    """Single endpoint returning all metadata-type coverage counts.
+
+    ``catalog`` filters to one SOURCE catalog; omitted = every source catalog
+    with metadata in this deployment's results schema (see _coverage_scope).
+    """
+    kb_where, like = _coverage_scope(catalog)
     result = {
         "total_tables": 0, "profiled": 0, "with_comments": 0,
         "with_pii": 0, "with_domain": 0, "with_ontology": 0,
@@ -6576,7 +6665,7 @@ def get_coverage_holistic(catalog: Optional[str] = None):
                    SUM(CASE WHEN has_pii = true OR has_phi = true THEN 1 ELSE 0 END) as with_pii,
                    SUM(CASE WHEN domain IS NOT NULL AND domain != '' THEN 1 ELSE 0 END) as with_domain
             FROM {fq('table_knowledge_base')}
-            WHERE LOWER(catalog) = LOWER('{cat}')
+            {kb_where}
         """)
         if rows:
             r = rows[0]
@@ -6592,11 +6681,16 @@ def get_coverage_holistic(catalog: Optional[str] = None):
     # system.information_schema) it leaves total_tables at 0 WITHOUT zeroing the
     # KB-derived signal above. (Catalog-local information_schema is the SP-safe form --
     # tracked as part of the broader "SP-safe metadata reads" sweep.)
+    if catalog:
+        inv_scope = f"table_catalog = '{str(catalog).replace(chr(39), chr(39) * 2)}'"
+    else:
+        # Every source catalog that has metadata here; empty KB -> 0 tables.
+        inv_scope = f"table_catalog IN (SELECT DISTINCT catalog FROM {fq('table_knowledge_base')})"
     try:
         trows = execute_sql(f"""
             SELECT COUNT(*) as total_tables
             FROM system.information_schema.tables
-            WHERE table_catalog = '{cat}'
+            WHERE {inv_scope}
               AND table_schema NOT IN ('information_schema','__internal')
               AND table_type IN {_ALL_TYPES}
               AND NOT table_name RLIKE '^(__|event_log_[0-9a-f]{{8}}_)'
@@ -6605,7 +6699,6 @@ def get_coverage_holistic(catalog: Optional[str] = None):
             result["total_tables"] = int(trows[0].get("total_tables") or 0)
     except Exception as e:
         logger.warning("holistic: total_tables inventory query failed: %s", e)
-    cat_like = f"{cat}.%"
     try:
         onto = execute_sql(f"""
             SELECT COUNT(DISTINCT entity_type) as type_cnt,
@@ -6613,7 +6706,7 @@ def get_coverage_holistic(catalog: Optional[str] = None):
                    COUNT(DISTINCT t.tbl) as tbl_cnt
             FROM {fq('ontology_entities')}
             LATERAL VIEW EXPLODE(source_tables) t AS tbl
-            WHERE t.tbl LIKE '{cat_like}'
+            WHERE {like('t.tbl')}
         """)
         if onto:
             result["entity_type_count"] = int(onto[0].get("type_cnt") or 0)
@@ -6622,27 +6715,27 @@ def get_coverage_holistic(catalog: Optional[str] = None):
     except Exception as e:
         logger.warning("holistic: ontology query failed: %s", e)
     try:
-        fks = execute_sql(f"SELECT COUNT(*) as cnt FROM {fq('fk_predictions')} WHERE final_confidence >= 0.5 AND (src_table LIKE '{cat_like}' OR dst_table LIKE '{cat_like}')")
+        fks = execute_sql(f"SELECT COUNT(*) as cnt FROM {fq('fk_predictions')} WHERE final_confidence >= 0.5 AND ({like('src_table')} OR {like('dst_table')})")
         result["fk_count"] = int(fks[0]["cnt"]) if fks else 0
     except Exception as e:
         logger.warning("holistic: fk_count query failed: %s", e)
     try:
         fk_tbls = execute_sql(f"""SELECT COUNT(DISTINCT t) as cnt FROM (
-            SELECT src_table AS t FROM {fq('fk_predictions')} WHERE final_confidence >= 0.5 AND src_table LIKE '{cat_like}'
+            SELECT src_table AS t FROM {fq('fk_predictions')} WHERE final_confidence >= 0.5 AND {like('src_table')}
             UNION
-            SELECT dst_table AS t FROM {fq('fk_predictions')} WHERE final_confidence >= 0.5 AND dst_table LIKE '{cat_like}'
+            SELECT dst_table AS t FROM {fq('fk_predictions')} WHERE final_confidence >= 0.5 AND {like('dst_table')}
         )""")
         result["with_fk"] = int(fk_tbls[0]["cnt"]) if fk_tbls else 0
     except Exception as e:
         logger.warning("holistic: fk_tables query failed: %s", e)
     try:
-        mvs = execute_sql(f"SELECT status, COUNT(*) as cnt FROM {fq('metric_view_definitions')} WHERE source_table LIKE '{cat_like}' GROUP BY status")
+        mvs = execute_sql(f"SELECT status, COUNT(*) as cnt FROM {fq('metric_view_definitions')} WHERE {like('source_table')} GROUP BY status")
         result["metric_view_statuses"] = {r["status"]: int(r["cnt"]) for r in mvs} if mvs else {}
         result["metric_views"] = sum(result["metric_view_statuses"].values())
     except Exception as e:
         logger.warning("holistic: metric_views query failed: %s", e)
     try:
-        docs = execute_sql(f"SELECT doc_type, COUNT(*) AS cnt FROM {fq('metadata_documents')} WHERE table_name LIKE '{cat_like}' GROUP BY doc_type")
+        docs = execute_sql(f"SELECT doc_type, COUNT(*) AS cnt FROM {fq('metadata_documents')} WHERE {like('table_name')} GROUP BY doc_type")
         result["vs_by_type"] = {r["doc_type"]: int(r["cnt"]) for r in docs} if docs else {}
         result["vs_documents"] = sum(result["vs_by_type"].values())
     except Exception as e:
@@ -6652,13 +6745,17 @@ def get_coverage_holistic(catalog: Optional[str] = None):
 
 @app.get("/api/coverage/review-summary")
 def get_coverage_review_summary(catalog: Optional[str] = None):
-    """Count tables by review_status in table_knowledge_base."""
-    cat = catalog or CATALOG
+    return _coverage_review_summary(catalog)
+
+
+def _coverage_review_summary(catalog: Optional[str] = None):
+    """Count tables by review_status in table_knowledge_base (scope: _coverage_scope)."""
+    _, like = _coverage_scope(catalog)
     try:
         rows = execute_sql(f"""
             SELECT COALESCE(review_status, 'unreviewed') AS status, COUNT(*) AS cnt
             FROM {fq('table_knowledge_base')}
-            WHERE table_name LIKE '{cat}.%'
+            WHERE {like('table_name')}
             GROUP BY 1
         """)
         return rows or []
@@ -18220,6 +18317,15 @@ def metric_view_agent_stream(req: dict):
         stream_metric_view_agent(question, history, session_id),
         media_type="text/event-stream",
     )
+
+
+# ---------------------------------------------------------------------------
+# UC Pages generation (opt-in, ENABLE_UC_PAGES). Router + logic live outside this module:
+# pages_routes.py (API) and src/dbxmetagen/uc_pages*.py (library). Mounted before the SPA catch-all.
+# ---------------------------------------------------------------------------
+from pages_routes import router as _uc_pages_router  # noqa: E402
+
+app.include_router(_uc_pages_router)
 
 
 # ---------------------------------------------------------------------------

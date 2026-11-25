@@ -20,6 +20,8 @@
 #                          DEFAULT is NO rebuild -- the built dist/ is committed and shipped as-is.
 #       --no-frontend      No-op (kept for backward compatibility): the frontend build is already skipped by default, so this just runs the default. Never errors.
 #       --no-vs            Skip Vector Search endpoint provisioning + grant
+#       --no-grants        Do not run scripts/grant_app_permissions.sh (grant manually instead)
+#       --allow-grant-failures  Finish with exit 0 even if some grants fail (default: exit 1)
 #   -h, --help             Show this help
 set -e
 
@@ -36,6 +38,8 @@ PROFILE="DEFAULT"
 SKIP_APP=false
 SKIP_FRONTEND=true   # default: do NOT rebuild the frontend (dist/ is committed); pass --yes-frontend to force
 SKIP_VS=false
+SKIP_GRANTS=false
+ALLOW_GRANT_FAILURES=false
 DEPLOY_VARS=()   # bundle-variable overrides forwarded from a legacy {target}.env, if present
 
 while [[ $# -gt 0 ]]; do
@@ -46,14 +50,17 @@ while [[ $# -gt 0 ]]; do
         --yes-frontend) SKIP_FRONTEND=false; shift ;;
         --no-frontend) SKIP_FRONTEND=true; shift ;;   # backward-compat no-op: SKIP_FRONTEND already defaults to true
         --no-vs)       SKIP_VS=true; shift ;;
+        --no-grants)   SKIP_GRANTS=true; shift ;;
+        --allow-grant-failures) ALLOW_GRANT_FAILURES=true; shift ;;
         --permissions) echo "Note: --permissions is no longer needed; grants run automatically below."; shift ;;
-        -h|--help)     sed -n '15,23p' "$0" | sed 's/^# \{0,1\}//'; exit 0 ;;
+        -h|--help)     sed -n '15,25p' "$0" | sed 's/^# \{0,1\}//'; exit 0 ;;
         *)             echo "Unknown option: $1 (use --help)"; exit 1 ;;
     esac
 done
 
 echo "=================================================================="
 echo " deploy.sh (legacy wrapper -- fully supported). It chains:"
+echo "   scripts/grant_app_permissions.sh -t $TARGET -p $PROFILE   (pre-deploy, only if run_as is an SP)"
 echo "   databricks bundle deploy -t $TARGET -p $PROFILE"
 echo "   databricks bundle run    -t $TARGET -p $PROFILE dbxmetagen_app"
 echo "   scripts/grant_app_permissions.sh -t $TARGET -p $PROFILE"
@@ -178,6 +185,36 @@ fi
 # step below deploys the app source AND starts it, so the started lifecycle is not
 # needed here. (A complex var cannot be set via --var/BUNDLE_VAR_*; the one-step
 # started:true is opt-in via variable-overrides.json on the direct engine only.)
+GRANT_ARGS=(-t "$TARGET" -p "$PROFILE")
+[ "$SKIP_VS" = true ] && GRANT_ARGS+=(--no-vs)
+
+# --- Pre-deploy grants, only when jobs run_as is a service principal ---
+# The Jobs API refuses to create a job whose run_as SP the deployer lacks the
+# "Service Principal: User" role on, so grant_app_permissions.sh must set that up
+# BEFORE the deploy (it also grants the jobs SP; the app SP is handled post-deploy).
+# Resolve the bundle once for the identity checks (scripts/bundle_identity_check.py):
+# the jobs-SP to grant before deploying, plus warnings for settings that silently
+# misbehave (an ignored run_as override, an alert_email that is not an email
+# address, an SP deploy nobody else can open). Warnings never stop the deploy.
+_bundle_json=$(databricks bundle validate -t "$TARGET" -p "$PROFILE" "${DEPLOY_VARS[@]}" --output json 2>/dev/null || echo "")
+_run_as_line=$(printf '%s' "$_bundle_json" | python3 scripts/bundle_identity_check.py 2>/dev/null || echo "")
+_deploy_warnings=$(printf '%s' "$_bundle_json" | python3 scripts/bundle_identity_check.py --warnings --target "$TARGET" 2>/dev/null || echo "")
+IFS=$'\t' read -r _run_as_id _run_as_kind _run_as_state <<< "$_run_as_line"
+_run_as_sp=""
+if [ "$_run_as_kind" = "service_principal_name" ] && [ "$_run_as_state" != "ignored" ]; then
+    _run_as_sp="$_run_as_id"
+fi
+if [ -n "$_deploy_warnings" ]; then
+    echo "" >&2
+    echo "$_deploy_warnings" >&2
+fi
+if [ -n "$_run_as_sp" ] && [ "$SKIP_GRANTS" = false ]; then
+    echo ""
+    echo "=== grant_app_permissions.sh (pre-deploy: jobs run_as SP ${_run_as_sp}) ==="
+    # Setup pass only (the app may not exist yet); the post-deploy pass reports failures.
+    scripts/grant_app_permissions.sh "${GRANT_ARGS[@]}" --allow-failures
+fi
+
 echo ""
 echo "=== bundle deploy (target=${TARGET}, profile=${PROFILE}) ==="
 # Capture the exit code without set -e aborting first, so we can attach a CLI-version
@@ -203,11 +240,32 @@ if [ "$SKIP_APP" = false ]; then
 fi
 
 # --- Post-deploy UC + Vector Search grants (idempotent) ---
-echo ""
-echo "=== grant_app_permissions.sh ==="
-GRANT_ARGS=(-t "$TARGET" -p "$PROFILE")
-[ "$SKIP_VS" = true ] && GRANT_ARGS+=(--no-vs)
-scripts/grant_app_permissions.sh "${GRANT_ARGS[@]}"
+_grants_rc=0
+if [ "$SKIP_GRANTS" = true ]; then
+    echo ""
+    echo "=== Skipping grant_app_permissions.sh (--no-grants) ==="
+    echo "  Grant the app SP its Unity Catalog and Vector Search access yourself:"
+    echo "  scripts/grant_app_permissions.sh -t ${TARGET} -p ${PROFILE}, or docs/MANUAL_DEPLOYMENT.md."
+else
+    echo ""
+    echo "=== grant_app_permissions.sh ==="
+    scripts/grant_app_permissions.sh "${GRANT_ARGS[@]}" || _grants_rc=$?
+fi
 
 echo ""
 echo "=== Deployment complete ==="
+if [ -n "$_deploy_warnings" ]; then
+    echo "" >&2
+    echo "Reminder -- deploy warnings (details above):" >&2
+    echo "$_deploy_warnings" | grep '^WARNING' >&2
+fi
+if [ "$_grants_rc" -ne 0 ]; then
+    echo "" >&2
+    if [ "$ALLOW_GRANT_FAILURES" = true ]; then
+        echo "Some grants failed (see above); continuing because of --allow-grant-failures." >&2
+    else
+        echo "Deploy finished, but some grants failed (see above). Fix them and re-run" >&2
+        echo "scripts/grant_app_permissions.sh, or pass --allow-grant-failures / --no-grants." >&2
+        exit "$_grants_rc"
+    fi
+fi

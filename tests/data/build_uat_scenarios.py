@@ -18,6 +18,7 @@
 # MAGIC | `uat_datamart`         | Pre-aggregated marts → SIMPLE single-table metric views |
 # MAGIC | `uat_fk_hard`          | FK stressors: generic id↔id, named-but-non-joining, role-prefix, dedup |
 # MAGIC | `uat_fk_suffixless`    | FK keys with NO _id/_key/_code suffix (npi/ndc/email) + _code-not-FK traps |
+# MAGIC | `uat_fk_patterns`      | FK ambiguity: suffix-less shared subject key, cross-name FK with orphans, small dense int domains, mixed-grain decoy, child-to-child |
 # MAGIC | `uat_pii`              | PII/PHI/PCI detection + false-positive traps |
 # MAGIC | `uat_domains`          | Domain classification incl. ambiguous / misnamed tables |
 # MAGIC | `uat_types`            | Databricks data-type coverage (BINARY/VARIANT/TIMESTAMP/complex) |
@@ -325,6 +326,8 @@ def build_snowflake_health():
     gold_fk.append((schema, "dim_facility", "health_system_id", "dim_health_system", "health_system_id", True))
     gold_fk.append((schema, "fct_encounter", "patient_id", "dim_patient", "patient_id", True))
     gold_fk.append((schema, "fct_encounter", "facility_id", "dim_facility", "facility_id", True))
+    gold_fk.append((schema, "patient_facility_bridge", "patient_id", "dim_patient", "patient_id", True))
+    gold_fk.append((schema, "patient_facility_bridge", "facility_id", "dim_facility", "facility_id", True))
     for t in ["dim_health_system", "dim_facility", "dim_patient",
               "patient_facility_bridge", "fct_encounter"]:
         gold_domain.append((schema, t, "Healthcare", "Clinical Operations", "snowflake health schema"))
@@ -528,6 +531,167 @@ def build_fk_suffixless():
 
 if "uat_fk_suffixless" not in skip_scenarios:
     build_fk_suffixless()
+
+# COMMAND ----------
+
+
+def build_fk_patterns():
+    """FK cases where containment alone is ambiguous or misleading.
+
+    Four independent patterns, each with real FKs (True) and traps (False):
+      A. A suffix-less subject key (usubjid) shared by sibling tables, plus a constant
+         study key and child-to-child / many-to-many traps.
+      B. A cross-name FK with ~20% orphans over a realistic domain (retired items).
+      C. Small dense integer domains (1..3, 1..5, 1..8): every small-int column is
+         contained in every small-int key, so containment and join rate say nothing;
+         includes a cross-name FK on that domain.
+      D. A mixed-grain decoy table (order rows plus subtotal rows) and two child
+         tables that both reference orders but not each other.
+    Uses its own RNG so adding this scenario leaves every other scenario's data unchanged.
+    """
+    schema = "uat_fk_patterns"
+    drop_schema(schema)
+    import pandas as pd
+
+    rng = random.Random(SEED + 9001)
+
+    # -- A. suffix-less subject key across sibling tables --------------------------
+    subjects = pd.DataFrame([{
+        "usubjid": f"STUDY1-{100 + (i % 8)}-{i:04d}",
+        "studyid": "STUDY1",                       # constant across every table: TRAP
+        "sex": rng.choice(["F", "M"]),
+        "age": rng.randint(18, 85),
+    } for i in range(1, 401)])
+    subj_ids = subjects["usubjid"].tolist()
+    visits = pd.DataFrame([{
+        "usubjid": sid, "studyid": "STUDY1", "visitnum": v,
+        "visit": f"VISIT {v}",
+    } for sid in subj_ids for v in range(1, rng.randint(2, 6) + 1)])
+    vitals = pd.DataFrame([{
+        "usubjid": r.usubjid, "studyid": "STUDY1", "visitnum": r.visitnum,
+        "vstestcd": t, "vsorres": round(rng.uniform(50, 180), 1),
+    } for r in visits.itertuples() for t in ("SYSBP", "DIABP")])
+    medications = pd.DataFrame([{
+        "usubjid": rng.choice(subj_ids), "studyid": "STUDY1", "cmseq": i,
+        "cmtrt": rng.choice(["ASPIRIN", "METFORMIN", "LISINOPRIL", "ATORVASTATIN"]),
+    } for i in range(1, 701)])
+
+    # -- B. cross-name FK with ~20% orphans -----------------------------------------
+    all_skus = list(range(5000, 5060))                   # 60 SKUs ever sold
+    retired = set(rng.sample(all_skus, 12))              # 12 retired -> removed from catalog
+    catalog_items = pd.DataFrame([{
+        "sku": sku, "item_name": f"Item {sku}", "unit_price": rng.randint(2, 400),
+    } for sku in all_skus if sku not in retired])        # 48 rows; sku unique
+
+    # -- D. orders, a mixed-grain decoy, and two child tables -----------------------
+    order_ids = list(range(100001, 100601))
+    orders = pd.DataFrame([{
+        "order_id": oid, "order_date": date(2026, 1, 1) + timedelta(days=rng.randint(0, 300)),
+        "order_status": rng.choice(["OPEN", "SHIPPED", "CLOSED"]),
+    } for oid in order_ids])
+    kept = sorted(rng.sample(order_ids, 480))           # 80% of orders at order grain
+    mixed_rows = (
+        [{"grain": "order", "order_id": oid, "region": None, "month": None,
+          "amount": rng.randint(20, 900)} for oid in kept]
+        + [{"grain": "region_month", "order_id": None, "region": reg, "month": f"2026-{m:02d}",
+            "amount": rng.randint(5000, 90000)}
+           for reg in ("NORTH", "SOUTH", "EAST", "WEST") for m in range(1, 13)]
+    )
+    order_totals_mixed = pd.DataFrame(mixed_rows)
+    # Keep order_id an INTEGER column with NULLs. pandas would otherwise turn int+None
+    # into float64 (-> Spark DOUBLE), which FK prediction excludes by type, so the
+    # decoy would never be exercised.
+    order_totals_mixed["order_id"] = pd.Series([r["order_id"] for r in mixed_rows], dtype=object)
+    order_items = pd.DataFrame([{
+        "order_id": oid, "line_no": ln,
+        "item_number": rng.choice(all_skus),             # B: cross-name FK, some retired
+        "quantity": rng.randint(1, 12),
+    } for oid in order_ids for ln in range(1, rng.randint(1, 3) + 1)])
+    invoices = pd.DataFrame([{
+        "invoice_id": 700000 + i, "order_id": rng.choice(order_ids),
+        "invoice_amount": rng.randint(20, 900),
+    } for i in range(1, 901)])                           # order_id NOT unique here
+
+    # -- C. small dense integer domains ----------------------------------------------
+    carriers = pd.DataFrame([{"carrier_id": i, "carrier_name": n}
+                             for i, n in enumerate(["ACME FREIGHT", "BLUE LINE", "CARGO ONE"], 1)])
+    depots = pd.DataFrame([{"depot_id": i, "depot_name": f"Depot {i}"} for i in range(1, 6)])
+    zones = pd.DataFrame([{"zone_num": i, "zone_name": f"Zone {i}"} for i in range(1, 9)])
+    deliveries = pd.DataFrame([{
+        "delivery_id": 300000 + i,
+        "carrier_id": rng.randint(1, 3),     # FK -> carriers
+        "depot_id": rng.randint(1, 5),       # FK -> depots
+        "service_tier": rng.randint(1, 3),   # TRAP: contained in carriers/depots/zones
+        "attempt_count": rng.randint(1, 3),  # TRAP
+    } for i in range(1, 601)])
+    delivery_legs = pd.DataFrame([{
+        "delivery_id": d, "leg_seq": leg,    # leg_seq: TRAP
+        "hauled_by": rng.randint(1, 3),      # cross-name FK -> carriers.carrier_id
+    } for d in deliveries["delivery_id"] for leg in range(1, rng.randint(1, 3) + 1)])
+
+    for name, pdf in [("subjects", subjects), ("visits", visits), ("vitals", vitals),
+                      ("medications", medications), ("catalog_items", catalog_items),
+                      ("orders", orders), ("order_totals_mixed", order_totals_mixed),
+                      ("order_items", order_items), ("invoices", invoices),
+                      ("carriers", carriers), ("depots", depots), ("zones", zones),
+                      ("deliveries", deliveries), ("delivery_legs", delivery_legs)]:
+        write_pandas(pdf, schema, name)
+
+    for child in ("visits", "vitals", "medications"):
+        assert_fk_joins(schema, child, "usubjid", "subjects", "usubjid")
+    assert_fk_joins(schema, "order_items", "item_number", "catalog_items", "sku", expect_orphans=True)
+    assert_fk_joins(schema, "order_items", "order_id", "orders", "order_id")
+    assert_fk_joins(schema, "invoices", "order_id", "orders", "order_id")
+    assert_fk_joins(schema, "deliveries", "carrier_id", "carriers", "carrier_id")
+    assert_fk_joins(schema, "deliveries", "depot_id", "depots", "depot_id")
+    assert_fk_joins(schema, "delivery_legs", "delivery_id", "deliveries", "delivery_id")
+    assert_fk_joins(schema, "delivery_legs", "hauled_by", "carriers", "carrier_id")
+
+    T, F_ = True, False
+    for row in [
+        # A
+        ("visits", "usubjid", "subjects", "usubjid", T),
+        ("vitals", "usubjid", "subjects", "usubjid", T),
+        ("medications", "usubjid", "subjects", "usubjid", T),
+        ("visits", "studyid", "subjects", "studyid", F_),        # constant value
+        ("vitals", "usubjid", "visits", "usubjid", F_),          # child-to-child
+        ("vitals", "visitnum", "visits", "visitnum", F_),        # many-to-many (composite at best)
+        # B
+        ("order_items", "item_number", "catalog_items", "sku", T),
+        # C
+        ("deliveries", "carrier_id", "carriers", "carrier_id", T),
+        ("deliveries", "depot_id", "depots", "depot_id", T),
+        ("delivery_legs", "delivery_id", "deliveries", "delivery_id", T),
+        ("delivery_legs", "hauled_by", "carriers", "carrier_id", T),
+        ("deliveries", "service_tier", "carriers", "carrier_id", F_),
+        ("deliveries", "attempt_count", "zones", "zone_num", F_),
+        ("delivery_legs", "leg_seq", "carriers", "carrier_id", F_),
+        ("deliveries", "carrier_id", "zones", "zone_num", F_),
+        ("deliveries", "depot_id", "zones", "zone_num", F_),
+        # D
+        ("order_items", "order_id", "orders", "order_id", T),
+        ("invoices", "order_id", "orders", "order_id", T),
+        ("order_items", "order_id", "invoices", "order_id", F_),           # child-to-child
+        ("order_items", "order_id", "order_totals_mixed", "order_id", F_),  # mixed-grain decoy
+        ("invoices", "order_id", "order_totals_mixed", "order_id", F_),
+        # The decoy's order-grain rows really are a subset of orders, so the reverse
+        # direction is defensible either way: ambiguous (excluded from scoring).
+        ("order_totals_mixed", "order_id", "orders", "order_id", None),
+    ]:
+        gold_fk.append((schema,) + row)
+
+    readme(schema, "capability", "FK cases where value containment alone is ambiguous or misleading")
+    readme(schema, "keep", "visits/vitals/medications.usubjid -> subjects.usubjid (suffix-less key shared by siblings)")
+    readme(schema, "drop", "studyid (one constant value in every table); vitals.usubjid <-> visits.usubjid (child-to-child)")
+    readme(schema, "keep", "order_items.item_number -> catalog_items.sku (cross-name, ~20% orphans from retired items)")
+    readme(schema, "keep", "deliveries.carrier_id/depot_id, delivery_legs.hauled_by (cross-name) on 1..3 / 1..5 domains")
+    readme(schema, "drop", "service_tier / attempt_count / leg_seq (1..3) and anything -> zones.zone_num (1..8): contained by chance")
+    readme(schema, "keep", "order_items.order_id, invoices.order_id -> orders.order_id")
+    readme(schema, "drop", "-> order_totals_mixed.order_id (mixed-grain decoy, 80% of orders); order_items <-> invoices (child-to-child)")
+
+
+if "uat_fk_patterns" not in skip_scenarios:
+    build_fk_patterns()
 
 # COMMAND ----------
 
@@ -858,7 +1022,8 @@ for schema, rows in scenario_readmes.items():
 print(f"Wrote _scenario_readme to {len(scenario_readmes)} schemas")
 
 # Gold expectations -> <catalog>.uat_eval (eval_expected_* shape, with a `scenario` column
-# so the eval_e2e scoring harness can filter per schema).
+# so the eval_e2e scoring harness can filter per schema). uat_expected_fk.expected_is_fk:
+# true = real FK, false = trap, NULL = ambiguous (excluded from scoring).
 ensure_schema(eval_schema)
 
 

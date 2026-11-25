@@ -133,15 +133,15 @@ try:
     main(config_no_perms.__dict__)
     print("  [OK] Run succeeded with grant_permissions_after_creation=false")
 
-    # Test 5: Volume access (if volume exists)
+    # Test 5: Volume access. The main() runs above used volume_name="test_volume",
+    # and main() creates it (CREATE VOLUME IF NOT EXISTS), so it must be listable.
     print("\nTest 5: Volume access")
+    volume_path = f"/Volumes/{test_catalog}/{test_schema}/test_volume"
     try:
-        volume_path = f"/Volumes/{test_catalog}/{test_schema}/test_volume"
         files = dbutils.fs.ls(volume_path)
-        print(f"  [OK] Volume accessible, {len(files)} file(s) found")
-        test_utils.assert_true(len(files) >= 0, "Volume is accessible and listable")
     except Exception as e:
-        print(f"  [SKIP] Volume access test skipped (volume may not exist): {e}")
+        raise TestFailure(f"Volume {volume_path} is not listable after main() created it: {e}")
+    print(f"  [OK] Volume accessible, {len(files)} entries")
 
     test_passed = True
     print_test_result("Permissions", True)

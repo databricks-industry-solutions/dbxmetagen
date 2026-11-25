@@ -852,9 +852,12 @@ Evaluate each entity independently. Consider whether table purpose, columns, and
             #
             # CONFIDENCE SEMANTICS: confidence is a cumulative evidence score, not a
             # bounded probability. Discovery clamps it to [0,1], but validation ADDS a
-            # signed confidence_adjustment (floored at 0.0, intentionally NOT capped at
-            # 1.0). A value > 1.0 simply means LLM validation corroborated an already
-            # high-confidence entity -- a positive signal, not an error. Do not clamp.
+            # signed confidence_adjustment, clamped to [0.0, 1.0]. Confidence is a
+            # probability everywhere downstream (ranking, conformance scoring, graph
+            # weights, and the app's percentage displays, which showed "104%"), and the
+            # build step already clamps to [0, 1]; this step runs after it, so it must
+            # clamp too. Corroboration is still recorded: validated=true plus
+            # validation_notes.
             self.spark.sql(f"""
                 MERGE INTO {self.config.fully_qualified_entities} AS target
                 USING __col_val_results AS source
@@ -864,7 +867,7 @@ Evaluate each entity independently. Consider whether table purpose, columns, and
                     OR COALESCE(target.validation_notes, '') != COALESCE(source.validation_notes, '')
                 ) THEN UPDATE SET
                     target.validated = CAST(source.validated AS BOOLEAN),
-                    target.confidence = GREATEST(0.0, target.confidence + CAST(source.confidence_adjustment AS DOUBLE)),
+                    target.confidence = GREATEST(0.0, LEAST(1.0, target.confidence + CAST(source.confidence_adjustment AS DOUBLE))),
                     target.validation_notes = source.validation_notes,
                     target.updated_at = current_timestamp()
             """)
@@ -938,7 +941,7 @@ Evaluate each entity independently. Consider whether table purpose, columns, and
                     UPDATE {self.config.fully_qualified_entities}
                     SET 
                         validated = {is_valid},
-                        confidence = GREATEST(0.0, confidence + {confidence_adj}),
+                        confidence = GREATEST(0.0, LEAST(1.0, confidence + {confidence_adj})),
                         validation_notes = '{reasoning.replace("'", "''")}',
                         updated_at = current_timestamp()
                     WHERE entity_id = '{entity_id}'

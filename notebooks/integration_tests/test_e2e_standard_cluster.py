@@ -62,6 +62,8 @@ try:
     # Setup
     print("\nSetup: Creating test environment")
     test_utils.setup_test_environment()
+    # Verifiers only accept rows written after this point (not a stale earlier run).
+    run_started_at = server_now(spark)
 
     test_table = test_utils.create_test_table(
         "test_e2e_standard_cluster", with_comment=False
@@ -90,7 +92,7 @@ try:
     # Enhanced validation for comment mode
     print("  Validating comment mode outputs...")
     log_df_comment = verify_metadata_log_for_mode(
-        spark, test_catalog, test_schema, test_table, "comment"
+        spark, test_catalog, test_schema, test_table, "comment", since=run_started_at
     )
 
     # Verify control table entry
@@ -98,7 +100,7 @@ try:
         f"metadata_control_e2e_standard_{sanitize_user_identifier(current_user)}"
     )
     verify_control_table_entry(
-        spark, test_catalog, test_schema, control_table_name, test_table
+        spark, test_catalog, test_schema, control_table_name, test_table, since=run_started_at
     )
 
     # Test Mode: pi
@@ -124,12 +126,12 @@ try:
     # Enhanced validation for PI mode
     print("  Validating PI mode outputs...")
     log_df_pi = verify_metadata_log_for_mode(
-        spark, test_catalog, test_schema, test_table, "pi"
+        spark, test_catalog, test_schema, test_table, "pi", since=run_started_at
     )
 
     # Verify control table still has entry
     verify_control_table_entry(
-        spark, test_catalog, test_schema, control_table_name, test_table
+        spark, test_catalog, test_schema, control_table_name, test_table, since=run_started_at
     )
 
     # Test Mode: domain
@@ -155,12 +157,12 @@ try:
     # Enhanced validation for domain mode
     print("  Validating domain mode outputs...")
     log_df_domain = verify_metadata_log_for_mode(
-        spark, test_catalog, test_schema, test_table, "domain"
+        spark, test_catalog, test_schema, test_table, "domain", since=run_started_at
     )
 
     # Verify control table still has entry
     verify_control_table_entry(
-        spark, test_catalog, test_schema, control_table_name, test_table
+        spark, test_catalog, test_schema, control_table_name, test_table, since=run_started_at
     )
 
     # Verify SQL file content (not just existence)
@@ -172,7 +174,7 @@ try:
 
     # Verify mode differentiation - all three modes should have produced different outputs
     print("\nValidating mode differentiation...")
-    verify_mode_differentiation(spark, test_catalog, test_schema, test_table)
+    verify_mode_differentiation(spark, test_catalog, test_schema, test_table, since=run_started_at)
 
     test_passed = True
     print_test_result("E2E Standard Cluster", True)

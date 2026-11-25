@@ -123,6 +123,15 @@ resources:
           # docs/CUSTOMER_CONTEXT_VECTOR_INDEX.md.
           - name: ENABLE_CONTEXT_VECTOR_INDEX
             value: "${var.enable_context_vector_index}"
+          # UC Pages generation (opt-in, default-off). Prompted Page proposals grounded in
+          # persisted dbxmetagen context; publish (Pages REST API) only on explicit user action.
+          # The publishing identity (app SP, or the user under OBO) needs Page manager rights on
+          # the target Domain. See src/dbxmetagen/uc_pages.py.
+          - name: ENABLE_UC_PAGES
+            value: "${var.enable_uc_pages}"
+          # Quality reviewer for generated Pages; comma-separated = averaged panel. 'none' = LLM_MODEL.
+          - name: PAGES_JUDGE_MODEL
+            value: "${var.uc_pages_judge_model}"
           # Upload size guardrail (MB) for context/acronym/description/document uploads.
           - name: MAX_UPLOAD_MB
             value: "${var.max_upload_mb}"

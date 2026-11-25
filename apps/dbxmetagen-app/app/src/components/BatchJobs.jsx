@@ -831,11 +831,9 @@ export default function BatchJobs({ onNavigate, pipelineStats }) {
       {onNavigate && !simplified && (
         <div className="pt-1">
           <p className="text-xs font-semibold uppercase tracking-wider text-slate-400 dark:text-slate-500 mb-2">Next steps</p>
-          <div className="grid grid-cols-2 sm:grid-cols-4 gap-2">
+          <div className="grid grid-cols-2 gap-2">
             <button onClick={() => onNavigate('semantic')} className="btn-secondary btn-sm">Generate Semantic Layer</button>
             <button onClick={() => onNavigate('syncops')} className="btn-secondary btn-sm">Post-review Sync</button>
-            <button onClick={() => onNavigate('syncops')} className="btn-secondary btn-sm">Lakebase</button>
-            <button onClick={() => onNavigate('syncops')} className="btn-secondary btn-sm">Create MCPs</button>
           </div>
         </div>
       )}
