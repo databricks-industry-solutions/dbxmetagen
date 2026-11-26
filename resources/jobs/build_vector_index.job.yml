@@ -2,6 +2,11 @@ resources:
   jobs:
     build_vector_index_job:
       name: "${var.app_name}${var.app_name_suffix}_build_vector_index"
+      # run_as: intentionally not set, so this job runs as the identity that deploys the
+      # bundle (a user or a service principal). To run it as a DIFFERENT service principal,
+      # uncomment the next line and set var.run_as to that SP in your overrides (see
+      # variables.yml for the role prerequisite).
+      # run_as: ${var.run_as}
       budget_policy_id: ${var.budget_policy_id}
 
       permissions:

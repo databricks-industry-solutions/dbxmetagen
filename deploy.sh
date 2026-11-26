@@ -21,7 +21,7 @@
 #       --no-frontend      No-op (kept for backward compatibility): the frontend build is already skipped by default, so this just runs the default. Never errors.
 #       --no-vs            Skip Vector Search endpoint provisioning + grant
 #       --no-grants        Do not run scripts/grant_app_permissions.sh (grant manually instead)
-#       --allow-grant-failures  Finish with exit 0 even if some grants fail (default: exit 1)
+#       --strict-grants    Exit 1 if any grant fails (for CI). Default: warn, list them, exit 0
 #   -h, --help             Show this help
 set -e
 
@@ -39,7 +39,9 @@ SKIP_APP=false
 SKIP_FRONTEND=true   # default: do NOT rebuild the frontend (dist/ is committed); pass --yes-frontend to force
 SKIP_VS=false
 SKIP_GRANTS=false
-ALLOW_GRANT_FAILURES=false
+# Default: a failed grant is reported but does not fail the deploy. Catalog-level grants
+# often fail for deployers without MANAGE on the catalog, and the app may not need them.
+STRICT_GRANTS=false
 DEPLOY_VARS=()   # bundle-variable overrides forwarded from a legacy {target}.env, if present
 
 while [[ $# -gt 0 ]]; do
@@ -51,7 +53,8 @@ while [[ $# -gt 0 ]]; do
         --no-frontend) SKIP_FRONTEND=true; shift ;;   # backward-compat no-op: SKIP_FRONTEND already defaults to true
         --no-vs)       SKIP_VS=true; shift ;;
         --no-grants)   SKIP_GRANTS=true; shift ;;
-        --allow-grant-failures) ALLOW_GRANT_FAILURES=true; shift ;;
+        --strict-grants) STRICT_GRANTS=true; shift ;;
+        --allow-grant-failures) STRICT_GRANTS=false; shift ;;   # backward-compat: this is now the default
         --permissions) echo "Note: --permissions is no longer needed; grants run automatically below."; shift ;;
         -h|--help)     sed -n '15,25p' "$0" | sed 's/^# \{0,1\}//'; exit 0 ;;
         *)             echo "Unknown option: $1 (use --help)"; exit 1 ;;
@@ -249,7 +252,9 @@ if [ "$SKIP_GRANTS" = true ]; then
 else
     echo ""
     echo "=== grant_app_permissions.sh ==="
-    scripts/grant_app_permissions.sh "${GRANT_ARGS[@]}" || _grants_rc=$?
+    _grants_flags=()
+    [ "$STRICT_GRANTS" = true ] && _grants_flags+=(--strict)
+    scripts/grant_app_permissions.sh "${GRANT_ARGS[@]}" "${_grants_flags[@]}" || _grants_rc=$?
 fi
 
 echo ""
@@ -261,11 +266,7 @@ if [ -n "$_deploy_warnings" ]; then
 fi
 if [ "$_grants_rc" -ne 0 ]; then
     echo "" >&2
-    if [ "$ALLOW_GRANT_FAILURES" = true ]; then
-        echo "Some grants failed (see above); continuing because of --allow-grant-failures." >&2
-    else
-        echo "Deploy finished, but some grants failed (see above). Fix them and re-run" >&2
-        echo "scripts/grant_app_permissions.sh, or pass --allow-grant-failures / --no-grants." >&2
-        exit "$_grants_rc"
-    fi
+    echo "Deploy finished, but some grants failed (see above). Fix them and re-run" >&2
+    echo "scripts/grant_app_permissions.sh, or pass --no-grants to skip it." >&2
+    exit "$_grants_rc"   # only reached with --strict-grants; the script exits 0 otherwise
 fi
