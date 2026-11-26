@@ -529,7 +529,7 @@ wcwidth==0.8.2
     # via prettytable
 websockets==16.1
     # via langsmith
-werkzeug==3.1.8
+werkzeug==3.1.9
     # via
     #   flask
     #   flask-cors
