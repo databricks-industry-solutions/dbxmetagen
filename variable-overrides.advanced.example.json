@@ -18,8 +18,11 @@
   "_comment_budget_policy": "Serverless budget policy ID for cost attribution on serverless jobs. Plain string variable -- empty is accepted at job level. Left EMPTY here so verbatim copy is safe; set it to your budget policy UUID to attribute serverless cost.",
   "budget_policy_id": "",
 
-  "_comment_run_as": "Identity jobs run as. Default is the deploying user. Set an SP to own all jobs (the old spn_id). The SP needs USE CATALOG/USE SCHEMA/CREATE TABLE/SELECT/MODIFY on the target schema plus CAN_ATTACH_TO on clusters.",
+  "_comment_run_as": "ADVANCED path only -- run specific JOBS as a service principal DIFFERENT from the deployer. By default jobs OMIT run_as and run as whoever deploys (user or SP, auto-typed by DAB), so to run jobs as a service principal the simple way, just DEPLOY as that SP and DELETE this key. For 'deploy as X, run jobs as a different SP Y': first add `run_as: ${var.run_as}` back to the job(s) you want in resources/jobs/*.yml, then set this to Y's EXISTING application id (only those jobs run as Y; the rest stay as the deployer). X must hold the Service Principal: User role on Y BEFORE deploying (admins are not exempt). grant_app_permissions.sh grants that role and gives Y the same output-schema + Vector Search privileges as the app SP -- run it before the first deploy as well as after (deploy.sh does both). Prefer a dedicated SP over the app's own SP, which changes if the app is recreated.",
   "run_as": { "service_principal_name": "00000000-0000-0000-0000-000000000000" },
+
+  "_comment_alert_email": "Where every job's failure alert is sent. Defaults to the deploying identity -- ALWAYS set it when deploying as a service principal (its identity is an application id, not an email address).",
+  "alert_email": "data-team@example.com",
 
   "_comment_app": "app_name = app display name + job-name prefix. app_name_suffix appends to both, so multiple instances can coexist in one workspace (the app is a singleton by name).",
   "app_name": "dbxmetagen-app",
@@ -32,7 +35,7 @@
   "enable_obo": true,
   "user_api_scopes": ["files.files", "serving.serving-endpoints", "sql.statement-execution", "dashboards.genie"],
 
-  "_comment_permissions": "Who can open the app UI (CAN_USE). Replaces the old permission_groups / permission_users env vars. The deploying user already has CAN_MANAGE.",
+  "_comment_permissions": "Who can open the app UI (CAN_USE). Replaces the old permission_groups / permission_users env vars. The deploying identity already has CAN_MANAGE. Set this when deploying as a service principal, or only the SP and workspace admins can open the app.",
   "app_permissions": [
     { "group_name": "account users", "level": "CAN_USE" },
     { "user_name": "user1@example.com", "level": "CAN_USE" }

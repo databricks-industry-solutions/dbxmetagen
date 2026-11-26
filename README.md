@@ -13,6 +13,7 @@
 - **Domain classification**: Categorize tables into business domains and subdomains
 - **Customer context**: Inject domain-specific knowledge into prompts, scoped by catalog/schema/table/pattern
 - **Metadata review**: Human-in-the-loop review, edit, and apply workflow; the governance centerpiece
+- **UC Pages (opt-in)**: Plan, write and publish governed business-concept Pages with claim-level provenance and quality scoring (see [Dashboard App](#dashboard-app))
 
 **2. Knowledge platform**: ontology, profiling, join keys, vector indexes, and knowledge graph
 
@@ -117,12 +118,12 @@ The default job-cluster `node_type` is `i3.2xlarge` (an **AWS** type). On anothe
 
 ### Step 3 — Deploy (pick one path)
 
-All three paths are **equivalent, fully-supported peers**: the same bundle, the same `artifacts.build` wheel hook, the same **24 jobs + app**. Pick the one that matches your environment. Anything that applies *after* the deploy — starting the app, grants, OBO — is in [After deploy](#after-deploy) and is the same for all paths.
+All three paths are **equivalent, fully-supported peers**: the same bundle, the same `artifacts.build` wheel hook, the same **25 jobs + app**. Pick the one that matches your environment. Anything that applies *after* the deploy — starting the app, grants, OBO — is in [After deploy](#after-deploy) and is the same for all paths.
 
 #### Path A — CLI (recommended)
 
 ```bash
-databricks bundle deploy -t dev -p <your-profile>                # build wheel + register all 24 jobs & the app
+databricks bundle deploy -t dev -p <your-profile>                # build wheel + register all 25 jobs & the app
 databricks bundle run    -t dev -p <your-profile> dbxmetagen_app # deploy app source + start the app
 ```
 
@@ -159,7 +160,7 @@ The bundle editor's **Deploy** button is a first-class peer to the CLI — same 
 
 #### Fallback — Notebook deployment pipeline
 
-If you can run **neither** the CLI nor the UI, deploy the app + **core jobs (8 of 24)** from Databricks notebooks via the Python SDK. Some dashboard features are unavailable. See [`notebook_deployment_pipeline/README.md`](notebook_deployment_pipeline/README.md). (This is different from the library-only [Partial Install](#partial-install-notebook-only) below.)
+If you can run **neither** the CLI nor the UI, deploy the app + **core jobs (8 of 25)** from Databricks notebooks via the Python SDK. Some dashboard features are unavailable. See [`notebook_deployment_pipeline/README.md`](notebook_deployment_pipeline/README.md). (This is different from the library-only [Partial Install](#partial-install-notebook-only) below.)
 
 ### Your first run
 
@@ -179,7 +180,7 @@ That's the core loop. From here, run **PI** and **domain** modes and the analyti
 The items below apply to **all paths** and are each **optional**:
 
 - **One-step deploy (`app_lifecycle`).** By default (`{}`) `bundle deploy` registers the app but doesn't start it — safe on **both** deploy engines. To make a single `bundle deploy` also push the app source and start it, set `app_lifecycle` to `{"started": true}` in your overrides. **This works only on the direct engine** (workspace UI and fresh CLI). A bundle whose state came from an older `deploy.sh`/CLI run stays on the **terraform** engine (the CLI does not auto-migrate), which rejects `started` at build time — leave it `{}` there. That's why `{}` is the default: it keeps every existing deploy working unchanged.
-- **Grants (only if needed).** `scripts/grant_app_permissions.sh -t dev -p <your-profile>` grants the app service principal UC access and provisions a Vector Search endpoint — things DAB can't do natively. **Skip it** if you're not using OBO and the app SP already has catalog access. In the UI, run it from a workspace **web terminal**, or grant manually — see [`docs/MANUAL_DEPLOYMENT.md`](docs/MANUAL_DEPLOYMENT.md).
+- **Grants (only if needed).** `scripts/grant_app_permissions.sh -t dev -p <your-profile>` grants the app service principal UC access and provisions a Vector Search endpoint — things DAB can't do natively. **Skip it** if you're not using OBO and the app SP already has catalog access. In the UI, run it from a workspace **web terminal**, or grant manually — see [`docs/MANUAL_DEPLOYMENT.md`](docs/MANUAL_DEPLOYMENT.md). It exits non-zero if any grant fails (so CI notices) and lists what failed; pass `--allow-failures` to exit 0 anyway. `deploy.sh` runs it for you; pass `./deploy.sh --no-grants` to skip it (and grant yourself), or `--allow-grant-failures` to finish with exit 0 when some grants fail.
 - **Jobs only:** run just `bundle deploy` (CLI) or the bundle **Deploy** (UI) and skip the app start + grants.
 - **Multiple instances in one workspace.** The app is a **singleton by name**. To run more than one target/instance in the same workspace, set `app_name_suffix` (e.g. `-dev`) in your overrides — it's appended to both the app name and the job-name prefix, so instances don't overwrite each other.
 - **On-Behalf-Of (OBO) user auth** — off by default; skip if `enable_obo=false`:
@@ -187,6 +188,55 @@ The items below apply to **all paths** and are each **optional**:
   - Scopes are declared for you (`files.files`, `serving.serving-endpoints`, `sql.statement-execution`, `dashboards.genie`), so no scope wrangling is needed. Declaring scopes requires the workspace's user-token-passthrough feature; if a target lacks it, override `user_api_scopes` to `[]` to opt out.
 - **Advanced overrides** (cluster policy, serverless budget, `run_as` SP, app permissions, OBO scopes, Lakebase): copy `variable-overrides.advanced.example.json` into `.databricks/bundle/<target>/variable-overrides.json` (CLI) or paste the same keys into the UI's ⋮ **Configure variable overrides** editor.
 - **Recommended: attach a budget policy.** dbxmetagen's jobs run LLM calls and analytics at whatever scale you point them at, so cost can grow quickly on a large catalog. Set `budget_policy_id` (serverless) and/or `policy_id` (classic job clusters) via the overrides above so every run carries cost-attribution tags and stays within your governance/cost guardrails. Pair this with the "start small, then scale up" guidance so you can measure cost before scaling.
+
+### Deploying to production as a service principal (CI/CD)
+
+For production and CI/CD, deploy the `prod` target **as a service principal (SP)**. Jobs omit `run_as`, so they automatically run as the identity that deploys -- the SP -- with no `run_as` configuration. (`dev` and `demo` are development-mode targets; deploy those as a user.)
+
+**1. Prepare the service principal.** Create it (Settings > Identity and access > Service principals) and generate an OAuth secret for it. The SP needs:
+- On the output catalog/schema: `USE CATALOG`, `USE SCHEMA`, `CREATE TABLE`, `CREATE VOLUME`, `CREATE FUNCTION`, `CREATE MATERIALIZED VIEW`, `SELECT`, `MODIFY` -- automatic if the SP owns the schema (for example, it created it). To run the grants script it must also be able to grant on that catalog and schema (owner or `MANAGE`).
+- `SELECT` on the source tables you document (plus `MODIFY` and `APPLY TAG` to apply DDL), access to the model endpoint, and `CAN_USE` on the SQL warehouse (the grants script runs its `GRANT`s there).
+
+See [docs/PERMISSIONS.md](docs/PERMISSIONS.md) for the full list and for moving an existing user-owned deployment to an SP.
+
+**2. Authenticate the CLI as the SP** (OAuth machine-to-machine). In CI, set environment variables:
+
+```bash
+export DATABRICKS_HOST=https://<your-workspace-host>
+export DATABRICKS_CLIENT_ID=<sp-application-id>
+export DATABRICKS_CLIENT_SECRET=<sp-oauth-secret>   # from your CI secret store
+```
+
+or add a profile to `~/.databrickscfg` with `host`, `client_id`, and `client_secret` and pass `-p <profile>`. The runner also needs the Databricks CLI >= 1.10.0, `uv`, and access to PyPI (or set `UV_INDEX_URL` to your mirror) to build the wheel.
+
+**3. Set the prod overrides** in `.databricks/bundle/prod/variable-overrides.json` (in CI, write the file from your pipeline). Besides the three required values, set these two -- with an SP deploy their defaults do not work:
+
+```json
+{
+  "catalog_name": "my_catalog",
+  "schema_name": "metadata_results",
+  "warehouse_id": "0123456789abcdef",
+  "alert_email": "data-team@example.com",
+  "app_permissions": [{ "group_name": "data-analysts", "level": "CAN_USE" }]
+}
+```
+
+- `alert_email` receives every job's failure alert. It defaults to the deploying identity, which for an SP is its application id, so alerts would reach nobody.
+- `app_permissions` controls who can open the app. The deploying identity gets `CAN_MANAGE`; with the default `[]`, an SP deploy leaves only the SP and workspace admins able to open it.
+
+`deploy.sh` and `scripts/grant_app_permissions.sh` print a warning for each of these when it is unset. The grants script exits non-zero if any grant fails, so a CI run fails visibly; the SP needs the right to grant on the output catalog and schema for it to succeed.
+
+**4. Deploy:**
+
+```bash
+databricks bundle deploy -t prod
+databricks bundle run    -t prod dbxmetagen_app
+scripts/grant_app_permissions.sh -t prod
+```
+
+The bundle lands under `/Workspace/Users/<sp-application-id>/.bundle/dbxmetagen/prod`; the SP owns the app and the jobs, the jobs run as the SP, and the app's own service principal can run them (`CAN_MANAGE_RUN`). Workspace admins can see the jobs; to let a team view them too, add an entry such as `- group_name: <your-group>` / `level: CAN_VIEW` to the `permissions:` list of the `prod` target in `databricks.yml`.
+
+**Running jobs as a different SP than the deployer** (for example, deploying as a user but running jobs as an SP) is an advanced path: see `run_as` in `variables.yml` and [docs/PERMISSIONS.md](docs/PERMISSIONS.md).
 
 ## Partial Install (Notebook Only)
 
@@ -592,7 +642,15 @@ The app is in `apps/dbxmetagen-app/` and provides a FastAPI backend with a React
 - **Agent** -- Deep analysis chat with GraphRAG, graph explorer, semantic search, and MLflow trace links
 - **Entity Browser** -- Entity-first navigation with conformance view
 
-**Permissions model:** The app uses two separate identities. The **app service principal** (SPN) controls what the app UI can *read* -- it needs SELECT on your catalog to browse tables, coverage, metadata, and graph data. The **deployer's identity** (the user who ran `databricks bundle deploy`) controls what jobs can *write* -- jobs run as the deployer and need CREATE TABLE, ALTER TABLE, and SET TAGS on the target catalog. This means a user can see metadata in the app even if they don't have permission to generate or apply it, and conversely, the app SPN doesn't need write access to your tables. UC grants for the app SPN are applied by `scripts/grant_app_permissions.sh` (run after each deploy). See [docs/PERMISSIONS.md](docs/PERMISSIONS.md) for the full permissions reference including OBO mode, Vector Search, and end-user access.
+**Permissions model:** The app uses two separate identities. The **app service principal** (SPN) controls what the app UI can *read* -- it needs SELECT on your catalog to browse tables, coverage, metadata, and graph data. The **job run identity** controls what jobs can *write* -- jobs run as the identity you **deploy as** (the user or service principal that runs `databricks bundle deploy`; DAB auto-types it), and need CREATE TABLE, ALTER TABLE, and SET TAGS on the target catalog. To run jobs as a service principal, deploy as that SP; to run them as a *different* SP than the deployer, see the advanced path in [docs/PERMISSIONS.md](docs/PERMISSIONS.md). This means a user can see metadata in the app even if they don't have permission to generate or apply it, and conversely, the app SPN doesn't need write access to your tables. UC grants for the app SPN are applied by `scripts/grant_app_permissions.sh` (run after each deploy). See [docs/PERMISSIONS.md](docs/PERMISSIONS.md) for the full permissions reference including OBO mode, Vector Search, and end-user access.
+
+**Generate UC Pages (opt-in, `enable_uc_pages=true`):** Draft Unity Catalog [Pages](https://docs.databricks.com/aws/en/uc-semantics/pages), the governed definitions of business concepts that Genie treats as authoritative, from a prompt plus everything dbxmetagen already knows about a scope. A Page covers **one** concept: an entity, a term or acronym, the *meaning* of a metric (the calculation stays in its metric view, which the Page links), a business rule, or a process. Table documentation belongs in UC wikis and grouping belongs in Domains; data-product overview Pages are available as an explicit opt-in.
+
+- **Plan → curate → write → review → publish.** The planner proposes candidate concepts with triage flags (duplicate, table-shaped, low evidence, conflicting sources). You select, rename, re-kind, merge or discard, then write only what you approved.
+- **Provenance.** Every input is citable evidence with an authority class: *human* (customer context, acronyms, ingested documents, steward-reviewed metadata), *governed* (deployed metric views, confirmed relationships) or *inferred* (AI-generated metadata). Each statement records the evidence it rests on. Candidates backed only by inferred evidence are shown but not selected, because a published Page outranks the tables it describes in Genie.
+- **Editable system of record.** Plans, drafts, quality scores, provenance and UC sync state live in `page_runs`, `page_drafts`, `page_evidence`, `page_sources`/`page_source_chunks` and `uc_pages_log` in the results schema. Edit them in the app or with SQL.
+- **Objective quality.** Deterministic checks (definition form, conciseness, citation coverage, assets in scope, PII) plus an independent reviewer model (`uc_pages_judge_model`, a single endpoint or an averaged panel), with one automatic revision pass that is kept only if it scores higher.
+- **Safe publishing.** Draft by default; links to tables, metric views, related Pages and source URLs are reconciled on every publish; Pages edited in UC since the last publish are never silently overwritten. The publishing identity needs Page permissions on the target Domain (and the `knowledge` OAuth scope under OBO).
 
 **Deep Analysis Agent:** Natural-language queries using a LangGraph GraphRAG pipeline that combines Vector Search retrieval, multi-hop graph traversal via Lakebase, FK/KB lookups, and LLM-generated data queries. Results include MLflow trace links for observability.
 

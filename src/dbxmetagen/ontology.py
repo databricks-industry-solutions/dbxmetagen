@@ -36,6 +36,7 @@ from pydantic import BaseModel, Field, field_validator
 from dbxmetagen.config import DEFAULT_CLASSIFICATION_MODEL
 from dbxmetagen.ontology_roles import (
     AUDIT_COLUMN_NAMES as _AUDIT_PATTERNS_CANONICAL,
+    is_technical_column,
     BUSINESS_KEY_COLUMN_NAMES as _BUSINESS_KEY_PATTERNS_CANONICAL,
     GEO_COLUMN_NAMES as _GEO_PATTERNS_CANONICAL,
     LABEL_COLUMN_NAMES as _LABEL_PATTERNS_CANONICAL,
@@ -71,7 +72,9 @@ class EntityClassificationResult(BaseModel):
 class ColumnClassificationItem(BaseModel):
     """Single column classification within a batch response."""
     column_name: str = Field(description="Exact column name as provided in input")
-    entity_type: str = Field(description="Entity type from the provided list")
+    entity_type: str = Field(
+        description="Entity type from the provided list, or None if no listed type fits"
+    )
     confidence: float = Field(ge=0.0, le=1.0, description="Confidence 0.0-1.0")
 
 
@@ -293,6 +296,23 @@ def _leading_overlap(pred: str, entity: str) -> int:
         else:
             break
     return n
+
+
+# Answers the column classifier may give when no listed entity type fits. Without
+# this escape hatch the LLM had to pick something, and picked whatever sounded
+# closest (OMOP CdmSource for study_id, which has no OMOP entity at all).
+_NO_ENTITY_ANSWERS = frozenset({"none", "null", "n/a", "na", "no_entity", "no entity", "unmapped", ""})
+
+
+def _is_no_entity(predicted: Optional[str], allowed: List[str]) -> bool:
+    """True if the classifier abstained (answered None) rather than naming an entity.
+
+    A bundle that genuinely defines an entity called e.g. "None" keeps it.
+    """
+    p = (predicted or "").strip().lower()
+    if p not in _NO_ENTITY_ANSWERS:
+        return False
+    return p not in {a.lower() for a in allowed}
 
 
 def _enforce_entity_value(
@@ -1414,6 +1434,8 @@ class EntityDiscoverer:
             "column_keyword_matches": 0,
             "column_ai_classifications": 0,
             "column_fallback": 0,
+            "column_technical_skipped": 0,
+            "column_no_entity": 0,
         }
 
         # Three-pass prediction support (lazy init on first use)
@@ -2370,6 +2392,12 @@ class EntityDiscoverer:
             table_batch = all_tables[batch_start : batch_start + _TABLE_BATCH]
             batch_rows = cols_df.filter(F.col("table_name").isin(table_batch)).collect()
             for row in batch_rows:
+                # Ingestion/lineage columns (_source_file, _rescued_data, ...) carry no
+                # business entity; classifying them forced spurious mappings such as
+                # OMOP CdmSource for _source_file. Skip before keyword and AI matching.
+                if is_technical_column(row.column_name):
+                    self._stats["column_technical_skipped"] += 1
+                    continue
                 matches = self._match_column_to_entities(row)
                 if matches:
                     for entity_type, conf in matches:
@@ -2478,7 +2506,9 @@ class EntityDiscoverer:
         logger.info(
             f"Column entity discovery: {self._stats['column_keyword_matches']} keyword, "
             f"{self._stats['column_ai_classifications']} AI, "
-            f"{self._stats['column_fallback']} fallback. "
+            f"{self._stats['column_fallback']} fallback, "
+            f"{self._stats['column_technical_skipped']} technical skipped, "
+            f"{self._stats['column_no_entity']} no entity. "
             f"{len(discovered)} column entities kept after thresholds."
         )
         return discovered
@@ -2670,6 +2700,9 @@ class EntityDiscoverer:
             "(e.g. Boolean, Integer, Text) -- primitive types describe data formats, "
             "not what a column semantically represents. "
             "Classify based on what the column itself represents, not the table's domain. "
+            "If no listed entity type fits the column -- e.g. it is ingestion or lineage "
+            "metadata, a technical row identifier, or a concept the list does not cover -- "
+            "answer None rather than picking the closest-sounding type. "
             "Tables in specialized domains (e.g. healthcare) often contain commercial, "
             "supply-chain, or financial columns (product_name, supplier_id, unit_price) "
             "that should map to Product, Supplier, or Transaction -- not to domain-specific "
@@ -2692,6 +2725,9 @@ class EntityDiscoverer:
         )
         results = []
         for item in response.classifications:
+            if _is_no_entity(item.entity_type, self._entity_names):
+                self._stats["column_no_entity"] += 1
+                continue
             enforced, exact = _enforce_entity_value(item.entity_type, self._entity_names)
             conf = item.confidence
             if not exact:
@@ -2735,6 +2771,8 @@ class EntityDiscoverer:
                         'You are an entity classifier for database columns. ',
                         'Classify this column into the entity type it most likely belongs to. ',
                         'Classify based on what the column itself represents, not the table domain. ',
+                        'If no listed entity type fits (ingestion or lineage metadata, a technical row id, ',
+                        'or a concept the list does not cover), answer None. ',
                         'Valid entity types: {escaped_names}. ',
                         'Entity descriptions:\\n{escaped_desc}\\n\\n',
                         'Column: ', column_name,
@@ -2761,6 +2799,10 @@ class EntityDiscoverer:
         for rr in result_rows:
             col_name = rr.column_name
             cls = rr.classification
+            _et = cls.result.entity_type if cls and cls.result else None
+            if _et and _is_no_entity(_et, self._entity_names):  # explicit "None"; empty = failure
+                self._stats["column_no_entity"] += 1
+                continue
             if cls and cls.result and cls.result.entity_type:
                 enforced, exact = _enforce_entity_value(cls.result.entity_type, self._entity_names)
                 conf = cls.result.confidence or 0.5

@@ -17,7 +17,7 @@ resources:
 
       email_notifications:
         on_failure:
-          - ${var.current_user}
+          - ${var.alert_email}
 
       parameters:
         - name: table_names
@@ -160,10 +160,11 @@ resources:
           max_retries: 1
           min_retry_interval_millis: 600000
           timeout_seconds: 14400
-          # run_if: ALL_DONE so a single pi/domain failure can't skip the KB
+          # run_if: AT_LEAST_ONE_SUCCESS (over comments/pi/domain): a single pi/domain failure can't skip the KB
           # rebuild and silently drop fresh metadata from the review UI.
-          run_if: ALL_DONE
+          run_if: AT_LEAST_ONE_SUCCESS
           depends_on:
+            - task_key: generate_comments
             - task_key: generate_pi
             - task_key: generate_domain
           environment_key: default
@@ -177,8 +178,9 @@ resources:
           max_retries: 1
           min_retry_interval_millis: 600000
           timeout_seconds: 14400
-          run_if: ALL_DONE
+          run_if: AT_LEAST_ONE_SUCCESS
           depends_on:
+            - task_key: generate_comments
             - task_key: generate_pi
             - task_key: generate_domain
           environment_key: default

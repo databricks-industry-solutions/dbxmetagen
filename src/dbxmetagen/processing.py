@@ -3355,7 +3355,7 @@ def summarize_table_content(table_df, config, table_name):
     raise ValueError("No table rows found during summarization...")
 
 
-def setup_ddl(config: MetadataConfig) -> None:
+def setup_ddl(config: MetadataConfig) -> Optional[str]:
     """
     Creates a schema volume if it does not already exist.
 
@@ -3377,6 +3377,8 @@ def setup_ddl(config: MetadataConfig) -> None:
         spark.sql(volume_sql)
         review_output_path = f"/Volumes/{config.catalog_name}/{config.schema_name}/{config.volume_name}/{sanitize_user_identifier(config.current_user)}/reviewed_outputs/"
         os.makedirs(review_output_path, exist_ok=True)
+        return review_output_path
+    return None
 
 
 def create_tables(config: MetadataConfig) -> None:

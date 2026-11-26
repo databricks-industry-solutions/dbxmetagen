@@ -18,7 +18,7 @@ resources:
 
       email_notifications:
         on_failure:
-          - ${var.current_user}
+          - ${var.alert_email}
 
       parameters:
         - name: table_names
@@ -197,14 +197,16 @@ resources:
         # into the knowledge bases AFTER pi/domain run. The first-pass build_*_kb
         # tasks above only enrich pi/domain prompts from the comment pass; without
         # this rebuild, pi/domain never reach the KB tables the review UI reads.
-        # run_if: ALL_DONE so a single pi/domain failure can't skip the rebuild and
+        # run_if: AT_LEAST_ONE_SUCCESS (over comments/pi/domain) so a single pi/domain
+        # failure can't skip the rebuild and
         # silently drop everything from review (KB builds are idempotent MERGEs).
         - task_key: build_knowledge_base_final
           max_retries: 1
           min_retry_interval_millis: 600000
           timeout_seconds: 14400
-          run_if: ALL_DONE
+          run_if: AT_LEAST_ONE_SUCCESS
           depends_on:
+            - task_key: generate_comments
             - task_key: generate_pi
             - task_key: generate_domain
           job_cluster_key: metadata_cluster
@@ -220,8 +222,9 @@ resources:
           max_retries: 1
           min_retry_interval_millis: 600000
           timeout_seconds: 14400
-          run_if: ALL_DONE
+          run_if: AT_LEAST_ONE_SUCCESS
           depends_on:
+            - task_key: generate_comments
             - task_key: generate_pi
             - task_key: generate_domain
           job_cluster_key: metadata_cluster

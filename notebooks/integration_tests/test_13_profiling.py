@@ -297,6 +297,8 @@ print("[TEST 6] PASSED: sample_values contains valid JSON arrays")
 
 # COMMAND ----------
 
+# Tests 7-14: every fixture column must have stats. Profiling only caps tables at 50
+# columns and these fixtures have fewer than 10, so a missing row is a real failure.
 # Test 7: Verify pattern detection for string columns
 uuid_pattern = spark.sql(f"""
     SELECT pattern_detected
@@ -309,7 +311,7 @@ if uuid_pattern:
         f"Expected 'uuid' pattern for uuid_col, got '{uuid_pattern[0]['pattern_detected']}'"
     print("[TEST 7] PASSED: UUID pattern detected correctly")
 else:
-    print("[TEST 7] SKIPPED: uuid_col stats not found (may be due to column limit)")
+    raise AssertionError("[TEST 7] FAILED: no column_profiling_stats row for test_string_data.uuid_col")
 
 # COMMAND ----------
 
@@ -325,7 +327,7 @@ if email_pattern:
         f"Expected 'email' pattern for email_col, got '{email_pattern[0]['pattern_detected']}'"
     print("[TEST 8] PASSED: Email pattern detected correctly")
 else:
-    print("[TEST 8] SKIPPED: email_col stats not found")
+    raise AssertionError("[TEST 8] FAILED: no column_profiling_stats row for test_string_data.email_col")
 
 # COMMAND ----------
 
@@ -343,7 +345,7 @@ if category_mode:
         f"Expected 'CategoryA' as mode, got '{category_mode[0]['mode_value']}'"
     print("[TEST 9] PASSED: Mode value and frequency computed correctly")
 else:
-    print("[TEST 9] SKIPPED: category_col stats not found")
+    raise AssertionError("[TEST 9] FAILED: no column_profiling_stats row for test_string_data.category_col")
 
 # COMMAND ----------
 
@@ -359,7 +361,7 @@ if entropy_check and entropy_check[0]["entropy"] is not None:
     assert 0 <= entropy_val <= 10, f"Entropy should be between 0 and ~10, got {entropy_val}"
     print(f"[TEST 10] PASSED: Entropy computed correctly (value: {entropy_val:.4f})")
 else:
-    print("[TEST 10] SKIPPED: Entropy not computed")
+    raise AssertionError("[TEST 10] FAILED: entropy missing for test_string_data.category_col")
 
 # COMMAND ----------
 
@@ -375,7 +377,7 @@ if unique_check:
         "uuid_col should be flagged as unique candidate"
     print("[TEST 11] PASSED: is_unique_candidate correctly identifies unique columns")
 else:
-    print("[TEST 11] SKIPPED: uuid_col stats not found")
+    raise AssertionError("[TEST 11] FAILED: no column_profiling_stats row for test_string_data.uuid_col")
 
 # COMMAND ----------
 
@@ -404,7 +406,7 @@ if numeric_stats:
     assert numeric_stats[0]["mean_value"] is not None, "mean_value should be computed"
     print("[TEST 13] PASSED: Numeric stats populated for numeric columns")
 else:
-    print("[TEST 13] SKIPPED: amount stats not found")
+    raise AssertionError("[TEST 13] FAILED: no column_profiling_stats row for the amount column")
 
 # COMMAND ----------
 
@@ -420,7 +422,7 @@ if string_stats:
     # empty_col has 9 empty strings and 1 NULL
     print(f"[TEST 14] PASSED: String stats populated (empty_string_count: {string_stats[0]['empty_string_count']})")
 else:
-    print("[TEST 14] SKIPPED: empty_col stats not found")
+    raise AssertionError("[TEST 14] FAILED: no column_profiling_stats row for test_string_data.empty_col")
 
 # COMMAND ----------
 # MAGIC %md
@@ -466,7 +468,7 @@ fed_stats = spark.sql(f"""
 if fed_stats:
     print(f"[TEST F2] PASSED: Federated path results written successfully")
 else:
-    print("[TEST F2] SKIPPED: No federated stats found (may overlap with delta snapshots)")
+    raise AssertionError("[TEST F2] FAILED: the federation-mode run (TEST F1) wrote no column stats for test_numeric_data")
 
 # COMMAND ----------
 # MAGIC %md

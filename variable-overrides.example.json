@@ -23,6 +23,8 @@
   "_comment_app_name": "Alternate app name. app_name_suffix appends to BOTH the app display name and the job-name prefix, so multiple instances can coexist in one workspace (the app is a singleton by name). e.g. \"-dev\". Honored by grant_app_permissions.sh too.",
   "app_name_suffix": "-dev",
 
+  "_comment_alert_email": "Optional: add  \"alert_email\": \"<team address>\"  to send every job's failure alert to a team instead of the deploying identity. REQUIRED when deploying as a service principal: an SP's identity is its application id, not an email address, so alerts would reach nobody.",
+
   "_comment_app_lifecycle": "Leave as {} (the safe default, shown below) -- works on BOTH deploy engines; the app is started by `bundle run dbxmetagen_app` (deploy.sh / Option 1 do this) or the UI run icon. For a ONE-STEP deploy where a single `bundle deploy` also deploys the app source and starts it, change this to {\"started\": true} -- but ONLY on the DIRECT engine (workspace UI + fresh CLI). Do NOT set `started` if your bundle state is on the TERRAFORM engine (an older deploy.sh/CLI lineage): terraform rejects it at build time.",
   "app_lifecycle": {}
 }

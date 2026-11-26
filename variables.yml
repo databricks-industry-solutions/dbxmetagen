@@ -173,20 +173,67 @@ variables:
   current_user:
     description: User deploying the bundle. Can apply to service principals as well.
     default: ${workspace.current_user.userName}
+  alert_email:
+    description: >-
+      Email address that job on_failure notifications are sent to. Defaults to the
+      deploying user for backward compatibility; override to a team distribution
+      list (a real email address, NOT a Unity Catalog group name -- Databricks job
+      email notifications do not accept group names) in variable-overrides.json so
+      operational failure alerts are not tied to a named individual. ALWAYS set it
+      when deploying as a service principal: the default is then the SP's
+      application id, not an email address, so alerts would reach nobody
+      (deploy.sh and grant_app_permissions.sh warn).
+    default: ${var.current_user}
   run_as:
     description: >-
-      Identity that jobs run as. Defaults to the deploying user. To run jobs as a
-      service principal instead, override this complex variable, e.g. in a gitignored
-      variable-overrides.json:
-        {"run_as": {"service_principal_name": "00000000-0000-0000-0000-000000000000"}}
-      Note: in development-mode targets (dev, demo), DAB requires run_as to be the
-      deploying user; SP run_as is intended for the prod target.
+      Service principal that jobs run as, for the ADVANCED pattern only: deploy as
+      one identity but run jobs as a DIFFERENT service principal. By default the job
+      resources (resources/jobs/*.yml) do NOT reference this variable -- they omit
+      run_as entirely, so DAB types the deploying identity automatically, a user OR a
+      service principal. That omission is what lets an SP-deployed prod bundle work
+      with zero run_as config: a hardcoded user_name: <sp-app-id> made it fail with
+      "cannot be set as run_as", and an empty run_as object fails with "run_as object
+      must have user_name or service_principal_name fields filled", so neither a
+      static default nor {} is safe to template -- only omission auto-types correctly.
+      The app always stays owned by the deployer (a target-level run_as would also
+      apply to the app, and DAB rejects an app whose run_as differs from the deployer).
+
+      To run jobs as a service principal the SIMPLE way, just deploy as that SP: the
+      jobs run as it automatically, no override and no entry here needed.
+
+      For the advanced "deploy as X, run jobs as a different SP Y" pattern: add a
+      per-job run_as that references this variable (run_as set to var.run_as) back to
+      the job resource(s) you want, then set this variable to Y in the overrides --
+      .databricks/bundle/<target>/variable-overrides.json (CLI) or
+      the UI's "Configure variable overrides" editor:
+        {"run_as": {"service_principal_name": "<sp-application-id>"}}
+      Requirements for Y: the deploying identity holds the "Service Principal: User"
+      role on Y BEFORE the deploy (workspace admins are not exempt), and Y has the
+      app SP's output-schema + Vector Search privileges, CREATE VOLUME / FUNCTION /
+      MATERIALIZED VIEW on the output schema, and CAN_READ on the bundle folder
+      (root_path) holding the job notebooks. scripts/grant_app_permissions.sh does all
+      of this when it detects a service_principal_name here (deploy.sh runs it
+      automatically). Use a dedicated SP rather than the app's own SP, which is
+      recreated (new id) whenever the app is deleted/recreated.
+
+      Only the PROD target should run jobs as an SP. dev and demo are development-mode
+      targets where DAB requires the deploying user, so leave run_as omitted there.
+
+      Upgrading: older releases applied this variable to EVERY job. If you set it and
+      no job references it, every job runs as the deployer; deploy.sh and
+      grant_app_permissions.sh print a warning saying so. Delete the override to
+      silence it, or add the per-job run_as described above.
     type: complex
     default:
       user_name: ${workspace.current_user.userName}
   current_working_directory:
-    description: Working directory or bundle root.
-    default: /Users/${var.current_user}/.bundle/${bundle.name}/${bundle.target}
+    description: >-
+      Prod bundle root_path. MUST be under /Workspace -- Databricks Apps reject a
+      source_code_path that is not a valid workspace path, and /Users/... (no
+      /Workspace prefix) is rejected at app-deploy time with "Source code path must
+      be a valid workspace path". For an SP deployer, current_user resolves to the
+      SP's application-id, so this path lands under that identity's home.
+    default: /Workspace/Users/${var.current_user}/.bundle/${bundle.name}/${bundle.target}
   review_input_file_type:
     description: excel or tsv. allows reviewed DDL to be in either format.
     default: tsv
@@ -397,3 +444,9 @@ variables:
   enable_agent_mcp:
     description: "Mount a custom MCP server at /mcp exposing the metadata AGENT (metadata_agent_query + deep_analysis_submit/poll) so another agent can delegate whole metadata questions. Off by default. Runs under the invoking user's identity via OBO (set enable_obo=true + user_api_scopes). See docs/MCP_SERVERS.md."
     default: false
+  enable_uc_pages:
+    description: "Opt-in: enable the app's 'Generate UC Pages' tool. A prompt plus the scope's accumulated context (business context, acronyms, ingested documents, generated comments, ontology, FKs, metric views) is planned into candidate concepts you curate, then written with claim-level provenance, quality-scored, and stored in editable page_* tables in the results schema. Only an explicit Publish writes to Unity Catalog (Draft by default) via the Pages REST API, with table, metric-view, related-Page and source links. Capability-gated: shows a clear message if Pages/Domains are unavailable or the identity lacks permission."
+    default: false
+  uc_pages_judge_model:
+    description: "Serving endpoint(s) for the Pages quality reviewer, comma-separated for a panel whose scores are averaged (e.g. 'databricks-gpt-5-5,databricks-claude-sonnet-4-6'). Prefer a different model family than llm_model to avoid self-preference bias. 'none' = use llm_model."
+    default: "none"
