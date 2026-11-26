@@ -237,7 +237,7 @@ marshmallow==3.26.2
 matplotlib==3.10.0
     # via
     #   mlflow
-mlflow==3.11.1
+mlflow==3.16.0
     # via
     #   databricks-langchain
     #   dbxmetagen
