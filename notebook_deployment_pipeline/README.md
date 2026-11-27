@@ -166,6 +166,7 @@ w.apps.update(name="dbxmetagen-app", app=App(
 | `app_name` | No | `dbxmetagen-app` | Databricks App name |
 | `enable_obo` | No | `false` | Enable On-Behalf-Of user authentication |
 | `mode` | No | `deploy` | `deploy` or `destroy` |
+| `run_jobs_as_app_sp` | No | `false` | `true` sets every job's run_as to the app service principal (and grants it read access to `repo_path`). `false` leaves each job's existing run_as unchanged, so switching back to `false` does not revert jobs already set to the app SP; change those in the Jobs UI |
 
 ## Jobs Created
 

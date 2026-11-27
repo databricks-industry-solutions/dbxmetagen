@@ -44,7 +44,7 @@ set -e
 TARGET="dev"
 PROFILE="DEFAULT"
 SKIP_VS=false
-ALLOW_FAILURES=false
+STRICT=false   # default: report failed grants and exit 0; --strict exits 1 (CI)
 PROBLEMS=()   # every grant that did not apply; reported at the end
 
 usage() {
@@ -53,7 +53,7 @@ Usage: scripts/grant_app_permissions.sh [OPTIONS]
   -t, --target TARGET    Bundle target (default: dev)
   -p, --profile PROFILE  Databricks CLI profile (default: DEFAULT)
       --no-vs            Skip Vector Search endpoint provisioning + grant
-      --allow-failures   Exit 0 even if some grants fail (default: exit 1 so CI notices)
+      --strict           Exit 1 if any grant fails (for CI). Default: list them and exit 0
   -h, --help             Show this help
 EOF
 }
@@ -63,7 +63,8 @@ while [[ $# -gt 0 ]]; do
         -t|--target)  TARGET="$2"; shift 2 ;;
         -p|--profile) PROFILE="$2"; shift 2 ;;
         --no-vs)      SKIP_VS=true; shift ;;
-        --allow-failures) ALLOW_FAILURES=true; shift ;;
+        --strict)     STRICT=true; shift ;;
+        --allow-failures) STRICT=false; shift ;;   # backward-compat: this is now the default
         -h|--help)    usage; exit 0 ;;
         *) echo "Unknown option: $1 (use --help)"; exit 1 ;;
     esac
@@ -426,6 +427,6 @@ fi
 if [ -z "${SPN_APP_ID}" ]; then
     echo "  (app not deployed yet: re-run this script after bundle deploy to grant the app SP)"
 fi
-if [ "${#PROBLEMS[@]}" -gt 0 ] && [ "${ALLOW_FAILURES}" = false ]; then
+if [ "${#PROBLEMS[@]}" -gt 0 ] && [ "${STRICT}" = true ]; then
     exit 1
 fi

@@ -21,6 +21,14 @@ Jobs **omit** `run_as` entirely -- it is set neither per job (`resources/jobs/*.
 
 2. **Advanced -- deploy as X, run jobs as a different SP Y** (e.g. deploy as a user but run jobs as the app SP). Add `run_as: ${var.run_as}` back to the job resource(s) you want, then set `{"run_as": {"service_principal_name": "<Y-application-id>"}}` in `variable-overrides.json` (CLI) or the UI's **Configure variable overrides** editor (only the jobs you added the line to run as Y; the rest stay as the deployer). X must hold the **Service Principal: User** role on Y **before** the deploy -- workspace admins are not exempt, and without it the Jobs API rejects the job with `PERMISSION_DENIED ... must have 'servicePrincipal.user' role`. `scripts/grant_app_permissions.sh` detects an SP `run_as`, grants X that role (if X is Y's manager or an admin), gives Y the same output-schema and Vector Search permissions as the app SP plus the create privileges only jobs need (`CREATE VOLUME`, `CREATE FUNCTION`, `CREATE MATERIALIZED VIEW`), and grants Y `CAN_READ` on the bundle's workspace folder (`root_path`) -- the job notebooks and wheel live in the deployer's folder, so without it the job fails with `Unable to access the notebook ... lacks the required permissions`. Because the role must exist before the deploy, run the script once **before** the first advanced deploy as well as after (`deploy.sh` does both). Source-table access is not granted by the script. Prefer a dedicated SP over the app's own SP: the app SP is recreated (new id) if the app is deleted and recreated.
 
+   To use the **app's own SP** as Y anyway, look up its application id after the app exists and use that value:
+
+   ```bash
+   databricks apps get <app_name> -p <profile> -o json | jq -r .service_principal_client_id
+   ```
+
+   If you deploy with the notebook pipeline instead of the CLI, set `run_jobs_as_app_sp=true` on `02_deploy_app.py`; it sets every job's run_as to the app SP for you (see `notebook_deployment_pipeline/README.md`).
+
 ---
 
 ## App SPN Permissions
